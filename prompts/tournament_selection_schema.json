@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "papers": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "description": "Ranked list of selected paper IDs (most important first). Use the 'id' field from each <paper> tag. Select as few as needed for comprehensive coverage.",
+      "maxItems": 100
+    }
+  },
+  "required": ["papers"],
+  "additionalProperties": false
+}

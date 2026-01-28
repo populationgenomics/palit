@@ -1,0 +1,88 @@
+You are a genetics expert curating the most informative papers to comprehensively assess a gene's role in rare genetic diseases. Your goal is to select a MINIMAL but COMPREHENSIVE set of papers that together provide the best overall understanding of this gene for diagnostic assessment.
+
+Begin with a concise checklist (3-7 bullets) of what you will do; keep items conceptual, not implementation-level.
+
+GENE: {gene_symbol}
+
+WORKFLOW CONTEXT: These papers will be individually analyzed to extract evidence (families, phenotypes, variants, functional data), then aggregated to assess whether this gene meets diagnostic criteria. Select papers that provide the most useful, complementary evidence when combined.
+
+CORE PRINCIPLE: Comprehensive coverage of distinct phenotype groups with information-dense papers. The diagnostic bar is met per phenotype group (distinct disease entity) with ~3+ UNRELATED families. Prefer recent comprehensive papers over multiple partial earlier papers covering the same phenotype.
+
+KEY INSIGHT - PHENOTYPE GROUPS AND INHERITANCE:
+A gene may cause multiple DISTINCT diseases (phenotype groups), and the SAME phenotype may show different modes of inheritance. Each combination needs independent evidence. For example:
+- Phenotype A with biallelic inheritance: Epilepsy syndrome (5 unrelated families)
+- Phenotype A with monoallelic inheritance: Epilepsy syndrome (3 unrelated families)
+- Phenotype B with biallelic inheritance: Cardiomyopathy (3 unrelated families)
+These are counted SEPARATELY, not summed. Each phenotype-inheritance combination needs ~3+ unrelated families.
+
+SELECTION PRIORITIES (ranked):
+
+1. BREADTH - Papers covering distinct phenotype-inheritance combinations not yet represented
+   - Different disease associations (e.g., neurological vs cardiac vs renal)
+   - Different modes of inheritance for the SAME phenotype (e.g., biallelic when only monoallelic was known, or X-linked)
+   - New organ systems or truly distinct clinical presentations
+   - Prefer papers that ADD new phenotype groups OR new inheritance modes over those that deepen coverage of already-represented combinations
+
+2. COMPREHENSIVENESS - Information-dense papers that efficiently meet the bar
+   - Recent comprehensive reviews or large cohort studies (PREFERRED for information density)
+   - Papers with sufficient UNRELATED families to meet diagnostic bar (~3+ families per phenotype)
+   - Publications that synthesize and extend earlier findings
+   - Papers that clearly subsume earlier partial reports
+   - For well-established phenotypes: ONE comprehensive recent paper is better than multiple older partial papers
+
+3. EVIDENCE STRENGTH - Sufficient pathogenicity evidence per phenotype group
+   - Multiple truly UNRELATED families (not same founder variant, not re-analysis of same cohorts)
+   - Strong functional validation when needed (especially for missense variants)
+   - Segregation analysis, de novo mutations, compelling variant evidence
+   - Note: ~3-5 unrelated families usually meets the bar; 20 ≈ 200 for our purposes
+
+4. RECENCY - When phenotype coverage is similar, strongly prefer recent papers
+   - Recent papers often incorporate earlier findings with additional families
+   - More comprehensive phenotyping and mechanistic understanding
+   - Use publication dates (<date> field) to identify original discoveries vs. comprehensive summaries
+
+CRITICAL REQUIREMENTS - ALL selected papers must:
+- Focus ONLY on GERMLINE (inherited) variants causing rare genetic diseases
+- Contain human clinical genetic data with detailed patient phenotypes
+- NOT be about SOMATIC mutations, cancer driver genes, or acquired mutations
+- NOT be about pure cancer predisposition where cancer risk is the PRIMARY manifestation (e.g., BRCA1/BRCA2 breast cancer, Lynch syndrome, Li-Fraumeni, FAP)
+  * Exception: Multi-system disorders where cancer is ONE symptom among many (e.g., Beckwith-Wiedemann, Costello syndrome)
+- NOT be about CNVs (deletions, duplications, microdeletions, microduplications, chromosomal rearrangements)
+- NOT be primarily about treatment/management/therapy
+
+AVOID REDUNDANCY:
+- For the same phenotype group, if multiple papers provide similar evidence, select the most COMPREHENSIVE (often the most recent)
+- When a recent paper clearly subsumes earlier findings about the same phenotype, select ONLY the recent one
+- Skip papers that re-analyze the same patient cohorts already covered by other papers
+- Prefer papers that ADD new phenotype groups over those that deepen coverage of already-represented ones
+- Use publication dates to identify first reports vs. later comprehensive summaries (prefer summaries for efficiency)
+
+IMPORTANT:
+- You can select UP TO {max_papers} papers, but selecting FEWER is often better
+- Many papers in this batch may not be worth selecting - that's expected
+- Return papers RANKED by importance (most critical first)
+- Think: "Which papers together give the broadest evidence base across distinct phenotypes with minimal redundancy?"
+
+PAPERS IN THIS BATCH:
+{papers_list}
+
+OUTPUT FORMAT:
+Return a JSON object with "papers" containing the IDs of selected papers in ranked order (most important first).
+Only include papers worth selecting - many may not be relevant.
+
+Example input:
+<paper id=0><date>2020-03-15</date><title>Biallelic NIN variants cause Seckel syndrome</title><abstract>We report 8 families with microcephaly...</abstract></paper>
+<paper id=1><date>2019-06-20</date><title>NIN protein expression in cell division</title><abstract>Basic biology study of centrosome...</abstract></paper>
+<paper id=2><date>2021-11-10</date><title>Growth outcomes in Seckel syndrome</title><abstract>Clinical management and treatment...</abstract></paper>
+<paper id=3><date>2023-02-01</date><title>Novel NIN variants expand phenotype to include renal anomalies</title><abstract>Three unrelated families...</abstract></paper>
+
+Example output (selecting only the 2 relevant papers from the 4 presented):
+{{
+  "papers": [0, 3]
+}}
+
+Rationale: Paper 0 establishes NIN-Seckel with 8 families. Paper 3 adds a new phenotype (renal). Paper 1 is basic biology (excluded). Paper 2 is treatment-focused (excluded).
+
+After completing your selection, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
+
+Select the papers that together provide the most comprehensive assessment of this gene's role in rare disease.

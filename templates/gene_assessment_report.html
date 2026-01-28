@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PanelApp Literature Assessment Report</title>
+    <style>
+{{ custom_css }}
+    </style>
+</head>
+<body>
+    {% if panelapp_integration %}
+    {# PanelApp integration: CSRF token for API calls #}
+    <input type="hidden" name="csrfmiddlewaretoken" value="{{ '{{CSRF_TOKEN}}' }}">
+
+    {# PanelApp integration: Report configuration for assignment system #}
+    <script type="application/json" id="report-config">
+{{ report_config_json | safe }}
+    </script>
+
+    {# PanelApp integration: Assignment widget assets (served by PanelApp) #}
+    <link rel="stylesheet" href="{{ '{{STATIC_URL}}' }}literature-assignments.css">
+    <script src="{{ '{{STATIC_URL}}' }}literature-assignments.js" defer></script>
+    {% endif %}
+
+    {# Macro for rendering MoI comparison badge #}
+    {% macro moi_comparison_badge(moi_comp) %}
+    {% if moi_comp %}
+        <span class="moi-badge {{ moi_comp.css_class }}" title="{{ moi_comp.message }}">
+            {{ moi_comp.icon }} MoI {{ "Expansion" if moi_comp.status == "expansion" else "Change" }}
+        </span>
+    {% endif %}
+    {% endmacro %}
+
+    {# Macro for rendering prefill button (inline in header) #}
+    {# Form is created dynamically by JS to avoid thousands of hidden inputs slowing down page load #}
+    {% macro prefill_button(gene, form_type) %}
+    {% if panelapp_integration %}
+    <span class="prefill-form">
+        <button type="button" class="prefill-button prefill-{{ form_type }}"
+                data-prefill="{{ gene.prefill_json }}">
+            {% if form_type == 'add' %}Add gene{% else %}Add review{% endif %}
+        </button>
+    </span>
+    {% endif %}
+    {% endmacro %}
+
+    {# Macro for rendering assignment slot (populated by JS widget) #}
+    {% macro assignment_slot(gene) %}
+    {% if panelapp_integration %}
+    <span class="assignment-slot" data-gene="{{ gene.gene_symbol }}"></span>
+    {% endif %}
+    {% endmacro %}
+
+    {# Macro for rendering gene header with optional PanelApp entity link #}
+    {% macro gene_header(gene) %}
+    {% if panelapp_integration %}
+    <a href="/panels/entities/{{ gene.gene_symbol }}" target="_blank">{{ gene | format_gene_with_aliases | safe }}</a>
+    {% else %}
+    {{ gene | format_gene_with_aliases | safe }}
+    {% endif %}
+    {% endmacro %}
+
+    {# Macro for rendering phenotype breakdown table - reusable across contexts #}
+    {% macro phenotype_breakdown_table(phenotype_groups, gene_symbol=none, pdf_base_path="", contributing_papers=none) %}
+    {% if phenotype_groups %}
+        <table class="phenotype-breakdown-table">
+            <thead>
+                <tr>
+                    <th>Phenotype</th>
+                    <th>MoI</th>
+                    <th>Patients</th>
+                    <th>Families</th>
+                    {% if phenotype_groups[0].citations is defined and contributing_papers %}<th>Citations</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% set sorted_groups = phenotype_groups | sort_by_family_count %}
+                {% set max_family_count = sorted_groups[0].family_count if sorted_groups and sorted_groups[0].family_count is not none else none %}
+                {% for group in sorted_groups %}
+                <tr>
+                    <td>
+                        {{ group.phenotype }}
+                        {% if group.mondo_id %}
+                            {% set mondo_info = group.mondo_id | format_mondo_badge %}
+                            <span class="mondo-badge mondo-{{ mondo_info.abbrev | lower }}" data-title="{{ mondo_info.description }} ({{ group.mondo_id }})">{{ mondo_info.abbrev }}</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ group.inheritance_mode | format_inheritance(group.inheritance_details) if group.inheritance_mode else 'NR' }}</td>
+                    <td>{{ group.patient_count }}</td>
+                    <td {% if group.family_count is not none and group.family_count == max_family_count and max_family_count > 0 %}class="phenotype-max-family-count" data-title="Maximum family count - used for classification"{% endif %}>{% if group.family_count is not none %}{{ group.family_count }}{% else %}NR{% endif %}</td>
+                    {% if group.citations is defined and contributing_papers %}<td>{% if group.citations %}{% set citation_links = group.citations | prepare_citation_links(contributing_papers) %}{% for pmid, page in citation_links %}<a href="{{ pdf_base_path }}/{{ gene_symbol }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+    {% endmacro %}
+
+    {# Macro for rendering evidence summary section #}
+    {% macro evidence_summary(gene, pdf_base_path="") %}
+    <div class="evidence-summary-expanded">
+        <h5><strong>Summary</strong></h5>
+        <p>{{ gene.assessment_json.summary }}</p>
+
+        <h5><strong>Evidence Details</strong></h5>
+        <ul>
+            <li><strong>Families:</strong> {{ gene.assessment_json.families }}</li>
+            <li><strong>Mode of inheritance:</strong> {{ gene.new_moi | format_inheritance(gene.new_moi_details) }}</li>
+            <li><strong>Variants:</strong> {{ gene.assessment_json.variants }}</li>
+            <li><strong>Population Frequency:</strong> {{ gene.assessment_json.population_freq }}</li>
+            <li><strong>Segregation:</strong> {{ gene.assessment_json.segregation }}</li>
+            <li><strong>Functional Studies:</strong> {{ gene.assessment_json.functional }}</li>
+            <li><strong>Prior Reports:</strong> {{ gene.assessment_json.prior_reports }}</li>
+            {% if gene.cited_pmids %}
+            <li><strong>Publications (PMID):</strong> {% for pmid in gene.cited_pmids %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ pmid }}/" target="_blank">{{ pmid }}</a>{% if not loop.last %};{% endif %}{% endfor %}</li>
+            {% endif %}
+        </ul>
+
+        {{ phenotype_breakdown_table(gene.assessment_json.phenotype_groups, gene.gene_symbol, pdf_base_path, gene.contributing_papers) }}
+
+        {% if gene.moi_comparison %}
+        <p class="moi-transition-note {% if not gene.moi_comparison.highlighted %}moi-not-highlighted{% endif %}">
+            <strong>{{ gene.moi_comparison.icon }} Mode of Inheritance Change:</strong>
+            {{ gene.moi_comparison.existing | format_inheritance }} →
+            {{ gene.moi_comparison.new | format_inheritance(gene.moi_comparison.new_details) }}
+            {% if gene.moi_comparison.reason %}
+            <span class="moi-reason">({{ gene.moi_comparison.reason }})</span>
+            {% endif %}
+        </p>
+        {% endif %}
+
+        {% if gene.assessment_json.quality_concerns %}
+        <div class="quality-concerns">
+            <h5><strong>⚠️ Quality Concerns</strong></h5>
+            <ul>
+                {% for concern in gene.assessment_json.quality_concerns %}
+                <li>
+                    {{ concern.concern }}
+                    {% if concern.citations %}
+                    {% set citation_links = concern.citations | prepare_citation_links(gene.contributing_papers) %}
+                    {% for pmid, page in citation_links %}
+                    <a href="{{ pdf_base_path }}/{{ gene.gene_symbol }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a>
+                    {% endfor %}
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+    {% endmacro %}
+
+    {# Macro for rendering criteria assessment grid - handles both aggregate and individual paper assessments #}
+    {% macro criteria_grid(assessment, gene_symbol, pdf_base_path, contributing_papers=none, citation_pages=none, pmid=none) %}
+    <div class="criteria-grid">
+        {% for crit_name, crit_label, separator in [
+            ('criterion_A', 'Criterion A - Multiple Unrelated Cases', 'OR'),
+            ('criterion_B', 'Criterion B - Cis-regulatory Mutations', 'OR'),
+            ('criterion_C', 'Criterion C - Fewer Cases with Functional Evidence', 'AND'),
+            ('criterion_D', 'Criterion D - Mendelian Inheritance', 'AND'),
+            ('criterion_E', 'Criterion E - No Contradictory Evidence', none)
+        ] %}
+            {% set crit = assessment[crit_name] %}
+            <span class="criterion-header criterion-{{ 'true' if crit.result else 'false' }}">
+                {{ '✓' if crit.result else '✗' }} {{ crit_label }} | Confidence: {{ crit.confidence }}
+            </span>
+            <strong>Rationale:</strong> {{ crit.rationale }}
+            {% if crit.citations %}
+            <div class="evidence-card">
+                <ul>
+                    {% if contributing_papers %}
+                        {# Aggregate mode: use prepare_citation_links filter #}
+                        {% set citation_links = crit.citations | prepare_citation_links(contributing_papers) %}
+                        {% for citation in crit.citations %}
+                        <li>
+                            {{ citation.commentary }}
+                            {% for cite_pmid, page in citation_links %}
+                            <a href="{{ pdf_base_path }}/{{ gene_symbol }}/{{ cite_pmid }}.pdf#page={{ page }}" target="_blank">[{{ cite_pmid }}:p{{ page }}]</a>
+                            {% endfor %}
+                        </li>
+                        {% endfor %}
+                    {% elif citation_pages and pmid %}
+                        {# Individual mode: use citation.box_id and paper.citation_pages #}
+                        {% for citation in crit.citations %}
+                        <li>
+                            {{ citation.commentary }}
+                            {% if citation.box_id and citation.box_id in citation_pages %}
+                            <a href="{{ pdf_base_path }}/individual/{{ pmid }}.pdf#page={{ citation_pages[citation.box_id] }}" target="_blank">[{{ pmid }}:p{{ citation_pages[citation.box_id] }}]</a>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    {% endif %}
+                </ul>
+            </div>
+            {% endif %}
+
+            {% if separator %}
+            <div class="criterion-separator">{{ separator }}</div>
+            {% endif %}
+        {% endfor %}
+    </div>
+    {% endmacro %}
+
+    {# Macro for rendering panel recommendations - used for both novel and known genes #}
+    {% macro panel_recommendations(gene) %}
+    {% if gene.missing_panels %}
+    <details class="panel-recommendations">
+        <summary>
+            <strong>Suggested panels:</strong>
+            {{ gene.missing_panels|sort(attribute='panel_name')|map(attribute='panel_name')|join(', ') }}
+        </summary>
+        <div class="panel-details">
+            {% set is_novel_gene = not gene.existing_panels %}
+
+            <div class="panel-section">
+                {% if not is_novel_gene %}
+                <h4>Additional panels</h4>
+                {% endif %}
+                <ul>
+                {% for panel in gene.missing_panels|sort(attribute='panel_name') %}
+                    <li>
+                        <a href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank"><strong>{{ panel.panel_name }}</strong></a>: {{ panel.rationale }}
+                    </li>
+                {% endfor %}
+                </ul>
+            </div>
+
+            {% if gene.existing_panels %}
+            <div class="panel-section">
+                <h4>Already in panels</h4>
+                <ul>
+                {% for panel in gene.existing_panels|sort(attribute='panel_name') %}
+                    <li>
+                        <a href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank"><strong>{{ panel.panel_name }}</strong></a>: {{ panel.rationale }}
+                    </li>
+                {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </div>
+    </details>
+    {% endif %}
+    {% endmacro %}
+
+    {# Macro for rendering gene article body - everything below the header #}
+    {% macro gene_article_body(gene, pdf_base_path) %}
+        {{ evidence_summary(gene, pdf_base_path) }}
+
+        {{ panel_recommendations(gene) }}
+
+        {% if gene.variant_frequencies %}
+        <div class="variant-frequency-section">
+            <h5><strong>gnomAD v4 frequencies</strong></h5>
+            {{ variant_frequency_table(gene.variant_frequencies, gene.new_moi, gene.gene_symbol, pdf_base_path, include_faf=true) }}
+        </div>
+        {% endif %}
+
+        <details>
+            <summary><strong>PanelApp Criteria Assessment</strong></summary>
+            {{ criteria_grid(gene.assessment_json, gene.gene_symbol, pdf_base_path, contributing_papers=gene.contributing_papers) }}
+        </details>
+
+        <details>
+            <summary><strong>Contributing Papers ({{ gene.contributing_papers|length }})</strong></summary>
+            {% for paper in gene.contributing_papers %}
+            {{ paper_display(paper, include_evidence=true, gene=gene, pdf_base_path=pdf_base_path) }}
+            {% endfor %}
+        </details>
+    {% endmacro %}
+
+    {# Macro for rendering variant frequency tables - reduces duplication #}
+    {% macro variant_frequency_table(variants, inheritance_mode, gene_symbol, pdf_base_path, include_faf=true) %}
+    <table class="variant-frequency-table">
+        <thead>
+            <tr>
+                <th>HGVS c.</th>
+                <th>HGVS p.</th>
+                <th data-title="Alternate allele count in high quality genotypes">AC</th>
+                <th data-title="Number of heterozygotes">het</th>
+                <th data-title="Number of homozygotes">hom</th>
+                <th data-title="Number of hemizygotes">hemi</th>
+                {% if include_faf %}
+                <th data-title="Grpmax Filtering Allele Frequency: the maximum credible genetic ancestry group alternate allele frequency as a lower bound of the 95% confidence interval">FAF</th>
+                {% endif %}
+                <th>Links</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for variant in variants %}
+            {% set flag_info = variant | get_variant_flag(inheritance_mode) %}
+            <tr class="{% if flag_info.should_flag %}high-frequency-variant{% endif %}">
+                <td>
+                    {% if variant.hgvs_c %}
+                        {{ variant.hgvs_c }}
+                    {% else %}
+                        <em>{{ variant.original_text }}</em>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if variant.hgvs_p %}
+                        {{ variant.hgvs_p }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td>
+                    {% if variant.gnomad_not_found %}
+                        <em>not found</em>
+                    {% elif variant.gnomad_ac is not none %}
+                        <span class="hover-value" data-title="AN = {{ variant.gnomad_an }}">{{ variant.gnomad_ac }}</span>
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td>
+                    {% if variant.gnomad_het is not none %}
+                        {{ variant.gnomad_het }}
+                        {% if flag_info.should_flag and "het" in flag_info.flagged_metric %}
+                            <span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>
+                        {% endif %}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td>
+                    {% if variant.gnomad_hom is not none %}
+                        {{ variant.gnomad_hom }}
+                        {% if flag_info.should_flag and "hom" in flag_info.flagged_metric %}
+                            <span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>
+                        {% endif %}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td>
+                    {% if variant.gnomad_hemi is not none %}
+                        {{ variant.gnomad_hemi }}
+                        {% if flag_info.should_flag and "hemi" in flag_info.flagged_metric %}
+                            <span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>
+                        {% endif %}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                {% if include_faf %}
+                <td>
+                    {% if variant.gnomad_faf95_popmax is not none %}
+                        <span class="hover-value" data-title="{{ variant.gnomad_faf95_popmax_population }}">{{ "%.2e" | format(variant.gnomad_faf95_popmax) }}</span>
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                {% endif %}
+                <td>
+                    <a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>
+                    {% if variant.citation_page %}
+                        | <a href="{{ pdf_base_path }}/{{ gene_symbol }}/{{ variant.pmid }}.pdf#page={{ variant.citation_page }}" target="_blank">[{{ variant.pmid }}:p{{ variant.citation_page }}]</a>
+                    {% elif variant.pmid %}
+                        | <a href="https://pubmed.ncbi.nlm.nih.gov/{{ variant.pmid }}/" target="_blank">[{{ variant.pmid }}]</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endmacro %}
+
+    {# Unified macro for displaying papers - used across all sections #}
+    {% macro paper_display(paper, include_evidence=false, gene=none, pdf_base_path="") %}
+    <article class="detailed-paper">
+        <header class="paper-header">
+            <h6>
+                <a href="https://pubmed.ncbi.nlm.nih.gov/{{ paper.pmid }}/" target="_blank">{{ paper.pmid }}</a>: {{ paper.title }}
+            </h6>
+            <div class="paper-metadata">
+                <ul>
+                    {% if paper.authors %}<li><strong>Authors:</strong> {{ paper.authors }}</li>{% endif %}
+                    {% if paper.journal %}<li><strong>Journal:</strong> {{ paper.journal }}</li>{% endif %}
+                    <li><strong>Date:</strong> {{ paper.entrez_date or 'Unknown' }}</li>
+                    <li><strong>Why considered:</strong>
+                        {% if paper.source_type == 'initial' %}Initial literature search
+                        {% elif paper.source_type == 'expansion' %}Literature expansion
+                        {% else %}{{ paper.source_type or 'Unknown' }}{% endif %}
+                    </li>
+                </ul>
+            </div>
+        </header>
+
+        {% if paper.abstract %}
+        <details class="paper-abstract">
+            <summary><strong>Abstract</strong></summary>
+            <p>{{ paper.abstract }}</p>
+        </details>
+        {% endif %}
+
+        {% if paper.relevance_assessment %}
+        <details class="llm-relevance-assessment">
+            <summary><strong>LLM Relevance Assessment</strong></summary>
+            <p><strong>Relevant:</strong> {{ 'Yes' if paper.relevance_assessment.relevant else 'No' }}</p>
+            <p><strong>Confidence:</strong> {{ paper.relevance_assessment.confidence or 'Unknown' }}</p>
+            <p><strong>Rationale:</strong> {{ paper.relevance_assessment.rationale or 'No rationale provided' }}</p>
+            {% if paper.relevance_assessment.associations %}
+            <div><strong>Associations:</strong>
+                <ul>
+                    {% for assoc in paper.relevance_assessment.associations %}
+                    <li>{{ assoc.gene }} → {{ assoc.disease }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </details>
+        {% endif %}
+
+        {% if include_evidence and paper.evidence_extraction %}
+        <details class="individual-evidence-extraction">
+            <summary><strong>Evidence</strong></summary>
+            {% set gene_eval = (paper.evidence_extraction.gene_evaluations | selectattr('gene', 'equalto', paper.paper_gene_symbol) | list)[0] %}
+            <div class="gene-evaluation">
+                <div class="evidence-summary-expanded">
+                    <h5><strong>Summary</strong></h5>
+                    <p>{{ gene_eval.summary }}</p>
+
+                    <h5><strong>Evidence Details</strong></h5>
+                    <ul>
+                        <li><strong>Families:</strong> {{ gene_eval.families }}</li>
+                        <li><strong>Mode of inheritance:</strong> {{ gene_eval.phenotype_groups | derive_moi | format_inheritance(gene_eval.phenotype_groups | derive_moi_details) }}</li>
+                        <li><strong>Variants:</strong> {{ gene_eval.variants_summary }}</li>
+                        <li><strong>Population Frequency:</strong> {{ gene_eval.population_freq }}</li>
+                        <li><strong>Functional:</strong> {{ gene_eval.functional }}</li>
+                    </ul>
+
+                    {{ phenotype_breakdown_table(gene_eval.phenotype_groups) }}
+
+                    {% if gene_eval.quality_concerns %}
+                    <div class="quality-concerns">
+                        <h6><strong>⚠️ Quality Concerns</strong></h6>
+                        <ul>
+                            {% for concern in gene_eval.quality_concerns %}
+                            <li>
+                                {{ concern.concern }}
+                                {% if concern.citations and paper.citation_pages %}
+                                {% for citation in concern.citations %}
+                                {% if citation.box_id and citation.box_id in paper.citation_pages %}
+                                <a href="{{ pdf_base_path }}/individual/{{ paper.pmid }}.pdf#page={{ paper.citation_pages[citation.box_id] }}" target="_blank">[{{ paper.pmid }}:p{{ paper.citation_pages[citation.box_id] }}]</a>
+                                {% endif %}
+                                {% endfor %}
+                                {% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                </div>
+
+                {{ criteria_grid(gene_eval, paper.pmid, pdf_base_path, citation_pages=paper.citation_pages, pmid=paper.pmid) }}
+
+                <div class="variant-frequency-section">
+                    <h6><strong>gnomAD v4 frequencies</strong></h6>
+                    {% if paper.variant_frequencies %}
+                    {{ variant_frequency_table(paper.variant_frequencies, gene.new_moi, gene.gene_symbol, pdf_base_path, include_faf=false) }}
+                    {% else %}
+                    <p><em>No variants with frequency data extracted from this paper.</em></p>
+                    {% endif %}
+                </div>
+            </div>
+        </details>
+        {% elif include_evidence %}
+        <p><em>No evidence extraction available for this paper.</em></p>
+        {% endif %}
+    </article>
+    {% endmacro %}
+
+    <header>
+        <h1>PanelApp Literature Assessment Report</h1>
+        <p>Generated on {{ generated_at }} | Panel state as of {{ panel_date }}</p>
+    </header>
+
+    <nav class="toc">
+        <h2>Table of Contents</h2>
+        <ul>
+            <li><a href="#statistics">Statistics Overview</a></li>
+            {% if novel_categories and novel_categories.total > 0 %}
+            <li>
+                <a href="#novel-genes">Novel Gene-Disease Associations ({{ novel_categories.total }})</a>
+
+                {% if novel_categories.green %}
+                <div class="toc-section-header">
+                    <span class="rating-badge rating-green">GREEN</span> Candidates ({{ novel_categories.green|length }})
+                </div>
+                <div class="toc-section toc-novel-to-green">
+                    <ul class="toc-gene-list">
+                        {% for gene in novel_categories.green %}
+                        <li><a href="#novel-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if novel_categories.amber %}
+                <div class="toc-section-header">
+                    <span class="rating-badge rating-amber">AMBER</span> Candidates ({{ novel_categories.amber|length }})
+                </div>
+                <div class="toc-section toc-novel-to-amber">
+                    <ul class="toc-gene-list">
+                        {% for gene in novel_categories.amber %}
+                        <li><a href="#novel-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if novel_categories.red %}
+                <div class="toc-section-header">
+                    <span class="rating-badge rating-red">RED</span> Candidates ({{ novel_categories.red|length }})
+                </div>
+                <div class="toc-section toc-novel-to-red">
+                    <ul class="toc-gene-list">
+                        {% for gene in novel_categories.red %}
+                        <li><a href="#novel-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+            </li>
+            {% endif %}
+            {% if known_categories and known_categories.total > 0 %}
+            <li>
+                <a href="#known-genes">Known Gene Evidence Updates ({{ known_categories.total }})</a>
+
+                {% if known_categories.red_to_green %}
+                <div class="toc-section-header">
+                    <span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.red_to_green|length }})
+                </div>
+                <div class="toc-section toc-red-to-green">
+                    <ul class="toc-gene-list">
+                        {% for gene in known_categories.red_to_green %}
+                        <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if known_categories.amber_to_green %}
+                <div class="toc-section-header">
+                    <span class="rating-badge rating-amber">AMBER</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.amber_to_green|length }})
+                </div>
+                <div class="toc-section toc-amber-to-green">
+                    <ul class="toc-gene-list">
+                        {% for gene in known_categories.amber_to_green %}
+                        <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if known_categories.red_to_amber %}
+                <div class="toc-section-header">
+                    <span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-amber">AMBER</span> Upgrades ({{ known_categories.red_to_amber|length }})
+                </div>
+                <div class="toc-section toc-red-to-amber">
+                    <ul class="toc-gene-list">
+                        {% for gene in known_categories.red_to_amber %}
+                        <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if known_categories.no_change_with_moi %}
+                <div class="toc-section-header">
+                    No Rating Change - MoI Expansion ({{ known_categories.no_change_with_moi|length }})
+                </div>
+                <div class="toc-section toc-no-change">
+                    <ul class="toc-gene-list">
+                        {% for gene in known_categories.no_change_with_moi %}
+                        <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}<span class="moi-expansion-indicator">➕</span></a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if known_categories.no_change_without_moi %}
+                <div class="toc-section-header">
+                    Additional Evidence - No Rating Change ({{ known_categories.no_change_without_moi|length }})
+                </div>
+                <div class="toc-section toc-no-change">
+                    <details class="toc-collapsed-section">
+                        <summary>Show gene list</summary>
+                        <ul class="toc-gene-list">
+                            {% for gene in known_categories.no_change_without_moi %}
+                            <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}</a></li>
+                            {% endfor %}
+                        </ul>
+                    </details>
+                </div>
+                {% endif %}
+            </li>
+            {% endif %}
+            {% if manual_download_papers %}
+            <li><a href="#manual-download-papers">Papers Requiring Manual Download ({{ manual_download_papers|length }})</a></li>
+            {% endif %}
+            <li><a href="#panel-publications-analysis">Panel Publications Analysis</a></li>
+            {% if low_confidence_papers %}
+            <li><a href="#low-confidence-review">Low-Confidence Review Candidates ({{ low_confidence_papers|length }})</a></li>
+            {% endif %}
+        </ul>
+    </nav>
+
+    <main>
+        <section id="statistics">
+            <h2>Statistics Overview</h2>
+
+            <ul class="stats-list">
+                <li><strong>Total Genes Assessed:</strong> {{ statistics.total_genes_assessed }}</li>
+                <li><strong>Novel Gene Associations:</strong> {{ statistics.novel_genes_count }}</li>
+                <li><strong>Potential Upgrades:</strong> {{ statistics.known_genes_upgraded }}</li>
+                <li><strong>Contributing Papers:</strong> {{ statistics.total_contributing_papers }}</li>
+                <li><strong>Panel Suggestions:</strong> {{ statistics.total_panel_suggestions }}</li>
+                <li><strong>Mode of Inheritance Expansions:</strong> {{ statistics.moi_expansions_count }}</li>
+                <li><strong>Mode of Inheritance Contradictions:</strong> {{ statistics.moi_contradictions_count }}</li>
+                <li><strong>Panel Publications Correctly Identified:</strong> {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% ({{ statistics.true_positives_count }}/{{ statistics.true_positives_count + statistics.false_negatives_count }})</li>
+                <li><strong>Non-Unanimous Relevance Assessments:</strong> {{ "%.1f"|format(statistics.non_unanimous_pct) }}%</li>
+            </ul>
+
+            <details>
+                <summary><strong>Detailed Statistics</strong></summary>
+
+                <div class="stats-card">
+                    <h3>Paper Sources</h3>
+                    <ul>
+                        <li>Initial Literature: {{ statistics.initial_papers }} papers</li>
+                        <li>Literature Expansion: {{ statistics.expansion_papers }} papers</li>
+                    </ul>
+                </div>
+
+                <div class="stats-card">
+                    <h3>Panel Publication Validation</h3>
+                    <ul>
+                        <li>Total panel publications: {{ statistics.total_panel_pmids }}</li>
+                        <li>Found in recent literature: {{ statistics.panel_papers_in_db }}</li>
+                        <li>Correctly identified as relevant: {{ statistics.true_positives_count }}</li>
+                        <li>Missed (false negatives): {{ statistics.false_negatives_count }}</li>
+                        <li>Sensitivity: {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}%</li>
+                    </ul>
+                </div>
+
+            </details>
+        </section>
+
+        {% if novel_categories and novel_categories.total > 0 %}
+        <section id="novel-genes" class="novel-section">
+            <h2>Novel Gene-Disease Associations</h2>
+            <p><em>Genes not currently in any panel, sorted by potential rating (GREEN candidates first)</em></p>
+
+            {% for gene in novel_categories.green + novel_categories.amber + novel_categories.red %}
+            <article class="gene-assessment" id="novel-gene-{{ gene.gene_symbol }}">
+                <h3>
+                    {{ gene_header(gene) }}
+                    <span class="rating-badge rating-grey">Not in panel</span>
+                    <span class="rating-arrow">→</span>
+                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
+                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ prefill_button(gene, 'add') }}
+                    {{ assignment_slot(gene) }}
+                </h3>
+
+                {{ gene_article_body(gene, pdf_base_path) }}
+            </article>
+            {% endfor %}
+        </section>
+        {% endif %}
+
+        {% if known_categories and known_categories.total > 0 %}
+        <section id="known-genes" class="known-section">
+            <h2>Known Gene Evidence Updates</h2>
+            <p><em>Genes already in panels, categorized by type of update</em></p>
+
+            {% if known_categories.red_to_green %}
+            <div class="subsection-header">
+                <h3><span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.red_to_green|length }})</h3>
+            </div>
+            {% for gene in known_categories.red_to_green %}
+            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+                <h3>
+                    {{ gene_header(gene) }}
+                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
+                    <span class="rating-arrow">→</span>
+                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
+                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ prefill_button(gene, 'review') }}
+                    {{ assignment_slot(gene) }}
+                </h3>
+                {{ gene_article_body(gene, pdf_base_path) }}
+            </article>
+            {% endfor %}
+            {% endif %}
+
+            {% if known_categories.amber_to_green %}
+            <div class="subsection-header">
+                <h3><span class="rating-badge rating-amber">AMBER</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.amber_to_green|length }})</h3>
+            </div>
+            {% for gene in known_categories.amber_to_green %}
+            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+                <h3>
+                    {{ gene_header(gene) }}
+                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
+                    <span class="rating-arrow">→</span>
+                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
+                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ prefill_button(gene, 'review') }}
+                    {{ assignment_slot(gene) }}
+                </h3>
+                {{ gene_article_body(gene, pdf_base_path) }}
+            </article>
+            {% endfor %}
+            {% endif %}
+
+            {% if known_categories.red_to_amber %}
+            <div class="subsection-header">
+                <h3><span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-amber">AMBER</span> Upgrades ({{ known_categories.red_to_amber|length }})</h3>
+            </div>
+            {% for gene in known_categories.red_to_amber %}
+            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+                <h3>
+                    {{ gene_header(gene) }}
+                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
+                    <span class="rating-arrow">→</span>
+                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
+                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ prefill_button(gene, 'review') }}
+                    {{ assignment_slot(gene) }}
+                </h3>
+                {{ gene_article_body(gene, pdf_base_path) }}
+            </article>
+            {% endfor %}
+            {% endif %}
+
+            {% if known_categories.no_change_with_moi %}
+            <div class="subsection-header">
+                <h3>No Rating Change - MoI Expansion ({{ known_categories.no_change_with_moi|length }})</h3>
+            </div>
+            {% for gene in known_categories.no_change_with_moi %}
+            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+                <h3>
+                    {{ gene_header(gene) }}
+                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
+                    <span class="rating-arrow">→</span>
+                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
+                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ prefill_button(gene, 'review') }}
+                    {{ assignment_slot(gene) }}
+                </h3>
+                {{ gene_article_body(gene, pdf_base_path) }}
+            </article>
+            {% endfor %}
+            {% endif %}
+
+            {% if known_categories.no_change_without_moi %}
+            <div class="subsection-header">
+                <h3>Additional Evidence - No Rating Change ({{ known_categories.no_change_without_moi|length }})</h3>
+            </div>
+            {% for gene in known_categories.no_change_without_moi %}
+            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+                <h3>
+                    {{ gene_header(gene) }}
+                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
+                    <span class="rating-arrow">→</span>
+                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
+                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ prefill_button(gene, 'review') }}
+                    {{ assignment_slot(gene) }}
+                </h3>
+                {{ gene_article_body(gene, pdf_base_path) }}
+            </article>
+            {% endfor %}
+            {% endif %}
+        </section>
+        {% endif %}
+
+
+        {% if manual_download_papers %}
+        <section id="manual-download-papers" class="review-section">
+            <h2>Papers Requiring Manual Download</h2>
+            <p><em>Papers from recent literature that weren't downloaded (missed or paywalled)</em></p>
+
+            {% for paper in manual_download_papers %}
+            {{ paper_display(paper, include_evidence=false, pdf_base_path=pdf_base_path) }}
+            {% endfor %}
+        </section>
+        {% endif %}
+
+        <section id="panel-publications-analysis" class="validation-section">
+            <h2>Panel Publications Analysis</h2>
+            <p><em>Validation of LLM assessments against publications mentioned in PanelApp panels</em></p>
+
+            <div class="validation-summary">
+                <p>Analysis of {{ panel_validation.panel_papers_in_db }} panel publications found in recent literature.</p>
+                <p><strong>Sensitivity: {{ "%.1f"|format(panel_validation.sensitivity_pct) }}%</strong> - {{ panel_validation.true_positives|length }} correctly identified, {{ panel_validation.false_negatives|length }} missed.</p>
+            </div>
+
+            {% if panel_validation.false_negatives %}
+            <details class="false-negatives">
+                <summary><strong>False Negatives ({{ panel_validation.false_negatives|length }}) - Missed Panel Publications</strong></summary>
+                <p><em>Publications mentioned in panels but assessed as NOT RELEVANT - potential missed associations</em></p>
+
+                {% for paper in panel_validation.false_negatives %}
+                {{ paper_display(paper, include_evidence=false, pdf_base_path=pdf_base_path) }}
+                {% endfor %}
+            </details>
+            {% endif %}
+
+            {% if panel_validation.true_positives %}
+            <details class="true-positives">
+                <summary><strong>True Positives ({{ panel_validation.true_positives|length }}) - Correctly Identified</strong></summary>
+                <p><em>Publications mentioned in panels and correctly assessed as RELEVANT</em></p>
+
+                {% for paper in panel_validation.true_positives %}
+                {{ paper_display(paper, include_evidence=false, pdf_base_path=pdf_base_path) }}
+                {% endfor %}
+            </details>
+            {% endif %}
+        </section>
+
+        {% if low_confidence_papers %}
+        <section id="low-confidence-review" class="review-section">
+            <h2>Low-Confidence Review Candidates</h2>
+            <p><em>Papers marked as not relevant but with low confidence - may warrant manual review</em></p>
+
+            {% for paper in low_confidence_papers %}
+            {{ paper_display(paper, include_evidence=false, pdf_base_path=pdf_base_path) }}
+            {% endfor %}
+        </section>
+        {% endif %}
+    </main>
+
+</body>
+</html>

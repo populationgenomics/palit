@@ -1,0 +1,374 @@
+/* General Styles (copied from gene_report_styles.css) */
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    color: #333;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+    background-color: #f5f5f5;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 40px;
+    padding: 20px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+h1 {
+    color: #2c3e50;
+    margin-bottom: 10px;
+}
+
+h2 {
+    color: #34495e;
+    border-bottom: 2px solid #3498db;
+    padding-bottom: 10px;
+    margin-top: 40px;
+}
+
+h3 {
+    color: #2c3e50;
+    margin-top: 30px;
+    margin-bottom: 15px;
+}
+
+main {
+    background: white;
+    padding: 30px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* Summary Table */
+.concordance-summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 15px;
+}
+
+.concordance-summary-table thead {
+    color: #2c3e50;
+}
+
+.concordance-summary-table thead tr:first-child {
+    background-color: #d4dce4;
+}
+
+.concordance-summary-table thead tr:first-child th {
+    font-size: 16px;
+    padding: 14px 12px;
+    font-weight: 600;
+}
+
+/* Novel genes column group - pale green */
+.concordance-summary-table thead tr:first-child th:nth-child(2) {
+    background-color: #b8e6d0;
+}
+
+/* Upgrades column group - pale blue */
+.concordance-summary-table thead tr:first-child th:nth-child(3) {
+    background-color: #c3dff0;
+}
+
+.concordance-summary-table th {
+    padding: 12px;
+    text-align: center;
+    border: 1px solid #ddd;
+    font-weight: 600;
+}
+
+/* Second header row with lighter backgrounds */
+.concordance-summary-table thead tr:nth-child(2) th:nth-child(1),
+.concordance-summary-table thead tr:nth-child(2) th:nth-child(2),
+.concordance-summary-table thead tr:nth-child(2) th:nth-child(3) {
+    background-color: #d0ece0;
+}
+
+.concordance-summary-table thead tr:nth-child(2) th:nth-child(4),
+.concordance-summary-table thead tr:nth-child(2) th:nth-child(5),
+.concordance-summary-table thead tr:nth-child(2) th:nth-child(6) {
+    background-color: #d6eaf7;
+}
+
+.concordance-summary-table td {
+    padding: 12px;
+    border: 1px solid #ddd;
+    text-align: center;
+}
+
+.concordance-summary-table tbody tr {
+    background-color: white;
+}
+
+.concordance-summary-table tbody tr:hover {
+    background-color: #f8f9fa;
+}
+
+/* Period name column */
+.concordance-summary-table tbody td:first-child {
+    background-color: #f8f9fa;
+    text-align: left;
+    padding-left: 16px;
+}
+
+/* Novel genes columns - subtle green tint */
+.concordance-summary-table tbody td.novel-genes {
+    background-color: #f1f9f5;
+}
+
+/* Upgrades columns - subtle blue tint */
+.concordance-summary-table tbody td.upgrades {
+    background-color: #f0f7fc;
+}
+
+/* Rating Badges (copied from gene_report_styles.css) */
+.rating-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    margin: 0 4px;
+}
+
+.rating-green {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.rating-amber {
+    background-color: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffeaa7;
+}
+
+.rating-red {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+/* Panel Activity Section */
+#panel-activity {
+    margin: 50px 0;
+}
+
+.activity-note {
+    color: #666;
+    font-size: 13px;
+    margin: 10px 0 30px 0;
+    font-style: italic;
+}
+
+.chart-container {
+    margin: 30px 0;
+    padding: 20px;
+    background-color: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* Period Sections */
+.period-section {
+    margin: 40px 0;
+}
+
+/* ToC Section Styles (copied exactly from gene_report_styles.css) */
+.toc-section {
+    margin: 0 0 15px 0;
+    padding: 15px;
+    border-radius: 5px;
+    border: 1px solid #dee2e6;
+}
+
+.toc-section-header {
+    font-weight: 600;
+    margin: 15px 0 8px 0;
+    color: #2c3e50;
+    font-size: 0.95em;
+}
+
+.toc-section-header:first-of-type {
+    margin-top: 10px;
+}
+
+.toc-section-header .rating-badge {
+    margin-left: 0;
+    margin-right: 4px;
+}
+
+/* 8-column layout for gene lists */
+.toc-gene-list {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    column-gap: 12px;
+    row-gap: 4px;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.toc-gene-list li {
+    margin: 0;
+}
+
+.toc-gene-list span {
+    display: inline-block;
+    padding: 2px 4px;
+}
+
+/* Gradient backgrounds for novel genes (copied from gene_report_styles.css) */
+.toc-novel-to-green {
+    background: linear-gradient(to right, #e9ecef 0%, #d4edda 100%);
+    border-left: 4px solid #28a745;
+}
+
+.toc-novel-to-amber {
+    background: linear-gradient(to right, #e9ecef 0%, #fff3cd 100%);
+    border-left: 4px solid #ffc107;
+}
+
+.toc-novel-to-red {
+    background: linear-gradient(to right, #e9ecef 0%, #f8d7da 100%);
+    border-left: 4px solid #dc3545;
+}
+
+/* Gradient backgrounds for known gene upgrades (copied from gene_report_styles.css) */
+.toc-red-to-green {
+    background: linear-gradient(to right, #f8d7da 0%, #d4edda 100%);
+    border-left: 4px solid #28a745;
+}
+
+.toc-amber-to-green {
+    background: linear-gradient(to right, #fff3cd 0%, #d4edda 100%);
+    border-left: 4px solid #28a745;
+}
+
+.toc-red-to-amber {
+    background: linear-gradient(to right, #f8d7da 0%, #fff3cd 100%);
+    border-left: 4px solid #ffc107;
+}
+
+/* No change section */
+.toc-no-change {
+    background: #f8f9fa;
+    border-left: 4px solid #6c757d;
+}
+
+/* Concordance Status Styling - Border Patterns */
+.concordance-concordant {
+    border: 2.5px solid #f4c430;
+    border-radius: 4px;
+    font-weight: 600;
+    background: linear-gradient(135deg, rgba(255, 223, 0, 0.12) 0%, rgba(255, 215, 0, 0.25) 100%);
+    box-shadow: 0 0 12px rgba(244, 196, 48, 0.5), 0 2px 4px rgba(0, 0, 0, 0.1);
+    position: relative;
+}
+
+.concordance-concordant::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    right: -2px;
+    bottom: -2px;
+    background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.6), transparent);
+    border-radius: 4px;
+    opacity: 0.8;
+    pointer-events: none;
+}
+
+.concordance-discordant {
+    border: 2px dashed #a8a8a8;
+    border-radius: 3px;
+    font-weight: 600;
+    background: linear-gradient(135deg, rgba(192, 192, 192, 0.08) 0%, rgba(192, 192, 192, 0.18) 100%);
+    box-shadow: 0 0 8px rgba(169, 169, 169, 0.4), 0 2px 4px rgba(0, 0, 0, 0.1);
+    position: relative;
+}
+
+.concordance-discordant::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    right: -2px;
+    bottom: -2px;
+    background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+    border-radius: 3px;
+    opacity: 0.8;
+    pointer-events: none;
+}
+
+.concordance-not_executed {
+    opacity: 0.5;
+}
+
+/* Period Legend (compact, inline) */
+.period-legend {
+    font-size: 12px;
+    color: #666;
+    margin: 10px 0 20px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.legend-separator {
+    color: #ccc;
+    margin: 0 4px;
+}
+
+.legend-item {
+    display: inline-block;
+    padding: 2px 6px;
+    margin-right: 4px;
+    font-family: "Courier New", monospace;
+}
+
+/* Responsive adjustments (copied from gene_report_styles.css) */
+@media (max-width: 1400px) {
+    .toc-gene-list {
+        grid-template-columns: repeat(6, 1fr);
+    }
+}
+
+@media (max-width: 1024px) {
+    .toc-gene-list {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .toc-gene-list {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (max-width: 480px) {
+    .toc-gene-list {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* Print Styles */
+@media print {
+    body {
+        background-color: white;
+    }
+
+    main, header {
+        box-shadow: none;
+    }
+
+    .period-section {
+        page-break-inside: avoid;
+    }
+}

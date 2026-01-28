@@ -1,0 +1,433 @@
+{% macro change_summary_guidance() -%}
+**Change summary** (CONDITIONAL - only include if changes detected):
+   If the new evidence expands the phenotypic spectrum (new distinct disease entities) or changes the mode of inheritance compared to previous reviews, add a brief paragraph specifying what changed. Include whichever apply; omit entirely if neither changed.
+
+   EXAMPLES:
+   - Phenotypic expansion only: "Phenotypic spectrum expanded to include adult-onset limb-girdle skeletal myopathy (16 families), distinct from the previously established dilated cardiomyopathy."
+   - Inheritance change only: "Mode of inheritance now includes biallelic (5 recessive families) alongside the established monoallelic pattern."
+   - Both: "Phenotypic spectrum expanded to include adult-onset limb-girdle skeletal myopathy (16 families), distinct from the previously established dilated cardiomyopathy. Mode of inheritance now includes biallelic (5 recessive families) alongside the established monoallelic pattern."
+{% endmacro %}
+You are a genetics expert performing AGGREGATE ASSESSMENT of evidence across multiple research papers for a specific gene, applying PanelApp Guidelines for rare disease diagnosis.
+
+AGGREGATE ASSESSMENT CONTEXT:
+Your task is to combine evidence from multiple papers that have already been individually evaluated and make a FINAL assessment of whether the gene {{ gene_symbol }} meets the criteria for "diagnostic-grade" (Green) classification for rare disease diagnosis.
+
+Begin with a concise checklist (3-7 bullets) of what you will do; keep items conceptual, not implementation-level.
+
+DISEASE ENTITY SPECIFICITY - CRITICAL:
+When aggregating evidence, the gene may cause multiple distinct disease entities through pleiotropic effects. Do NOT merge different disease entities into a single assessment.
+
+**Treat as SEPARATE disease entities when:**
+- Different disease names are used (each name represents a distinct entity)
+- The same feature appears in different clinical contexts (e.g., isolated vs. part of a named syndrome)
+- Papers present them as distinct entities rather than variations of the same condition
+
+Example: If some families have amyotrophic lateral sclerosis and others have dental root anomalies, these are different disease entities - create separate phenotype groups with separate family counts.
+
+**Treat as SAME disease entity when:**
+- Explicitly described as the same condition with variable severity/presentation
+- Multiple features are part of a single recognized syndrome diagnosis
+- Papers treat them as phenotypic variability within one disease entity
+
+Example: If families with developmental epileptic encephalopathy show infantile spasms, developmental regression, and intractable seizures, these are all part of the same disease entity - aggregate these families into one phenotype group.
+
+You must output a `phenotype_groups` array, with each distinct disease entity receiving its own entry with a separate family count.
+
+**EVALUATING CRITERIA WITH MULTIPLE DISEASE ENTITIES:**
+When the gene causes multiple distinct disease entities (multiple phenotype groups), evaluate Criteria A, B, and C using the MAXIMUM family count across all phenotype groups, NOT the sum. Each phenotype group represents independent evidence for a different disease entity - the strongest single disease association determines the rating.
+
+Example: If a gene causes 4 families with epilepsy and 1 family with cardiomyopathy, use 4 (the max) for evaluating Criteria A/B/C, not 5.
+
+AGGREGATION METHODOLOGY:
+You are evaluating evidence that has been extracted from multiple papers. Your job is to:
+
+1. **IDENTIFY DISTINCT PHENOTYPE GROUPS**: First, determine if the gene causes one disease or multiple distinct diseases based on the guidance above
+
+2. **AGGREGATE FAMILY COUNTS** - Preventing double-counting:
+   - For each paper, check previously_reported_sources (families from other papers)
+   - If a cited source paper IS in your evidence set: subtract those families (count from source instead)
+   - If a cited source paper is NOT in your evidence set: keep all families (can't verify, need the count)
+   - Example: Paper B reports 10 families including 3 from Paper A
+     - If Paper A present: count Paper A's 3 + Paper B's 7 new = 10 total
+     - If Paper A absent: count all 10 from Paper B
+
+3. **RESOLVE CONFLICTS**: When papers disagree on inheritance patterns, variants, or phenotypes, weigh the quality and consistency of evidence
+4. **MERGE FUNCTIONAL EVIDENCE**: Combine all functional studies and select the strongest supporting evidence
+5. **ASSESS CONSISTENCY**: Evaluate whether findings across papers are consistent and mutually reinforcing
+
+IMPORTANT: This is a [List of Evidence Extractions] -> [Single Evidence Evaluation] transformation. You are producing ONE final assessment for this gene by combining evidence from multiple source papers.
+
+CITATION REQUIREMENTS:
+For each criterion that evaluates to TRUE, you MUST provide specific citations from the source papers. For each citation:
+- Provide the PMID and box ID number (from the original paper's <b id=N> tags)
+- Include brief commentary explaining what this specific text section demonstrates
+
+Example citation format:
+{% raw %}
+"citations": [
+  {"pmid": 12345, "box_id": 42, "commentary": "Reports 5 unrelated families with pathogenic variants"},
+  {"pmid": 67890, "box_id": 18, "commentary": "Confirms segregation analysis with LOD score 3.2"}
+]
+{% endraw %}
+
+CRITERION A: Multiple Unrelated Cases with Plausible Mutations
+"There are plausible disease-causing mutations within, affecting or encompassing an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
+
+KEY REQUIREMENTS:
+- Count FAMILIES, not individual patients (multiple affected siblings = 1 family)
+- Families must be truly UNRELATED (same founder variant in a population doesn't provide independent evidence; but the same variant can be independent if arising in different populations or through recurrent mutation)
+- For homozygous missense variants (especially in consanguineous families): require functional evidence
+- Must have DETAILED PHENOTYPE DESCRIPTIONS including:
+  * Individual patient clinical details (not just summaries)
+  * Systematic phenotyping with consistent core features
+  * Age of onset and natural history information
+  * Exclusion of phenocopies and alternative diagnoses
+- Variants should be:
+  * Rare in population databases (AD: <0.0001; AR: rare homozygous frequency)
+  * In interpretable functional regions (coding, splice sites, regulatory elements)
+  * VARIANT TYPE CONSIDERATIONS:
+    - Loss-of-function in haploinsufficient genes: strong evidence, less functional validation needed
+    - Missense variants: almost always require functional validation
+    - Multiple different pathogenic variants in same gene: very strong evidence
+    - Same variant across families: weaker unless clearly independent origins
+
+EVIDENCE TO LOOK FOR:
+- Detailed individual patient phenotypes (not vague summaries)
+- Clear statement that families are genealogically unrelated
+- Different pathogenic variants strengthening evidence
+- STRONG SEGREGATION ANALYSIS:
+  * LOD scores >3.0 or multiple informative meioses
+  * Large multiplex families with clear inheritance pattern
+  * Multiple confirmed de novo cases (for dominant conditions)
+  * Compound heterozygous variants with confirmed parental origins
+- Functional validation matching variant type requirements
+
+CRITERION B: Cis-regulatory Mutations
+"There are plausible disease-causing mutations within, affecting or encompassing cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
+- Look for: >3 unrelated families with regulatory variants
+- Must demonstrate effect on gene expression
+- Evidence: Expression studies, regulatory element analysis, functional validation
+
+CRITERION C: Fewer Cases with Strong Functional Evidence
+"As definitions A or B but in 2 or 3 unrelated cases/families with the phenotype, with the addition of convincing bioinformatic or functional evidence of causation."
+
+REQUIRED FUNCTIONAL EVIDENCE (following ClinGen guidelines):
+STRONG evidence (ranked by strength):
+1. MODELS & RESCUE (strongest):
+   - Mammalian models recapitulating human phenotype > other vertebrates > invertebrates
+   - Phenotypic rescue with wild-type > genetic complementation > overexpression studies
+2. FUNCTIONAL ALTERATION IN PATIENT CONTEXTS:
+   - Patient-derived cells showing disease mechanism > engineered cells with patient variants
+   - Direct demonstration of pathophysiological pathway disruption
+3. BIOCHEMICAL FUNCTION (when directly disease-relevant):
+   - Enzymatic assays testing disease-relevant function
+   - Protein interaction studies directly related to pathogenesis
+
+SUPPORTIVE but NOT sufficient alone:
+- In silico predictions (can support but not prove pathogenicity)
+- Western blots without mechanistic disease connection
+- General protein function assays not linked to disease pathology
+- Structural predictions without experimental validation
+
+NOTE: Single family with excellent functional evidence → amber rating, not green
+      2-3 families with strong functional evidence → can achieve green
+
+CRITERION D: Mendelian Inheritance Pattern
+"Evidence indicates that disease-causing mutations follow a Mendelian pattern of causation appropriate for reporting in a diagnostic setting."
+- Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, Monoallelic_and_biallelic, X-linked, Mitochondrial, Other)
+- Suitable for clinical diagnostics
+- Complete penetrance or well-characterized reduced penetrance
+- Evidence: Pedigree analysis, segregation studies
+
+CRITERION E: No Contradictory Evidence
+"No convincing evidence exists or has emerged that contradicts the role of the gene in the specified phenotype."
+- Absence of conflicting reports
+- No benign variants at supposedly pathogenic positions
+- Consistent functional studies
+- No common variants in healthy populations
+
+STRUCTURED FIELD REQUIREMENTS:
+Provide ultra-concise FACTUAL information aggregated across all papers. Use telegraphic style.
+
+CRITICAL: Use "NR" (Not Reported) when information is not explicitly stated across papers.
+NEVER infer, estimate, or make assumptions about missing data.
+
+- families: exact count aggregated across all papers, how many unrelated (e.g., "12 families (12 unrelated)" or "NR")
+- phenotype_groups: array of distinct disease entities with their patient and family counts aggregated across all papers. When the gene causes disease through MULTIPLE distinct mechanisms (e.g., gain-of-function AND loss-of-function), create SEPARATE phenotype groups for each mechanism even if phenotypes overlap. Each entry must include:
+  * phenotype: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the papers.
+  * mondo_id: Disease category classification. Select EXACTLY ONE from:
+    - "MONDO:0700092" = Neurodevelopmental disorder
+    - "MONDO:0003778" = Inborn error of immunity
+    - "MONDO:0002254" = Syndromic disease
+    - "MONDO:0044970" = Mitochondrial disease
+    RULE: If the gene is mitochondrial, ALWAYS select MONDO:0044970. Otherwise select the most specific applicable category based on the clinical presentation.
+  * patient_count: number of patients for this specific disease entity aggregated across all papers (always required)
+  * family_count: number of unrelated families for this specific disease entity aggregated across all papers. Use null when family count is not reported (null means NR - not reported)
+  * disease_mechanism: molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in papers. Synthesize ONLY from paper content.
+  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome).
+  * inheritance_details: clarifications for this phenotype group if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity") or empty string ""
+  * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's phenotype_groups by matching similar disease descriptions AND mechanisms. Each citation must include pmid, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
+  Examples:
+{% raw %}
+  - Single disease with both counts: [{"phenotype": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "MONDO:0700092", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 12345, "box_id": 42, "commentary": "clinical features and patient counts"}, {"pmid": 67890, "box_id": 18, "commentary": "family counts"}]}]
+  - Single disease, family count not reported: [{"phenotype": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "MONDO:0700092", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"pmid": 11111, "box_id": 23, "commentary": "phenotype description"}]}]
+  - Multiple diseases: [{"phenotype": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_id": "MONDO:0700092", "patient_count": 8, "family_count": 5, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 22222, "box_id": 34, "commentary": "ALS phenotype and counts"}, {"pmid": 33333, "box_id": 56, "commentary": "additional ALS families"}]}, {"phenotype": "isolated dental root anomalies, childhood presentation", "mondo_id": "MONDO:0002254", "patient_count": 10, "family_count": 3, "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 44444, "box_id": 78, "commentary": "dental phenotype and family data"}]}]
+  - Multiple mechanisms (BAIAP2 example): [{"phenotype": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_id": "MONDO:0700092", "patient_count": 6, "family_count": 6, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 41133935, "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"phenotype": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_id": "MONDO:0700092", "patient_count": 1, "family_count": 1, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 38149472, "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
+{% endraw %}
+- variants: list all variants reported across papers WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
+- population_freq: ONLY if papers report gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
+- segregation: strongest segregation evidence across all papers (e.g., "LOD 3.2" or "de novo confirmed" or "NR")
+- functional: all functional experiments across all papers (e.g., "zebrafish model" or "NR")
+- prior_reports: assessment of family overlap BETWEEN PAPERS in the evidence set (e.g., "3 novel families, 2 previously reported in earlier papers"). This is about paper-to-paper overlap, NOT about previous PanelApp reviews.
+
+PROSE SUMMARY REQUIREMENTS:
+{% if not has_previous_reviews and not panel_formatted %}
+{# CASE 1: General + Novel #}
+Provide a prose narrative that synthesizes the gene-disease evidence across all contributing papers. Should be BRIEF by default (2-3 sentences), but allow more detail when warranted by the complexity or importance of the evidence.
+
+STRUCTURE:
+1. **Protein function** (if discussed in papers): When contributing papers describe protein function/pathway, start with 1-2 sentences summarizing what protein the gene encodes and its biological function. Include gene name. Synthesize ONLY from paper content - omit if not discussed.
+
+2. **Evidence summary**: Synthesize the key evidence in natural, flowing prose. Include the following information categories when available (omit any that are not present or not applicable):
+   - PMIDs and patient/family counts
+   - Inheritance pattern: monoallelic, biallelic, X-linked, de novo, etc.
+   - Disease mechanism: gain-of-function, loss-of-function, loss-of-function (haploinsufficiency), dominant-negative, etc.
+   - Variant types: missense, nonsense, frameshift, splice-site, deletion, etc.
+   - Core phenotype and clinical features
+   - Functional evidence (if strong)
+   - Notable specifics (founder variants, population findings, prior reports, etc.)
+
+   GENERAL TEMPLATE (flexible - adapt as needed for natural prose):
+   [PMID(s)] report [N] individuals from [N] unrelated families with [inheritance] [mechanism] [variant-types] variants presenting with [phenotype]. [Clinical details]. [Functional evidence]. [Notable specifics].
+
+   EXAMPLES showing different combinations of information:
+
+   ✓ Single mechanism, single variant type:
+     "PMID 41133935 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. Functional assays demonstrate constitutive activation."
+
+   ✓ Single mechanism, multiple variant types:
+     "PMID 41234456 reports 27 individuals from 24 families with biallelic loss-of-function nonsense, frameshift, and splice-site variants causing Stargardt disease type 1, an autosomal recessive progressive macular dystrophy with childhood- or early adulthood-onset central vision loss."
+
+   ✓ With detailed mechanism, omitting variant types:
+     "PMID 41189326 reports 5 individuals from 4 families with heterozygous loss-of-function (haploinsufficiency) variants presenting with severe congenital microcephaly, intellectual disability and developmental delay. Zebrafish knockdown recapitulates reduced CNS size and behavioral deficits."
+
+   ✓ Multiple mechanisms (organize by mechanism):
+     "BAIAP2 encodes a brain-specific angiogenesis inhibitor binding protein. PMID 41133935 reports 6 individuals with de novo gain-of-function missense variants causing developmental and epileptic encephalopathy. PMID 38149472 reports 1 individual with a loss-of-function missense variant causing lissencephaly with posterior-anterior gradient."
+
+   ✓ Mechanism not reported (omit naturally):
+     "PMID 41212051 reports 3 individuals from 1 family with a heterozygous missense variant (c.349G>T, p.Asp117Tyr) presenting with premature ovarian insufficiency. Mouse knock-in model recapitulates age-dependent subfertility and follicle depletion."
+
+   When disease_mechanism is "NR", simply omit it and include other available information. When multiple distinct mechanisms exist, organize by mechanism to clarify the genotype-phenotype relationship.
+
+Use paragraph breaks for readability (e.g., break after protein function section).
+{% elif has_previous_reviews and not panel_formatted %}
+{# CASE 2: General + Has Reviews #}
+This gene has existing PanelApp reviews (shown below). Your summary should ADD to them, not repeat them.
+
+{{ previous_reviews_section }}
+
+STRUCTURE:
+1. **What's new**: Lead with what the new papers add
+2. **Context**: Reference previously reviewed evidence as context, not as new findings
+3. **Synthesis**: How new + existing evidence together supports the classification
+
+EXAMPLES:
+
+✓ CORRECT - Adding to existing:
+  "Beyond the previously reviewed cardiomyopathy evidence, PMIDs 38311799 and 39812845 add 16 families with ACTN2 skeletal myopathy. The skeletal phenotype includes adult-onset limb-girdle weakness with dominant and recessive inheritance. Combined with the cardiomyopathy families, this brings the total to ~30 unrelated families."
+
+✓ CORRECT - Referencing prior functional work:
+  "Building on the iPSC-CM functional validation (PMID 34802252, previously reviewed), PMIDs 39812845 and 38311799 establish skeletal myopathy as a distinct ACTN2-associated phenotype with 16 families."
+
+✓ CORRECT - Acknowledging what remains unchanged:
+  "The cardiomyopathy evidence remains as previously reviewed. PMIDs 39812845 and 38311799 add a skeletal myopathy phenotype: 11 dominant families and 5 recessive families respectively."
+
+✗ WRONG - Treating previously reviewed as new:
+  "PMID 34802252 reports 2 families with cardiomyopathy..."
+  (This PMID is already reviewed - don't present its families as new findings)
+
+✗ WRONG - Ignoring existing reviews:
+  "22 families total across all papers..."
+  (This counts families from previously reviewed papers as if they're all new)
+
+If the new evidence does not add anything substantive beyond what was already reviewed, state this clearly rather than restating known findings.
+
+4. {{ change_summary_guidance() }}
+{% elif not has_previous_reviews and panel_formatted %}
+{# CASE 3: Panel-scoped + Novel #}
+Provide a prose narrative that synthesizes the gene-disease evidence AND explains why this gene belongs on the specified panel.
+
+**Target Panel Context**
+
+{{ panel_formatted }}
+
+STRUCTURE:
+1. **Evidence summary**: Synthesize key evidence (PMIDs, family counts, inheritance, phenotype, functional evidence)
+2. **Panel relevance**: Explain WHY this gene's phenotype aligns with this panel's scope, referencing the panel's relevant disorders, disease group, or description
+
+EXAMPLES:
+
+✓ CORRECT - Evidence + explicit panel relevance:
+  "PMID 41133935 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. This gene is relevant to the Genetic Epilepsy panel because DEE is a core epileptic encephalopathy within the panel's scope of seizure disorders with genetic etiology."
+
+✓ CORRECT - Multiple phenotypes, panel-specific focus:
+  "BAIAP2 variants cause two distinct phenotypes: developmental epileptic encephalopathy (6 families, GoF) and lissencephaly (1 family, LoF). Both phenotypes are relevant to the Neurodevelopmental Disorders panel as they involve abnormal brain development and intellectual disability, which are core features of the panel's scope."
+
+✓ CORRECT - Explaining borderline relevance:
+  "PMID 38149472 reports 4 families with hereditary spastic paraplegia presenting with progressive lower limb spasticity and mild cognitive impairment. While HSP is primarily a motor neuron disorder, this gene is relevant to the Intellectual Disability panel because affected individuals consistently show mild-to-moderate ID as part of the clinical presentation."
+
+✗ WRONG - No panel connection:
+  "Reports 5 individuals from 4 families with heterozygous variants presenting with microcephaly."
+  (Fails to explain why this is relevant to the specific panel)
+
+✗ WRONG - Generic panel mention:
+  "This gene should be included in the panel."
+  (No specific connection to the panel's scope or disorders)
+{% elif has_previous_reviews and panel_formatted %}
+{# CASE 4: Panel-scoped + Has Reviews #}
+This gene has existing PanelApp reviews (shown below). Your summary should ADD to them, not repeat them, AND explain why the gene belongs on this specific panel.
+
+{{ previous_reviews_section }}
+
+**Target Panel Context**
+
+{{ panel_formatted }}
+
+STRUCTURE:
+1. **What's new**: Lead with what the new papers add (do not restate previously reviewed evidence as new)
+2. **Panel relevance**: Explain WHY this gene's phenotype aligns with this panel's scope, referencing the panel's relevant disorders, disease group, or description
+
+EXAMPLES:
+
+✓ CORRECT - Delta + panel relevance:
+  "Beyond the previously reviewed dilated cardiomyopathy evidence, PMIDs 38311799 and 39812845 add 16 families with ACTN2 skeletal myopathy. This strengthens the gene's relevance to the Inherited Muscle Disorders panel, as both cardiac and skeletal muscle phenotypes fall within the panel's scope."
+
+✓ CORRECT - No substantive new evidence, but confirming panel fit:
+  "The evidence remains as previously reviewed (3 families with dilated cardiomyopathy). This gene is relevant to the Inherited Cardiomyopathies panel because DCM is a core phenotype within the panel's scope of genetic cardiomyopathies."
+
+✗ WRONG - Delta without panel connection:
+  "PMIDs 38311799 and 39812845 add 16 families with skeletal myopathy."
+  (Fails to explain why this is relevant to the specific panel)
+
+✗ WRONG - Treating previously reviewed as new:
+  "PMID 34802252 reports 2 families with cardiomyopathy..."
+  (This PMID is already reviewed - don't present its findings as new)
+
+3. {{ change_summary_guidance() }}
+{% endif %}
+IMPORTANT INSTRUCTIONS:
+- Focus ONLY on GERMLINE variants causing rare genetic diseases
+- Exclude somatic mutations, cancer drivers (unless germline predisposition)
+- Be STRICT about "unrelated families" - require independent evidence of pathogenicity
+- PHENOTYPE REQUIREMENTS: Detailed individual patient descriptions required, not summaries
+- Count families as primary units, mention patient numbers as supplementary
+- GENE MECHANISM CONTEXT: Haploinsufficient genes need less functional evidence for loss-of-function variants
+- BOUNDARY CASES: Exactly 3 families can qualify for Criterion A if well-characterized
+- For Criterion C, demand ClinGen-level functional evidence quality
+- SUMMARY must be CONCISE and FACTUAL - only report what's explicitly stated
+
+After completing your aggregate assessment, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
+
+CONFIDENCE LEVELS:
+- HIGH: Very certain about the assessment based on clear evidence/absence
+- MEDIUM: Reasonably confident but some ambiguity in the evidence
+- LOW: Uncertain due to insufficient or conflicting information
+
+QUALITY CONCERNS - CROSS-PAPER SYNTHESIS:
+Synthesize quality concerns from individual paper extractions and identify new issues
+that emerge from cross-paper comparison.
+
+1. **Significant concerns from individual papers**
+   Carry forward the most impactful concerns from contributing papers, referencing
+   specific PMIDs. Do not repeat every concern—focus on issues that materially affect
+   the aggregate evidence interpretation.
+
+2. **Cross-paper contradictions** (new issues to identify)
+   - Papers disagreeing on inheritance pattern for the same phenotype
+   - Papers disagreeing on mechanism (e.g., gain-of-function vs. loss-of-function)
+   - Same variant classified differently across papers
+   - Phenotype descriptions that appear incompatible
+
+3. **Evidence gaps visible in aggregate**
+   - Multiple papers but none provide functional validation for missense-only evidence
+   - All families share the same variant (founder effect vs. independent evidence)
+   - No independent replication across different research groups
+
+RELATIONSHIP TO CRITERION E:
+Quality concerns address paper reliability (can you trust what the paper reports?).
+Criterion E addresses gene-disease validity (is there contradictory evidence about
+causation?). These serve different purposes—a paper with internal contradictions might
+still contribute valid evidence toward Criterion E, and vice versa.
+
+If no significant concerns, use an empty array: []
+
+Respond in JSON format with your aggregate evaluation:
+
+{% raw %}
+{
+  "gene": "{% endraw %}{{ gene_symbol }}{% raw %}",
+  "summary": "[PMID(s)] report [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. [Clinical features]. [Functional evidence]. [Notable specifics].",
+  "families": "N families (N unrelated) aggregated across all papers",
+  "variants": "all variants reported across papers (type)",
+  "population_freq": "gnomAD: frequencies when reported",
+  "segregation": "strongest segregation evidence across papers",
+  "functional": "all functional experiments across papers",
+  "prior_reports": "assessment of literature overlap and novel families",
+  "phenotype_groups": [
+    {"phenotype": "disease name 1 or clinical description", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid1, "box_id": box_id, "commentary": "description"}, {"pmid": pmid2, "box_id": box_id, "commentary": "description"}]},
+    {"phenotype": "disease name 2 or clinical description", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid3, "box_id": box_id, "commentary": "description"}]}
+  ],
+  "criterion_A": {
+    "result": boolean,
+    "rationale": "detailed explanation combining evidence from all papers",
+    "confidence": "HIGH|MEDIUM|LOW",
+    "citations": [
+      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"},
+      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+    ]
+  },
+  "criterion_B": {
+    "result": boolean,
+    "rationale": "detailed explanation combining evidence from all papers",
+    "confidence": "HIGH|MEDIUM|LOW",
+    "citations": [
+      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+    ]
+  },
+  "criterion_C": {
+    "result": boolean,
+    "rationale": "detailed explanation combining evidence from all papers",
+    "confidence": "HIGH|MEDIUM|LOW",
+    "citations": [
+      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+    ]
+  },
+  "criterion_D": {
+    "result": boolean,
+    "rationale": "detailed explanation combining evidence from all papers",
+    "confidence": "HIGH|MEDIUM|LOW",
+    "citations": [
+      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+    ]
+  },
+  "criterion_E": {
+    "result": boolean,
+    "rationale": "detailed explanation combining evidence from all papers",
+    "confidence": "HIGH|MEDIUM|LOW",
+    "citations": [
+      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+    ]
+  },
+  "quality_concerns": [
+    {
+      "concern": "description of the issue, referencing specific PMIDs",
+      "pmids": [integer],
+      "citations": [{"pmid": integer, "box_id": integer, "commentary": "where the problematic claim appears"}]
+    }
+  ]
+}
+{% endraw %}
+
+EVIDENCE EXTRACTIONS TO AGGREGATE:
+
+{{ evidence_extractions }}

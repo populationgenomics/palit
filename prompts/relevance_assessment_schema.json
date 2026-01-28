@@ -1,0 +1,17 @@
+{
+    "type": "object",
+    "properties": {
+        "relevant": {"type": "boolean"},
+        "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+        "rationale": {"type": "string"},
+        "associations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"gene": {"type": "string"}, "disease": {"type": "string"}},
+                "required": ["gene", "disease"]
+            }
+        }
+    },
+    "required": ["relevant", "confidence", "rationale", "associations"]
+}

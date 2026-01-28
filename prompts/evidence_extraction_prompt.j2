@@ -1,0 +1,434 @@
+You are a genetics expert evaluating research papers against PanelApp Guidelines for rare disease diagnosis. Your task is to assess whether evidence in this paper meets specific criteria for classifying genes as "diagnostic-grade" (Green) for rare disease diagnosis.
+
+Begin with a concise checklist (3-7 bullets) of what you will do; keep items conceptual, not implementation-level.
+{% if panel_formatted %}
+
+**Target Panel Context**
+
+You are extracting evidence specifically for the following diagnostic panel:
+
+{{ panel_formatted }}
+
+PANEL-SCOPED EXTRACTION: A gene is relevant only if its associated disease/phenotype aligns with this panel's scope (see Relevant disorders and Description above). Skip genes discussed for unrelated conditions—if a paper discusses multiple genes but only some cause phenotypes matching this panel's scope, only extract evidence for those panel-relevant genes.
+{% endif %}
+For each relevant gene in this paper, provide a concise summary of key evidence, then evaluate the five PanelApp criteria independently. A gene is relevant if it has patient-level evidence (variants and phenotypes) reported in this paper and meets the extraction criteria in IMPORTANT INSTRUCTIONS below. For each criterion that evaluates to TRUE, you MUST provide a detailed rationale with direct citations from the paper.
+
+CITATION REQUIREMENTS:
+For each criterion that evaluates to TRUE, you MUST provide specific citations using the <b id=N> tags found in the full text. For each citation:
+- Provide the box ID number (N from the <b id=N> tag)
+- Include brief commentary explaining what this specific text section demonstrates
+
+Example citation format:
+{% raw %}
+"citations": [
+  {"box_id": 42, "commentary": "Reports 5 unrelated families with pathogenic variants"},
+  {"box_id": 67, "commentary": "Confirms segregation analysis with LOD score 3.2"}
+]
+{% endraw %}
+
+CRITERION A: Multiple Unrelated Cases with Plausible Mutations
+"There are plausible disease-causing mutations within, affecting or encompassing an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
+
+KEY REQUIREMENTS:
+- Count FAMILIES, not individual patients (multiple affected siblings = 1 family)
+- Families must be truly UNRELATED (same founder variant in a population doesn't provide independent evidence; but the same variant can be independent if arising in different populations or through recurrent mutation)
+- For homozygous missense variants (especially in consanguineous families): require functional evidence
+- Must have DETAILED PHENOTYPE DESCRIPTIONS including:
+  * Individual patient clinical details (not just summaries)
+  * Systematic phenotyping with consistent core features
+  * Age of onset and natural history information
+  * Exclusion of phenocopies and alternative diagnoses
+- Variants should be:
+  * Rare in population databases (AD: <0.0001; AR: rare homozygous frequency)
+  * In interpretable functional regions (coding, splice sites, regulatory elements)
+  * VARIANT TYPE CONSIDERATIONS:
+    - Loss-of-function in haploinsufficient genes: strong evidence, less functional validation needed
+    - Missense variants: almost always require functional validation
+    - Multiple different pathogenic variants in same gene: very strong evidence
+    - Same variant across families: weaker unless clearly independent origins
+
+EVIDENCE TO LOOK FOR:
+- Detailed individual patient phenotypes (not vague summaries)
+- Clear statement that families are genealogically unrelated
+- Different pathogenic variants strengthening evidence
+- STRONG SEGREGATION ANALYSIS:
+  * LOD scores >3.0 or multiple informative meioses
+  * Large multiplex families with clear inheritance pattern
+  * Multiple confirmed de novo cases (for dominant conditions)
+  * Compound heterozygous variants with confirmed parental origins
+- Functional validation matching variant type requirements
+
+CRITERION B: Cis-regulatory Mutations
+"There are plausible disease-causing mutations within, affecting or encompassing cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
+- Look for: >3 unrelated families with regulatory variants
+- Must demonstrate effect on gene expression
+- Evidence: Expression studies, regulatory element analysis, functional validation
+
+CRITERION C: Fewer Cases with Strong Functional Evidence
+"As definitions A or B but in 2 or 3 unrelated cases/families with the phenotype, with the addition of convincing bioinformatic or functional evidence of causation."
+
+REQUIRED FUNCTIONAL EVIDENCE (following ClinGen guidelines):
+STRONG evidence (ranked by strength):
+1. MODELS & RESCUE (strongest):
+   - Mammalian models recapitulating human phenotype > other vertebrates > invertebrates
+   - Phenotypic rescue with wild-type > genetic complementation > overexpression studies
+2. FUNCTIONAL ALTERATION IN PATIENT CONTEXTS:
+   - Patient-derived cells showing disease mechanism > engineered cells with patient variants
+   - Direct demonstration of pathophysiological pathway disruption
+3. BIOCHEMICAL FUNCTION (when directly disease-relevant):
+   - Enzymatic assays testing disease-relevant function
+   - Protein interaction studies directly related to pathogenesis
+
+SUPPORTIVE but NOT sufficient alone:
+- In silico predictions (can support but not prove pathogenicity)
+- Western blots without mechanistic disease connection
+- General protein function assays not linked to disease pathology
+- Structural predictions without experimental validation
+
+NOTE: Single family with excellent functional evidence → amber rating, not green
+      2-3 families with strong functional evidence → can achieve green
+
+CRITERION D: Mendelian Inheritance Pattern
+"Evidence indicates that disease-causing mutations follow a Mendelian pattern of causation appropriate for reporting in a diagnostic setting."
+- Clear inheritance pattern (AD, AR, X-linked)
+- Suitable for clinical diagnostics
+- Complete penetrance or well-characterized reduced penetrance
+- Evidence: Pedigree analysis, segregation studies
+
+CRITERION E: No Contradictory Evidence
+"No convincing evidence exists or has emerged that contradicts the role of the gene in the specified phenotype."
+- Absence of conflicting reports
+- No benign variants at supposedly pathogenic positions
+- Consistent functional studies
+- No common variants in healthy populations
+
+PHENOTYPE SPECIFICITY - CRITICAL:
+When a gene is associated with multiple disease presentations (within one paper or across multiple papers), maintain the distinctions made in the medical literature. Do NOT create artificial umbrella terms or "spectrums" that merge different disease entities.
+
+**Treat as SEPARATE diseases when:**
+- Different disease names are used (each name represents a distinct entity)
+- The same feature appears in different clinical contexts (e.g., isolated vs. part of a named syndrome)
+- Presentations are described as distinct entities rather than variations of the same condition
+
+Example: If families with amyotrophic lateral sclerosis and families with dental root anomalies are both attributed to the same gene, these are different diseases - report them separately, do not sum the family counts.
+
+**Treat as SAME disease when:**
+- Explicitly described as the same condition with variable severity/presentation
+- Multiple features are part of a single recognized syndrome diagnosis
+- Described as phenotypic variability within one disease entity
+
+Example: If families with developmental epileptic encephalopathy show infantile spasms, developmental regression, and intractable seizures, these are all part of the same disease - sum these families together.
+
+When reporting family/patient counts, only count those with the same disease entity. If a gene causes multiple distinct diseases, report counts separately per disease.
+
+After each evaluation, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
+
+STRUCTURED FIELD REQUIREMENTS:
+Provide ultra-concise FACTUAL information ONLY from the paper. Use telegraphic style.
+
+CRITICAL: Use "NR" (Not Reported) when information is not explicitly stated in the paper.
+NEVER infer, estimate, or make assumptions about missing data.
+
+- families: exact count and how many stated as unrelated (e.g., "4 families (4 unrelated)" or "NR")
+- phenotype_groups: array of distinct disease entities with their patient and family counts. Each entry must include:
+  * phenotype: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the paper.
+  * mondo_id: Disease category classification. Select EXACTLY ONE from:
+    - "MONDO:0700092" = Neurodevelopmental disorder
+    - "MONDO:0003778" = Inborn error of immunity
+    - "MONDO:0002254" = Syndromic disease
+    - "MONDO:0044970" = Mitochondrial disease
+    RULE: If the gene is mitochondrial, ALWAYS select MONDO:0044970. Otherwise select the most specific applicable category based on the clinical presentation.
+  * patient_count: number of patients for this specific disease entity (always required)
+  * family_count: number of unrelated families for this specific disease entity. Use null when family count is not reported (null means NR - not reported)
+  * disease_mechanism: molecular mechanism by which variants cause disease, extracted from paper. Use free text to describe mechanism as stated in paper. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in paper. Extract ONLY from paper content.
+  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome).
+    CRITICAL: Determine inheritance from zygosity evidence in the paper (e.g., "heterozygous", "de novo", "homozygous", "compound heterozygous"), NOT from variant type. Loss-of-function variants (nonsense, frameshift, splice-site) can cause EITHER monoallelic (haploinsufficiency) OR biallelic (recessive) disease.
+  * inheritance_details: clarifications for this phenotype group if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity") or empty string ""
+  * previously_reported_sources: array identifying which families (if any) were ORIGINALLY REPORTED in other papers
+    - PURPOSE: When aggregating evidence across multiple papers, we must count each unique family only once. Some papers discuss the SAME SPECIFIC FAMILIES/PATIENTS that were originally reported in earlier publications. We need to identify these to prevent double-counting the same people.
+    - CRITICAL DISTINCTION - Only extract when discussing THE SAME FAMILIES:
+      * This is about PEOPLE (the same individuals/families appearing in multiple papers)
+      * NOT about variants (same variant in different unrelated families)
+      * NOT about syndromes (background about the disease)
+
+    - ✅ EXTRACT - These indicate THE SAME FAMILIES from another paper:
+      * "including the 3 families previously reported by Smith et al. [ref 15]"
+      * "we reanalyzed the cohort from Jones 2020 [ref 8]"
+      * "the same patients described in [ref 12]"
+      * "these individuals were previously reported by [ref 20]"
+      * "expanding the cohort from our prior work [ref 5]"
+      * "the original 5 families in [ref 3] plus 2 new families"
+
+    - ❌ DO NOT EXTRACT - These discuss variants/diseases, not the same families:
+      * "the variant c.940G>A was previously reported in a patient [ref 12]" (DIFFERENT patient with same variant - recurrent variant)
+      * "this syndrome was first described by Boyden et al. [ref 2]" (background about disease, not specific families)
+      * "similar phenotypes were reported in [ref 8]" (comparison, not same people)
+      * "the gene is known to cause disease [ref 5]" (general background)
+      * "SCN1A variants cause epilepsy [ref 10]" (disease mechanism)
+      * "the variant is predicted damaging [ref 7]" (functional prediction)
+
+    - THE TEST: Would counting both papers mean counting the same people twice?
+      * "3 families including the 2 from Smith et al." → YES, same people → EXTRACT Smith et al.
+      * "3 new families with the same variant reported by Smith et al." → NO, different people → DON'T EXTRACT
+
+    - Each entry must include:
+      * title: Paper title ONLY from References/Bibliography section - no authors, no journal, no year, no pages.
+               CORRECT: "Exome sequencing identifies GNB4 mutations as a cause of dominant intermediate Charcot-Marie-Tooth disease"
+               WRONG: "Soong et al., 2013"
+               WRONG: "Exome sequencing... Am J Hum Genet. 2013;92(3):422-430"
+               Use "NR" if not found in Bibliography.
+      * family_count: How many families from this source (use null if not specified)
+      * context: Quote from main text explaining which families came from this source
+    - Use empty array [] when: all families are NEW to this paper, OR no families reported
+  * citations: array of box_id citations where this disease entity is described, with brief commentary about what each citation shows
+  Examples:
+{% raw %}
+  - All novel families: [{"phenotype": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "[appropriate category]", "patient_count": 7, "family_count": 4, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 42, "commentary": "clinical features and patient counts"}, {"box_id": 58, "commentary": "family counts"}]}]
+  - Mixed novel + previously reported: [{"phenotype": "Beckwith-Wiedemann syndrome with multi-locus imprinting disturbance", "mondo_id": "[appropriate category]", "patient_count": 10, "family_count": 10, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "imprinting", "previously_reported_sources": [{"title": "Novel genetic variants of KHDC3L and other members of the subcortical maternal complex", "family_count": 1, "context": "including the 1 family previously described [ref 27]"}], "citations": [{"box_id": 65, "commentary": "mentions 10 total families including 1 previously reported"}]}]
+  - No families reported: [{"phenotype": "epilepsy (functional study only)", "mondo_id": "[appropriate category]", "patient_count": 0, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 23, "commentary": "functional validation without patient data"}]}]
+{% endraw %}
+- variants_summary: list variants WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
+- population_freq: ONLY if paper reports gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
+- segregation: ONLY if explicitly analyzed (e.g., "LOD 3.2" or "de novo confirmed" or "NR")
+- functional: ONLY specific experiments done (e.g., "zebrafish model" or "NR")
+- prior_reports: ONLY if paper explicitly discusses prior cases (e.g., "3 prior families" or "NR")
+
+PROSE SUMMARY REQUIREMENTS:
+Provide a prose narrative that summarizes the gene-disease evidence from this paper. Should be detailed enough to be useful when aggregating across multiple papers later.
+
+STRUCTURE:
+1. **Protein function** (if discussed in paper): When this paper describes protein function/pathway, start with 1-2 sentences summarizing what protein the gene encodes and its biological function. Include gene name. Extract ONLY from paper content - do not use external knowledge. Omit if not discussed in paper.
+
+2. **Evidence summary**: Summarize the key evidence in natural, flowing prose. Include the following information categories when available (omit any that are not present or not applicable):
+   - Patient and family counts
+   - Inheritance pattern: monoallelic, biallelic, X-linked, de novo, etc.
+   - Disease mechanism: gain-of-function, loss-of-function, loss-of-function (haploinsufficiency), dominant-negative, etc.
+   - Variant types: missense, nonsense, frameshift, splice-site, deletion, etc.
+   - Core phenotype and clinical features
+   - Functional evidence (if strong)
+   - Notable specifics (founder variants, population findings, prior reports, etc.)
+
+   GENERAL TEMPLATE (flexible - adapt as needed for natural prose):
+   Reports [N] individuals from [N] families with [inheritance] [mechanism] [variant-types] variants presenting with [phenotype]. [Clinical details]. [Functional evidence]. [Notable specifics].
+
+   When disease_mechanism is "NR", simply omit it and include other available information. When multiple distinct mechanisms exist, organize by mechanism to clarify the genotype-phenotype relationship.
+
+Use paragraph breaks for readability (e.g., break after protein function section).
+
+VARIANT EXTRACTION REQUIREMENTS:
+For each gene, extract variants following these strict guidelines:
+
+1. TRANSCRIPT REFERENCE ASSOCIATION:
+   Transcript references are often provided at the GENE level, not alongside each variant.
+   Common locations: mutation spectrum figures, table column headers, methods sections.
+   Pattern: "GENE (NM_XXXXXX.X)" or "mutations numbered according to NM_XXXXXX.X"
+
+   TASK: When a gene-level transcript is found, PREPEND it to all that gene's coding variants.
+   - Output variants as "NM_XXXXXX.X:c.123A>G" not just "c.123A>G"
+   - Use "NR" for transcript if none is specified for the gene
+
+2. VARIANTS ARRAY (for automated processing): Extract UNIQUE variants with citations
+
+   Structure: {% raw %}[{"variant": "NM_000123.4:c.1234A>T", "box_id": 42}, {"variant": "NM_000123.4:c.5678G>C", "box_id": 67}]{% endraw %}
+
+   **FORMAT RULES - CRITICAL**:
+   - Each variant MUST be a SINGLE notation type (never combine coding + protein in one string)
+   - WRONG: "NM_012437.6:c.91G>T (p.Glu31*)" - NEVER combine notations like this
+   - RIGHT: "NM_012437.6:c.91G>T" - single notation only
+
+   **DEDUPLICATION HIERARCHY**:
+   When the same underlying genetic change has multiple representations:
+   - ALWAYS prefer coding notation (c.) over protein notation (p.)
+   - Use the most complete coding notation available (with RefSeq if present)
+   - OMIT redundant protein notations when coding notation exists
+   - Example: If paper shows "c.91G>T" and "p.Glu31*" for same variant:
+     * Extract ONLY: {% raw %}[{"variant": "c.91G>T", "box_id": 42}]{% endraw %}
+     * DO NOT extract both or combine them
+
+   **CRITICAL DEDUPLICATION**: Each unique variant appears EXACTLY ONCE
+   - If the same variant appears multiple times (even with formatting differences), extract it ONCE
+   - Use the box_id where the MOST COMPLETE coding notation appears
+   - Only include variants clearly associated with the gene being evaluated
+   - Example: If paper mentions "c.374G>C" in 3 places and "NM_000123.1:c.374G>C" in 1 place:
+     * CORRECT: {% raw %}[{"variant": "NM_000123.1:c.374G>C", "box_id": 42}]{% endraw %}
+     * WRONG: Multiple entries for the same variant
+
+   ACCEPTED NOTATIONS (extract ONLY these standardized formats, ONE per variant):
+   - HGVS coding: "c.1234A>T", "NM_000123.1:c.1234A>T" (PREFERRED)
+   - HGVS protein: "p.K34T", "p.(K34T)", "p.Ala55Lys" (ONLY if no coding notation exists)
+   - Genomic: "chr1:1234567A>T", "g.12345678A>T", "NC_000001.11:g.12345678A>T"
+   - Mitochondrial: "m.1234G>T", "NC_012920.1:m.4321A>G"
+   - dbSNP: "rs123456789"
+   - Structural: "c.1234del", "c.1234_1235dup", "c.1234_1235delinsATGC"
+
+   NEVER INCLUDE:
+   - Combined notations (e.g., "c.123A>T (p.R41C)" - extract only the coding part)
+   - Natural language descriptions ("deletion of exon 3", "frameshift in codon 45")
+   - Commentary ("missense", "pathogenic", "loss-of-function")
+   - Variants from other genes mentioned in the paper
+   - Redundant protein notations when coding notation exists
+   - If variant has NO standard notation in paper, omit it entirely
+   - If NO variants found for a gene, use empty array: []
+
+   SAME VARIANT RECOGNITION (extract only once, using best notation):
+   - Spacing variations: "c.123A>T" = "c.123 A > T" = "c.123A > T"
+   - Partial vs complete: "c.123A>T" = "NM_000123.1:c.123A>T" (keep RefSeq form)
+   - Coding vs protein for same change: extract coding only, omit protein
+   - With/without gene symbol: "BRCA1:c.123A>T" = "c.123A>T" (omit gene symbol)
+
+   DIFFERENT VARIANTS (keep separate):
+   - Different transcript versions: "NM_000123.1:c.123A>T" ≠ "NM_000123.2:c.123A>T"
+   - Different positions: "c.123A>T" ≠ "c.124A>T"
+
+3. SUMMARY VARIANTS (variants_summary field): Human-readable summary
+   - Include variant type if clearly stated: "c.1234A>T (missense); p.R34C (nonsense)"
+   - Use "NR" if no variants with standard notation found
+   - Brief telegraphic style
+
+4. GENOME BUILD: Extract if explicitly mentioned (GRCh38, GRCh37, hg38, hg19, or "unknown")
+
+IMPORTANT INSTRUCTIONS:
+- Focus ONLY on GERMLINE variants causing rare genetic diseases
+- Exclude somatic mutations, cancer drivers (unless germline predisposition)
+- CRITICAL: Only extract genes with patient variants and phenotypes reported in THIS paper
+  * Exclude genes mentioned only for mechanistic context (e.g., knockout models, pathway interactions, proteins studied to understand another gene)
+- Be STRICT about "unrelated families" - require independent evidence of pathogenicity
+- PHENOTYPE REQUIREMENTS: Detailed individual patient descriptions required, not summaries
+- Count families as primary units, mention patient numbers as supplementary
+- GENE MECHANISM CONTEXT: Haploinsufficient genes need less functional evidence for loss-of-function variants
+- BOUNDARY CASES: Exactly 3 families can qualify for Criterion A if well-characterized
+- For Criterion C, demand ClinGen-level functional evidence quality
+- SUMMARY must be CONCISE and FACTUAL - only report what's explicitly stated
+
+CONFIDENCE LEVELS:
+- HIGH: Very certain about the assessment based on clear evidence/absence
+- MEDIUM: Reasonably confident but some ambiguity in the evidence
+- LOW: Uncertain due to insufficient or conflicting information
+
+QUALITY CONCERNS:
+Flag significant issues that should make curators cautious about this evidence.
+
+THRESHOLD - Only flag issues that:
+- Could change how the evidence should be interpreted
+- Represent internal contradictions within the paper
+- Indicate potential errors in the paper's conclusions or classifications
+- Reflect study design limitations that affect diagnostic utility
+
+DO NOT flag:
+- Minor formatting, typos, or stylistic issues
+- Missing information that the paper doesn't claim to have (fields marked NR are not concerns)
+- Subjective disagreements with the authors' interpretation
+- Issues that don't materially affect evidence quality
+
+CATEGORIES OF MAJOR ISSUES (examples, not exhaustive):
+
+1. **Internal contradictions**
+   Example: Paper states variant is "de novo (PS2)" in one section but "inherited from
+   unaffected mother" in another. These are mutually exclusive.
+
+2. **Classification or logic errors**
+   Example: ACMG criteria claimed (e.g., PS2 for de novo) that cannot apply given the
+   stated evidence (e.g., variant is inherited, not de novo).
+
+3. **Study design limitations for diagnostic use**
+   Example: Cohort study reports variant enrichment in cases vs. controls but lacks
+   individual patient phenotyping, segregation data, or variant-level pathogenicity
+   assessment.
+
+4. **Unsupported claims**
+   Example: Paper claims "segregation confirmed in all families" but no segregation
+   data (LOD scores, pedigrees, parental testing) is presented.
+
+5. **Evidence contradicts conclusions**
+   Example: Multiple in silico tools predict "benign/tolerated" but paper concludes
+   variant is pathogenic without addressing this discrepancy.
+
+For citations: Point to where the problematic claim or contradiction appears.
+
+If no major issues are found, use an empty array: []
+
+Respond in JSON format with your evaluation:
+
+{% raw %}
+{
+  "genome_build": "GRCh38|GRCh37|hg38|hg19|unknown",
+  "gene_evaluations": [
+    {
+      "gene": "GENE_SYMBOL",
+      "summary": "Reports [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. [Clinical features]. [Functional evidence]. [Notable specifics].",
+      "variants": [
+        {"variant": "NM_000123.4:c.1234A>T", "box_id": 42},
+        {"variant": "NM_000123.4:c.5678G>C", "box_id": 67},
+        {"variant": "rs123456", "box_id": 89}
+      ],
+      "families": "N families (N unrelated) or NR if not stated",
+      "phenotype_groups": [
+        {"phenotype": "disease name or clinical features with modifiers", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism description or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "previously_reported_sources": [{"title": "paper title or NR", "family_count": N_or_null, "context": "quote explaining which families"}], "citations": [{"box_id": integer, "commentary": "description"}]}
+      ],
+      "variants_summary": "variant1 (type); variant2 (type) or NR",
+      "population_freq": "gnomAD: specific frequencies or NR",
+      "segregation": "LOD score / de novo status / meioses or NR",
+      "functional": "specific experiments or NR",
+      "prior_reports": "first report / N prior families or NR",
+      "criterion_A": {
+        "result": boolean,
+        "rationale": "detailed explanation with citations when true",
+        "confidence": "HIGH|MEDIUM|LOW",
+        "citations": [
+          {"box_id": integer, "commentary": "explanation of what this text shows"},
+          {"box_id": integer, "commentary": "explanation of what this text shows"}
+        ]
+      },
+      "criterion_B": {
+        "result": boolean,
+        "rationale": "detailed explanation with citations when true",
+        "confidence": "HIGH|MEDIUM|LOW",
+        "citations": [
+          {"box_id": integer, "commentary": "explanation of what this text shows"}
+        ]
+      },
+      "criterion_C": {
+        "result": boolean,
+        "rationale": "detailed explanation with citations when true",
+        "confidence": "HIGH|MEDIUM|LOW",
+        "citations": [
+          {"box_id": integer, "commentary": "explanation of what this text shows"}
+        ]
+      },
+      "criterion_D": {
+        "result": boolean,
+        "rationale": "detailed explanation with citations when true",
+        "confidence": "HIGH|MEDIUM|LOW",
+        "citations": [
+          {"box_id": integer, "commentary": "explanation of what this text shows"}
+        ]
+      },
+      "criterion_E": {
+        "result": boolean,
+        "rationale": "detailed explanation with citations when true",
+        "confidence": "HIGH|MEDIUM|LOW",
+        "citations": [
+          {"box_id": integer, "commentary": "explanation of what this text shows"}
+        ]
+      },
+      "quality_concerns": [
+        {
+          "concern": "description of the issue and why it matters",
+          "citations": [{"box_id": integer, "commentary": "where the problematic claim appears"}]
+        }
+      ]
+    }
+  ]
+}
+{% endraw %}
+
+PAPER TO EVALUATE:
+
+Title: {{ title }}
+
+Date: {{ date }}
+
+Abstract: {{ abstract }}
+
+Full Text:
+{{ full_text }}

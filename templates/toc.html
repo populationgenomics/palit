@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PanelApp Literature Assessment Reports</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 3rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 2.5rem;
+            font-size: 2rem;
+        }
+
+        .reports-list {
+            list-style: none;
+        }
+
+        .report-item {
+            margin-bottom: 1rem;
+        }
+
+        .report-link {
+            display: block;
+            padding: 1.25rem;
+            background: #e3f2fd;
+            border: 1px solid #90caf9;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #2c3e50;
+            transition: all 0.2s ease;
+        }
+
+        .report-link:hover {
+            background: #bbdefb;
+            border-color: #3498db;
+            transform: translateX(4px);
+        }
+
+        .link-title {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            font-weight: 500;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .badge-backfill {
+            background: #ede7f6;
+            color: #5e35b1;
+            border: 1px solid #b39ddb;
+        }
+
+        .badge-obsolete {
+            background: #f5f5f5;
+            color: #757575;
+            border: 1px solid #bdbdbd;
+        }
+
+        .report-link-obsolete {
+            display: block;
+            padding: 1.25rem;
+            background: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #888;
+            transition: all 0.2s ease;
+            opacity: 0.7;
+        }
+
+        .report-link-obsolete:hover {
+            background: #f0f0f0;
+            border-color: #bdbdbd;
+            transform: translateX(4px);
+            opacity: 1;
+        }
+
+        .report-link-obsolete .link-title {
+            color: #666;
+        }
+
+        .toc-section {
+            margin-bottom: 2rem;
+        }
+
+        .section-heading {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .concordance-link {
+            display: block;
+            padding: 1.25rem;
+            background: #fff3e0;
+            border: 1px solid #ffcc80;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #2c3e50;
+            transition: all 0.2s ease;
+        }
+
+        .concordance-link:hover {
+            background: #ffe0b2;
+            border-color: #fb8c00;
+            transform: translateX(4px);
+        }
+
+        .panel-link {
+            display: block;
+            padding: 1.25rem;
+            background: #e8f5e9;
+            border: 1px solid #a5d6a7;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #2c3e50;
+            transition: all 0.2s ease;
+        }
+
+        .panel-link:hover {
+            background: #c8e6c9;
+            border-color: #4caf50;
+            transform: translateX(4px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PanelApp Literature Assessment Reports</h1>
+
+        <ul class="reports-list" style="margin-bottom: 2rem;">
+            <li class="report-item">
+                <a href="concordance_report.html" class="concordance-link">
+                    <div class="link-title">Concordance</div>
+                </a>
+            </li>
+        </ul>
+
+        <div class="toc-section">
+            <h2 class="section-heading">2026</h2>
+            <ul class="reports-list">
+                <li class="report-item">
+                    <a href="report_2026-01-h1/index.html" class="report-link">
+                        <div class="link-title">January H1</div>
+                    </a>
+                </li>
+            </ul>
+        </div>
+
+        <div class="toc-section">
+            <h2 class="section-heading">2025</h2>
+            <ul class="reports-list">
+                <li class="report-item">
+                    <a href="report_2025-12-h2/index.html" class="report-link">
+                        <div class="link-title">December H2</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-12-h1/index.html" class="report-link">
+                        <div class="link-title">December H1</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-11-h2/index.html" class="report-link">
+                        <div class="link-title">November H2</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-11-16/index.html" class="report-link">
+                        <div class="link-title">November H1</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-11-01/index.html" class="report-link">
+                        <div class="link-title">October H2</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-10-15/index.html" class="report-link">
+                        <div class="link-title">October H1</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-10-01/index.html" class="report-link">
+                        <div class="link-title">September H2</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-09-16/index.html" class="report-link">
+                        <div class="link-title">September H1</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-08/index.html" class="report-link">
+                        <div class="link-title">August <span class="badge badge-backfill">backfill</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-09-01/index.html" class="report-link-obsolete">
+                        <div class="link-title">August <span class="badge badge-obsolete">obsolete</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-07/index.html" class="report-link">
+                        <div class="link-title">July <span class="badge badge-backfill">backfill</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-08-01/index.html" class="report-link-obsolete">
+                        <div class="link-title">July <span class="badge badge-obsolete">obsolete</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-06/index.html" class="report-link">
+                        <div class="link-title">June <span class="badge badge-backfill">backfill</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-07-01/index.html" class="report-link-obsolete">
+                        <div class="link-title">June <span class="badge badge-obsolete">obsolete</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-05/index.html" class="report-link">
+                        <div class="link-title">May <span class="badge badge-backfill">backfill</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-04/index.html" class="report-link">
+                        <div class="link-title">April <span class="badge badge-backfill">backfill</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-03/index.html" class="report-link">
+                        <div class="link-title">March <span class="badge badge-backfill">backfill</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-02/index.html" class="report-link">
+                        <div class="link-title">February <span class="badge badge-backfill">backfill</span></div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="report_2025-01/index.html" class="report-link">
+                        <div class="link-title">January <span class="badge badge-backfill">backfill</span></div>
+                    </a>
+                </li>
+            </ul>
+        </div>
+
+        <div class="toc-section">
+            <h2 class="section-heading">Panel-Scoped Reviews</h2>
+            <ul class="reports-list">
+                <li class="report-item">
+                    <a href="panel_arthrogryposis/index.html" class="panel-link">
+                        <div class="link-title">Arthrogryposis</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="panel_brain_calcification/index.html" class="panel-link">
+                        <div class="link-title">Brain Calcification</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="panel_cataract/index.html" class="panel-link">
+                        <div class="link-title">Cataract</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="panel_mito/index.html" class="panel-link">
+                        <div class="link-title">Mitochondrial Disease</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="panel_osteopetrosis/index.html" class="panel-link">
+                        <div class="link-title">Osteopetrosis</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="panel_pulmonary_fibrosis/index.html" class="panel-link">
+                        <div class="link-title">Pulmonary Fibrosis</div>
+                    </a>
+                </li>
+            </ul>
+        </div>
+</body>
+</html>

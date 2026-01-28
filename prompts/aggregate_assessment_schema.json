@@ -1,0 +1,249 @@
+{
+    "type": "object",
+    "properties": {
+        "gene": {"type": "string"},
+        "summary": {
+            "type": "string",
+            "description": "Prose narrative summarizing the gene-disease evidence. Should be brief by default (2-3 sentences), but allow more detail when warranted. Follow style: [PMID(s)] report [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. Include key clinical features, functional evidence, and notable specifics."
+        },
+        "families": {"type": "string"},
+        "variants": {"type": "string"},
+        "population_freq": {"type": "string"},
+        "segregation": {"type": "string"},
+        "functional": {"type": "string"},
+        "prior_reports": {"type": "string"},
+        "phenotype_groups": {
+            "type": "array",
+            "description": "Array of distinct disease entities caused by this gene, each with separate patient and family counts. Include specific disease names where applicable.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "phenotype": {
+                        "type": "string",
+                        "description": "Specific disease name (where applicable) or clinical description of this disease entity"
+                    },
+                    "mondo_id": {
+                        "type": "string",
+                        "enum": ["MONDO:0700092", "MONDO:0003778", "MONDO:0002254", "MONDO:0044970"],
+                        "description": "Disease category classification. MONDO:0700092 = Neurodevelopmental disorder, MONDO:0003778 = Inborn error of immunity, MONDO:0002254 = Syndromic disease, MONDO:0044970 = Mitochondrial disease. If gene is mitochondrial, always select MONDO:0044970. Otherwise select most specific category."
+                    },
+                    "patient_count": {
+                        "type": "integer",
+                        "description": "Number of patients for this specific disease entity aggregated across all papers"
+                    },
+                    "family_count": {
+                        "type": ["integer", "null"],
+                        "description": "Number of unrelated families for this specific disease entity aggregated across all papers. Use null when not reported (NR)."
+                    },
+                    "disease_mechanism": {
+                        "type": "string",
+                        "description": "Molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: 'loss-of-function', 'gain-of-function', 'dominant-negative', 'loss-of-function (haploinsufficiency)', 'unknown mechanism'. Use 'NR' when not discussed in papers. Synthesize ONLY from paper content."
+                    },
+                    "inheritance_mode": {
+                        "type": "string",
+                        "enum": [
+                            "Monoallelic",
+                            "Biallelic",
+                            "Monoallelic_and_biallelic",
+                            "X-linked",
+                            "Mitochondrial",
+                            "Other",
+                            "NR"
+                        ],
+                        "description": "Mode of inheritance for this specific phenotype group. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns."
+                    },
+                    "inheritance_details": {
+                        "type": "string",
+                        "description": "Additional inheritance clarifications for this phenotype group (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity'). Use empty string if none."
+                    },
+                    "citations": {
+                        "type": "array",
+                        "description": "Array of citations from papers that describe this phenotype, aggregated across all contributing papers",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "pmid": {
+                                    "type": "integer",
+                                    "description": "PMID of the paper containing this citation"
+                                },
+                                "box_id": {
+                                    "type": "integer",
+                                    "description": "Box ID where the phenotype information appears in the paper"
+                                },
+                                "commentary": {
+                                    "type": "string",
+                                    "description": "Brief description of what this citation shows"
+                                }
+                            },
+                            "required": ["pmid", "box_id", "commentary"]
+                        }
+                    }
+                },
+                "required": ["phenotype", "mondo_id", "patient_count", "family_count", "disease_mechanism", "inheritance_mode", "inheritance_details", "citations"]
+            }
+        },
+        "criterion_A": {
+            "type": "object",
+            "properties": {
+                "result": {"type": "boolean"},
+                "rationale": {"type": "string"},
+                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                "citations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pmid": {"type": "integer"},
+                            "box_id": {"type": "integer"},
+                            "commentary": {"type": "string"}
+                        },
+                        "required": ["pmid", "box_id", "commentary"]
+                    }
+                }
+            },
+            "required": ["result", "rationale", "confidence", "citations"]
+        },
+        "criterion_B": {
+            "type": "object",
+            "properties": {
+                "result": {"type": "boolean"},
+                "rationale": {"type": "string"},
+                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                "citations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pmid": {"type": "integer"},
+                            "box_id": {"type": "integer"},
+                            "commentary": {"type": "string"}
+                        },
+                        "required": ["pmid", "box_id", "commentary"]
+                    }
+                }
+            },
+            "required": ["result", "rationale", "confidence", "citations"]
+        },
+        "criterion_C": {
+            "type": "object",
+            "properties": {
+                "result": {"type": "boolean"},
+                "rationale": {"type": "string"},
+                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                "citations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pmid": {"type": "integer"},
+                            "box_id": {"type": "integer"},
+                            "commentary": {"type": "string"}
+                        },
+                        "required": ["pmid", "box_id", "commentary"]
+                    }
+                }
+            },
+            "required": ["result", "rationale", "confidence", "citations"]
+        },
+        "criterion_D": {
+            "type": "object",
+            "properties": {
+                "result": {"type": "boolean"},
+                "rationale": {"type": "string"},
+                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                "citations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pmid": {"type": "integer"},
+                            "box_id": {"type": "integer"},
+                            "commentary": {"type": "string"}
+                        },
+                        "required": ["pmid", "box_id", "commentary"]
+                    }
+                }
+            },
+            "required": ["result", "rationale", "confidence", "citations"]
+        },
+        "criterion_E": {
+            "type": "object",
+            "properties": {
+                "result": {"type": "boolean"},
+                "rationale": {"type": "string"},
+                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                "citations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pmid": {"type": "integer"},
+                            "box_id": {"type": "integer"},
+                            "commentary": {"type": "string"}
+                        },
+                        "required": ["pmid", "box_id", "commentary"]
+                    }
+                }
+            },
+            "required": ["result", "rationale", "confidence", "citations"]
+        },
+        "quality_concerns": {
+            "type": "array",
+            "description": "Synthesized concerns from individual papers plus cross-paper issues. Empty array if no significant concerns.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "concern": {
+                        "type": "string",
+                        "description": "Description of the issue, referencing specific PMIDs where relevant"
+                    },
+                    "pmids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "PMIDs of papers where this concern applies"
+                    },
+                    "citations": {
+                        "type": "array",
+                        "description": "Specific citations from papers where the problematic claim appears",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "pmid": {
+                                    "type": "integer",
+                                    "description": "PMID of the paper"
+                                },
+                                "box_id": {
+                                    "type": "integer",
+                                    "description": "Box ID where the problematic claim appears"
+                                },
+                                "commentary": {
+                                    "type": "string",
+                                    "description": "Brief explanation of what this citation demonstrates"
+                                }
+                            },
+                            "required": ["pmid", "box_id", "commentary"]
+                        }
+                    }
+                },
+                "required": ["concern", "pmids", "citations"]
+            }
+        }
+    },
+    "required": [
+        "gene",
+        "summary",
+        "families",
+        "variants",
+        "population_freq",
+        "segregation",
+        "functional",
+        "prior_reports",
+        "phenotype_groups",
+        "criterion_A",
+        "criterion_B",
+        "criterion_C",
+        "criterion_D",
+        "criterion_E",
+        "quality_concerns"
+    ]
+}

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Concordance Analysis Report</title>
+    <style>
+{{ custom_css }}
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Concordance Analysis Report</h1>
+        <p>Analysis of literature suggestions vs PanelApp curation outcomes</p>
+    </header>
+
+    <main>
+        <section id="summary">
+            <h2>Summary Statistics</h2>
+
+            <table class="concordance-summary-table">
+                <thead>
+                    <tr>
+                        <th rowspan="2">Period</th>
+                        <th colspan="3">Novel Genes</th>
+                        <th colspan="3">Upgrades</th>
+                    </tr>
+                    <tr>
+                        <th>Suggested</th>
+                        <th>Added</th>
+                        <th>Concordant</th>
+                        <th>Suggested</th>
+                        <th>Executed</th>
+                        <th>Concordant</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for result in results %}
+                    <tr>
+                        <td>{{ result.month }}</td>
+                        <td class="novel-genes">{{ result.novel_suggested }}</td>
+                        <td class="novel-genes">{{ result.novel_added }} ({{ "%.0f"|format(result.novel_added / result.novel_suggested * 100 if result.novel_suggested > 0 else 0) }}%)</td>
+                        <td class="novel-genes">{{ result.novel_added_concordant }} ({{ "%.0f"|format(result.novel_added_concordant / result.novel_added * 100 if result.novel_added > 0 else 0) }}%)</td>
+                        <td class="upgrades">{{ result.upgrade_suggested }}</td>
+                        <td class="upgrades">{{ result.upgrade_executed }} ({{ "%.0f"|format(result.upgrade_executed / result.upgrade_suggested * 100 if result.upgrade_suggested > 0 else 0) }}%)</td>
+                        <td class="upgrades">{{ result.upgrade_executed_concordant }} ({{ "%.0f"|format(result.upgrade_executed_concordant / result.upgrade_executed * 100 if result.upgrade_executed > 0 else 0) }}%)</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section id="panel-activity">
+            <h2>Overall Mendeliome Panel Activity</h2>
+            <p class="activity-note">These charts show <em>total panel changes from all sources</em>, not limited to the literature assessment suggestions. Hover over the bars to see gene lists for each category.</p>
+
+            <div class="chart-container">
+                {{ additions_chart_html|safe }}
+            </div>
+
+            <div class="chart-container">
+                {{ upgrades_chart_html|safe }}
+            </div>
+        </section>
+
+        {% for period in periods %}
+        <section id="{{ period.id }}" class="period-section">
+            <h2>{{ period.name }}</h2>
+            <div class="period-legend">
+                <span class="legend-item concordance-concordant">GENE</span> Concordant rating
+                <span class="legend-separator">•</span>
+                <span class="legend-item concordance-discordant">GENE</span> Different rating
+                <span class="legend-separator">•</span>
+                <span class="legend-item concordance-not-executed">GENE</span> Not executed
+            </div>
+
+            <h3>Novel Gene-Disease Associations ({{ period.novel_concordance.suggested }})</h3>
+
+            {% set novel_green = period.novel_concordance.gene_statuses | selectattr('suggested_rating', 'equalto', 'GREEN') | list %}
+            {% set novel_amber = period.novel_concordance.gene_statuses | selectattr('suggested_rating', 'equalto', 'AMBER') | list %}
+            {% set novel_red = period.novel_concordance.gene_statuses | selectattr('suggested_rating', 'equalto', 'RED') | list %}
+
+            {% if novel_green %}
+            <div class="toc-section toc-novel-to-green">
+                <ul class="toc-gene-list">
+                    {% for status in novel_green %}
+                    <li><span class="concordance-{{ status.status.value }}">{{ status.gene }}</span></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            {% if novel_amber %}
+            <div class="toc-section toc-novel-to-amber">
+                <ul class="toc-gene-list">
+                    {% for status in novel_amber %}
+                    <li><span class="concordance-{{ status.status.value }}">{{ status.gene }}</span></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            {% if novel_red %}
+            <div class="toc-section toc-novel-to-red">
+                <ul class="toc-gene-list">
+                    {% for status in novel_red %}
+                    <li><span class="concordance-{{ status.status.value }}">{{ status.gene }}</span></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            <h3>Known Gene Evidence Updates ({{ period.upgrade_concordance.suggested }})</h3>
+
+            {% set upgrade_groups = {} %}
+            {% for status in period.upgrade_concordance.gene_statuses %}
+                {% set key = status.current_rating ~ '→' ~ status.suggested_rating %}
+                {% if key not in upgrade_groups %}
+                    {% set _ = upgrade_groups.update({key: []}) %}
+                {% endif %}
+                {% set _ = upgrade_groups[key].append(status) %}
+            {% endfor %}
+
+            {% for transition in ['RED→GREEN', 'AMBER→GREEN', 'RED→AMBER'] %}
+            {% if transition in upgrade_groups %}
+            {% set statuses = upgrade_groups[transition] %}
+            {% set current, suggested = transition.split('→') %}
+            <div class="toc-section toc-{{ current.lower() }}-to-{{ suggested.lower() }}">
+                <ul class="toc-gene-list">
+                    {% for status in statuses %}
+                    <li><span class="concordance-{{ status.status.value }}">{{ status.gene }}</span></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </section>
+        {% endfor %}
+    </main>
+</body>
+</html>

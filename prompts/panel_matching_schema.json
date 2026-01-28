@@ -1,0 +1,20 @@
+{
+    "type": "object",
+    "properties": {
+        "matched_panels": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "panel_name": {"type": "string", "description": "Exact panel name from the provided list"},
+                    "rationale": {
+                        "type": "string",
+                        "description": "Brief explanation for panel match"
+                    }
+                },
+                "required": ["panel_name", "rationale"]
+            }
+        }
+    },
+    "required": ["matched_panels"]
+}

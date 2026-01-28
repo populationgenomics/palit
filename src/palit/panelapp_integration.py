@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Shared utilities for PanelApp criteria evaluation and integration."""
+
+from dataclasses import dataclass
+from typing import Any
+
+# Target panel IDs
+MENDELIOME_PANEL_ID = 137
+INCIDENTALOME_PANEL_ID = 126
+MITOCHONDRIAL_PANEL_ID = 203
+REPEAT_DISORDERS_PANEL_ID = 3597
+TARGET_PANEL_IDS = [
+    MENDELIOME_PANEL_ID,
+    INCIDENTALOME_PANEL_ID,
+    MITOCHONDRIAL_PANEL_ID,
+    REPEAT_DISORDERS_PANEL_ID,
+]
+
+# Panel ID to name mapping
+PANEL_NAMES = {
+    MENDELIOME_PANEL_ID: "Mendeliome",
+    INCIDENTALOME_PANEL_ID: "Incidentalome",
+    MITOCHONDRIAL_PANEL_ID: "Mitochondrial Disease",
+    REPEAT_DISORDERS_PANEL_ID: "Repeat Disorders",
+}
+
+# PanelApp criteria names
+PANELAPP_CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
+
+# MONDO ID to category information (abbreviation, description)
+# CSS class is derived from abbrev.lower()
+MONDO_CATEGORIES = {
+    "MONDO:0002254": {"abbrev": "Synd", "description": "Syndromic disease"},
+    "MONDO:0003778": {"abbrev": "IEI", "description": "Inborn error of immunity"},
+    "MONDO:0044970": {"abbrev": "Mito", "description": "Mitochondrial disease"},
+    "MONDO:0700092": {"abbrev": "NDD", "description": "Neurodevelopmental disorder"},
+}
+
+# Canonical mapping from evidence extraction enum to PanelApp long-form MoI
+# Evidence extraction uses: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR"
+ENUM_TO_PANELAPP_MOI = {
+    "Monoallelic": "MONOALLELIC, autosomal or pseudoautosomal, imprinted status unknown",
+    "Biallelic": "BIALLELIC, autosomal or pseudoautosomal",
+    "Monoallelic_and_biallelic": "BOTH monoallelic and biallelic, autosomal or pseudoautosomal",
+    "X-linked": "X-LINKED: hemizygous mutation in males, monoallelic mutations in females may cause disease (may be less severe, later onset than males)",
+    "Mitochondrial": "MITOCHONDRIAL",
+    "Other": "Other",
+    "NR": "",
+}
+
+# Reverse mapping from PanelApp long-form to enum (1:1 from canonical)
+PANELAPP_MOI_TO_ENUM = {v: k for k, v in ENUM_TO_PANELAPP_MOI.items() if v}
+
+# Additional PanelApp long-forms that map to the same enum values
+PANELAPP_MOI_TO_ENUM.update(
+    {
+        "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted": "Monoallelic",
+        "MONOALLELIC, autosomal or pseudoautosomal, maternally imprinted (paternal allele expressed)": "Monoallelic",
+        "MONOALLELIC, autosomal or pseudoautosomal, paternally imprinted (maternal allele expressed)": "Monoallelic",
+        "BOTH monoallelic and biallelic (but BIALLELIC mutations cause a more SEVERE disease form), autosomal or pseudoautosomal": "Monoallelic_and_biallelic",
+        "X-LINKED: hemizygous mutation in males, biallelic mutations in females": "X-linked",
+        "Unknown": "Other",
+    }
+)
+
+
+@dataclass
+class PrefillData:
+    """Prefill form data for PanelApp integration."""
+
+    form_type: str  # "add" or "review"
+    panel_id: int
+    gene_symbol: str
+    rating: str  # "GREEN", "AMBER", "RED"
+    moi: str  # Full PanelApp MoI string
+    mode_of_pathogenicity: str | None
+    publications: str  # semicolon-separated PMIDs
+    phenotypes: str  # semicolon-separated "description, MONDO_ID" pairs
+    comments: str  # summary text
+
+
+def derive_aggregate_moi(phenotype_groups: list[dict[str, Any]]) -> tuple[str, str]:
+    """Derive overall inheritance mode and details from phenotype_groups.
+
+    PanelApp requires a single MoI per gene, but our schema captures MoI per
+    phenotype group. This function aggregates across groups for PanelApp compatibility.
+
+    Args:
+        phenotype_groups: List of phenotype group dicts, each with inheritance_mode
+            and inheritance_details fields
+
+    Returns:
+        Tuple of (inheritance_mode, inheritance_details)
+        - If all groups have the same mode -> that mode
+        - If mixed Monoallelic + Biallelic -> Monoallelic_and_biallelic
+        - If mixed with X-linked/Mitochondrial -> Other
+        - If all NR -> NR
+    """
+    modes: set[str] = set()
+    details_list: list[str] = []
+
+    for pg in phenotype_groups:
+        mode = pg.get("inheritance_mode")
+        if mode and mode != "NR":
+            modes.add(mode)
+        detail = pg.get("inheritance_details")
+        if detail and detail.strip():
+            details_list.append(detail)
+
+    # Combine details (unique, sorted)
+    combined_details = "; ".join(sorted(set(details_list))) if details_list else ""
+
+    # Derive mode
+    if not modes:
+        return "NR", combined_details
+
+    if len(modes) == 1:
+        return modes.pop(), combined_details
+
+    # Multiple modes - check for mono+bi combination
+    if modes == {"Monoallelic", "Biallelic"}:
+        return "Monoallelic_and_biallelic", combined_details
+
+    # If Monoallelic_and_biallelic is already in there with either mono or bi
+    if "Monoallelic_and_biallelic" in modes:
+        remaining = modes - {"Monoallelic_and_biallelic", "Monoallelic", "Biallelic"}
+        if not remaining:
+            return "Monoallelic_and_biallelic", combined_details
+
+    # Mixed with X-linked, Mitochondrial, or Other
+    return "Other", combined_details
+
+
+def count_families_by_moi(phenotype_groups: list[dict[str, Any]]) -> dict[str, int]:
+    """Count families per inheritance mode from phenotype_groups.
+
+    Falls back to patient_count if family_count is null.
+
+    Note: Monoallelic_and_biallelic counts toward BOTH Monoallelic and Biallelic,
+    since by definition it contains evidence for both modes.
+
+    Args:
+        phenotype_groups: List of phenotype group dicts
+
+    Returns:
+        Dict mapping inheritance mode to total family count
+    """
+    counts: dict[str, int] = {}
+
+    for pg in phenotype_groups:
+        moi = pg.get("inheritance_mode")
+        if not moi or moi == "NR":
+            continue
+
+        family_count = pg.get("family_count")
+        count = family_count if family_count is not None else pg.get("patient_count", 0)
+        if count is None or count <= 0:
+            continue
+
+        if moi == "Monoallelic_and_biallelic":
+            # Counts toward both modes
+            counts["Monoallelic"] = counts.get("Monoallelic", 0) + count
+            counts["Biallelic"] = counts.get("Biallelic", 0) + count
+        else:
+            counts[moi] = counts.get(moi, 0) + count
+
+    return counts
+
+
+def prepare_prefill_data(
+    gene_symbol: str,
+    assessment_json: dict[str, Any],
+    form_type: str,
+    panel_id: int,
+    cited_pmids: list[int],
+) -> PrefillData:
+    """Prepare prefill form data from gene assessment.
+
+    Args:
+        gene_symbol: Gene symbol
+        assessment_json: Assessment JSON with criteria evaluations
+        form_type: "add" or "review"
+        panel_id: Target panel ID
+        cited_pmids: List of PMIDs cited in the assessment
+
+    Returns:
+        PrefillData object ready for form rendering
+    """
+    # Calculate rating from assessment
+    rating = calculate_gene_rating(assessment_json)
+    rating_str = panelapp_confidence_to_color(rating).upper()
+
+    # Get MoI in PanelApp long format (derived from phenotype_groups)
+    phenotype_groups = assessment_json.get("phenotype_groups", [])
+    inheritance_mode, _ = derive_aggregate_moi(phenotype_groups)
+    moi = ENUM_TO_PANELAPP_MOI[inheritance_mode]
+
+    # Get mode of pathogenicity if present
+    mode_of_pathogenicity = assessment_json.get("mode_of_pathogenicity")
+
+    # Format publications as semicolon-separated PMIDs
+    publications = ";".join(str(pmid) for pmid in cited_pmids)
+
+    # Format phenotypes as semicolon-separated "description, MONDO_ID" pairs
+    phenotype_groups = assessment_json["phenotype_groups"]
+    mondo_pairs = {
+        f"{MONDO_CATEGORIES[group['mondo_id']]['description']}, {group['mondo_id']}"
+        for group in phenotype_groups
+    }
+    phenotypes = ";".join(sorted(mondo_pairs))
+
+    # Get summary as comments
+    comments = assessment_json.get("summary", "")
+
+    return PrefillData(
+        form_type=form_type,
+        panel_id=panel_id,
+        gene_symbol=gene_symbol,
+        rating=rating_str,
+        moi=moi,
+        mode_of_pathogenicity=mode_of_pathogenicity,
+        publications=publications,
+        phenotypes=phenotypes,
+        comments=comments,
+    )
+
+
+def meets_green_criteria(gene_eval: dict[str, Any]) -> bool:
+    """Check if a single gene evaluation meets GREEN criteria: (A OR B OR C) AND D AND E.
+
+    Args:
+        gene_eval: Gene evaluation dictionary with criterion_A, criterion_B, etc.
+
+    Returns:
+        True if evaluation meets GREEN criteria, False otherwise
+    """
+    a = bool(gene_eval.get("criterion_A", {}).get("result", False))
+    b = bool(gene_eval.get("criterion_B", {}).get("result", False))
+    c = bool(gene_eval.get("criterion_C", {}).get("result", False))
+    d = bool(gene_eval.get("criterion_D", {}).get("result", False))
+    e = bool(gene_eval.get("criterion_E", {}).get("result", False))
+
+    return (a or b or c) and d and e
+
+
+def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
+    """Calculate gene rating confidence level based on PanelApp criteria.
+
+    Rating logic:
+    - 3 (GREEN) if meets criteria (A OR B OR C) AND D AND E
+    - 2 (AMBER) if not GREEN but more than one family reported for any phenotype
+    - 1 (RED) otherwise
+
+    Args:
+        gene_eval: Gene evaluation dictionary with criterion_A, criterion_B, etc.
+
+    Returns:
+        Confidence level: 3 (GREEN), 2 (AMBER), or 1 (RED)
+    """
+    # Check GREEN criteria first
+    if meets_green_criteria(gene_eval):
+        return 3
+
+    # Check AMBER criteria: more than one family reported for any phenotype
+    # Use max family count across all phenotype groups (treating null/NR as 0)
+    phenotype_groups = gene_eval.get("phenotype_groups", [])
+    if phenotype_groups:
+        max_family_count = max(group.get("family_count") or 0 for group in phenotype_groups)
+        if max_family_count > 1:
+            return 2
+
+    # Default to RED
+    return 1
+
+
+def panelapp_confidence_to_color(confidence: int | None) -> str:
+    """Convert PanelApp confidence level to color name.
+
+    Args:
+        confidence: PanelApp confidence level integer
+
+    Returns:
+        Color name (Grey, Red, Amber, Green)
+    """
+    if confidence is None:
+        return "Grey"
+
+    mapping = {
+        0: "Grey",  # Not in panel / no evidence
+        1: "Red",  # Limited evidence
+        2: "Amber",  # Moderate evidence
+        3: "Green",  # High evidence
+    }
+    return mapping.get(confidence, "Grey")

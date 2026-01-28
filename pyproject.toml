@@ -1,0 +1,121 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "palit"
+version = "0.1.0"
+description = "PanelApp Australia literature assessment for rare disease gene curation"
+readme = "README.md"
+requires-python = "==3.13.*"
+dependencies = [
+    "cryptography",
+    "defusedxml",
+    "docling",
+    "httpx",
+    "jinja2",
+    "jsonschema",
+    "lxml",
+    "metapub",
+    "openai",
+    "plotly",
+    "pydantic-settings",
+    "pypdf",
+    "requests",
+    "rich",
+    "tqdm",
+    "typer",
+]
+
+[project.optional-dependencies]
+docling-macos = [
+    "mlx-vlm",
+]
+ml = [
+    "flashinfer-python",
+    "openai-harmony",
+    "scikit-learn",
+    "torch",
+    "transformers",
+    "vllm",
+    "wandb",
+]
+
+[project.scripts]
+palit = "palit.cli:app"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade - modernize Python code
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "RUF",    # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long
+    "B008",   # Do not perform function call in argument defaults - false positive with Typer
+]
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disable_error_code = ["import-untyped"]
+
+# Ignore specific ML package imports that are optional dependencies
+# These packages are only needed for ML workflows, not for core functionality
+[[tool.mypy.overrides]]
+module = [
+    "openai_harmony",
+    "openai_harmony.*",
+    "vllm",
+    "vllm.*",
+    "wandb",
+    "wandb.*",
+    "sklearn",
+    "sklearn.*",
+]
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "mypy",
+    "pytest",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]

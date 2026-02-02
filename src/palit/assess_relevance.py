@@ -210,6 +210,12 @@ class PaperBatchProcessor:
             }
 
 
+# Maximum abstract length in characters (~2500 tokens at 4 chars/token).
+# Legitimate abstracts rarely exceed 5000 chars; this handles edge cases like
+# taxonomic papers that dump species lists into the abstract.
+MAX_ABSTRACT_CHARS = 10000
+
+
 def prepare_prompts_for_papers(
     papers: list[dict[str, Any]],
     template: str,
@@ -228,10 +234,19 @@ def prepare_prompts_for_papers(
     """
     prompts = []
     for paper in papers:
+        abstract = paper["abstract"]
+
+        # Truncate excessively long abstracts
+        if len(abstract) > MAX_ABSTRACT_CHARS:
+            logger.warning(
+                f"Truncating abstract for PMID {paper['pmid']} from {len(abstract)} to {MAX_ABSTRACT_CHARS} chars"
+            )
+            abstract = abstract[:MAX_ABSTRACT_CHARS] + "... [truncated]"
+
         # Build template variables starting with title and abstract
         template_vars = {
             "title": paper["title"],
-            "abstract": paper["abstract"],
+            "abstract": abstract,
         }
 
         # Add any extra template variables

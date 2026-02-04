@@ -79,19 +79,19 @@ class PrefillData:
     comments: str  # summary text
 
 
-def derive_aggregate_moi(phenotype_groups: list[dict[str, Any]]) -> tuple[str, str]:
-    """Derive overall inheritance mode and details from phenotype_groups.
+def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> tuple[str, str]:
+    """Derive overall inheritance mode and details from disease_entities.
 
     PanelApp requires a single MoI per gene, but our schema captures MoI per
-    phenotype group. This function aggregates across groups for PanelApp compatibility.
+    disease entity. This function aggregates across entities for PanelApp compatibility.
 
     Args:
-        phenotype_groups: List of phenotype group dicts, each with inheritance_mode
+        disease_entities: List of disease entity dicts, each with inheritance_mode
             and inheritance_details fields
 
     Returns:
         Tuple of (inheritance_mode, inheritance_details)
-        - If all groups have the same mode -> that mode
+        - If all entities have the same mode -> that mode
         - If mixed Monoallelic + Biallelic -> Monoallelic_and_biallelic
         - If mixed with X-linked/Mitochondrial -> Other
         - If all NR -> NR
@@ -99,11 +99,11 @@ def derive_aggregate_moi(phenotype_groups: list[dict[str, Any]]) -> tuple[str, s
     modes: set[str] = set()
     details_list: list[str] = []
 
-    for pg in phenotype_groups:
-        mode = pg.get("inheritance_mode")
+    for entity in disease_entities:
+        mode = entity.get("inheritance_mode")
         if mode and mode != "NR":
             modes.add(mode)
-        detail = pg.get("inheritance_details")
+        detail = entity.get("inheritance_details")
         if detail and detail.strip():
             details_list.append(detail)
 
@@ -131,8 +131,8 @@ def derive_aggregate_moi(phenotype_groups: list[dict[str, Any]]) -> tuple[str, s
     return "Other", combined_details
 
 
-def count_families_by_moi(phenotype_groups: list[dict[str, Any]]) -> dict[str, int]:
-    """Count families per inheritance mode from phenotype_groups.
+def count_families_by_moi(disease_entities: list[dict[str, Any]]) -> dict[str, int]:
+    """Count families per inheritance mode from disease_entities.
 
     Falls back to patient_count if family_count is null.
 
@@ -140,20 +140,20 @@ def count_families_by_moi(phenotype_groups: list[dict[str, Any]]) -> dict[str, i
     since by definition it contains evidence for both modes.
 
     Args:
-        phenotype_groups: List of phenotype group dicts
+        disease_entities: List of disease entity dicts
 
     Returns:
         Dict mapping inheritance mode to total family count
     """
     counts: dict[str, int] = {}
 
-    for pg in phenotype_groups:
-        moi = pg.get("inheritance_mode")
+    for entity in disease_entities:
+        moi = entity.get("inheritance_mode")
         if not moi or moi == "NR":
             continue
 
-        family_count = pg.get("family_count")
-        count = family_count if family_count is not None else pg.get("patient_count", 0)
+        family_count = entity.get("family_count")
+        count = family_count if family_count is not None else entity.get("patient_count", 0)
         if count is None or count <= 0:
             continue
 
@@ -190,9 +190,9 @@ def prepare_prefill_data(
     rating = calculate_gene_rating(assessment_json)
     rating_str = panelapp_confidence_to_color(rating).upper()
 
-    # Get MoI in PanelApp long format (derived from phenotype_groups)
-    phenotype_groups = assessment_json.get("phenotype_groups", [])
-    inheritance_mode, _ = derive_aggregate_moi(phenotype_groups)
+    # Get MoI in PanelApp long format (derived from disease_entities)
+    disease_entities = assessment_json.get("disease_entities", [])
+    inheritance_mode, _ = derive_aggregate_moi(disease_entities)
     moi = ENUM_TO_PANELAPP_MOI[inheritance_mode]
 
     # Get mode of pathogenicity if present
@@ -202,10 +202,10 @@ def prepare_prefill_data(
     publications = ";".join(str(pmid) for pmid in cited_pmids)
 
     # Format phenotypes as semicolon-separated "description, MONDO_ID" pairs
-    phenotype_groups = assessment_json["phenotype_groups"]
+    disease_entities = assessment_json["disease_entities"]
     mondo_pairs = {
-        f"{MONDO_CATEGORIES[group['mondo_id']]['description']}, {group['mondo_id']}"
-        for group in phenotype_groups
+        f"{MONDO_CATEGORIES[entity['mondo_id']]['description']}, {entity['mondo_id']}"
+        for entity in disease_entities
     }
     phenotypes = ";".join(sorted(mondo_pairs))
 
@@ -262,10 +262,10 @@ def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
         return 3
 
     # Check AMBER criteria: more than one family reported for any phenotype
-    # Use max family count across all phenotype groups (treating null/NR as 0)
-    phenotype_groups = gene_eval.get("phenotype_groups", [])
-    if phenotype_groups:
-        max_family_count = max(group.get("family_count") or 0 for group in phenotype_groups)
+    # Use max family count across all disease entities (treating null/NR as 0)
+    disease_entities = gene_eval.get("disease_entities", [])
+    if disease_entities:
+        max_family_count = max(entity.get("family_count") or 0 for entity in disease_entities)
         if max_family_count > 1:
             return 2
 

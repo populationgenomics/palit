@@ -8,7 +8,7 @@ AVAILABLE PANELS:
 
 GENE CONTEXT:
 Summary: {summary}
-Phenotype: {phenotype_description}
+Disease: {disease_description}
 
 TASK:
 Match the gene's summary and phenotypes to appropriate diagnostic panels.

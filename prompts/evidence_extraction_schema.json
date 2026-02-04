@@ -31,13 +31,13 @@
                         "description": "Unique variants with citations for automated processing"
                     },
                     "families": {"type": "string"},
-                    "phenotype_groups": {
+                    "disease_entities": {
                         "type": "array",
                         "description": "Array of distinct disease entities reported in this paper, each with separate patient and family counts. Include specific disease names where applicable.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "phenotype": {
+                                "description": {
                                     "type": "string",
                                     "description": "Specific disease name (where applicable) or clinical description, including important modifiers like age of onset, severity, or progression"
                                 },
@@ -91,21 +91,21 @@
                                         "Other",
                                         "NR"
                                     ],
-                                    "description": "Mode of inheritance for this specific phenotype group. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome)."
+                                    "description": "Mode of inheritance for this specific disease entity. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome)."
                                 },
                                 "inheritance_details": {
                                     "type": "string",
-                                    "description": "Additional inheritance clarifications for this phenotype group (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity'). Use empty string if none."
+                                    "description": "Additional inheritance clarifications for this disease entity (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity'). Use empty string if none."
                                 },
                                 "citations": {
                                     "type": "array",
-                                    "description": "Array of citations (box IDs) where this phenotype is described in the paper",
+                                    "description": "Array of citations (box IDs) where this disease entity is described in the paper",
                                     "items": {
                                         "type": "object",
                                         "properties": {
                                             "box_id": {
                                                 "type": "integer",
-                                                "description": "Box ID where the phenotype information appears"
+                                                "description": "Box ID where the disease entity information appears"
                                             },
                                             "commentary": {
                                                 "type": "string",
@@ -116,7 +116,7 @@
                                     }
                                 }
                             },
-                            "required": ["phenotype", "mondo_id", "patient_count", "family_count", "disease_mechanism", "inheritance_mode", "inheritance_details", "previously_reported_sources", "citations"]
+                            "required": ["description", "mondo_id", "patient_count", "family_count", "disease_mechanism", "inheritance_mode", "inheritance_details", "previously_reported_sources", "citations"]
                         }
                     },
                     "variants_summary": {
@@ -265,7 +265,7 @@
                     "summary",
                     "variants",
                     "families",
-                    "phenotype_groups",
+                    "disease_entities",
                     "variants_summary",
                     "population_freq",
                     "segregation",

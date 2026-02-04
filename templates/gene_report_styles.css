@@ -1041,69 +1041,69 @@ footer hr {
     opacity: 1;
 }
 
-/* Phenotype Breakdown Table */
+/* Disease Entity Table */
 
-.phenotype-breakdown-note {
+.disease-entity-note {
     margin: 0 0 10px 0;
     font-size: 0.9em;
     color: #6c757d;
     line-height: 1.4;
 }
 
-.phenotype-breakdown-table {
+.disease-entity-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 0.9em;
     margin-top: 10px;
 }
 
-.phenotype-breakdown-table th,
-.phenotype-breakdown-table td {
+.disease-entity-table th,
+.disease-entity-table td {
     padding: 8px 12px;
     text-align: left;
     border: 1px solid #ddd;
     vertical-align: top;
 }
 
-.phenotype-breakdown-table th {
+.disease-entity-table th {
     background-color: #fef3d9;
     color: #2c3e50;
     border-bottom: 2px solid #f39c12;
 }
 
-.phenotype-breakdown-table tbody tr {
+.disease-entity-table tbody tr {
     background-color: #ffffff;
 }
 
-.phenotype-breakdown-table tbody tr:hover {
+.disease-entity-table tbody tr:hover {
     background-color: #fffbf0;
     transition: background-color 0.2s ease;
 }
 
-.phenotype-max-highlight {
+.disease-entity-max-highlight {
     background-color: #ffefb3 !important;
 }
 
-.phenotype-max-highlight:hover {
+.disease-entity-max-highlight:hover {
     background-color: #ffe799 !important;
 }
 
-.phenotype-max-family-count {
+.disease-entity-max-family-count {
     background-color: #ffefb3 !important;
     cursor: help;
     position: relative;
 }
 
-.phenotype-max-family-count:hover {
+.disease-entity-max-family-count:hover {
     background-color: #ffe799 !important;
 }
 
-/* Immediate tooltip for phenotype table cells */
-.phenotype-max-family-count[data-title]::before {
+/* Immediate tooltip for disease entity table cells */
+.disease-entity-max-family-count[data-title]::before {
     transition: opacity 0s !important;
 }
 
-.phenotype-max-family-count[data-title]::after {
+.disease-entity-max-family-count[data-title]::after {
     transition: opacity 0s !important;
 }
 
@@ -1191,12 +1191,12 @@ footer hr {
         padding: 6px 8px;
     }
 
-    .phenotype-breakdown-table {
+    .disease-entity-table {
         font-size: 0.85em;
     }
 
-    .phenotype-breakdown-table th,
-    .phenotype-breakdown-table td {
+    .disease-entity-table th,
+    .disease-entity-table td {
         padding: 6px 8px;
     }
 }

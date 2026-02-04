@@ -14,34 +14,34 @@ Your task is to combine evidence from multiple papers that have already been ind
 
 Begin with a concise checklist (3-7 bullets) of what you will do; keep items conceptual, not implementation-level.
 
-DISEASE ENTITY SPECIFICITY - CRITICAL:
-When aggregating evidence, the gene may cause multiple distinct disease entities through pleiotropic effects. Do NOT merge different disease entities into a single assessment.
+LUMPING AND SPLITTING DISEASE ENTITIES - CRITICAL:
 
-**Treat as SEPARATE disease entities when:**
-- Different disease names are used (each name represents a distinct entity)
-- The same feature appears in different clinical contexts (e.g., isolated vs. part of a named syndrome)
-- Papers present them as distinct entities rather than variations of the same condition
+Following ClinGen Lumping and Splitting principles, decide whether the gene causes ONE disease entity or MULTIPLE distinct entities. Each distinct entity becomes a separate entry in the `disease_entities` array. Assess from the paper content only.
 
-Example: If some families have amyotrophic lateral sclerosis and others have dental root anomalies, these are different disease entities - create separate phenotype groups with separate family counts.
+**Criteria (weigh together):**
 
-**Treat as SAME disease entity when:**
-- Explicitly described as the same condition with variable severity/presentation
-- Multiple features are part of a single recognized syndrome diagnosis
-- Papers treat them as phenotypic variability within one disease entity
+1. **Molecular Mechanism** (strongest criterion): Different mechanisms (LOF vs GOF, domain-specific) for different phenotypes → SPLIT. Same mechanism → LUMP.
 
-Example: If families with developmental epileptic encephalopathy show infantile spasms, developmental regression, and intractable seizures, these are all part of the same disease entity - aggregate these families into one phenotype group.
+2. **Phenotypic Variability**: If intrafamilial variability ≈ interfamilial variability → LUMP (variable expressivity, not distinct diseases). If families differ more from each other than members within families → consider splitting.
 
-You must output a `phenotype_groups` array, with each distinct disease entity receiving its own entry with a separate family count.
+3. **Inheritance Pattern**: Different inheritance + distinct phenotypes → SPLIT. Different inheritance as severity continuum (e.g., dosage effects, mild heterozygous features in recessive disease) → LUMP.
+
+4. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
+
+**Isolated Features of Syndromes:**
+If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, report the SYNDROME, not the isolated feature—unless papers present it as distinct with a different mechanism or inheritance.
+
+You must output a `disease_entities` array, with each distinct disease entity receiving its own entry with a separate family count.
 
 **EVALUATING CRITERIA WITH MULTIPLE DISEASE ENTITIES:**
-When the gene causes multiple distinct disease entities (multiple phenotype groups), evaluate Criteria A, B, and C using the MAXIMUM family count across all phenotype groups, NOT the sum. Each phenotype group represents independent evidence for a different disease entity - the strongest single disease association determines the rating.
+When the gene causes multiple distinct disease entities, evaluate Criteria A, B, and C using the MAXIMUM family count across all disease entities, NOT the sum. Each entity represents independent evidence for a different disease - the strongest single disease association determines the rating.
 
 Example: If a gene causes 4 families with epilepsy and 1 family with cardiomyopathy, use 4 (the max) for evaluating Criteria A/B/C, not 5.
 
 AGGREGATION METHODOLOGY:
 You are evaluating evidence that has been extracted from multiple papers. Your job is to:
 
-1. **IDENTIFY DISTINCT PHENOTYPE GROUPS**: First, determine if the gene causes one disease or multiple distinct diseases based on the guidance above
+1. **IDENTIFY DISTINCT DISEASE ENTITIES**: First, determine if the gene causes one disease or multiple distinct diseases based on the guidance above
 
 2. **AGGREGATE FAMILY COUNTS** - Preventing double-counting:
    - For each paper, check previously_reported_sources (families from other papers)
@@ -153,8 +153,8 @@ CRITICAL: Use "NR" (Not Reported) when information is not explicitly stated acro
 NEVER infer, estimate, or make assumptions about missing data.
 
 - families: exact count aggregated across all papers, how many unrelated (e.g., "12 families (12 unrelated)" or "NR")
-- phenotype_groups: array of distinct disease entities with their patient and family counts aggregated across all papers. When the gene causes disease through MULTIPLE distinct mechanisms (e.g., gain-of-function AND loss-of-function), create SEPARATE phenotype groups for each mechanism even if phenotypes overlap. Each entry must include:
-  * phenotype: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the papers.
+- disease_entities: array of distinct disease entities with their patient and family counts aggregated across all papers. When the gene causes disease through MULTIPLE distinct mechanisms (e.g., gain-of-function AND loss-of-function), create SEPARATE disease entities for each mechanism even if phenotypes overlap. Each entry must include:
+  * description: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the papers.
   * mondo_id: Disease category classification. Select EXACTLY ONE from:
     - "MONDO:0700092" = Neurodevelopmental disorder
     - "MONDO:0003778" = Inborn error of immunity
@@ -165,14 +165,14 @@ NEVER infer, estimate, or make assumptions about missing data.
   * family_count: number of unrelated families for this specific disease entity aggregated across all papers. Use null when family count is not reported (null means NR - not reported)
   * disease_mechanism: molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in papers. Synthesize ONLY from paper content.
   * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome).
-  * inheritance_details: clarifications for this phenotype group if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity") or empty string ""
-  * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's phenotype_groups by matching similar disease descriptions AND mechanisms. Each citation must include pmid, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
+  * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity") or empty string ""
+  * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions AND mechanisms. Each citation must include pmid, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
   Examples:
 {% raw %}
-  - Single disease with both counts: [{"phenotype": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "MONDO:0700092", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 12345, "box_id": 42, "commentary": "clinical features and patient counts"}, {"pmid": 67890, "box_id": 18, "commentary": "family counts"}]}]
-  - Single disease, family count not reported: [{"phenotype": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "MONDO:0700092", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"pmid": 11111, "box_id": 23, "commentary": "phenotype description"}]}]
-  - Multiple diseases: [{"phenotype": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_id": "MONDO:0700092", "patient_count": 8, "family_count": 5, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 22222, "box_id": 34, "commentary": "ALS phenotype and counts"}, {"pmid": 33333, "box_id": 56, "commentary": "additional ALS families"}]}, {"phenotype": "isolated dental root anomalies, childhood presentation", "mondo_id": "MONDO:0002254", "patient_count": 10, "family_count": 3, "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 44444, "box_id": 78, "commentary": "dental phenotype and family data"}]}]
-  - Multiple mechanisms (BAIAP2 example): [{"phenotype": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_id": "MONDO:0700092", "patient_count": 6, "family_count": 6, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 41133935, "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"phenotype": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_id": "MONDO:0700092", "patient_count": 1, "family_count": 1, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 38149472, "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
+  - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "MONDO:0700092", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 12345, "box_id": 42, "commentary": "clinical features and patient counts"}, {"pmid": 67890, "box_id": 18, "commentary": "family counts"}]}]
+  - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "MONDO:0700092", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"pmid": 11111, "box_id": 23, "commentary": "phenotype description"}]}]
+  - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_id": "MONDO:0700092", "patient_count": 8, "family_count": 5, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 22222, "box_id": 34, "commentary": "ALS phenotype and counts"}, {"pmid": 33333, "box_id": 56, "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_id": "MONDO:0002254", "patient_count": 10, "family_count": 3, "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 44444, "box_id": 78, "commentary": "dental phenotype and family data"}]}]
+  - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_id": "MONDO:0700092", "patient_count": 6, "family_count": 6, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 41133935, "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_id": "MONDO:0700092", "patient_count": 1, "family_count": 1, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 38149472, "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
 {% endraw %}
 - variants: list all variants reported across papers WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
 - population_freq: ONLY if papers report gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
@@ -373,9 +373,9 @@ Respond in JSON format with your aggregate evaluation:
   "segregation": "strongest segregation evidence across papers",
   "functional": "all functional experiments across papers",
   "prior_reports": "assessment of literature overlap and novel families",
-  "phenotype_groups": [
-    {"phenotype": "disease name 1 or clinical description", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid1, "box_id": box_id, "commentary": "description"}, {"pmid": pmid2, "box_id": box_id, "commentary": "description"}]},
-    {"phenotype": "disease name 2 or clinical description", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid3, "box_id": box_id, "commentary": "description"}]}
+  "disease_entities": [
+    {"description": "disease name 1 or clinical description", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid1, "box_id": box_id, "commentary": "description"}, {"pmid": pmid2, "box_id": box_id, "commentary": "description"}]},
+    {"description": "disease name 2 or clinical description", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid3, "box_id": box_id, "commentary": "description"}]}
   ],
   "criterion_A": {
     "result": boolean,

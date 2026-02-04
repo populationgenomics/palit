@@ -12,13 +12,13 @@
         "segregation": {"type": "string"},
         "functional": {"type": "string"},
         "prior_reports": {"type": "string"},
-        "phenotype_groups": {
+        "disease_entities": {
             "type": "array",
             "description": "Array of distinct disease entities caused by this gene, each with separate patient and family counts. Include specific disease names where applicable.",
             "items": {
                 "type": "object",
                 "properties": {
-                    "phenotype": {
+                    "description": {
                         "type": "string",
                         "description": "Specific disease name (where applicable) or clinical description of this disease entity"
                     },
@@ -50,15 +50,15 @@
                             "Other",
                             "NR"
                         ],
-                        "description": "Mode of inheritance for this specific phenotype group. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns."
+                        "description": "Mode of inheritance for this specific disease entity. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns."
                     },
                     "inheritance_details": {
                         "type": "string",
-                        "description": "Additional inheritance clarifications for this phenotype group (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity'). Use empty string if none."
+                        "description": "Additional inheritance clarifications for this disease entity (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity'). Use empty string if none."
                     },
                     "citations": {
                         "type": "array",
-                        "description": "Array of citations from papers that describe this phenotype, aggregated across all contributing papers",
+                        "description": "Array of citations from papers that describe this disease entity, aggregated across all contributing papers",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -68,7 +68,7 @@
                                 },
                                 "box_id": {
                                     "type": "integer",
-                                    "description": "Box ID where the phenotype information appears in the paper"
+                                    "description": "Box ID where the disease entity information appears in the paper"
                                 },
                                 "commentary": {
                                     "type": "string",
@@ -79,7 +79,7 @@
                         }
                     }
                 },
-                "required": ["phenotype", "mondo_id", "patient_count", "family_count", "disease_mechanism", "inheritance_mode", "inheritance_details", "citations"]
+                "required": ["description", "mondo_id", "patient_count", "family_count", "disease_mechanism", "inheritance_mode", "inheritance_details", "citations"]
             }
         },
         "criterion_A": {
@@ -238,7 +238,7 @@
         "segregation",
         "functional",
         "prior_reports",
-        "phenotype_groups",
+        "disease_entities",
         "criterion_A",
         "criterion_B",
         "criterion_C",

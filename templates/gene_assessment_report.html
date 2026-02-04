@@ -61,35 +61,35 @@
     {% endif %}
     {% endmacro %}
 
-    {# Macro for rendering phenotype breakdown table - reusable across contexts #}
-    {% macro phenotype_breakdown_table(phenotype_groups, gene_symbol=none, pdf_base_path="", contributing_papers=none) %}
-    {% if phenotype_groups %}
-        <table class="phenotype-breakdown-table">
+    {# Macro for rendering disease entity breakdown table - reusable across contexts #}
+    {% macro disease_entity_table(disease_entities, gene_symbol=none, pdf_base_path="", contributing_papers=none) %}
+    {% if disease_entities %}
+        <table class="disease-entity-table">
             <thead>
                 <tr>
                     <th>Phenotype</th>
                     <th>MoI</th>
                     <th>Patients</th>
                     <th>Families</th>
-                    {% if phenotype_groups[0].citations is defined and contributing_papers %}<th>Citations</th>{% endif %}
+                    {% if disease_entities[0].citations is defined and contributing_papers %}<th>Citations</th>{% endif %}
                 </tr>
             </thead>
             <tbody>
-                {% set sorted_groups = phenotype_groups | sort_by_family_count %}
-                {% set max_family_count = sorted_groups[0].family_count if sorted_groups and sorted_groups[0].family_count is not none else none %}
-                {% for group in sorted_groups %}
+                {% set sorted_entities = disease_entities | sort_by_family_count %}
+                {% set max_family_count = sorted_entities[0].family_count if sorted_entities and sorted_entities[0].family_count is not none else none %}
+                {% for entity in sorted_entities %}
                 <tr>
                     <td>
-                        {{ group.phenotype }}
-                        {% if group.mondo_id %}
-                            {% set mondo_info = group.mondo_id | format_mondo_badge %}
-                            <span class="mondo-badge mondo-{{ mondo_info.abbrev | lower }}" data-title="{{ mondo_info.description }} ({{ group.mondo_id }})">{{ mondo_info.abbrev }}</span>
+                        {{ entity.description }}
+                        {% if entity.mondo_id %}
+                            {% set mondo_info = entity.mondo_id | format_mondo_badge %}
+                            <span class="mondo-badge mondo-{{ mondo_info.abbrev | lower }}" data-title="{{ mondo_info.description }} ({{ entity.mondo_id }})">{{ mondo_info.abbrev }}</span>
                         {% endif %}
                     </td>
-                    <td>{{ group.inheritance_mode | format_inheritance(group.inheritance_details) if group.inheritance_mode else 'NR' }}</td>
-                    <td>{{ group.patient_count }}</td>
-                    <td {% if group.family_count is not none and group.family_count == max_family_count and max_family_count > 0 %}class="phenotype-max-family-count" data-title="Maximum family count - used for classification"{% endif %}>{% if group.family_count is not none %}{{ group.family_count }}{% else %}NR{% endif %}</td>
-                    {% if group.citations is defined and contributing_papers %}<td>{% if group.citations %}{% set citation_links = group.citations | prepare_citation_links(contributing_papers) %}{% for pmid, page in citation_links %}<a href="{{ pdf_base_path }}/{{ gene_symbol }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
+                    <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
+                    <td>{{ entity.patient_count }}</td>
+                    <td {% if entity.family_count is not none and entity.family_count == max_family_count and max_family_count > 0 %}class="disease-entity-max-family-count" data-title="Maximum family count - used for classification"{% endif %}>{% if entity.family_count is not none %}{{ entity.family_count }}{% else %}NR{% endif %}</td>
+                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for pmid, page in citation_links %}<a href="{{ pdf_base_path }}/{{ gene_symbol }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
@@ -117,7 +117,7 @@
             {% endif %}
         </ul>
 
-        {{ phenotype_breakdown_table(gene.assessment_json.phenotype_groups, gene.gene_symbol, pdf_base_path, gene.contributing_papers) }}
+        {{ disease_entity_table(gene.assessment_json.disease_entities, gene.gene_symbol, pdf_base_path, gene.contributing_papers) }}
 
         {% if gene.moi_comparison %}
         <p class="moi-transition-note {% if not gene.moi_comparison.highlighted %}moi-not-highlighted{% endif %}">
@@ -424,13 +424,13 @@
                     <h5><strong>Evidence Details</strong></h5>
                     <ul>
                         <li><strong>Families:</strong> {{ gene_eval.families }}</li>
-                        <li><strong>Mode of inheritance:</strong> {{ gene_eval.phenotype_groups | derive_moi | format_inheritance(gene_eval.phenotype_groups | derive_moi_details) }}</li>
+                        <li><strong>Mode of inheritance:</strong> {{ gene_eval.disease_entities | derive_moi | format_inheritance(gene_eval.disease_entities | derive_moi_details) }}</li>
                         <li><strong>Variants:</strong> {{ gene_eval.variants_summary }}</li>
                         <li><strong>Population Frequency:</strong> {{ gene_eval.population_freq }}</li>
                         <li><strong>Functional:</strong> {{ gene_eval.functional }}</li>
                     </ul>
 
-                    {{ phenotype_breakdown_table(gene_eval.phenotype_groups) }}
+                    {{ disease_entity_table(gene_eval.disease_entities) }}
 
                     {% if gene_eval.quality_concerns %}
                     <div class="quality-concerns">

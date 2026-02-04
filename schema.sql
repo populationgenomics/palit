@@ -35,7 +35,7 @@ CREATE TABLE papers (
 
 -- Normalized gene-paper relationships (automatically maintained from evidence extraction)
 -- Tracks which papers mention which genes with patient/disease evidence
--- Query relevance_assessment_json.associations or evidence_extraction_json.phenotype_groups for actual disease associations
+-- Query relevance_assessment_json.associations or evidence_extraction_json.disease_entities for actual disease associations
 CREATE TABLE gene_mentions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     panelapp_gene_symbol TEXT NOT NULL,  -- Symbol as used in PanelApp (for novelty detection)

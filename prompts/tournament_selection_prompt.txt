@@ -6,10 +6,10 @@ GENE: {gene_symbol}
 
 WORKFLOW CONTEXT: These papers will be individually analyzed to extract evidence (families, phenotypes, variants, functional data), then aggregated to assess whether this gene meets diagnostic criteria. Select papers that provide the most useful, complementary evidence when combined.
 
-CORE PRINCIPLE: Comprehensive coverage of distinct phenotype groups with information-dense papers. The diagnostic bar is met per phenotype group (distinct disease entity) with ~3+ UNRELATED families. Prefer recent comprehensive papers over multiple partial earlier papers covering the same phenotype.
+CORE PRINCIPLE: Comprehensive coverage of distinct disease entities with information-dense papers. The diagnostic bar is met per disease entity (distinct disease entity) with ~3+ UNRELATED families. Prefer recent comprehensive papers over multiple partial earlier papers covering the same phenotype.
 
-KEY INSIGHT - PHENOTYPE GROUPS AND INHERITANCE:
-A gene may cause multiple DISTINCT diseases (phenotype groups), and the SAME phenotype may show different modes of inheritance. Each combination needs independent evidence. For example:
+KEY INSIGHT - DISEASE ENTITIES AND INHERITANCE:
+A gene may cause multiple DISTINCT diseases (disease entities), and the SAME phenotype may show different modes of inheritance. Each combination needs independent evidence. For example:
 - Phenotype A with biallelic inheritance: Epilepsy syndrome (5 unrelated families)
 - Phenotype A with monoallelic inheritance: Epilepsy syndrome (3 unrelated families)
 - Phenotype B with biallelic inheritance: Cardiomyopathy (3 unrelated families)
@@ -21,7 +21,7 @@ SELECTION PRIORITIES (ranked):
    - Different disease associations (e.g., neurological vs cardiac vs renal)
    - Different modes of inheritance for the SAME phenotype (e.g., biallelic when only monoallelic was known, or X-linked)
    - New organ systems or truly distinct clinical presentations
-   - Prefer papers that ADD new phenotype groups OR new inheritance modes over those that deepen coverage of already-represented combinations
+   - Prefer papers that ADD new disease entities OR new inheritance modes over those that deepen coverage of already-represented combinations
 
 2. COMPREHENSIVENESS - Information-dense papers that efficiently meet the bar
    - Recent comprehensive reviews or large cohort studies (PREFERRED for information density)
@@ -30,7 +30,7 @@ SELECTION PRIORITIES (ranked):
    - Papers that clearly subsume earlier partial reports
    - For well-established phenotypes: ONE comprehensive recent paper is better than multiple older partial papers
 
-3. EVIDENCE STRENGTH - Sufficient pathogenicity evidence per phenotype group
+3. EVIDENCE STRENGTH - Sufficient pathogenicity evidence per disease entity
    - Multiple truly UNRELATED families (not same founder variant, not re-analysis of same cohorts)
    - Strong functional validation when needed (especially for missense variants)
    - Segregation analysis, de novo mutations, compelling variant evidence
@@ -51,10 +51,10 @@ CRITICAL REQUIREMENTS - ALL selected papers must:
 - NOT be primarily about treatment/management/therapy
 
 AVOID REDUNDANCY:
-- For the same phenotype group, if multiple papers provide similar evidence, select the most COMPREHENSIVE (often the most recent)
+- For the same disease entity, if multiple papers provide similar evidence, select the most COMPREHENSIVE (often the most recent)
 - When a recent paper clearly subsumes earlier findings about the same phenotype, select ONLY the recent one
 - Skip papers that re-analyze the same patient cohorts already covered by other papers
-- Prefer papers that ADD new phenotype groups over those that deepen coverage of already-represented ones
+- Prefer papers that ADD new disease entities over those that deepen coverage of already-represented ones
 - Use publication dates to identify first reports vs. later comprehensive summaries (prefer summaries for efficiency)
 
 IMPORTANT:

@@ -84,14 +84,14 @@ def extract_citations_from_individual_assessment(
                     )
                 )
 
-    # Extract phenotype citations
+    # Extract disease entity citations
     for gene_eval in evidence_json.get("gene_evaluations", []):
         gene_symbol = gene_eval.get("gene", "Unknown")
 
-        for phenotype_group in gene_eval.get("phenotype_groups", []):
-            phenotype = phenotype_group.get("phenotype", "Unknown phenotype")
+        for disease_entity in gene_eval.get("disease_entities", []):
+            description = disease_entity.get("description", "Unknown")
 
-            for citation in phenotype_group.get("citations", []):
+            for citation in disease_entity.get("citations", []):
                 box_id = citation["box_id"]
 
                 # Check if box_id exists in current paper's bbox_mapping
@@ -106,7 +106,7 @@ def extract_citations_from_individual_assessment(
                 citations.append(
                     AnnotationCitation(
                         gene=gene_symbol,
-                        title=f"{gene_symbol} - Phenotype: {phenotype} - Individual",
+                        title=f"{gene_symbol} - Disease: {description} - Individual",
                         content=citation["commentary"],
                         box_id=box_id,
                         page=bbox_info["page"],
@@ -184,11 +184,11 @@ def extract_citations_from_aggregate_assessment(
                 )
             )
 
-    # Extract phenotype citations
-    for phenotype_group in assessment_json.get("phenotype_groups", []):
-        phenotype = phenotype_group.get("phenotype", "Unknown phenotype")
+    # Extract disease entity citations
+    for disease_entity in assessment_json.get("disease_entities", []):
+        description = disease_entity.get("description", "Unknown")
 
-        for citation in phenotype_group.get("citations", []):
+        for citation in disease_entity.get("citations", []):
             # Only process citations from the current paper
             if citation["pmid"] != current_pmid:
                 continue
@@ -199,7 +199,7 @@ def extract_citations_from_aggregate_assessment(
             citations.append(
                 AnnotationCitation(
                     gene=gene_symbol,
-                    title=f"{gene_symbol} - Phenotype: {phenotype} - Aggregate",
+                    title=f"{gene_symbol} - Disease: {description} - Aggregate",
                     content=citation["commentary"],
                     box_id=box_id,
                     page=bbox_info["page"],

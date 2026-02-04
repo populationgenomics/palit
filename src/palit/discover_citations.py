@@ -34,7 +34,7 @@ class ReferencedSource:
 
 
 def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
-    """Extract all previously reported sources from phenotype groups in the database.
+    """Extract all previously reported sources from disease entities in the database.
 
     Args:
         db_path: Path to SQLite database
@@ -77,10 +77,10 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
                 if gene_eval.get("gene") != gene_symbol:
                     continue
 
-                # Look for phenotype groups with previously_reported_sources
-                phenotype_groups = gene_eval.get("phenotype_groups", [])
-                for pg in phenotype_groups:
-                    previously_reported = pg.get("previously_reported_sources", [])
+                # Look for disease entities with previously_reported_sources
+                disease_entities = gene_eval.get("disease_entities", [])
+                for entity in disease_entities:
+                    previously_reported = entity.get("previously_reported_sources", [])
                     for prev_source in previously_reported:
                         title = prev_source.get("title", "").strip()
                         context = prev_source.get("context", "")
@@ -270,7 +270,7 @@ def discover(
     """Discover and schedule referenced papers for download.
 
     Scans all genes with evidence, extracts previously_reported_sources from
-    phenotype groups, searches PubMed for the papers, and adds missing papers
+    disease entities, searches PubMed for the papers, and adds missing papers
     as expansion papers.
     """
 

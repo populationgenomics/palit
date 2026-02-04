@@ -102,22 +102,22 @@ CRITERION E: No Contradictory Evidence
 - Consistent functional studies
 - No common variants in healthy populations
 
-PHENOTYPE SPECIFICITY - CRITICAL:
-When a gene is associated with multiple disease presentations (within one paper or across multiple papers), maintain the distinctions made in the medical literature. Do NOT create artificial umbrella terms or "spectrums" that merge different disease entities.
+LUMPING AND SPLITTING DISEASE ENTITIES - CRITICAL:
 
-**Treat as SEPARATE diseases when:**
-- Different disease names are used (each name represents a distinct entity)
-- The same feature appears in different clinical contexts (e.g., isolated vs. part of a named syndrome)
-- Presentations are described as distinct entities rather than variations of the same condition
+Following ClinGen Lumping and Splitting principles, decide whether the gene causes ONE disease entity or MULTIPLE distinct entities. Each distinct entity becomes a separate entry in the `disease_entities` array. Assess from the paper content only.
 
-Example: If families with amyotrophic lateral sclerosis and families with dental root anomalies are both attributed to the same gene, these are different diseases - report them separately, do not sum the family counts.
+**Criteria (weigh together):**
 
-**Treat as SAME disease when:**
-- Explicitly described as the same condition with variable severity/presentation
-- Multiple features are part of a single recognized syndrome diagnosis
-- Described as phenotypic variability within one disease entity
+1. **Molecular Mechanism** (strongest criterion): Different mechanisms (LOF vs GOF, domain-specific) for different phenotypes → SPLIT. Same mechanism → LUMP.
 
-Example: If families with developmental epileptic encephalopathy show infantile spasms, developmental regression, and intractable seizures, these are all part of the same disease - sum these families together.
+2. **Phenotypic Variability**: If intrafamilial variability ≈ interfamilial variability → LUMP (variable expressivity, not distinct diseases). If families differ more from each other than members within families → consider splitting.
+
+3. **Inheritance Pattern**: Different inheritance + distinct phenotypes → SPLIT. Different inheritance as severity continuum (e.g., dosage effects, mild heterozygous features in recessive disease) → LUMP.
+
+4. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
+
+**Isolated Features of Syndromes:**
+If a feature (e.g., cardiomyopathy) is part of a named syndrome in the paper, report the SYNDROME, not the isolated feature—unless the paper presents it as distinct with a different mechanism or inheritance.
 
 When reporting family/patient counts, only count those with the same disease entity. If a gene causes multiple distinct diseases, report counts separately per disease.
 
@@ -130,8 +130,8 @@ CRITICAL: Use "NR" (Not Reported) when information is not explicitly stated in t
 NEVER infer, estimate, or make assumptions about missing data.
 
 - families: exact count and how many stated as unrelated (e.g., "4 families (4 unrelated)" or "NR")
-- phenotype_groups: array of distinct disease entities with their patient and family counts. Each entry must include:
-  * phenotype: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the paper.
+- disease_entities: array of distinct disease entities with their patient and family counts. Each entry must include:
+  * description: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the paper.
   * mondo_id: Disease category classification. Select EXACTLY ONE from:
     - "MONDO:0700092" = Neurodevelopmental disorder
     - "MONDO:0003778" = Inborn error of immunity
@@ -143,7 +143,7 @@ NEVER infer, estimate, or make assumptions about missing data.
   * disease_mechanism: molecular mechanism by which variants cause disease, extracted from paper. Use free text to describe mechanism as stated in paper. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in paper. Extract ONLY from paper content.
   * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome).
     CRITICAL: Determine inheritance from zygosity evidence in the paper (e.g., "heterozygous", "de novo", "homozygous", "compound heterozygous"), NOT from variant type. Loss-of-function variants (nonsense, frameshift, splice-site) can cause EITHER monoallelic (haploinsufficiency) OR biallelic (recessive) disease.
-  * inheritance_details: clarifications for this phenotype group if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity") or empty string ""
+  * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity") or empty string ""
   * previously_reported_sources: array identifying which families (if any) were ORIGINALLY REPORTED in other papers
     - PURPOSE: When aggregating evidence across multiple papers, we must count each unique family only once. Some papers discuss the SAME SPECIFIC FAMILIES/PATIENTS that were originally reported in earlier publications. We need to identify these to prevent double-counting the same people.
     - CRITICAL DISTINCTION - Only extract when discussing THE SAME FAMILIES:
@@ -183,9 +183,9 @@ NEVER infer, estimate, or make assumptions about missing data.
   * citations: array of box_id citations where this disease entity is described, with brief commentary about what each citation shows
   Examples:
 {% raw %}
-  - All novel families: [{"phenotype": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "[appropriate category]", "patient_count": 7, "family_count": 4, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 42, "commentary": "clinical features and patient counts"}, {"box_id": 58, "commentary": "family counts"}]}]
-  - Mixed novel + previously reported: [{"phenotype": "Beckwith-Wiedemann syndrome with multi-locus imprinting disturbance", "mondo_id": "[appropriate category]", "patient_count": 10, "family_count": 10, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "imprinting", "previously_reported_sources": [{"title": "Novel genetic variants of KHDC3L and other members of the subcortical maternal complex", "family_count": 1, "context": "including the 1 family previously described [ref 27]"}], "citations": [{"box_id": 65, "commentary": "mentions 10 total families including 1 previously reported"}]}]
-  - No families reported: [{"phenotype": "epilepsy (functional study only)", "mondo_id": "[appropriate category]", "patient_count": 0, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 23, "commentary": "functional validation without patient data"}]}]
+  - All novel families: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "[appropriate category]", "patient_count": 7, "family_count": 4, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 42, "commentary": "clinical features and patient counts"}, {"box_id": 58, "commentary": "family counts"}]}]
+  - Mixed novel + previously reported: [{"description": "Beckwith-Wiedemann syndrome with multi-locus imprinting disturbance", "mondo_id": "[appropriate category]", "patient_count": 10, "family_count": 10, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "imprinting", "previously_reported_sources": [{"title": "Novel genetic variants of KHDC3L and other members of the subcortical maternal complex", "family_count": 1, "context": "including the 1 family previously described [ref 27]"}], "citations": [{"box_id": 65, "commentary": "mentions 10 total families including 1 previously reported"}]}]
+  - No families reported: [{"description": "epilepsy (functional study only)", "mondo_id": "[appropriate category]", "patient_count": 0, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 23, "commentary": "functional validation without patient data"}]}]
 {% endraw %}
 - variants_summary: list variants WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
 - population_freq: ONLY if paper reports gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
@@ -362,8 +362,8 @@ Respond in JSON format with your evaluation:
         {"variant": "rs123456", "box_id": 89}
       ],
       "families": "N families (N unrelated) or NR if not stated",
-      "phenotype_groups": [
-        {"phenotype": "disease name or clinical features with modifiers", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism description or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "previously_reported_sources": [{"title": "paper title or NR", "family_count": N_or_null, "context": "quote explaining which families"}], "citations": [{"box_id": integer, "commentary": "description"}]}
+      "disease_entities": [
+        {"description": "disease name or clinical features with modifiers", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism description or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "previously_reported_sources": [{"title": "paper title or NR", "family_count": N_or_null, "context": "quote explaining which families"}], "citations": [{"box_id": integer, "commentary": "description"}]}
       ],
       "variants_summary": "variant1 (type); variant2 (type) or NR",
       "population_freq": "gnomAD: specific frequencies or NR",

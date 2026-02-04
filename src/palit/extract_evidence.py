@@ -192,11 +192,11 @@ class PaperBatchProcessor:
                     )
 
                     # Insert new gene_mentions for each gene found with appropriate source
-                    # Only include genes with phenotype_groups (patient data)
+                    # Only include genes with disease_entities (patient data)
                     for resolved_gene in genes:
-                        # Skip genes without phenotype_groups (mechanistic only)
+                        # Skip genes without disease_entities (mechanistic only)
                         has_phenotypes = any(
-                            g["gene"] == resolved_gene.paper_symbol and g["phenotype_groups"]
+                            g["gene"] == resolved_gene.paper_symbol and g["disease_entities"]
                             for g in result.parsed_json["gene_evaluations"]
                         )
                         if not has_phenotypes:

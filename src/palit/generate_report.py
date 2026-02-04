@@ -189,8 +189,8 @@ class GeneAssessment:
     assessment_json: dict[str, Any]
     existing_rating: int | None  # Current confidence level in panel (for known genes)
     existing_moi: str | None  # Current mode of inheritance from panel (mapped to enum)
-    new_moi: str  # Derived aggregate MoI from phenotype_groups
-    new_moi_details: str  # Derived aggregate MoI details from phenotype_groups
+    new_moi: str  # Derived aggregate MoI from disease_entities
+    new_moi_details: str  # Derived aggregate MoI details from disease_entities
     moi_comparison: dict[str, Any] | None  # Precomputed MoI comparison result
     new_rating: int  # Calculated confidence level: 1 (RED), 2 (AMBER), 3 (GREEN)
     contributing_papers: list[DetailedPaper]
@@ -814,9 +814,9 @@ def load_gene_assessments(
                 ]
 
             # Compute MoI comparison (precompute for sorting and display)
-            phenotype_groups = assessment_json.get("phenotype_groups", [])
-            new_moi, new_moi_details = derive_aggregate_moi(phenotype_groups)
-            moi_family_counts = count_families_by_moi(phenotype_groups)
+            disease_entities = assessment_json.get("disease_entities", [])
+            new_moi, new_moi_details = derive_aggregate_moi(disease_entities)
+            moi_family_counts = count_families_by_moi(disease_entities)
 
             moi_comparison = None
             if existing_moi and new_moi:
@@ -1564,9 +1564,9 @@ def generate_html_report(
     env.filters["derive_moi_details"] = lambda pgs: derive_aggregate_moi(pgs)[1]
 
     # Add custom sort filter that handles None values
-    def sort_by_family_count(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Sort phenotype groups by family_count, treating None as 0."""
-        return sorted(groups, key=lambda g: g.get("family_count") or 0, reverse=True)
+    def sort_by_family_count(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Sort disease entities by family_count, treating None as 0."""
+        return sorted(entities, key=lambda e: e.get("family_count") or 0, reverse=True)
 
     env.filters["sort_by_family_count"] = sort_by_family_count
 
@@ -1719,9 +1719,9 @@ def main(
                     pmid = citation["pmid"]
                     aggregate_pdfs.add((gene, pmid))
 
-            # 2. Phenotype group citations
-            for phenotype_group in assessment.assessment_json.get("phenotype_groups", []):
-                for citation in phenotype_group.get("citations", []):
+            # 2. Disease entity citations
+            for disease_entity in assessment.assessment_json.get("disease_entities", []):
+                for citation in disease_entity.get("citations", []):
                     pmid = citation["pmid"]
                     aggregate_pdfs.add((gene, pmid))
 

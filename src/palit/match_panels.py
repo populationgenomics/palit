@@ -62,30 +62,30 @@ class PaperBatchProcessor:
                     assessment = json.loads(row["assessment_json"])
                     summary = assessment["summary"]
 
-                    # Extract phenotype from phenotype_groups
-                    phenotype_groups = assessment.get("phenotype_groups", [])
-                    if not phenotype_groups:
+                    # Extract phenotype from disease_entities
+                    disease_entities = assessment.get("disease_entities", [])
+                    if not disease_entities:
                         # Skip genes without phenotype information - can't match to panels
                         logger.warning(
-                            f"Skipping {row['panelapp_gene_symbol']}: no phenotype_groups in assessment"
+                            f"Skipping {row['panelapp_gene_symbol']}: no disease_entities in assessment"
                         )
                         continue
 
-                    # Combine phenotypes with their MoI for panel matching
-                    phenotype_parts = []
-                    for group in phenotype_groups:
-                        moi = group.get("inheritance_mode")
+                    # Combine disease descriptions with their MoI for panel matching
+                    disease_description_parts = []
+                    for entity in disease_entities:
+                        moi = entity.get("inheritance_mode")
                         if moi and moi != "NR":
-                            phenotype_parts.append(f"{group['phenotype']} ({moi})")
+                            disease_description_parts.append(f"{entity['description']} ({moi})")
                         else:
-                            phenotype_parts.append(group["phenotype"])
-                    phenotype = "; ".join(phenotype_parts)
+                            disease_description_parts.append(entity["description"])
+                    disease_description = "; ".join(disease_description_parts)
 
                     genes.append(
                         {
                             "gene_symbol": row["panelapp_gene_symbol"],
                             "summary": summary,
-                            "phenotype": phenotype,
+                            "disease_description": disease_description,
                         }
                     )
                 except (json.JSONDecodeError, KeyError) as e:
@@ -261,7 +261,7 @@ def main(
                     prompt = template.format(
                         panel_list=panel_list,
                         summary=gene_info["summary"],
-                        phenotype_description=gene_info["phenotype"],
+                        disease_description=gene_info["disease_description"],
                     )
                     prompts.append(prompt)
 

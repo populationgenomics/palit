@@ -167,6 +167,46 @@ uv run palit assess-relevance \
 
 The retrospective prompt evaluates papers in their historical context, accepting important early descriptions of gene-disease associations even if those genes are now well-established. This ensures comprehensive coverage across 25 years of literature for downstream tournament selection and analysis.
 
+### Updating the Baseline
+
+After each fortnightly processing run completes, feed majority-relevant papers back into the baseline screening DB so it grows as a comprehensive repository:
+
+```bash
+FORTNIGHTLY_DB=data/db_2026_february_h1.sqlite
+
+sqlite3 data/pubmed_baseline_screening.sqlite <<SQL
+ATTACH '\$FORTNIGHTLY_DB' AS source;
+
+CREATE TEMP TABLE relevant_pmids AS
+SELECT pmid FROM source.papers
+WHERE relevance_assessment_json IS NOT NULL
+  AND (json_extract(relevance_assessment_json, '\$[0].relevant')
+     + json_extract(relevance_assessment_json, '\$[1].relevant')
+     + json_extract(relevance_assessment_json, '\$[2].relevant')) >= 2;
+
+INSERT OR IGNORE INTO papers
+  (pmid, title, abstract, authors, journal, entrez_date,
+   source_type, source_details, download_status,
+   relevance_assessment_raw, relevance_assessment_json)
+SELECT pmid, title, abstract, authors, journal, entrez_date,
+       source_type, source_details, 'scheduled',
+       relevance_assessment_raw, relevance_assessment_json
+FROM source.papers WHERE pmid IN relevant_pmids;
+
+INSERT OR IGNORE INTO gene_mentions
+  (panelapp_gene_symbol, paper_gene_symbol, pmid, source)
+SELECT panelapp_gene_symbol, paper_gene_symbol, pmid, source
+FROM source.gene_mentions
+WHERE source = 'relevance_assessment'
+  AND pmid IN relevant_pmids;
+
+DROP TABLE relevant_pmids;
+DETACH source;
+SQL
+```
+
+This step is tracked as `UPDATE_BASELINE` in the pipeline tracker and also syncs the updated baseline to the cluster.
+
 ### Panel-Specific Curation
 
 For curating literature for a specific panel (e.g., Arthrogryposis):

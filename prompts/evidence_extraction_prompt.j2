@@ -27,7 +27,7 @@ Example citation format:
 {% endraw %}
 
 CRITERION A: Multiple Unrelated Cases with Plausible Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
 
 KEY REQUIREMENTS:
 - Count FAMILIES, not individual patients (multiple affected siblings = 1 family)
@@ -59,7 +59,7 @@ EVIDENCE TO LOOK FOR:
 - Functional validation matching variant type requirements
 
 CRITERION B: Cis-regulatory Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
 - Look for: >3 unrelated families with regulatory variants
 - Must demonstrate effect on gene expression
 - Evidence: Expression studies, regulatory element analysis, functional validation
@@ -292,6 +292,22 @@ IMPORTANT INSTRUCTIONS:
 - Exclude somatic mutations, cancer drivers (unless germline predisposition)
 - CRITICAL: Only extract genes with patient variants and phenotypes reported in THIS paper
   * Exclude genes mentioned only for mechanistic context (e.g., knockout models, pathway interactions, proteins studied to understand another gene)
+- CNV EXCLUSION: PanelApp gene curation is based on sequence-level variants that
+  specifically disrupt individual genes, not on large CNV deletions or duplications that
+  remove or encompass entire genes or multi-gene regions.
+  * Count ONLY families with gene-specific variants toward family_count and patient_count:
+    SNVs, small indels, splice-site variants, and intragenic structural variants (e.g.,
+    single-exon deletions confined to the gene)
+  * Do NOT count families whose only link to the gene is through a whole-gene or multi-gene
+    CNV deletion/duplication — these provide evidence for a genomic region, not a specific gene
+  * Base Criteria A–E on gene-specific variant families only
+  * You MAY reference CNV findings as supporting context in the prose summary (e.g., "whole-gene
+    deletions in additional families support haploinsufficiency"), but clearly distinguish this
+    from the gene-specific evidence and do not include CNV families in counts
+  * If a gene has ONLY large-CNV evidence in this paper (no gene-specific variants), do not
+    create a gene evaluation for it
+  * The top-level "families" field should also reflect only gene-specific variant families,
+    consistent with family_count in disease_entities
 - Be STRICT about "unrelated families" - require independent evidence of pathogenicity
 - PHENOTYPE REQUIREMENTS: Detailed individual patient descriptions required, not summaries
 - Count families as primary units, mention patient numbers as supplementary

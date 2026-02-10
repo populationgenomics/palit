@@ -50,6 +50,10 @@ You are evaluating evidence that has been extracted from multiple papers. Your j
    - Example: Paper B reports 10 families including 3 from Paper A
      - If Paper A present: count Paper A's 3 + Paper B's 7 new = 10 total
      - If Paper A absent: count all 10 from Paper B
+   - CNV EXCLUSION: Do not count families whose gene involvement is solely through
+     whole-gene or multi-gene CNV deletions/duplications, even if they appear in
+     individual paper extractions. Only families with gene-specific sequence-level variants
+     (SNVs, small indels, intragenic structural variants) contribute to family counts.
 
 3. **RESOLVE CONFLICTS**: When papers disagree on inheritance patterns, variants, or phenotypes, weigh the quality and consistency of evidence
 4. **MERGE FUNCTIONAL EVIDENCE**: Combine all functional studies and select the strongest supporting evidence
@@ -71,7 +75,7 @@ Example citation format:
 {% endraw %}
 
 CRITERION A: Multiple Unrelated Cases with Plausible Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
 
 KEY REQUIREMENTS:
 - Count FAMILIES, not individual patients (multiple affected siblings = 1 family)
@@ -103,7 +107,7 @@ EVIDENCE TO LOOK FOR:
 - Functional validation matching variant type requirements
 
 CRITERION B: Cis-regulatory Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
 - Look for: >3 unrelated families with regulatory variants
 - Must demonstrate effect on gene expression
 - Evidence: Expression studies, regulatory element analysis, functional validation
@@ -318,6 +322,9 @@ EXAMPLES:
 IMPORTANT INSTRUCTIONS:
 - Focus ONLY on GERMLINE variants causing rare genetic diseases
 - Exclude somatic mutations, cancer drivers (unless germline predisposition)
+- CNV EXCLUSION: Only count families with gene-specific sequence-level variants (SNVs, small
+  indels, intragenic structural variants) toward family counts. Exclude families linked to the
+  gene solely through whole-gene or multi-gene CNV deletions/duplications.
 - Be STRICT about "unrelated families" - require independent evidence of pathogenicity
 - PHENOTYPE REQUIREMENTS: Detailed individual patient descriptions required, not summaries
 - Count families as primary units, mention patient numbers as supplementary

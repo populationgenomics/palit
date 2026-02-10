@@ -158,14 +158,24 @@ CRITICAL: Use "NR" (Not Reported) when information is not explicitly stated acro
 NEVER infer, estimate, or make assumptions about missing data.
 
 - families: exact count aggregated across all papers, how many unrelated (e.g., "12 families (12 unrelated)" or "NR")
+{% if mondo_candidates %}
+KNOWN MONDO DISEASE MAPPINGS FOR THIS GENE:
+The following specific MONDO disease terms are known for {{ gene_symbol }}. For each disease entity, select the most appropriate MONDO ID from these candidates. If no candidate matches (e.g., a novel disease association), fall back to the high-level categories listed below.
+{% for c in mondo_candidates %}
+- {{ c.mondo_id }}: {{ c.title }}{% if c.definition %} — {{ c.definition }}{% endif %}
+
+{% endfor %}
+{% endif %}
 - disease_entities: array of distinct disease entities with their patient and family counts aggregated across all papers. When the gene causes disease through MULTIPLE distinct mechanisms (e.g., gain-of-function AND loss-of-function), create SEPARATE disease entities for each mechanism even if phenotypes overlap. Each entry must include:
   * description: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the papers.
-  * mondo_id: Disease category classification. Select EXACTLY ONE from:
-    - "MONDO:0700092" = Neurodevelopmental disorder
+  * mondo_id: Select the MONDO disease ID that best matches this disease entity.
+    {% if mondo_candidates %}PREFERRED: Choose from the gene-specific MONDO candidates listed above.
+    FALLBACK (if no candidate matches):
+    {% endif %}- "MONDO:0700092" = Neurodevelopmental disorder
     - "MONDO:0003778" = Inborn error of immunity
     - "MONDO:0002254" = Syndromic disease
     - "MONDO:0044970" = Mitochondrial disease
-    RULE: If the gene is mitochondrial, ALWAYS select MONDO:0044970. Otherwise select the most specific applicable category based on the clinical presentation.
+    RULE: If the gene is mitochondrial, ALWAYS select MONDO:0044970 (or a specific mitochondrial disease candidate if available). Otherwise select the most specific applicable match.
   * patient_count: number of patients for this specific disease entity aggregated across all papers (always required)
   * family_count: number of unrelated families for this specific disease entity aggregated across all papers. Use null when family count is not reported (null means NR - not reported)
   * disease_mechanism: molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in papers. Synthesize ONLY from paper content.

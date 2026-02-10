@@ -1495,9 +1495,18 @@ def generate_html_report(
     env.filters["sort_by_family_count"] = sort_by_family_count
 
     # Add MONDO badge formatter
-    def format_mondo_badge(mondo_id: str) -> dict[str, str]:
-        """Format MONDO ID into badge information with abbreviation and description."""
-        return MONDO_CATEGORIES[mondo_id]
+    def format_mondo_badge(entity: dict[str, str]) -> dict[str, str]:
+        """Format disease entity into MONDO badge information."""
+        mondo_id = entity["mondo_id"]
+        category = MONDO_CATEGORIES.get(mondo_id)
+        if category:
+            return {
+                "text": category["abbrev"],
+                "label": category["label"],
+                "css": category["abbrev"].lower(),
+            }
+        label = entity.get("mondo_label", mondo_id)
+        return {"text": label, "label": label, "css": "specific"}
 
     env.filters["format_mondo_badge"] = format_mondo_badge
 

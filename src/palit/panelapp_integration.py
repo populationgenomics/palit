@@ -30,10 +30,10 @@ PANELAPP_CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D",
 # MONDO ID to category information (abbreviation, description)
 # CSS class is derived from abbrev.lower()
 MONDO_CATEGORIES = {
-    "MONDO:0002254": {"abbrev": "Synd", "description": "Syndromic disease"},
-    "MONDO:0003778": {"abbrev": "IEI", "description": "Inborn error of immunity"},
-    "MONDO:0044970": {"abbrev": "Mito", "description": "Mitochondrial disease"},
-    "MONDO:0700092": {"abbrev": "NDD", "description": "Neurodevelopmental disorder"},
+    "MONDO:0002254": {"abbrev": "Synd", "label": "Syndromic disease"},
+    "MONDO:0003778": {"abbrev": "IEI", "label": "Inborn error of immunity"},
+    "MONDO:0044970": {"abbrev": "Mito", "label": "Mitochondrial disease"},
+    "MONDO:0700092": {"abbrev": "NDD", "label": "Neurodevelopmental disorder"},
 }
 
 # Canonical mapping from evidence extraction enum to PanelApp long-form MoI
@@ -201,12 +201,14 @@ def prepare_prefill_data(
     # Format publications as semicolon-separated PMIDs
     publications = ";".join(str(pmid) for pmid in cited_pmids)
 
-    # Format phenotypes as semicolon-separated "description, MONDO_ID" pairs
+    # Format phenotypes as semicolon-separated "label, MONDO_ID" pairs
     disease_entities = assessment_json["disease_entities"]
-    mondo_pairs = {
-        f"{MONDO_CATEGORIES[entity['mondo_id']]['description']}, {entity['mondo_id']}"
-        for entity in disease_entities
-    }
+    mondo_pairs: set[str] = set()
+    for entity in disease_entities:
+        mondo_id = entity["mondo_id"]
+        category = MONDO_CATEGORIES.get(mondo_id)
+        label = category["label"] if category else entity.get("mondo_label", mondo_id)
+        mondo_pairs.add(f"{label}, {mondo_id}")
     phenotypes = ";".join(sorted(mondo_pairs))
 
     # Get summary as comments

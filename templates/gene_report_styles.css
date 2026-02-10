@@ -470,6 +470,12 @@ section > h2 {
     border: 1px solid #ef9a9a;
 }
 
+.mondo-specific {
+    background: #f5f5f5;
+    color: #424242;
+    border: 1px solid #bdbdbd;
+}
+
 /* Instant tooltip for MONDO badges */
 .mondo-badge[data-title]::before {
     transition: opacity 0s !important;

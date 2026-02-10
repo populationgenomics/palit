@@ -82,8 +82,8 @@
                     <td>
                         {{ entity.description }}
                         {% if entity.mondo_id %}
-                            {% set mondo_info = entity.mondo_id | format_mondo_badge %}
-                            <span class="mondo-badge mondo-{{ mondo_info.abbrev | lower }}" data-title="{{ mondo_info.description }} ({{ entity.mondo_id }})">{{ mondo_info.abbrev }}</span>
+                            {% set mondo_info = entity | format_mondo_badge %}
+                            <span class="mondo-badge mondo-{{ mondo_info.css }}" data-title="{{ mondo_info.label }} ({{ entity.mondo_id }})">{{ mondo_info.text }}</span>
                         {% endif %}
                     </td>
                     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>

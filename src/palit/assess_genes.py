@@ -11,6 +11,7 @@ import typer
 from jinja2 import Environment, FileSystemLoader
 from tqdm import tqdm
 
+from palit.mondo_lookup import MondoCandidate, MondoLookup
 from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
 
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
@@ -302,6 +303,7 @@ def prepare_aggregate_assessment_prompt(
     template_path: Path,
     existing_reviews: list[dict[str, Any]],
     panel_formatted: str,
+    mondo_candidates: list[MondoCandidate],
 ) -> str:
     """
     Prepare aggregate assessment prompt using Jinja2 template.
@@ -312,6 +314,7 @@ def prepare_aggregate_assessment_prompt(
         template_path: Path to Jinja2 template file
         existing_reviews: List of existing PanelApp reviews (empty for novel genes)
         panel_formatted: Formatted panel description for panel-scoped mode (empty string if not scoping)
+        mondo_candidates: MONDO disease candidates for this gene from GenCC
 
     Returns:
         Rendered prompt string
@@ -344,6 +347,7 @@ def prepare_aggregate_assessment_prompt(
         has_previous_reviews=bool(existing_reviews),
         previous_reviews_section=previous_reviews_section,
         panel_formatted=panel_formatted,
+        mondo_candidates=mondo_candidates,
     )
 
 
@@ -438,6 +442,10 @@ def main(
     schema: dict[str, Any] = json.loads(schema_path.read_text())
     logger.info(f"  Loaded schema from {schema_path}")
 
+    # Initialize MONDO lookup (downloads GenCC + MONDO if stale)
+    logger.info("Initializing MONDO lookup...")
+    mondo_lookup = MondoLookup(cache_dir=db_path.parent)
+
     # Initialize PanelApp client and fetch panel data
     logger.info(f"Fetching PanelApp gene data for {panel_date}...")
     panelapp_client = PanelAppClient(panel_date)
@@ -445,6 +453,9 @@ def main(
     logger.info(
         f"  Loaded {len(panel_data.combined_gene_symbols)} genes from {len(panel_data.panel_ids)} target panels"
     )
+
+    # Build PanelApp→HGNC reverse mapping for MONDO lookups
+    panelapp_to_hgnc = {v: k for k, v in panel_data.hgnc_to_panelapp.items()}
 
     # Build panel_formatted for template (empty string if not scoping to a panel)
     if scope_panel_id is not None:
@@ -565,9 +576,20 @@ def main(
                         f"  Found {len(existing_reviews)} existing reviews in panel {existing_panel_id}"
                     )
 
+                # Look up MONDO candidates (resolve PanelApp→HGNC if needed)
+                hgnc_symbol = panelapp_to_hgnc.get(gene_symbol, gene_symbol)
+                mondo_candidates = mondo_lookup.get_candidates(hgnc_symbol)
+                if mondo_candidates:
+                    logger.info(f"  {len(mondo_candidates)} MONDO candidates for {hgnc_symbol}")
+
                 # Prepare aggregate assessment prompt
                 prompt = prepare_aggregate_assessment_prompt(
-                    gene_symbol, evidence_list, prompt_path, existing_reviews, panel_formatted
+                    gene_symbol,
+                    evidence_list,
+                    prompt_path,
+                    existing_reviews,
+                    panel_formatted,
+                    mondo_candidates,
                 )
 
                 # Process aggregate assessment
@@ -582,6 +604,9 @@ def main(
                         logger.warning(f"Invalid (pmid, box_id) pairs for {gene_symbol}")
                         failed_genes.append(gene_symbol)
                     else:
+                        # Add mondo_label to each disease entity
+                        for entity in result.parsed_json.get("disease_entities", []):
+                            entity["mondo_label"] = mondo_lookup.get_label(entity["mondo_id"])
                         db_processor.update_gene_assessment(
                             gene_symbol, (result.raw_response, result.parsed_json)
                         )

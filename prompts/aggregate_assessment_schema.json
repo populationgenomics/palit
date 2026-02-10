@@ -50,11 +50,11 @@
                             "Other",
                             "NR"
                         ],
-                        "description": "Mode of inheritance for this specific disease entity. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns."
+                        "description": "Mode of inheritance for this specific disease entity. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns. Use Other for post-zygotic mosaic/somatic variants."
                     },
                     "inheritance_details": {
                         "type": "string",
-                        "description": "Additional inheritance clarifications for this disease entity (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity'). Use empty string if none."
+                        "description": "Additional inheritance clarifications for this disease entity (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity', 'post-zygotic mosaic'). Use empty string if none."
                     },
                     "citations": {
                         "type": "array",

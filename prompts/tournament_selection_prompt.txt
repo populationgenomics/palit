@@ -42,9 +42,11 @@ SELECTION PRIORITIES (ranked):
    - Use publication dates (<date> field) to identify original discoveries vs. comprehensive summaries
 
 CRITICAL REQUIREMENTS - ALL selected papers must:
-- Focus ONLY on GERMLINE (inherited) variants causing rare genetic diseases
+- Focus on variants causing rare genetic diseases — including both germline variants and
+  post-zygotic mosaic/somatic variants causing non-malignant rare disease phenotypes
 - Contain human clinical genetic data with detailed patient phenotypes
-- NOT be about SOMATIC mutations, cancer driver genes, or acquired mutations
+- NOT be about cancer-associated somatic mutations, tumor drivers, or acquired
+  hematological malignancy mutations
 - NOT be about pure cancer predisposition where cancer risk is the PRIMARY manifestation (e.g., BRCA1/BRCA2 breast cancer, Lynch syndrome, Li-Fraumeni, FAP)
   * Exception: Multi-system disorders where cancer is ONE symptom among many (e.g., Beckwith-Wiedemann, Costello syndrome)
 - NOT be about CNVs (deletions, duplications, microdeletions, microduplications, chromosomal rearrangements)

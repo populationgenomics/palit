@@ -88,12 +88,13 @@ SUPPORTIVE but NOT sufficient alone:
 NOTE: Single family with excellent functional evidence → amber rating, not green
       2-3 families with strong functional evidence → can achieve green
 
-CRITERION D: Mendelian Inheritance Pattern
-"Evidence indicates that disease-causing mutations follow a Mendelian pattern of causation appropriate for reporting in a diagnostic setting."
-- Clear inheritance pattern (AD, AR, X-linked)
+CRITERION D: Inheritance Pattern Appropriate for Diagnostic Reporting
+"Evidence indicates that disease-causing mutations follow a pattern of causation appropriate for reporting in a diagnostic setting."
+- Clear inheritance pattern (AD, AR, X-linked, or mosaic/somatic for non-Mendelian disorders)
 - Suitable for clinical diagnostics
 - Complete penetrance or well-characterized reduced penetrance
-- Evidence: Pedigree analysis, segregation studies
+- For post-zygotic mosaic/somatic disorders: use "Other" as inheritance_mode; Criterion D is met if the variant is reportable and actionable in a diagnostic setting
+- Evidence: Pedigree analysis, segregation studies, or tissue-level mosaicism characterization
 
 CRITERION E: No Contradictory Evidence
 "No convincing evidence exists or has emerged that contradicts the role of the gene in the specified phenotype."
@@ -141,9 +142,9 @@ NEVER infer, estimate, or make assumptions about missing data.
   * patient_count: number of patients for this specific disease entity (always required)
   * family_count: number of unrelated families for this specific disease entity. Use null when family count is not reported (null means NR - not reported)
   * disease_mechanism: molecular mechanism by which variants cause disease, extracted from paper. Use free text to describe mechanism as stated in paper. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in paper. Extract ONLY from paper content.
-  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome).
-    CRITICAL: Determine inheritance from zygosity evidence in the paper (e.g., "heterozygous", "de novo", "homozygous", "compound heterozygous"), NOT from variant type. Loss-of-function variants (nonsense, frameshift, splice-site) can cause EITHER monoallelic (haploinsufficiency) OR biallelic (recessive) disease.
-  * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity") or empty string ""
+  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome). Use "Other" for post-zygotic mosaic/somatic variants.
+    CRITICAL: Determine inheritance from zygosity evidence in the paper (e.g., "heterozygous", "de novo", "homozygous", "compound heterozygous", "mosaic/somatic"), NOT from variant type. Loss-of-function variants (nonsense, frameshift, splice-site) can cause EITHER monoallelic (haploinsufficiency) OR biallelic (recessive) disease. For post-zygotic mosaic/somatic variants, use "Other".
+  * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity", "post-zygotic mosaic") or empty string ""
   * previously_reported_sources: array identifying which families (if any) were ORIGINALLY REPORTED in other papers
     - PURPOSE: When aggregating evidence across multiple papers, we must count each unique family only once. Some papers discuss the SAME SPECIFIC FAMILIES/PATIENTS that were originally reported in earlier publications. We need to identify these to prevent double-counting the same people.
     - CRITICAL DISTINCTION - Only extract when discussing THE SAME FAMILIES:
@@ -201,7 +202,7 @@ STRUCTURE:
 
 2. **Evidence summary**: Summarize the key evidence in natural, flowing prose. Include the following information categories when available (omit any that are not present or not applicable):
    - Patient and family counts
-   - Inheritance pattern: monoallelic, biallelic, X-linked, de novo, etc.
+   - Inheritance pattern: monoallelic, biallelic, X-linked, de novo, mosaic/somatic, etc.
    - Disease mechanism: gain-of-function, loss-of-function, loss-of-function (haploinsufficiency), dominant-negative, etc.
    - Variant types: missense, nonsense, frameshift, splice-site, deletion, etc.
    - Core phenotype and clinical features
@@ -288,8 +289,13 @@ For each gene, extract variants following these strict guidelines:
 4. GENOME BUILD: Extract if explicitly mentioned (GRCh38, GRCh37, hg38, hg19, or "unknown")
 
 IMPORTANT INSTRUCTIONS:
-- Focus ONLY on GERMLINE variants causing rare genetic diseases
-- Exclude somatic mutations, cancer drivers (unless germline predisposition)
+- Focus on variants causing rare genetic diseases — including both germline variants and
+  post-zygotic mosaic/somatic variants causing non-malignant rare disease phenotypes
+  (congenital overgrowth, vascular malformations, cortical malformations, pigmentary
+  mosaicism, enchondromatosis, autoinflammatory/immune conditions, secreting tumors
+  causing endocrine disease)
+- Exclude cancer-associated somatic mutations: tumor drivers, acquired hematological
+  malignancy mutations (MDS, MPN, CHIP), and cancer predisposition as primary phenotype
 - CRITICAL: Only extract genes with patient variants and phenotypes reported in THIS paper
   * Exclude genes mentioned only for mechanistic context (e.g., knockout models, pathway interactions, proteins studied to understand another gene)
 - CNV EXCLUSION: PanelApp gene curation is based on sequence-level variants that

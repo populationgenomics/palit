@@ -136,12 +136,13 @@ SUPPORTIVE but NOT sufficient alone:
 NOTE: Single family with excellent functional evidence → amber rating, not green
       2-3 families with strong functional evidence → can achieve green
 
-CRITERION D: Mendelian Inheritance Pattern
-"Evidence indicates that disease-causing mutations follow a Mendelian pattern of causation appropriate for reporting in a diagnostic setting."
+CRITERION D: Inheritance Pattern Appropriate for Diagnostic Reporting
+"Evidence indicates that disease-causing mutations follow a pattern of causation appropriate for reporting in a diagnostic setting."
 - Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, Monoallelic_and_biallelic, X-linked, Mitochondrial, Other)
 - Suitable for clinical diagnostics
 - Complete penetrance or well-characterized reduced penetrance
-- Evidence: Pedigree analysis, segregation studies
+- For post-zygotic mosaic/somatic disorders: use "Other" as inheritance_mode; Criterion D is met if the variant is reportable and actionable in a diagnostic setting
+- Evidence: Pedigree analysis, segregation studies, or tissue-level mosaicism characterization
 
 CRITERION E: No Contradictory Evidence
 "No convincing evidence exists or has emerged that contradicts the role of the gene in the specified phenotype."
@@ -168,8 +169,8 @@ NEVER infer, estimate, or make assumptions about missing data.
   * patient_count: number of patients for this specific disease entity aggregated across all papers (always required)
   * family_count: number of unrelated families for this specific disease entity aggregated across all papers. Use null when family count is not reported (null means NR - not reported)
   * disease_mechanism: molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in papers. Synthesize ONLY from paper content.
-  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome).
-  * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity") or empty string ""
+  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome). Use "Other" for post-zygotic mosaic/somatic variants.
+  * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity", "post-zygotic mosaic") or empty string ""
   * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions AND mechanisms. Each citation must include pmid, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
   Examples:
 {% raw %}
@@ -194,7 +195,7 @@ STRUCTURE:
 
 2. **Evidence summary**: Synthesize the key evidence in natural, flowing prose. Include the following information categories when available (omit any that are not present or not applicable):
    - PMIDs and patient/family counts
-   - Inheritance pattern: monoallelic, biallelic, X-linked, de novo, etc.
+   - Inheritance pattern: monoallelic, biallelic, X-linked, de novo, mosaic/somatic, etc.
    - Disease mechanism: gain-of-function, loss-of-function, loss-of-function (haploinsufficiency), dominant-negative, etc.
    - Variant types: missense, nonsense, frameshift, splice-site, deletion, etc.
    - Core phenotype and clinical features
@@ -320,8 +321,13 @@ EXAMPLES:
 3. {{ change_summary_guidance() }}
 {% endif %}
 IMPORTANT INSTRUCTIONS:
-- Focus ONLY on GERMLINE variants causing rare genetic diseases
-- Exclude somatic mutations, cancer drivers (unless germline predisposition)
+- Focus on variants causing rare genetic diseases — including both germline variants and
+  post-zygotic mosaic/somatic variants causing non-malignant rare disease phenotypes
+  (congenital overgrowth, vascular malformations, cortical malformations, pigmentary
+  mosaicism, enchondromatosis, autoinflammatory/immune conditions, secreting tumors
+  causing endocrine disease)
+- Exclude cancer-associated somatic mutations: tumor drivers, acquired hematological
+  malignancy mutations (MDS, MPN, CHIP), and cancer predisposition as primary phenotype
 - CNV EXCLUSION: Only count families with gene-specific sequence-level variants (SNVs, small
   indels, intragenic structural variants) toward family counts. Exclude families linked to the
   gene solely through whole-gene or multi-gene CNV deletions/duplications.

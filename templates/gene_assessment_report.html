@@ -67,7 +67,7 @@
         <table class="disease-entity-table">
             <thead>
                 <tr>
-                    <th>Phenotype</th>
+                    <th>Disease entities</th>
                     <th>MoI</th>
                     <th>Patients</th>
                     <th>Families</th>
@@ -257,12 +257,12 @@
         {% endif %}
 
         <details>
-            <summary><strong>PanelApp Criteria Assessment</strong></summary>
+            <summary><strong>PanelApp criteria assessment</strong></summary>
             {{ criteria_grid(gene.assessment_json, gene.gene_symbol, pdf_base_path, contributing_papers=gene.contributing_papers) }}
         </details>
 
         <details>
-            <summary><strong>Contributing Papers ({{ gene.contributing_papers|length }})</strong></summary>
+            <summary><strong>Contributing papers ({{ gene.contributing_papers|length }})</strong></summary>
             {% for paper in gene.contributing_papers %}
             {{ paper_display(paper, include_evidence=true, gene=gene, pdf_base_path=pdf_base_path) }}
             {% endfor %}

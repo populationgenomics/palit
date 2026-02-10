@@ -398,30 +398,6 @@ def _create_variant_frequency_from_db_row(
     )
 
 
-def extract_cited_pmids(assessment_json: dict[str, Any]) -> list[int]:
-    """Extract unique PMIDs that are actually cited in the aggregate assessment.
-
-    Args:
-        assessment_json: The aggregate assessment JSON containing criteria evaluations
-
-    Returns:
-        List of unique PMIDs that have citations in the assessment, sorted in descending order
-    """
-    cited_pmids = set()
-
-    # Check each criterion for citations
-    for criterion in PANELAPP_CRITERIA:
-        if criterion in assessment_json:
-            criterion_data = assessment_json[criterion]
-            if criterion_data.get("citations"):
-                for citation in criterion_data["citations"]:
-                    if citation.get("pmid"):
-                        cited_pmids.add(citation["pmid"])
-
-    # Return sorted list (descending order, newest first)
-    return sorted(cited_pmids, reverse=True)
-
-
 def load_variant_frequencies_for_gene(
     cursor: sqlite3.Cursor, gene_symbol: str, contributing_papers: list[DetailedPaper]
 ) -> list[VariantFrequency]:
@@ -599,9 +575,6 @@ def load_gene_assessments(
             # Calculate rating from assessment
             new_rating = calculate_gene_rating(assessment_json)
 
-            # Extract cited PMIDs from the aggregate assessment
-            cited_pmids = extract_cited_pmids(assessment_json)
-
             # Get current panel membership from target panels only (for novel/known determination)
             # List preserves order from target_panel_ids
             gene_panels = target_panel_data.gene_panel_mapping.get(panelapp_gene_symbol, set())
@@ -742,6 +715,9 @@ def load_gene_assessments(
 
             # Sort contributing papers by PMID (descending)
             contributing_papers.sort(key=lambda p: p.pmid, reverse=True)
+
+            # Derive cited PMIDs from contributing papers
+            cited_pmids = [p.pmid for p in contributing_papers]
 
             # Load variant frequencies for this gene
             variant_frequencies = load_variant_frequencies_for_gene(

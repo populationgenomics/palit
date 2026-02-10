@@ -149,6 +149,7 @@ class VariantFrequency:
     gnomad_link: str  # Direct link to gnomAD
     citation_page: int | None  # PDF page number for citation
     gnomad_not_found: bool  # True if variant not found in gnomAD
+    gnomad_error: str | None  # Error message if gnomAD lookup failed
 
 
 @dataclass
@@ -320,30 +321,30 @@ def format_gene_with_aliases(gene_assessment: GeneAssessment) -> str:
         return gene_symbol
 
 
-def _extract_gnomad_data(
-    gnomad_json: dict[str, Any],
-) -> tuple[
-    bool, int | None, int | None, int | None, int | None, int | None, float | None, str | None
-]:
-    """Extract gnomAD data from JSON response.
+POPULATION_NAMES = {
+    "afr": "African/African American",
+    "ami": "Amish",
+    "amr": "Admixed American",
+    "asj": "Ashkenazi Jewish",
+    "eas": "East Asian",
+    "fin": "Finnish",
+    "mid": "Middle Eastern",
+    "nfe": "European (non-Finnish)",
+    "sas": "South Asian",
+}
 
-    Returns:
-        Tuple of (not_found, ac, an, hom, het, hemi, faf95_popmax, faf95_popmax_population)
-    """
-    # Population abbreviation mapping
-    population_mapping = {
-        "afr": "African/African American",
-        "ami": "Amish",
-        "amr": "Admixed American",
-        "asj": "Ashkenazi Jewish",
-        "eas": "East Asian",
-        "fin": "Finnish",
-        "mid": "Middle Eastern",
-        "nfe": "European (non-Finnish)",
-        "sas": "South Asian",
-    }
 
-    gnomad_not_found = "variant_not_found" in gnomad_json
+def _create_variant_frequency_from_db_row(
+    variant_id: str,
+    pmid: int,
+    box_id: int,
+    normalization: dict[str, Any],
+    gnomad: dict[str, Any],
+    citation_page: int | None,
+) -> VariantFrequency:
+    """Create a VariantFrequency object from database row data."""
+    gnomad_not_found = "variant_not_found" in gnomad
+    gnomad_error = gnomad.get("error")
     gnomad_ac = None
     gnomad_an = None
     gnomad_hom = None
@@ -352,8 +353,8 @@ def _extract_gnomad_data(
     gnomad_faf95_popmax = None
     gnomad_faf95_popmax_population = None
 
-    if not gnomad_not_found and "error" not in gnomad_json:
-        variant_data = gnomad_json.get("variant")
+    if not gnomad_not_found and gnomad_error is None:
+        variant_data = gnomad.get("variant")
         if variant_data and variant_data.get("joint"):
             joint_data = variant_data["joint"]
             gnomad_ac = joint_data.get("ac")
@@ -374,69 +375,15 @@ def _extract_gnomad_data(
             if faf95_data:
                 gnomad_faf95_popmax = faf95_data.get("popmax")
                 popmax_pop = faf95_data.get("popmax_population")
-                # Map population abbreviation to full name
-                gnomad_faf95_popmax_population = population_mapping.get(popmax_pop, popmax_pop)
-
-    return (
-        gnomad_not_found,
-        gnomad_ac,
-        gnomad_an,
-        gnomad_hom,
-        gnomad_het,
-        gnomad_hemi,
-        gnomad_faf95_popmax,
-        gnomad_faf95_popmax_population,
-    )
-
-
-def _create_variant_frequency_from_db_row(
-    variant_id: str,
-    pmid: int,
-    box_id: int,
-    normalization: dict[str, Any],
-    gnomad: dict[str, Any],
-    citation_page: int | None,
-) -> VariantFrequency:
-    """Create a VariantFrequency object from database row data.
-
-    Args:
-        variant_id: Variant ID in pseudo-VCF format
-        pmid: Paper PMID
-        box_id: Box ID for citation tracking
-        normalization: JSON normalization data
-        gnomad: JSON gnomAD response data
-        citation_page: Page number for citation
-
-    Returns:
-        VariantFrequency object
-    """
-    # Extract gnomAD data
-    (
-        gnomad_not_found,
-        gnomad_ac,
-        gnomad_an,
-        gnomad_hom,
-        gnomad_het,
-        gnomad_hemi,
-        gnomad_faf95_popmax,
-        gnomad_faf95_popmax_population,
-    ) = _extract_gnomad_data(gnomad)
-
-    # Extract HGVS information
-    hgvs_c = normalization.get("hgvs_c")
-    hgvs_p = normalization.get("hgvs_p")
-    original_text = normalization.get("original_text", "")
-
-    # Create gnomAD link
-    gnomad_link = f"https://gnomad.broadinstitute.org/variant/{variant_id}?dataset=gnomad_r4"
+                gnomad_faf95_popmax_population = POPULATION_NAMES.get(popmax_pop, popmax_pop)
 
     return VariantFrequency(
         variant_id=variant_id,
         pmid=pmid,
         box_id=box_id,
-        hgvs_c=hgvs_c,
-        hgvs_p=hgvs_p,
-        original_text=original_text,
+        hgvs_c=normalization.get("hgvs_c"),
+        hgvs_p=normalization.get("hgvs_p"),
+        original_text=normalization.get("original_text", ""),
         gnomad_ac=gnomad_ac,
         gnomad_an=gnomad_an,
         gnomad_hom=gnomad_hom,
@@ -444,9 +391,10 @@ def _create_variant_frequency_from_db_row(
         gnomad_hemi=gnomad_hemi,
         gnomad_faf95_popmax=gnomad_faf95_popmax,
         gnomad_faf95_popmax_population=gnomad_faf95_popmax_population,
-        gnomad_link=gnomad_link,
+        gnomad_link=f"https://gnomad.broadinstitute.org/variant/{variant_id}?dataset=gnomad_r4",
         citation_page=citation_page,
         gnomad_not_found=gnomad_not_found,
+        gnomad_error=gnomad_error,
     )
 
 

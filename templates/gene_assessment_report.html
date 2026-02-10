@@ -307,6 +307,8 @@
                 <td>
                     {% if variant.gnomad_not_found %}
                         <em>not found</em>
+                    {% elif variant.gnomad_error %}
+                        <span class="hover-value lookup-error" data-title="{{ variant.gnomad_error }}">error</span>
                     {% elif variant.gnomad_ac is not none %}
                         <span class="hover-value" data-title="AN = {{ variant.gnomad_an }}">{{ variant.gnomad_ac }}</span>
                     {% else %}

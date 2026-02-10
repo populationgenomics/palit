@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import tenacity
 import typer
 from rich.progress import (
     BarColumn,
@@ -127,6 +128,19 @@ def get_processed_pmids(db_path: Path) -> set[int]:
         return {row[0] for row in cursor.fetchall()}
 
 
+@tenacity.retry(
+    stop=tenacity.stop_after_attempt(5),
+    wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
+    retry=tenacity.retry_if_exception_type(requests.exceptions.RequestException),
+    before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
+)
+def _gnomad_request(url: str, payload: dict[str, Any]) -> requests.Response:
+    """Make a single gnomAD API request, retrying on network errors."""
+    response = requests.post(url, json=payload, timeout=30)
+    response.raise_for_status()
+    return response
+
+
 def query_gnomad_v4(variant_id: str) -> dict[str, Any]:
     """Query gnomAD v4 API for variant frequency information.
 
@@ -159,10 +173,10 @@ def query_gnomad_v4(variant_id: str) -> dict[str, Any]:
 
     # Variables for the query
     variables = {"variantId": variant_id, "datasetId": "gnomad_r4"}
+    payload = {"query": query, "variables": variables}
 
     try:
-        response = requests.post(url, json={"query": query, "variables": variables}, timeout=30)
-        response.raise_for_status()
+        response = _gnomad_request(url, payload)
         result = response.json()
 
         if "errors" in result:
@@ -177,7 +191,7 @@ def query_gnomad_v4(variant_id: str) -> dict[str, Any]:
         return data if data is not None else {}
 
     except requests.exceptions.RequestException as e:
-        logger.warning(f"Network error querying gnomAD for {variant_id}: {e}")
+        logger.warning(f"Network error querying gnomAD for {variant_id} after retries: {e}")
         return {"error": f"Network error: {e!s}"}
     except Exception as e:
         logger.warning(f"Unexpected error querying gnomAD for {variant_id}: {e}")
@@ -395,12 +409,58 @@ def print_summary_statistics(processing_results: VariantProcessingResults) -> No
             print(f"    ... and {len(high_freq_variants) - 5} more")
 
 
+def _retry_errored_variants(db_path: Path) -> None:
+    """Re-query gnomAD for variants that previously failed with network/timeout errors."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, variant_id, panelapp_gene_symbol
+            FROM variant_frequencies
+            WHERE json_extract(gnomad, '$.error') IS NOT NULL
+        """)
+        error_rows = cursor.fetchall()
+
+    if not error_rows:
+        print("No errored variants found.")
+        return
+
+    print(f"Found {len(error_rows)} variants with errors. Retrying...")
+
+    fixed = 0
+    still_errored = 0
+    for row in error_rows:
+        row_id = row["id"]
+        variant_id = row["variant_id"]
+        gene = row["panelapp_gene_symbol"]
+
+        gnomad_result = query_gnomad_v4(variant_id)
+
+        if "error" in gnomad_result:
+            still_errored += 1
+            print(f"  Still failing: {gene} {variant_id}: {gnomad_result['error']}")
+        else:
+            fixed += 1
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "UPDATE variant_frequencies SET gnomad = ? WHERE id = ?",
+                    (json.dumps(gnomad_result), row_id),
+                )
+                conn.commit()
+            print(f"  Fixed: {gene} {variant_id}")
+
+    print(f"\nDone. Fixed: {fixed}, still errored: {still_errored}")
+
+
 @app.callback(invoke_without_command=True)
 def lookup(
     db_path: Path = typer.Option(
         default=Path("data/db.sqlite"), help="Path to SQLite database with extracted variants"
     ),
     max_workers: int = typer.Option(default=5, help="Number of papers to process in parallel"),
+    retry_errors: bool = typer.Option(
+        default=False, help="Re-query gnomAD for variants that previously failed with errors"
+    ),
 ) -> None:
     """Look up variant frequencies from gnomAD v4 for all extracted variants.
 
@@ -410,6 +470,10 @@ def lookup(
     if not db_path.exists():
         logger.error(f"Database not found at {db_path}")
         raise typer.Exit(1)
+
+    if retry_errors:
+        _retry_errored_variants(db_path)
+        return
 
     # Step 1: Load variants from evidence extractions, grouped by pmid
     variants_by_pmid = load_extracted_variants(db_path)

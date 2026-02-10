@@ -23,6 +23,7 @@ dependencies = [
     "pypdf",
     "requests",
     "rich",
+    "tenacity>=9.1.4",
     "tqdm",
     "typer",
 ]

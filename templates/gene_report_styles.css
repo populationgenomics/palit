@@ -950,6 +950,11 @@ footer hr {
     margin-left: 5px;
 }
 
+.lookup-error {
+    color: #e74c3c;
+    font-style: italic;
+}
+
 /* Link styling in variant table */
 .variant-frequency-table td a {
     color: #3498db;

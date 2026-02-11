@@ -159,23 +159,23 @@ NEVER infer, estimate, or make assumptions about missing data.
 
 - families: exact count aggregated across all papers, how many unrelated (e.g., "12 families (12 unrelated)" or "NR")
 {% if mondo_candidates %}
-KNOWN MONDO DISEASE MAPPINGS FOR THIS GENE:
-The following specific MONDO disease terms are known for {{ gene_symbol }}. For each disease entity, select the most appropriate MONDO ID from these candidates. If no candidate matches (e.g., a novel disease association), fall back to the high-level categories listed below.
+KNOWN MONDO DISEASE NAMES FOR THIS GENE:
+The following specific MONDO disease names are known for {{ gene_symbol }}. For each disease entity, select the most appropriate mondo_disease_name from these candidates. You MUST use the EXACT spelling shown in quotes. If no candidate matches (e.g., a novel disease association), fall back to the high-level categories listed below.
 {% for c in mondo_candidates %}
-- {{ c.mondo_id }}: {{ c.title }}{% if c.definition %} — {{ c.definition }}{% endif %}
+- "{{ c.title }}"{% if c.definition %} — {{ c.definition }}{% endif %}
 
 {% endfor %}
 {% endif %}
 - disease_entities: array of distinct disease entities with their patient and family counts aggregated across all papers. When the gene causes disease through MULTIPLE distinct mechanisms (e.g., gain-of-function AND loss-of-function), create SEPARATE disease entities for each mechanism even if phenotypes overlap. Each entry must include:
   * description: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the papers.
-  * mondo_id: Select the MONDO disease ID that best matches this disease entity.
-    {% if mondo_candidates %}PREFERRED: Choose from the gene-specific MONDO candidates listed above.
+  * mondo_disease_name: Select the disease name that best matches this disease entity. You MUST use the EXACT spelling from the lists provided — do not paraphrase or abbreviate.
+    {% if mondo_candidates %}PREFERRED: Choose from the gene-specific disease candidates listed above.
     FALLBACK (if no candidate matches):
-    {% endif %}- "MONDO:0700092" = Neurodevelopmental disorder
-    - "MONDO:0003778" = Inborn error of immunity
-    - "MONDO:0002254" = Syndromic disease
-    - "MONDO:0044970" = Mitochondrial disease
-    RULE: If the gene is mitochondrial, ALWAYS select MONDO:0044970 (or a specific mitochondrial disease candidate if available). Otherwise select the most specific applicable match.
+    {% endif %}- "Neurodevelopmental disorder"
+    - "Inborn error of immunity"
+    - "Syndromic disease"
+    - "Mitochondrial disease"
+    RULE: If the gene is mitochondrial, ALWAYS select "Mitochondrial disease" (or a specific mitochondrial disease candidate if available). Otherwise select the most specific applicable match.
   * patient_count: number of patients for this specific disease entity aggregated across all papers (always required)
   * family_count: number of unrelated families for this specific disease entity aggregated across all papers. Use null when family count is not reported (null means NR - not reported)
   * disease_mechanism: molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in papers. Synthesize ONLY from paper content.
@@ -184,10 +184,10 @@ The following specific MONDO disease terms are known for {{ gene_symbol }}. For 
   * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions AND mechanisms. Each citation must include pmid, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
   Examples:
 {% raw %}
-  - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "MONDO:0700092", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 12345, "box_id": 42, "commentary": "clinical features and patient counts"}, {"pmid": 67890, "box_id": 18, "commentary": "family counts"}]}]
-  - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "MONDO:0700092", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"pmid": 11111, "box_id": 23, "commentary": "phenotype description"}]}]
-  - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_id": "MONDO:0700092", "patient_count": 8, "family_count": 5, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 22222, "box_id": 34, "commentary": "ALS phenotype and counts"}, {"pmid": 33333, "box_id": 56, "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_id": "MONDO:0002254", "patient_count": 10, "family_count": 3, "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 44444, "box_id": 78, "commentary": "dental phenotype and family data"}]}]
-  - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_id": "MONDO:0700092", "patient_count": 6, "family_count": 6, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 41133935, "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_id": "MONDO:0700092", "patient_count": 1, "family_count": 1, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 38149472, "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
+  - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 12345, "box_id": 42, "commentary": "clinical features and patient counts"}, {"pmid": 67890, "box_id": 18, "commentary": "family counts"}]}]
+  - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"pmid": 11111, "box_id": 23, "commentary": "phenotype description"}]}]
+  - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 8, "family_count": 5, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 22222, "box_id": 34, "commentary": "ALS phenotype and counts"}, {"pmid": 33333, "box_id": 56, "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_disease_name": "Syndromic disease", "patient_count": 10, "family_count": 3, "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 44444, "box_id": 78, "commentary": "dental phenotype and family data"}]}]
+  - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 6, "family_count": 6, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 41133935, "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 1, "family_count": 1, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 38149472, "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
 {% endraw %}
 - variants: list all variants reported across papers WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
 - population_freq: ONLY if papers report gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
@@ -397,8 +397,8 @@ Respond in JSON format with your aggregate evaluation:
   "functional": "all functional experiments across papers",
   "prior_reports": "assessment of literature overlap and novel families",
   "disease_entities": [
-    {"description": "disease name 1 or clinical description", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid1, "box_id": box_id, "commentary": "description"}, {"pmid": pmid2, "box_id": box_id, "commentary": "description"}]},
-    {"description": "disease name 2 or clinical description", "mondo_id": "[selected category]", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid3, "box_id": box_id, "commentary": "description"}]}
+    {"description": "disease name 1 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid1, "box_id": box_id, "commentary": "description"}, {"pmid": pmid2, "box_id": box_id, "commentary": "description"}]},
+    {"description": "disease name 2 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid3, "box_id": box_id, "commentary": "description"}]}
   ],
   "criterion_A": {
     "result": boolean,

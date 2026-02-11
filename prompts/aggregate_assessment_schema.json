@@ -22,9 +22,9 @@
                         "type": "string",
                         "description": "Specific disease name (where applicable) or clinical description of this disease entity"
                     },
-                    "mondo_id": {
+                    "mondo_disease_name": {
                         "type": "string",
-                        "description": "MONDO disease ID. Select a gene-specific candidate if available, otherwise use a fallback category (MONDO:0700092=NDD, MONDO:0003778=IEI, MONDO:0002254=Syndromic, MONDO:0044970=Mito)."
+                        "description": "Exact MONDO disease name from the provided candidate list or fallback categories (Neurodevelopmental disorder, Inborn error of immunity, Syndromic disease, Mitochondrial disease)."
                     },
                     "patient_count": {
                         "type": "integer",
@@ -78,7 +78,7 @@
                         }
                     }
                 },
-                "required": ["description", "mondo_id", "patient_count", "family_count", "disease_mechanism", "inheritance_mode", "inheritance_details", "citations"]
+                "required": ["description", "mondo_disease_name", "patient_count", "family_count", "disease_mechanism", "inheritance_mode", "inheritance_details", "citations"]
             }
         },
         "criterion_A": {

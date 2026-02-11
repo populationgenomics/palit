@@ -13,9 +13,55 @@ from tqdm import tqdm
 
 from palit.mondo_lookup import MondoCandidate, MondoLookup
 from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
+from palit.panelapp_integration import MONDO_CATEGORIES
 
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
 logger = logging.getLogger(__name__)
+
+# Case-insensitive fallback name→ID lookup (static, built once)
+_FALLBACK_NAME_TO_ID = {
+    info["label"].lower(): mondo_id for mondo_id, info in MONDO_CATEGORIES.items()
+}
+
+
+def build_mondo_name_to_id(candidates: list[MondoCandidate]) -> dict[str, str]:
+    """Build case-insensitive name→MONDO ID lookup from candidates + fallback categories.
+
+    Args:
+        candidates: Gene-specific MONDO candidates from GenCC
+
+    Returns:
+        Dict mapping lowercased disease name to MONDO ID
+    """
+    name_to_id = dict(_FALLBACK_NAME_TO_ID)  # copy fallbacks
+    for c in candidates:
+        name_to_id[c.title.lower()] = c.mondo_id
+    return name_to_id
+
+
+def resolve_mondo_names(parsed_json: dict[str, Any], name_to_id: dict[str, str]) -> list[str]:
+    """Resolve mondo_disease_name → mondo_id + mondo_label in each disease entity.
+
+    Mutates parsed_json in place. Returns list of unresolved names (empty = success).
+
+    Args:
+        parsed_json: Parsed LLM output
+        name_to_id: Case-insensitive name→MONDO ID lookup
+
+    Returns:
+        List of disease names that could not be resolved (empty if all resolved)
+    """
+    unresolved: list[str] = []
+    for entity in parsed_json.get("disease_entities", []):
+        disease_name = entity.get("mondo_disease_name", "")
+        mondo_id = name_to_id.get(disease_name.lower())
+        if mondo_id is None:
+            unresolved.append(disease_name)
+        else:
+            entity["mondo_id"] = mondo_id
+            entity["mondo_label"] = disease_name
+            del entity["mondo_disease_name"]
+    return unresolved
 
 
 def find_gene_panel(
@@ -579,6 +625,7 @@ def main(
                 # Look up MONDO candidates (resolve PanelApp→HGNC if needed)
                 hgnc_symbol = panelapp_to_hgnc.get(gene_symbol, gene_symbol)
                 mondo_candidates = mondo_lookup.get_candidates(hgnc_symbol)
+                mondo_name_to_id = build_mondo_name_to_id(mondo_candidates)
                 if mondo_candidates:
                     logger.info(f"  {len(mondo_candidates)} MONDO candidates for {hgnc_symbol}")
 
@@ -603,10 +650,13 @@ def main(
                     if not validate_box_ids_with_pmid(result.parsed_json, valid_box_ids_by_pmid):
                         logger.warning(f"Invalid (pmid, box_id) pairs for {gene_symbol}")
                         failed_genes.append(gene_symbol)
+                    # Resolve mondo_disease_name → mondo_id + mondo_label
+                    elif unresolved := resolve_mondo_names(result.parsed_json, mondo_name_to_id):
+                        logger.warning(
+                            f"Unresolved MONDO disease names for {gene_symbol}: {unresolved}"
+                        )
+                        failed_genes.append(gene_symbol)
                     else:
-                        # Add mondo_label to each disease entity
-                        for entity in result.parsed_json.get("disease_entities", []):
-                            entity["mondo_label"] = mondo_lookup.get_label(entity["mondo_id"])
                         db_processor.update_gene_assessment(
                             gene_symbol, (result.raw_response, result.parsed_json)
                         )

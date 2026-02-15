@@ -10,12 +10,11 @@ from typing import Any
 import typer
 from tqdm import tqdm
 
+from palit.hgnc import HgncResolver
 from palit.llm import HarmonyBatchProcessor, PromptResult
 from palit.panelapp_client import (
     PanelAppClient,
-    PanelGeneData,
     format_panel_for_prompt,
-    resolve_gene_symbols,
 )
 from palit.relevance import compute_relevance_majority_vote
 
@@ -68,7 +67,7 @@ class PaperBatchProcessor:
         self,
         papers: list[dict[str, Any]],
         all_results: list[tuple[PromptResult | None, PromptResult | None, PromptResult | None]],
-        panel_data: PanelGeneData,
+        hgnc_resolver: HgncResolver,
     ) -> None:
         """
         Update paper relevance assessment responses and extracted JSON.
@@ -77,7 +76,7 @@ class PaperBatchProcessor:
         Args:
             papers: List of paper dicts with PMIDs
             all_results: List of 3-tuples of PromptResult objects or None, same order as papers
-            panel_data: PanelApp gene data for symbol resolution
+            hgnc_resolver: HGNC resolver for gene symbol normalization
         """
         if not papers or not all_results:
             return
@@ -126,22 +125,21 @@ class PaperBatchProcessor:
 
                 # Extract and resolve gene symbols from associations (only for relevant papers)
                 if is_relevant and associations:
-                    gene_symbols = {assoc["gene"] for assoc in associations if assoc.get("gene")}
-                    resolved_genes = resolve_gene_symbols(gene_symbols, panel_data)
-
-                    # Insert gene_mentions with source='relevance_assessment'
-                    for resolved_gene in resolved_genes:
+                    for assoc in associations:
+                        paper_gene_symbol: str = assoc["gene_symbol"]
+                        entry = hgnc_resolver.resolve(paper_gene_symbol)
+                        if entry is None:
+                            logger.debug(
+                                f"Unresolved gene symbol '{paper_gene_symbol}' in PMID {pmid}"
+                            )
+                            continue
                         cursor.execute(
                             """
                             INSERT OR IGNORE INTO gene_mentions
-                            (panelapp_gene_symbol, paper_gene_symbol, pmid, source)
+                            (hgnc_id, paper_gene_symbol, pmid, source)
                             VALUES (?, ?, ?, 'relevance_assessment')
                             """,
-                            (
-                                resolved_gene.panelapp_symbol,
-                                resolved_gene.paper_symbol,
-                                pmid,
-                            ),
+                            (entry.hgnc_id, paper_gene_symbol.upper(), pmid),
                         )
 
                 successful_updates += 1
@@ -369,13 +367,12 @@ def main(
     db_processor = PaperBatchProcessor(db_path)
     logger.info(f"  Connected to database at {db_path}")
 
-    # Fetch PanelApp data once for gene symbol resolution
-    logger.info(f"Fetching PanelApp gene data for {panel_date}...")
-    client = PanelAppClient(panel_date)
-    panel_data = client.get_target_panels_genes()
-    logger.info(f"  Loaded {len(panel_data.combined_gene_symbols)} genes from PanelApp")
+    # Load HGNC resolver for gene symbol normalization
+    hgnc_resolver = HgncResolver.from_file()
+    logger.info(f"  Loaded HgncResolver with {len(hgnc_resolver._by_symbol)} genes")
 
     # Fetch panel description if scope_panel_id is provided
+    client = PanelAppClient(panel_date)
     panel_description = None
     if scope_panel_id is not None:
         logger.info(f"Fetching description for scope panel {scope_panel_id}...")
@@ -465,7 +462,7 @@ def main(
                 all_results = list(zip(*all_runs, strict=True))
 
                 # Update database immediately (only successful results)
-                db_processor.update_paper_relevance_assessments(papers, all_results, panel_data)
+                db_processor.update_paper_relevance_assessments(papers, all_results, hgnc_resolver)
 
                 # Count successful results (all 3 must succeed)
                 num_successful = sum(

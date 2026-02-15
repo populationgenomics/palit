@@ -19,6 +19,7 @@ from pypdf.generic import (
 )
 
 from palit.docling import parse_bbox_mapping_from_json
+from palit.hgnc import HgncResolver
 from palit.panelapp_integration import PANELAPP_CRITERIA
 
 app = typer.Typer(help="Create annotated PDFs with citation highlighting")
@@ -29,7 +30,6 @@ logger = logging.getLogger(__name__)
 class AnnotationCitation:
     """Represents a citation to be highlighted in a PDF."""
 
-    gene: str
     title: str
     content: str
     box_id: int
@@ -37,7 +37,10 @@ class AnnotationCitation:
 
 
 def extract_citations_from_individual_assessment(
-    evidence_json: dict[str, Any], bbox_mapping: dict[int, dict[str, Any]], current_pmid: int
+    evidence_json: dict[str, Any],
+    bbox_mapping: dict[int, dict[str, Any]],
+    current_pmid: int,
+    hgnc_resolver: HgncResolver,
 ) -> list[AnnotationCitation]:
     """
     Extract citations from an individual paper's evidence extraction.
@@ -46,6 +49,7 @@ def extract_citations_from_individual_assessment(
         evidence_json: The evidence extraction JSON for one paper
         bbox_mapping: Bbox mapping for the current paper
         current_pmid: PMID of the current paper being processed
+        hgnc_resolver: HGNC resolver for gene symbol display
 
     Returns:
         List of AnnotationCitation objects
@@ -53,7 +57,10 @@ def extract_citations_from_individual_assessment(
     citations = []
 
     for gene_eval in evidence_json.get("gene_evaluations", []):
-        gene_symbol = gene_eval.get("gene", "Unknown")
+        hgnc_id = gene_eval.get("hgnc_id")
+        if hgnc_id is None:
+            continue
+        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
 
         for criterion_name in PANELAPP_CRITERIA:
             if criterion_name not in gene_eval:
@@ -76,8 +83,8 @@ def extract_citations_from_individual_assessment(
 
                 citations.append(
                     AnnotationCitation(
-                        gene=gene_symbol,
-                        title=f"{gene_symbol} - {criterion_name} ({result_status}) - Individual",
+
+                        title=f"{hgnc_symbol} - {criterion_name} ({result_status}) - Individual",
                         content=citation["commentary"],
                         box_id=box_id,
                         page=bbox_info["page"],
@@ -86,7 +93,10 @@ def extract_citations_from_individual_assessment(
 
     # Extract disease entity citations
     for gene_eval in evidence_json.get("gene_evaluations", []):
-        gene_symbol = gene_eval.get("gene", "Unknown")
+        hgnc_id = gene_eval.get("hgnc_id")
+        if hgnc_id is None:
+            continue
+        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
 
         for disease_entity in gene_eval.get("disease_entities", []):
             description = disease_entity.get("description", "Unknown")
@@ -105,8 +115,8 @@ def extract_citations_from_individual_assessment(
 
                 citations.append(
                     AnnotationCitation(
-                        gene=gene_symbol,
-                        title=f"{gene_symbol} - Disease: {description} - Individual",
+
+                        title=f"{hgnc_symbol} - Disease: {description} - Individual",
                         content=citation["commentary"],
                         box_id=box_id,
                         page=bbox_info["page"],
@@ -115,7 +125,10 @@ def extract_citations_from_individual_assessment(
 
     # Extract quality concern citations
     for gene_eval in evidence_json.get("gene_evaluations", []):
-        gene_symbol = gene_eval.get("gene", "Unknown")
+        hgnc_id = gene_eval.get("hgnc_id")
+        if hgnc_id is None:
+            continue
+        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
 
         for concern in gene_eval.get("quality_concerns", []):
             concern_text = concern.get("concern", "Quality concern")
@@ -134,8 +147,8 @@ def extract_citations_from_individual_assessment(
 
                 citations.append(
                     AnnotationCitation(
-                        gene=gene_symbol,
-                        title=f"{gene_symbol} - Quality Concern - Individual",
+
+                        title=f"{hgnc_symbol} - Quality Concern - Individual",
                         content=f"{concern_text}: {citation['commentary']}",
                         box_id=box_id,
                         page=bbox_info["page"],
@@ -146,7 +159,10 @@ def extract_citations_from_individual_assessment(
 
 
 def extract_citations_from_aggregate_assessment(
-    assessment_json: dict[str, Any], bbox_mapping: dict[int, dict[str, Any]], current_pmid: int
+    assessment_json: dict[str, Any],
+    bbox_mapping: dict[int, dict[str, Any]],
+    current_pmid: int,
+    hgnc_symbol: str,
 ) -> list[AnnotationCitation]:
     """
     Extract citations from an aggregate assessment for a specific gene and paper.
@@ -155,12 +171,12 @@ def extract_citations_from_aggregate_assessment(
         assessment_json: The aggregate assessment JSON for one gene
         bbox_mapping: Bbox mapping for the current paper only
         current_pmid: PMID of the current paper being processed
+        hgnc_symbol: Current HGNC symbol for display
 
     Returns:
         List of AnnotationCitation objects for citations that belong to the current paper only
     """
     citations = []
-    gene_symbol = assessment_json["gene"]
 
     for criterion_name in PANELAPP_CRITERIA:
         criterion = assessment_json[criterion_name]
@@ -176,8 +192,7 @@ def extract_citations_from_aggregate_assessment(
 
             citations.append(
                 AnnotationCitation(
-                    gene=gene_symbol,
-                    title=f"{gene_symbol} - {criterion_name} ({result_status}) - Aggregate",
+                    title=f"{hgnc_symbol} - {criterion_name} ({result_status}) - Aggregate",
                     content=citation["commentary"],
                     box_id=box_id,
                     page=bbox_info["page"],
@@ -198,8 +213,7 @@ def extract_citations_from_aggregate_assessment(
 
             citations.append(
                 AnnotationCitation(
-                    gene=gene_symbol,
-                    title=f"{gene_symbol} - Disease: {description} - Aggregate",
+                    title=f"{hgnc_symbol} - Disease: {description} - Aggregate",
                     content=citation["commentary"],
                     box_id=box_id,
                     page=bbox_info["page"],
@@ -220,8 +234,7 @@ def extract_citations_from_aggregate_assessment(
 
             citations.append(
                 AnnotationCitation(
-                    gene=gene_symbol,
-                    title=f"{gene_symbol} - Quality Concern - Aggregate",
+                    title=f"{hgnc_symbol} - Quality Concern - Aggregate",
                     content=f"{concern_text}: {citation['commentary']}",
                     box_id=box_id,
                     page=bbox_info["page"],
@@ -232,7 +245,10 @@ def extract_citations_from_aggregate_assessment(
 
 
 def extract_variant_citations(
-    db_cursor: Any, bbox_mapping: dict[int, dict[str, Any]], current_pmid: int
+    db_cursor: Any,
+    bbox_mapping: dict[int, dict[str, Any]],
+    current_pmid: int,
+    hgnc_resolver: HgncResolver,
 ) -> list[AnnotationCitation]:
     """
     Extract variant citations from the variant_frequencies table for the current paper.
@@ -241,6 +257,7 @@ def extract_variant_citations(
         db_cursor: Database cursor for querying variant frequencies
         bbox_mapping: Bbox mapping for the current paper
         current_pmid: PMID of the current paper being processed
+        hgnc_resolver: HGNC resolver for gene symbol display
 
     Returns:
         List of AnnotationCitation objects
@@ -253,19 +270,19 @@ def extract_variant_citations(
         SELECT
             vf.variant_id,
             vf.box_id,
-            vf.panelapp_gene_symbol,
+            vf.hgnc_id,
             vf.normalization,
             vf.gnomad
         FROM variant_frequencies vf
         WHERE vf.pmid = ?
-        ORDER BY vf.panelapp_gene_symbol, vf.variant_id
+        ORDER BY vf.hgnc_id, vf.variant_id
     """,
         (current_pmid,),
     )
 
     for row in db_cursor.fetchall():
         box_id = row["box_id"]
-        gene_symbol = row["panelapp_gene_symbol"]
+        hgnc_symbol = hgnc_resolver.get_symbol(row["hgnc_id"])
         variant_id = row["variant_id"]
 
         # Check if box_id exists in current paper's bbox_mapping
@@ -311,8 +328,7 @@ def extract_variant_citations(
 
         citations.append(
             AnnotationCitation(
-                gene=gene_symbol,
-                title=f"{gene_symbol} - Variant Evidence",
+                title=f"{hgnc_symbol} - Variant Evidence",
                 content=commentary,
                 box_id=box_id,
                 page=bbox_info["page"],
@@ -432,7 +448,7 @@ def main(
 ) -> None:
     """Create gene-centric annotated PDFs with simple directory structure.
 
-    Creates annotated PDFs in structure: {output_dir}/{gene}/{pmid}.pdf
+    Creates annotated PDFs in structure: {output_dir}/{hgnc_id}/{pmid}.pdf
     Each PDF contains highlights relevant to the specific gene.
     """
 
@@ -446,6 +462,8 @@ def main(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    hgnc_resolver = HgncResolver.from_file()
+
     logger.info("Loading gene-panel assessments and paper data...")
 
     with sqlite3.connect(db_path) as conn:
@@ -455,29 +473,29 @@ def main(
         # Get all gene assessments with their paper citations (all sources)
         cursor.execute("""
             SELECT DISTINCT
-                ga.panelapp_gene_symbol,
+                ga.hgnc_id,
                 ga.assessment_json,
                 p.pmid,
                 p.bbox_mapping
             FROM gene_assessments ga
-            JOIN gene_mentions gm ON ga.panelapp_gene_symbol = gm.panelapp_gene_symbol
+            JOIN gene_mentions gm ON ga.hgnc_id = gm.hgnc_id
             JOIN papers p ON gm.pmid = p.pmid
             WHERE p.bbox_mapping IS NOT NULL
-            ORDER BY ga.panelapp_gene_symbol, p.pmid
+            ORDER BY ga.hgnc_id, p.pmid
         """)
 
         # Process gene assessments
         gene_data = {}
         for row in cursor.fetchall():
-            gene_symbol = row["panelapp_gene_symbol"]
+            hgnc_id = row["hgnc_id"]
             pmid = row["pmid"]
             assessment_json = json.loads(row["assessment_json"])
             bbox_mapping = parse_bbox_mapping_from_json(row["bbox_mapping"])
 
-            key = (gene_symbol, pmid)
+            key = (hgnc_id, pmid)
             if key not in gene_data:
                 gene_data[key] = {
-                    "gene_symbol": gene_symbol,
+                    "hgnc_id": hgnc_id,
                     "pmid": pmid,
                     "assessment_json": assessment_json,
                     "bbox_mapping": bbox_mapping,
@@ -526,21 +544,24 @@ def main(
         task_type = task["type"]
 
         if task_type == "aggregate":
-            gene_symbol = task["gene_symbol"]
-            logger.debug(f"Processing gene assessment: {gene_symbol} / PMID {pmid}")
+            hgnc_id = task["hgnc_id"]
+            hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
+            logger.debug(f"Processing gene assessment: {hgnc_symbol} / PMID {pmid}")
 
             # Create output directory structure for gene
-            gene_dir = output_dir / gene_symbol
+            gene_dir = output_dir / str(hgnc_id)
             gene_dir.mkdir(parents=True, exist_ok=True)
             output_path = gene_dir / f"{pmid}.pdf"
 
             # Extract aggregate citations
             citations = extract_citations_from_aggregate_assessment(
-                task["assessment_json"], task["bbox_mapping"], pmid
+                task["assessment_json"], task["bbox_mapping"], pmid, hgnc_symbol
             )
 
             # Add variant citations from variant_frequencies table
-            variant_citations = extract_variant_citations(cursor, task["bbox_mapping"], pmid)
+            variant_citations = extract_variant_citations(
+                cursor, task["bbox_mapping"], pmid, hgnc_resolver
+            )
             citations.extend(variant_citations)
 
         else:  # individual
@@ -553,11 +574,13 @@ def main(
 
             # Extract individual citations
             citations = extract_citations_from_individual_assessment(
-                task["evidence_json"], task["bbox_mapping"], pmid
+                task["evidence_json"], task["bbox_mapping"], pmid, hgnc_resolver
             )
 
             # Add variant citations from variant_frequencies table
-            variant_citations = extract_variant_citations(cursor, task["bbox_mapping"], pmid)
+            variant_citations = extract_variant_citations(
+                cursor, task["bbox_mapping"], pmid, hgnc_resolver
+            )
             citations.extend(variant_citations)
 
         # Check if original PDF exists

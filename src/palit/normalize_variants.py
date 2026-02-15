@@ -26,6 +26,8 @@ from requests.adapters import HTTPAdapter, Retry
 from requests.exceptions import HTTPError, RetryError
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
+from palit.hgnc import HgncResolver
+
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Normalize extracted variants from papers")
@@ -855,7 +857,7 @@ class _MutalyzerClient:
 class _VariantNormalizationResult:
     """Result of normalizing a single variant."""
 
-    gene_symbol: str
+    hgnc_id: int
     original: str
     normalized: str | None
     p_vcf: PseudoVCFVariant | None
@@ -868,7 +870,7 @@ class _PaperVariants:
 
     pmid: int
     genome_build: str | None
-    gene_variants: list[tuple[str, list[str]]] = field(default_factory=list)
+    gene_variants: list[tuple[int, list[str]]] = field(default_factory=list)  # (hgnc_id, variants)
 
 
 @dataclass
@@ -925,10 +927,12 @@ def _load_extracted_variants(db_path: Path) -> list[_PaperVariants]:
             gene_variants_list = []
 
             for eval_data in gene_evaluations:
-                gene_symbol = eval_data.get("gene")
+                hgnc_id = eval_data.get("hgnc_id")
+                if hgnc_id is None:
+                    continue
                 variants = eval_data.get("variants", [])
                 variant_strs = [variant["variant"] for variant in variants]
-                gene_variants_list.append((gene_symbol, variant_strs))
+                gene_variants_list.append((hgnc_id, variant_strs))
 
             if gene_variants_list:
                 paper_variants = _PaperVariants(
@@ -942,11 +946,13 @@ def _load_extracted_variants(db_path: Path) -> list[_PaperVariants]:
 
 def _process_variants(
     paper_variants_list: list[_PaperVariants],
+    hgnc_resolver: HgncResolver,
 ) -> tuple[dict[int, list[_VariantNormalizationResult]], list[_PaperVariantStats]]:
     """Process and normalize variants.
 
     Args:
         paper_variants_list: List of PaperVariants objects
+        hgnc_resolver: HGNC resolver for gene symbol lookup
 
     Returns:
         Tuple of (normalization results by PMID, statistics per paper)
@@ -960,7 +966,8 @@ def _process_variants(
     # Calculate total variants to process
     total_papers = len(paper_variants_list)
     total_variants_to_process = sum(
-        sum(len(variants) for _, variants in paper.gene_variants) for paper in paper_variants_list
+        sum(len(variants) for _hgnc_id, variants in paper.gene_variants)
+        for paper in paper_variants_list
     )
 
     with Progress(
@@ -982,7 +989,8 @@ def _process_variants(
             successful = 0
             failed = 0
 
-            for gene_symbol, variants in paper.gene_variants:
+            for hgnc_id, variants in paper.gene_variants:
+                gene_symbol = hgnc_resolver.get_symbol(hgnc_id)
                 for variant_text in variants:
                     total_variants += 1
 
@@ -994,7 +1002,7 @@ def _process_variants(
 
                     try:
                         logger.debug(
-                            f"Normalizing variant '{variant_text}' for gene {gene_symbol} from PMID {paper.pmid}"
+                            f"Normalizing variant '{variant_text}' for HGNC:{hgnc_id} from PMID {paper.pmid}"
                         )
 
                         hgvs_variant = variant_normalizer.hgvs(
@@ -1008,7 +1016,7 @@ def _process_variants(
                         # across all possibilities).
                         paper_results.extend(
                             _VariantNormalizationResult(
-                                gene_symbol=gene_symbol,
+                                hgnc_id=hgnc_id,
                                 original=variant_text,
                                 normalized=str(hgvs_variant),
                                 p_vcf=p_vcf,
@@ -1021,7 +1029,7 @@ def _process_variants(
                     except Exception as e:
                         paper_results.append(
                             _VariantNormalizationResult(
-                                gene_symbol=gene_symbol,
+                                hgnc_id=hgnc_id,
                                 original=variant_text,
                                 normalized=None,
                                 p_vcf=None,
@@ -1031,7 +1039,7 @@ def _process_variants(
 
                         failed += 1
                         logger.debug(
-                            f"Failed to normalize variant '{variant_text}' for gene {gene_symbol} from PMID {paper.pmid}: {e}"
+                            f"Failed to normalize variant '{variant_text}' for HGNC:{hgnc_id} from PMID {paper.pmid}: {e}"
                         )
 
                     # Update variant progress
@@ -1118,16 +1126,25 @@ def normalize(
         logger.error(f"Database not found at {db_path}")
         raise typer.Exit(1)
 
+    hgnc_resolver = HgncResolver.from_file()
+
     # Load variants from database or use test data
     if use_test_data:
         logger.info("Using hardcoded test data")
+
+        def _resolve_id(symbol: str) -> int:
+            entry = hgnc_resolver.resolve(symbol)
+            if entry is None:
+                raise ValueError(f"Test gene {symbol} not found in HGNC data")
+            return entry.hgnc_id
+
         paper_variants_list = [
             _PaperVariants(
                 pmid=40947452,
                 genome_build="GRCh38",
                 gene_variants=[
                     (
-                        "SLC20A2",
+                        _resolve_id("SLC20A2"),
                         [
                             "c.1240G>T",
                             "p.(Glu414*)",
@@ -1139,11 +1156,11 @@ def normalize(
                             "p.(Pro568Leu)",
                         ],
                     ),
-                    ("PDGFB", ["c.571C>T", "p.(Arg191*)", "c.418C>T", "p.(Gln140*)"]),
-                    ("MYORG", ["c.1727G>A", "p.(Arg576His)"]),
-                    ("MAP3K6", ["c.322G>A", "p.(Asp108Asn)"]),
-                    ("GLA", ["c.394G>C", "p.(Gly132Arg)"]),
-                    ("MT-TL1", ["m.3243A>C"]),
+                    (_resolve_id("PDGFB"), ["c.571C>T", "p.(Arg191*)", "c.418C>T", "p.(Gln140*)"]),
+                    (_resolve_id("MYORG"), ["c.1727G>A", "p.(Arg576His)"]),
+                    (_resolve_id("MAP3K6"), ["c.322G>A", "p.(Asp108Asn)"]),
+                    (_resolve_id("GLA"), ["c.394G>C", "p.(Gly132Arg)"]),
+                    (_resolve_id("MT-TL1"), ["m.3243A>C"]),
                 ],
             )
         ]
@@ -1157,7 +1174,7 @@ def normalize(
         return
 
     # Process and normalize variants
-    results_by_pmid, stats_per_paper = _process_variants(paper_variants_list)
+    results_by_pmid, stats_per_paper = _process_variants(paper_variants_list, hgnc_resolver)
 
     # Print results
     _print_results(results_by_pmid, stats_per_paper)

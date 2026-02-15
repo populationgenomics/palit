@@ -1,7 +1,6 @@
 {
     "type": "object",
     "properties": {
-        "gene": {"type": "string"},
         "summary": {
             "type": "string",
             "description": "Prose narrative summarizing the gene-disease evidence. Should be brief by default (2-3 sentences), but allow more detail when warranted. Follow style: [PMID(s)] report [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. Include key clinical features, functional evidence, and notable specifics."
@@ -229,7 +228,6 @@
         }
     },
     "required": [
-        "gene",
         "summary",
         "families",
         "variants",

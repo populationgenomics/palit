@@ -14,13 +14,11 @@ from openai_harmony import HarmonyEncoding
 from tqdm import tqdm
 
 from palit.docling import serialize_with_bbox_ids
+from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import HarmonyBatchProcessor, PromptResult
 from palit.panelapp_client import (
     PanelAppClient,
-    PanelGeneData,
-    ResolvedGene,
     format_panel_for_prompt,
-    resolve_gene_symbols,
 )
 
 app = typer.Typer(help="Extract structured evidence from full-text papers using vLLM")
@@ -79,6 +77,56 @@ def validate_box_ids(data: Any, valid_box_ids: set[int]) -> bool:
     return recurse(data)
 
 
+def normalize_extraction_genes(
+    parsed_json: dict[str, Any],
+    hgnc_resolver: HgncResolver,
+) -> tuple[dict[str, Any], list[str]]:
+    """Normalize gene symbols in extraction JSON to current HGNC.
+
+    For each unique gene_symbol in gene_evaluations:
+    - Resolve via HgncResolver
+    - If resolved and symbol changed: replace old symbol with current symbol
+      throughout the entire JSON (summary, variant descriptions, etc.)
+    - Resolved: add hgnc_id
+    - Always: rename gene_symbol → paper_gene_symbol (uppercased)
+
+    Returns:
+        (normalized_json, unresolved_symbols)
+    """
+    # Resolve unique gene symbols
+    resolved: dict[str, HgncEntry] = {}  # uppercased raw symbol → entry
+    unresolved: set[str] = set()
+    for gene_eval in parsed_json.get("gene_evaluations", []):
+        upper: str = gene_eval["gene_symbol"].upper()
+        if upper not in resolved and upper not in unresolved:
+            entry = hgnc_resolver.resolve(upper)
+            if entry is not None:
+                resolved[upper] = entry
+            else:
+                unresolved.add(upper)
+
+    # Full string replacement across serialized JSON for changed symbols
+    replacements = {old: entry.symbol for old, entry in resolved.items() if old != entry.symbol}
+    if replacements:
+        json_str = json.dumps(parsed_json)
+        for old in sorted(replacements, key=len, reverse=True):
+            json_str = json_str.replace(old, replacements[old])
+        parsed_json = json.loads(json_str)
+
+    # Rewrite gene_evaluations: add hgnc_id if resolved, always rename gene_symbol.
+    # Gene evaluations without hgnc_id are ignored by all downstream pipeline stages
+    # (aggregation, annotation, reporting) — they exist only for diagnostic inspection.
+    by_current_symbol: dict[str, int] = {entry.symbol: entry.hgnc_id for entry in resolved.values()}
+    for gene_eval in parsed_json.get("gene_evaluations", []):
+        gene_symbol: str = gene_eval.pop("gene_symbol")
+        gene_eval["paper_gene_symbol"] = gene_symbol.upper()
+        hgnc_id = by_current_symbol.get(gene_symbol)
+        if hgnc_id is not None:
+            gene_eval["hgnc_id"] = hgnc_id
+
+    return parsed_json, sorted(unresolved)
+
+
 class PaperBatchProcessor:
     """Handle database operations for evidence extraction."""
 
@@ -113,7 +161,7 @@ class PaperBatchProcessor:
         self,
         paper_prompts: list[PaperPrompt],
         results: list[PromptResult | None],
-        panel_data: PanelGeneData,
+        hgnc_resolver: HgncResolver,
     ) -> None:
         """
         Update evidence extraction and automatically sync gene_mentions with source.
@@ -121,7 +169,7 @@ class PaperBatchProcessor:
         Args:
             paper_prompts: List of PaperPrompt objects with PMIDs and bbox mappings
             results: List of PromptResult objects or None, same order as paper_prompts
-            panel_data: PanelApp gene data for symbol resolution
+            hgnc_resolver: HGNC resolver for gene symbol normalization
         """
         if not paper_prompts or not results:
             return
@@ -131,113 +179,90 @@ class PaperBatchProcessor:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            # Update each paper with its result
             for paper_prompt, result in zip(paper_prompts, results, strict=True):
-                if result is not None:
-                    pmid = paper_prompt.pmid
-                    bbox_mapping_str = json.dumps(paper_prompt.bbox_mapping)
+                if result is None:
+                    continue
 
-                    # Get source_type to determine gene_mentions source
-                    cursor.execute("SELECT source_type FROM papers WHERE pmid = ?", (pmid,))
-                    row = cursor.fetchone()
-                    if not row:
-                        raise ValueError(f"Paper PMID {pmid} not found in database")
+                pmid = paper_prompt.pmid
+                bbox_mapping_str = json.dumps(paper_prompt.bbox_mapping)
 
-                    source_type = row["source_type"]
-                    if not source_type:
-                        raise ValueError(f"Paper PMID {pmid} has NULL source_type")
+                # Get source_type to determine gene_mentions source
+                cursor.execute("SELECT source_type FROM papers WHERE pmid = ?", (pmid,))
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError(f"Paper PMID {pmid} not found in database")
 
-                    # Map source_type to gene_mentions source
-                    if source_type == "initial":
-                        gene_source = "recent_evidence"
-                    elif source_type == "expansion":
-                        gene_source = "expansion_evidence"
-                    else:
-                        raise ValueError(
-                            f"Unknown source_type '{source_type}' for PMID {pmid}. "
-                            f"Expected 'initial' or 'expansion'"
-                        )
+                source_type = row["source_type"]
+                if not source_type:
+                    raise ValueError(f"Paper PMID {pmid} has NULL source_type")
 
-                    # Normalize gene names to uppercase for consistency with gene_mentions
-                    if "gene_evaluations" in result.parsed_json:
-                        for gene_eval in result.parsed_json["gene_evaluations"]:
-                            if "gene" in gene_eval:
-                                gene_eval["gene"] = gene_eval["gene"].upper()
+                if source_type == "initial":
+                    gene_source = "recent_evidence"
+                elif source_type == "expansion":
+                    gene_source = "expansion_evidence"
+                else:
+                    raise ValueError(
+                        f"Unknown source_type '{source_type}' for PMID {pmid}. "
+                        f"Expected 'initial' or 'expansion'"
+                    )
 
-                    # Update papers table
+                # Normalize gene symbols to current HGNC (replaces across entire JSON)
+                normalized_json, unresolved_symbols = normalize_extraction_genes(
+                    result.parsed_json, hgnc_resolver
+                )
+                if unresolved_symbols:
+                    logger.warning(f"PMID {pmid}: unresolved gene symbols: {unresolved_symbols}")
+
+                # Update papers table
+                cursor.execute(
+                    """
+                    UPDATE papers
+                    SET evidence_extraction_raw = ?,
+                        evidence_extraction_json = ?,
+                        bbox_mapping = ?
+                    WHERE pmid = ?
+                    """,
+                    (
+                        result.raw_response,
+                        json.dumps(normalized_json),
+                        bbox_mapping_str,
+                        pmid,
+                    ),
+                )
+
+                # Sync gene_mentions: delete existing, insert for resolved genes with patient data
+                cursor.execute(
+                    "DELETE FROM gene_mentions WHERE pmid = ? AND source = ?",
+                    (pmid, gene_source),
+                )
+
+                for gene_eval in normalized_json.get("gene_evaluations", []):
+                    hgnc_id = gene_eval.get("hgnc_id")
+                    if hgnc_id is None:
+                        continue  # Unresolved gene
+                    if not gene_eval.get("disease_entities"):
+                        continue  # Mechanistic only, no patient data
+
                     cursor.execute(
                         """
-                        UPDATE papers
-                        SET evidence_extraction_raw = ?,
-                            evidence_extraction_json = ?,
-                            bbox_mapping = ?
-                        WHERE pmid = ?
-                    """,
+                        INSERT OR IGNORE INTO gene_mentions
+                        (hgnc_id, paper_gene_symbol, pmid, source)
+                        VALUES (?, ?, ?, ?)
+                        """,
                         (
-                            result.raw_response,
-                            json.dumps(result.parsed_json),
-                            bbox_mapping_str,
+                            hgnc_id,
+                            gene_eval["paper_gene_symbol"],
                             pmid,
+                            gene_source,
                         ),
                     )
 
-                    # Sync gene_mentions for this paper
-                    # Extract genes from evidence JSON
-                    genes = self._extract_genes_from_evidence(result.parsed_json, panel_data)
-
-                    # Delete existing gene_mentions for this PMID and source only
-                    cursor.execute(
-                        "DELETE FROM gene_mentions WHERE pmid = ? AND source = ?",
-                        (pmid, gene_source),
-                    )
-
-                    # Insert new gene_mentions for each gene found with appropriate source
-                    # Only include genes with disease_entities (patient data)
-                    for resolved_gene in genes:
-                        # Skip genes without disease_entities (mechanistic only)
-                        has_phenotypes = any(
-                            g["gene"] == resolved_gene.paper_symbol and g["disease_entities"]
-                            for g in result.parsed_json["gene_evaluations"]
-                        )
-                        if not has_phenotypes:
-                            continue
-
-                        cursor.execute(
-                            """
-                            INSERT INTO gene_mentions (panelapp_gene_symbol, paper_gene_symbol, pmid, source)
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            (
-                                resolved_gene.panelapp_symbol,
-                                resolved_gene.paper_symbol,
-                                pmid,
-                                gene_source,
-                            ),
-                        )
-
-                    successful_updates += 1
+                successful_updates += 1
 
             conn.commit()
             logger.info(
                 f"Updated {successful_updates} papers with evidence extraction and synchronized gene_mentions"
             )
-
-    def _extract_genes_from_evidence(
-        self, evidence_data: dict[str, Any], panel_data: PanelGeneData
-    ) -> set[ResolvedGene]:
-        """Extract gene symbols from evidence extraction JSON with alias resolution."""
-
-        # Extract gene symbols from evidence evaluations
-        gene_symbols = set()
-        if "gene_evaluations" in evidence_data:
-            for evaluation in evidence_data["gene_evaluations"]:
-                paper_gene_symbol = evaluation.get("gene")
-                if paper_gene_symbol:
-                    gene_symbols.add(paper_gene_symbol)
-
-        # Use shared resolution logic
-        resolved: set[ResolvedGene] = resolve_gene_symbols(gene_symbols, panel_data)
-        return resolved
 
     def get_deep_analysis_statistics(self) -> dict[str, int]:
         """Get statistics about deep analysis processing progress."""
@@ -460,13 +485,12 @@ def main(
     db_processor = PaperBatchProcessor(db_path)
     logger.info(f"  Connected to database at {db_path}")
 
-    # Fetch PanelApp data once for gene symbol resolution
-    logger.info(f"Fetching PanelApp gene data for {panel_date}...")
-    client = PanelAppClient(panel_date)
-    panel_data = client.get_target_panels_genes()
-    logger.info(f"  Loaded {len(panel_data.combined_gene_symbols)} genes from PanelApp")
+    # Load HGNC resolver for gene symbol normalization
+    hgnc_resolver = HgncResolver.from_file()
+    logger.info(f"  Loaded HgncResolver with {len(hgnc_resolver._by_symbol)} genes")
 
     # Build panel_formatted for template (empty string if not scoping to a panel)
+    client = PanelAppClient(panel_date)
     if scope_panel_id is not None:
         logger.info(f"Fetching description for scope panel {scope_panel_id}...")
         try:
@@ -569,7 +593,7 @@ def main(
                         failed_papers.append(paper_prompt.pmid)
                     else:
                         db_processor.update_paper_evidence_extraction(
-                            [paper_prompt], [result], panel_data
+                            [paper_prompt], [result], hgnc_resolver
                         )
                         pass_processed += 1
                         pbar.update(1)

@@ -7,7 +7,7 @@
             "items": {
                 "type": "object",
                 "properties": {
-                    "gene": {"type": "string"},
+                    "gene_symbol": {"type": "string"},
                     "summary": {
                         "type": "string",
                         "description": "Prose narrative summarizing the gene-disease evidence from this paper. Should be detailed enough for aggregation: report patient/family counts, inheritance pattern, core clinical features, and functional evidence if present."
@@ -261,7 +261,7 @@
                     }
                 },
                 "required": [
-                    "gene",
+                    "gene_symbol",
                     "summary",
                     "variants",
                     "families",

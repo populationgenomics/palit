@@ -10,6 +10,7 @@ from typing import Any
 import typer
 from tqdm import tqdm
 
+from palit.hgnc import HgncResolver
 from palit.ingest_pubmed import Article
 from palit.llm import HarmonyBatchProcessor
 from palit.tournament import TournamentOutcome, run_tournament_selection
@@ -18,12 +19,12 @@ app = typer.Typer(help="Reduce literature using tournament selection to minimize
 logger = logging.getLogger(__name__)
 
 
-def get_articles_for_gene(db_path: Path, gene_symbol: str, limit: int) -> list[Article]:
+def get_articles_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Article]:
     """Fetch all articles for a gene, regardless of download status.
 
     Args:
         db_path: Path to SQLite database
-        gene_symbol: Gene symbol to look up
+        hgnc_id: HGNC ID of the gene to look up
         limit: Maximum number of articles to return
 
     Returns:
@@ -37,11 +38,11 @@ def get_articles_for_gene(db_path: Path, gene_symbol: str, limit: int) -> list[A
             SELECT DISTINCT p.pmid, p.title, p.abstract, p.authors, p.journal, p.entrez_date
             FROM papers p
             JOIN gene_mentions gm ON p.pmid = gm.pmid
-            WHERE gm.panelapp_gene_symbol = ?
+            WHERE gm.hgnc_id = ?
             ORDER BY p.entrez_date DESC, p.pmid DESC
             LIMIT ?
             """,
-            (gene_symbol, limit),
+            (hgnc_id, limit),
         )
 
         articles = []
@@ -55,11 +56,11 @@ def get_articles_for_gene(db_path: Path, gene_symbol: str, limit: int) -> list[A
                     journal=row["journal"],
                     entrez_date=row["entrez_date"],
                     source_type="initial",
-                    source_details=gene_symbol,
+                    source_details=str(hgnc_id),
                 )
             )
 
-        logger.info(f"Found {len(articles)} articles for gene {gene_symbol}")
+        logger.info(f"Found {len(articles)} articles for HGNC:{hgnc_id}")
         return articles
 
 
@@ -139,26 +140,24 @@ def clear_unselected_papers(db_path: Path, all_selected_pmids: set[int]) -> dict
         return result
 
 
-def _record_reduction_completion(
-    db_path: Path, gene_symbol: str, outcome: TournamentOutcome
-) -> None:
+def _record_reduction_completion(db_path: Path, hgnc_id: int, outcome: TournamentOutcome) -> None:
     """Persist tournament results for resumability."""
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO tournament_results (
-                panelapp_gene_symbol,
+                hgnc_id,
                 selected_pmids_json,
                 tournament_raw_responses_json
             )
             VALUES (?, ?, ?)
-            ON CONFLICT(panelapp_gene_symbol) DO UPDATE SET
+            ON CONFLICT(hgnc_id) DO UPDATE SET
                 selected_pmids_json = excluded.selected_pmids_json,
                 tournament_raw_responses_json = excluded.tournament_raw_responses_json
             """,
             (
-                gene_symbol,
+                hgnc_id,
                 json.dumps([a.pmid for a in outcome.selected_articles]),
                 json.dumps(outcome.raw_responses_by_round),
             ),
@@ -273,12 +272,12 @@ def main(
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT gm.panelapp_gene_symbol, COUNT(DISTINCT gm.pmid) as paper_count
+            SELECT gm.hgnc_id, COUNT(DISTINCT gm.pmid) as paper_count
             FROM gene_mentions gm
             LEFT JOIN tournament_results er
-              ON gm.panelapp_gene_symbol = er.panelapp_gene_symbol
-            WHERE er.panelapp_gene_symbol IS NULL
-            GROUP BY gm.panelapp_gene_symbol
+              ON gm.hgnc_id = er.hgnc_id
+            WHERE er.hgnc_id IS NULL
+            GROUP BY gm.hgnc_id
             HAVING paper_count > ?
             ORDER BY paper_count DESC
             """,
@@ -296,10 +295,14 @@ def main(
         f"(total {total_papers_before} papers)"
     )
 
+    # Initialize HGNC resolver for gene symbol display
+    hgnc_resolver = HgncResolver.from_file()
+
     if dry_run:
         logger.info("Dry run - showing genes that would be processed:")
-        for gene, count in genes_with_counts[:20]:
-            logger.info(f"  {gene}: {count} papers -> {max_papers}")
+        for hgnc_id, count in genes_with_counts[:20]:
+            symbol = hgnc_resolver.get_symbol(hgnc_id)
+            logger.info(f"  {symbol} (HGNC:{hgnc_id}): {count} papers -> {max_papers}")
         if len(genes_with_counts) > 20:
             logger.info(f"  ... and {len(genes_with_counts) - 20} more genes")
         return
@@ -324,10 +327,10 @@ def main(
             """
             SELECT DISTINCT gm.pmid
             FROM gene_mentions gm
-            WHERE gm.panelapp_gene_symbol IN (
-                SELECT panelapp_gene_symbol
+            WHERE gm.hgnc_id IN (
+                SELECT hgnc_id
                 FROM gene_mentions
-                GROUP BY panelapp_gene_symbol
+                GROUP BY hgnc_id
                 HAVING COUNT(DISTINCT pmid) <= ?
             )
             """,
@@ -340,15 +343,16 @@ def main(
         )
 
     # Phase 1b: Run tournament selection for genes with many papers
-    for gene_symbol, paper_count in tqdm(genes_with_counts, desc="Reducing literature"):
-        articles = get_articles_for_gene(db_path, gene_symbol, pmid_limit)
+    for hgnc_id, paper_count in tqdm(genes_with_counts, desc="Reducing literature"):
+        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
+        articles = get_articles_for_gene(db_path, hgnc_id, pmid_limit)
 
         if not articles:
-            logger.warning(f"No articles found for {gene_symbol}")
+            logger.warning(f"No articles found for {hgnc_symbol} (HGNC:{hgnc_id})")
             continue
 
         tournament_outcome = run_tournament_selection(
-            gene_symbol=gene_symbol,
+            gene_symbol=hgnc_symbol,
             articles=articles,
             llm_processor=inference_engine,
             prompt_template=template,
@@ -362,9 +366,11 @@ def main(
         selected_pmids = {a.pmid for a in tournament_outcome.selected_articles}
         all_selected_pmids.update(selected_pmids)
 
-        logger.info(f"{gene_symbol}: {paper_count} -> {len(selected_pmids)} selected")
+        logger.info(
+            f"{hgnc_symbol} (HGNC:{hgnc_id}): {paper_count} -> {len(selected_pmids)} selected"
+        )
 
-        _record_reduction_completion(db_path, gene_symbol, tournament_outcome)
+        _record_reduction_completion(db_path, hgnc_id, tournament_outcome)
 
     # Phase 2: Clear download_status for papers not selected by ANY gene
     logger.info("Clearing download_status for unselected papers...")

@@ -13,6 +13,7 @@ import typer
 from rich.console import Console
 from rich.progress import track
 
+from palit.hgnc import HgncResolver
 from palit.ingest_pubmed import Article, extract_articles_from_xml
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
@@ -29,7 +30,7 @@ class ReferencedSource:
 
     title: str
     context: str
-    gene_symbol: str
+    hgnc_id: int
     citing_pmid: int
 
 
@@ -54,7 +55,7 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
             """
             SELECT DISTINCT
                 p.pmid,
-                gm.paper_gene_symbol,
+                gm.hgnc_id,
                 p.evidence_extraction_json
             FROM papers p
             JOIN gene_mentions gm ON p.pmid = gm.pmid
@@ -63,7 +64,7 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
         )
 
         for row in cursor.fetchall():
-            pmid, gene_symbol, evidence_json = row
+            pmid, hgnc_id, evidence_json = row
 
             try:
                 evidence = json.loads(evidence_json)
@@ -74,7 +75,7 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
             # Look for gene evaluations
             gene_evaluations = evidence.get("gene_evaluations", [])
             for gene_eval in gene_evaluations:
-                if gene_eval.get("gene") != gene_symbol:
+                if gene_eval.get("hgnc_id") != hgnc_id:
                     continue
 
                 # Look for disease entities with previously_reported_sources
@@ -90,7 +91,7 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
                                 ReferencedSource(
                                     title=title,
                                     context=context,
-                                    gene_symbol=gene_symbol,
+                                    hgnc_id=hgnc_id,
                                     citing_pmid=pmid,
                                 )
                             )
@@ -162,12 +163,12 @@ def search_pubmed_by_title(title: str) -> int | None:
         return None
 
 
-def fetch_paper_metadata(pmid: int, gene_symbol: str, citing_pmid: int | str) -> Article | None:
+def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_pmid: int | str) -> Article | None:
     """Fetch paper metadata from PubMed using efetch.
 
     Args:
         pmid: PubMed ID
-        gene_symbol: Gene symbol for source_details
+        hgnc_id: HGNC ID for source_details
         citing_pmid: PMID of paper citing this reference, or "manual" for manually added papers
 
     Returns:
@@ -192,7 +193,7 @@ def fetch_paper_metadata(pmid: int, gene_symbol: str, citing_pmid: int | str) ->
         articles = extract_articles_from_xml(
             result.stdout,
             source_type="expansion",
-            source_details=f"referenced:{gene_symbol}:{citing_pmid}",
+            source_details=f"referenced:{hgnc_id}:{citing_pmid}",
             require_abstract=False,
         )
 
@@ -295,24 +296,25 @@ def discover(
     console.print(f"Found {len(unique_sources)} unique referenced paper titles")
 
     # Search for each title and store new papers
+    hgnc_resolver = HgncResolver.from_file()
     new_papers = 0
     already_exists = 0
     not_found = 0
-    failures_by_gene: dict[str, list[str]] = {}
+    failures_by_gene: dict[int, list[str]] = {}
 
     for source in track(unique_sources.values(), description="Searching PubMed..."):
+        gene_display = hgnc_resolver.get_symbol(source.hgnc_id)
+
         # Search for PMID
         pmid = search_pubmed_by_title(source.title)
 
         if pmid is None:
             logger.info(
                 f"Could not find PMID for '{source.title}' "
-                f"(gene: {source.gene_symbol}, cited by: {source.citing_pmid})"
+                f"(gene: {gene_display}, cited by: {source.citing_pmid})"
             )
             not_found += 1
-            if source.gene_symbol not in failures_by_gene:
-                failures_by_gene[source.gene_symbol] = []
-            failures_by_gene[source.gene_symbol].append(source.title)
+            failures_by_gene.setdefault(source.hgnc_id, []).append(source.title)
             continue
 
         # Check if already in database
@@ -322,13 +324,11 @@ def discover(
             continue
 
         # Fetch metadata
-        article = fetch_paper_metadata(pmid, source.gene_symbol, source.citing_pmid)
+        article = fetch_paper_metadata(pmid, source.hgnc_id, source.citing_pmid)
         if article is None:
             logger.warning(f"Failed to fetch metadata for PMID {pmid}")
             not_found += 1
-            if source.gene_symbol not in failures_by_gene:
-                failures_by_gene[source.gene_symbol] = []
-            failures_by_gene[source.gene_symbol].append(
+            failures_by_gene.setdefault(source.hgnc_id, []).append(
                 f"{source.title} (PMID {pmid} found but metadata fetch failed)"
             )
             continue
@@ -337,7 +337,7 @@ def discover(
         inserted = store_referenced_paper(db_path, article)
         if inserted:
             logger.info(
-                f"Added PMID {pmid} for gene {source.gene_symbol} "
+                f"Added PMID {pmid} for {gene_display} (HGNC:{source.hgnc_id}) "
                 f"(referenced by PMID {source.citing_pmid})"
             )
             new_papers += 1
@@ -354,14 +354,15 @@ def discover(
     # Detailed failure report
     if failures_by_gene:
         console.print("\n[bold yellow]Failed to find the following papers:[/bold yellow]")
-        for gene in sorted(failures_by_gene.keys()):
-            console.print(f"\n[bold]{gene}:[/bold]")
-            for title in failures_by_gene[gene]:
+        for hgnc_id in sorted(failures_by_gene.keys()):
+            gene_display = hgnc_resolver.get_symbol(hgnc_id)
+            console.print(f"\n[bold]{gene_display} (HGNC:{hgnc_id}):[/bold]")
+            for title in failures_by_gene[hgnc_id]:
                 console.print(f"  - {title}")
 
         console.print("\n[dim]Hint: To add papers manually, look up PMIDs and run:[/dim]")
         console.print(
-            "[dim]  uv run palit discover-citations add --gene GENE_SYMBOL PMID1 PMID2 ...[/dim]"
+            "[dim]  uv run palit discover-citations add --hgnc-id HGNC_ID PMID1 PMID2 ...[/dim]"
         )
 
     if new_papers > 0:
@@ -373,13 +374,13 @@ def discover(
 @app.command()
 def add(
     pmids: list[int] = typer.Argument(..., help="PMIDs to add to the database"),
-    gene: str = typer.Option(..., "--gene", "-g", help="Gene symbol to associate with"),
+    hgnc_id: int = typer.Option(..., "--hgnc-id", "-g", help="HGNC ID to associate with"),
     db_path: Path = typer.Option(default=Path("data/db.sqlite"), help="Path to SQLite database"),
 ) -> None:
     """Manually add papers to the database by PMID.
 
     Papers will be added with source_type='expansion' and
-    source_details='referenced:{gene}:manual' to match the citation discovery format.
+    source_details='referenced:{hgnc_id}:manual' to match the citation discovery format.
     """
 
     if not db_path.exists():
@@ -390,7 +391,9 @@ def add(
         console.print("[red]Error: At least one PMID must be provided[/red]")
         raise typer.Exit(code=1)
 
-    console.print(f"Adding {len(pmids)} paper(s) for gene {gene}")
+    hgnc_resolver = HgncResolver.from_file()
+    gene_display = hgnc_resolver.get_symbol(hgnc_id)
+    console.print(f"Adding {len(pmids)} paper(s) for {gene_display} (HGNC:{hgnc_id})")
 
     added = 0
     skipped = 0
@@ -404,7 +407,7 @@ def add(
             continue
 
         # Fetch metadata using "manual" as the citing PMID
-        article = fetch_paper_metadata(pmid, gene, citing_pmid="manual")
+        article = fetch_paper_metadata(pmid, hgnc_id, citing_pmid="manual")
 
         if article is None:
             logger.error(f"Failed to fetch metadata for PMID {pmid}")
@@ -414,7 +417,7 @@ def add(
         # Store in database
         inserted = store_referenced_paper(db_path, article)
         if inserted:
-            logger.info(f"Added PMID {pmid} for gene {gene}")
+            logger.info(f"Added PMID {pmid} for {gene_display} (HGNC:{hgnc_id})")
             added += 1
         else:
             skipped += 1

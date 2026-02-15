@@ -1,0 +1,455 @@
+/**
+ * Literature Assignment Widget Styles
+ *
+ * Monochrome "Fill vs Stroke" visual hierarchy:
+ * - My tasks: Dark filled chips (high prominence)
+ * - Assigned to others: Outline only (secondary)
+ * - Skipped: Ghost/dashed (de-emphasized)
+ * - Concordance: Gold (concordant) / Silver (discordant)
+ */
+
+/* ==========================================================================
+   CSS Custom Properties - Design Tokens
+   ========================================================================== */
+
+:root {
+  /* Muted color for skipped/dimmed states */
+  --lit-muted-color: #8e99a4;
+}
+
+/* ==========================================================================
+   Header Widgets - Assignment dropdowns and skip badges
+   ========================================================================== */
+
+.assignment-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+.lit-widget {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  transition: all 0.2s ease;
+}
+
+/* Pending state - subtle, awaiting assignment */
+.lit-widget:not(.lit-assigned-mine):not(.lit-assigned-other):not(.lit-skipped-widget) {
+  background: linear-gradient(135deg, #f8f9fa 0%, #eef0f2 100%);
+  border: 1.5px solid #d1d5db;
+}
+
+/* Assigned to ME - dark filled style matching ToC my-task */
+.lit-widget.lit-assigned-mine {
+  background: #1f2937;
+  border: 2px solid #1f2937;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+  position: relative;
+}
+
+/* Assigned to SOMEONE ELSE - outline style matching ToC assigned-other */
+.lit-widget.lit-assigned-other {
+  background: transparent;
+  border: 2px solid #6b7280;
+  box-shadow: none;
+  position: relative;
+}
+
+/* Polished dropdown - matches "Add gene" button aesthetic */
+.lit-assignee-select {
+  font-size: 0.85em;
+  font-weight: 500;
+  padding: 4px 24px 4px 8px;
+  border: 1.5px solid #d1d5db;
+  border-radius: 4px;
+  background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M3 4.5L6 8l3-3.5H3z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  min-width: 52px;
+}
+
+.lit-assignee-select:hover {
+  border-color: #9ca3af;
+  background: linear-gradient(135deg, #ffffff 0%, #f3f4f6 100%);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.lit-assignee-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow:
+    0 0 0 3px rgba(59, 130, 246, 0.15),
+    0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* When assigned to ME, dropdown gets light style on dark background */
+.lit-widget.lit-assigned-mine .lit-assignee-select {
+  border-color: #e5e7eb;
+  background: #fff;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+/* When assigned to SOMEONE ELSE, dropdown gets subtle gray accent */
+.lit-widget.lit-assigned-other .lit-assignee-select {
+  border-color: #9ca3af;
+  background: #f9fafb;
+  color: #374151;
+  font-weight: 600;
+}
+
+/* Skip button - subtle, secondary action */
+.lit-skip-btn {
+  font-size: 1em;
+  padding: 2px 8px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 4px;
+  background: linear-gradient(135deg, #f9fafb 0%, #f3f4f6 100%);
+  color: #9ca3af;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: all 0.2s ease;
+}
+
+.lit-skip-btn:hover {
+  border-color: #d1d5db;
+  background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
+  color: #6b7280;
+  transform: scale(1.05);
+}
+
+.lit-skip-btn:active {
+  transform: scale(0.98);
+}
+
+/* ==========================================================================
+   Skipped State - Diagonal strikethrough badge
+   ========================================================================== */
+
+.lit-skipped-widget {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.lit-badge {
+  font-size: 0.8em;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-weight: 500;
+  display: inline-block;
+  position: relative;
+}
+
+/* Skipped badge - ghost style matching ToC */
+.lit-skipped {
+  background: #f9fafb;
+  color: var(--lit-muted-color);
+  border: 1px dashed #d1d5db;
+  position: relative;
+  opacity: 0.7;
+}
+
+/* Restore button */
+.lit-restore-btn {
+  font-size: 0.9em;
+  padding: 3px 7px;
+  border: 1.5px solid #d1d9e6;
+  border-radius: 4px;
+  background: linear-gradient(135deg, #f8fafc 0%, #eef2f7 100%);
+  color: #64748b;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: all 0.2s ease;
+}
+
+.lit-restore-btn:hover {
+  border-color: #22c55e;
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  color: #16a34a;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.25);
+  transform: scale(1.08);
+}
+
+.lit-restore-btn:active {
+  transform: scale(1);
+}
+
+/* ==========================================================================
+   ToC Highlighting - Status indicators on gene links
+
+   These classes are applied to <a> elements within .toc-gene-list
+   All states now have consistent depth treatment
+   ========================================================================== */
+
+/* My task: assigned to current user, not yet completed */
+/* Filled dark chip - inverted colors for maximum prominence */
+.toc-gene-list a.my-task {
+  display: inline-block;
+  padding: 3px 8px;
+  border: 2px solid #1f2937;
+  border-radius: 5px;
+  font-weight: 600;
+  color: #fff !important;
+  background: #1f2937;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+  position: relative;
+  text-decoration: none !important;
+}
+
+/* Completed with concordant rating (matches suggestion) - shiny gold */
+.toc-gene-list a.concordance-concordant {
+  display: inline-block;
+  padding: 3px 6px;
+  border: 1.5px solid #c4a850;
+  border-radius: 4px;
+  background: linear-gradient(
+    135deg,
+    #fdfcf5 0%,
+    #f5f0dc 40%,
+    #e8d890 70%,
+    #f5f2e0 100%
+  );
+  box-shadow:
+    0 0 8px rgba(200, 180, 100, 0.4),
+    0 2px 4px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  text-decoration: none !important;
+  position: relative;
+}
+
+/* Completed with discordant rating (differs from suggestion) - shiny silver */
+.toc-gene-list a.concordance-discordant {
+  display: inline-block;
+  padding: 3px 6px;
+  border: 1.5px solid #a8b8c0;
+  border-radius: 4px;
+  background: linear-gradient(
+    135deg,
+    #f8fafc 0%,
+    #e4eaef 40%,
+    #d0dae2 70%,
+    #e8eef2 100%
+  );
+  box-shadow:
+    0 0 8px rgba(160, 180, 195, 0.5),
+    0 2px 4px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  text-decoration: none !important;
+  position: relative;
+}
+
+/* Assigned to someone else - outline only, secondary prominence */
+.toc-gene-list a.assigned-other {
+  display: inline-block;
+  padding: 3px 8px;
+  border: 1.5px solid #6b7280;
+  border-radius: 4px;
+  background: transparent;
+  color: #374151;
+  text-decoration: none !important;
+  position: relative;
+}
+
+/* Skipped (not executed) - Ghost, de-emphasized */
+.toc-gene-list a.concordance-not_executed {
+  display: inline-block;
+  padding: 3px 8px;
+  color: #9ca3af !important;
+  position: relative;
+  text-decoration: none !important;
+  background: #f9fafb;
+  border: 1px dashed #d1d5db;
+  border-radius: 4px;
+  opacity: 0.6;
+}
+
+/* ==========================================================================
+   Animation & Interaction Polish
+   ========================================================================== */
+
+/* Subtle hover lift for ToC items */
+.toc-gene-list a.my-task:hover,
+.toc-gene-list a.assigned-other:hover,
+.toc-gene-list a.concordance-concordant:hover,
+.toc-gene-list a.concordance-discordant:hover {
+  transform: translateY(-1px);
+  transition: transform 0.15s ease;
+}
+
+/* Hover enhancement for outline style */
+.toc-gene-list a.assigned-other:hover {
+  border-color: #4b5563;
+  background: #f9fafb;
+}
+
+/* Focus states for accessibility */
+.toc-gene-list a.my-task:focus,
+.toc-gene-list a.assigned-other:focus,
+.toc-gene-list a.concordance-concordant:focus,
+.toc-gene-list a.concordance-discordant:focus,
+.toc-gene-list a.concordance-not_executed:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* ==========================================================================
+   Instant Tooltips - CSS-based tooltips via data-title attribute
+   Same mechanism as gene_report_styles.css for instant hover display
+   ========================================================================== */
+
+.toc-gene-list a[data-title] {
+  position: relative;
+}
+
+.toc-gene-list a[data-title]::before {
+  content: attr(data-title);
+  position: absolute;
+  top: auto;
+  bottom: 100%;
+  left: 50%;
+  right: auto;
+  height: auto;
+  width: auto;
+  transform: translateX(-50%);
+  background: #333;
+  color: white;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: normal;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0s;
+  z-index: 1000;
+  margin-bottom: 5px;
+}
+
+.toc-gene-list a[data-title]::after {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #333;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0s;
+  z-index: 1000;
+}
+
+.toc-gene-list a[data-title]:hover::before,
+.toc-gene-list a[data-title]:hover::after {
+  opacity: 1;
+}
+
+/* ==========================================================================
+   Instant Tooltips - Widget elements (skipped badge, etc.)
+   ========================================================================== */
+
+.lit-badge[data-title] {
+  position: relative;
+}
+
+.lit-badge[data-title]::before {
+  content: attr(data-title);
+  position: absolute;
+  top: auto;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #333;
+  color: white;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: normal;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0s;
+  z-index: 1000;
+  margin-bottom: 5px;
+}
+
+.lit-badge[data-title]::after {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #333;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0s;
+  z-index: 1000;
+}
+
+.lit-badge[data-title]:hover::before,
+.lit-badge[data-title]:hover::after {
+  opacity: 1;
+}
+
+/* Instant tooltips for buttons */
+.lit-skip-btn[data-title],
+.lit-restore-btn[data-title] {
+  position: relative;
+}
+
+.lit-skip-btn[data-title]::before,
+.lit-restore-btn[data-title]::before {
+  content: attr(data-title);
+  position: absolute;
+  top: auto;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #333;
+  color: white;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: normal;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0s;
+  z-index: 1000;
+  margin-bottom: 5px;
+}
+
+.lit-skip-btn[data-title]::after,
+.lit-restore-btn[data-title]::after {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #333;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0s;
+  z-index: 1000;
+}
+
+.lit-skip-btn[data-title]:hover::before,
+.lit-skip-btn[data-title]:hover::after,
+.lit-restore-btn[data-title]:hover::before,
+.lit-restore-btn[data-title]:hover::after {
+  opacity: 1;
+}

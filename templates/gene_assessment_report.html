@@ -18,9 +18,13 @@
 {{ report_config_json | safe }}
     </script>
 
-    {# PanelApp integration: Assignment widget assets (served by PanelApp) #}
-    <link rel="stylesheet" href="{{ '{{STATIC_URL}}' }}literature-assignments.css">
-    <script src="{{ '{{STATIC_URL}}' }}literature-assignments.js" defer></script>
+    {# PanelApp integration: Assignment widget assets (bundled inline) #}
+    <style>
+{% include 'literature-assignments.css' %}
+    </style>
+    <script>
+{% include 'literature-assignments.js' %}
+    </script>
     {% endif %}
 
     {# Macro for rendering MoI comparison badge #}
@@ -48,21 +52,21 @@
     {# Macro for rendering assignment slot (populated by JS widget) #}
     {% macro assignment_slot(gene) %}
     {% if panelapp_integration %}
-    <span class="assignment-slot" data-gene="{{ gene.gene_symbol }}"></span>
+    <span class="assignment-slot" data-hgnc-id="HGNC:{{ gene.hgnc_id }}"></span>
     {% endif %}
     {% endmacro %}
 
     {# Macro for rendering gene header with optional PanelApp entity link #}
     {% macro gene_header(gene) %}
     {% if panelapp_integration %}
-    <a href="/panels/entities/{{ gene.gene_symbol }}" target="_blank">{{ gene | format_gene_with_aliases | safe }}</a>
+    <a href="/panels/entities/HGNC:{{ gene.hgnc_id }}" target="_blank">{{ gene | format_gene_with_aliases | safe }}</a>
     {% else %}
     {{ gene | format_gene_with_aliases | safe }}
     {% endif %}
     {% endmacro %}
 
     {# Macro for rendering disease entity breakdown table - reusable across contexts #}
-    {% macro disease_entity_table(disease_entities, gene_symbol=none, pdf_base_path="", contributing_papers=none) %}
+    {% macro disease_entity_table(disease_entities, hgnc_id, pdf_base_path="", contributing_papers=none) %}
     {% if disease_entities %}
         <table class="disease-entity-table">
             <thead>
@@ -89,7 +93,7 @@
                     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
                     <td>{{ entity.patient_count }}</td>
                     <td {% if entity.family_count is not none and entity.family_count == max_family_count and max_family_count > 0 %}class="disease-entity-max-family-count" data-title="Maximum family count - used for classification"{% endif %}>{% if entity.family_count is not none %}{{ entity.family_count }}{% else %}NR{% endif %}</td>
-                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for pmid, page in citation_links %}<a href="{{ pdf_base_path }}/{{ gene_symbol }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
+                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for pmid, page in citation_links %}<a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
@@ -117,7 +121,7 @@
             {% endif %}
         </ul>
 
-        {{ disease_entity_table(gene.assessment_json.disease_entities, gene.gene_symbol, pdf_base_path, gene.contributing_papers) }}
+        {{ disease_entity_table(gene.assessment_json.disease_entities, gene.hgnc_id, pdf_base_path, gene.contributing_papers) }}
 
         {% if gene.moi_comparison %}
         <p class="moi-transition-note {% if not gene.moi_comparison.highlighted %}moi-not-highlighted{% endif %}">
@@ -140,7 +144,7 @@
                     {% if concern.citations %}
                     {% set citation_links = concern.citations | prepare_citation_links(gene.contributing_papers) %}
                     {% for pmid, page in citation_links %}
-                    <a href="{{ pdf_base_path }}/{{ gene.gene_symbol }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a>
+                    <a href="{{ pdf_base_path }}/{{ gene.hgnc_id }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a>
                     {% endfor %}
                     {% endif %}
                 </li>
@@ -152,7 +156,7 @@
     {% endmacro %}
 
     {# Macro for rendering criteria assessment grid - handles both aggregate and individual paper assessments #}
-    {% macro criteria_grid(assessment, gene_symbol, pdf_base_path, contributing_papers=none, citation_pages=none, pmid=none) %}
+    {% macro criteria_grid(assessment, hgnc_id, pdf_base_path, contributing_papers=none, citation_pages=none, pmid=none) %}
     <div class="criteria-grid">
         {% for crit_name, crit_label, separator in [
             ('criterion_A', 'Criterion A - Multiple Unrelated Cases', 'OR'),
@@ -176,7 +180,7 @@
                         <li>
                             {{ citation.commentary }}
                             {% for cite_pmid, page in citation_links %}
-                            <a href="{{ pdf_base_path }}/{{ gene_symbol }}/{{ cite_pmid }}.pdf#page={{ page }}" target="_blank">[{{ cite_pmid }}:p{{ page }}]</a>
+                            <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ cite_pmid }}.pdf#page={{ page }}" target="_blank">[{{ cite_pmid }}:p{{ page }}]</a>
                             {% endfor %}
                         </li>
                         {% endfor %}
@@ -252,13 +256,13 @@
         {% if gene.variant_frequencies %}
         <div class="variant-frequency-section">
             <h5><strong>gnomAD v4 frequencies</strong></h5>
-            {{ variant_frequency_table(gene.variant_frequencies, gene.new_moi, gene.gene_symbol, pdf_base_path, include_faf=true) }}
+            {{ variant_frequency_table(gene.variant_frequencies, gene.new_moi, gene.hgnc_id, pdf_base_path, include_faf=true) }}
         </div>
         {% endif %}
 
         <details>
             <summary><strong>PanelApp criteria assessment</strong></summary>
-            {{ criteria_grid(gene.assessment_json, gene.gene_symbol, pdf_base_path, contributing_papers=gene.contributing_papers) }}
+            {{ criteria_grid(gene.assessment_json, gene.hgnc_id, pdf_base_path, contributing_papers=gene.contributing_papers) }}
         </details>
 
         <details>
@@ -270,7 +274,7 @@
     {% endmacro %}
 
     {# Macro for rendering variant frequency tables - reduces duplication #}
-    {% macro variant_frequency_table(variants, inheritance_mode, gene_symbol, pdf_base_path, include_faf=true) %}
+    {% macro variant_frequency_table(variants, inheritance_mode, hgnc_id, pdf_base_path, include_faf=true) %}
     <table class="variant-frequency-table">
         <thead>
             <tr>
@@ -357,7 +361,7 @@
                 <td>
                     <a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>
                     {% if variant.citation_page %}
-                        | <a href="{{ pdf_base_path }}/{{ gene_symbol }}/{{ variant.pmid }}.pdf#page={{ variant.citation_page }}" target="_blank">[{{ variant.pmid }}:p{{ variant.citation_page }}]</a>
+                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ variant.pmid }}.pdf#page={{ variant.citation_page }}" target="_blank">[{{ variant.pmid }}:p{{ variant.citation_page }}]</a>
                     {% elif variant.pmid %}
                         | <a href="https://pubmed.ncbi.nlm.nih.gov/{{ variant.pmid }}/" target="_blank">[{{ variant.pmid }}]</a>
                     {% endif %}
@@ -406,7 +410,7 @@
             <div><strong>Associations:</strong>
                 <ul>
                     {% for assoc in paper.relevance_assessment.associations %}
-                    <li>{{ assoc.gene }} → {{ assoc.disease }}</li>
+                    <li>{{ assoc.gene_symbol }} → {{ assoc.disease }}</li>
                     {% endfor %}
                 </ul>
             </div>
@@ -417,7 +421,7 @@
         {% if include_evidence and paper.evidence_extraction %}
         <details class="individual-evidence-extraction">
             <summary><strong>Evidence</strong></summary>
-            {% set gene_eval = (paper.evidence_extraction.gene_evaluations | selectattr('gene', 'equalto', paper.paper_gene_symbol) | list)[0] %}
+            {% set gene_eval = (paper.evidence_extraction.gene_evaluations | selectattr('hgnc_id', 'defined') | selectattr('hgnc_id', 'equalto', gene.hgnc_id) | list)[0] %}
             <div class="gene-evaluation">
                 <div class="evidence-summary-expanded">
                     <h5><strong>Summary</strong></h5>
@@ -432,7 +436,7 @@
                         <li><strong>Functional:</strong> {{ gene_eval.functional }}</li>
                     </ul>
 
-                    {{ disease_entity_table(gene_eval.disease_entities) }}
+                    {{ disease_entity_table(gene_eval.disease_entities, gene.hgnc_id) }}
 
                     {% if gene_eval.quality_concerns %}
                     <div class="quality-concerns">
@@ -455,12 +459,12 @@
                     {% endif %}
                 </div>
 
-                {{ criteria_grid(gene_eval, paper.pmid, pdf_base_path, citation_pages=paper.citation_pages, pmid=paper.pmid) }}
+                {{ criteria_grid(gene_eval, gene.hgnc_id, pdf_base_path, citation_pages=paper.citation_pages, pmid=paper.pmid) }}
 
                 <div class="variant-frequency-section">
                     <h6><strong>gnomAD v4 frequencies</strong></h6>
                     {% if paper.variant_frequencies %}
-                    {{ variant_frequency_table(paper.variant_frequencies, gene.new_moi, gene.gene_symbol, pdf_base_path, include_faf=false) }}
+                    {{ variant_frequency_table(paper.variant_frequencies, gene.new_moi, gene.hgnc_id, pdf_base_path, include_faf=false) }}
                     {% else %}
                     <p><em>No variants with frequency data extracted from this paper.</em></p>
                     {% endif %}
@@ -493,7 +497,7 @@
                 <div class="toc-section toc-novel-to-green">
                     <ul class="toc-gene-list">
                         {% for gene in novel_categories.green %}
-                        <li><a href="#novel-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -506,7 +510,7 @@
                 <div class="toc-section toc-novel-to-amber">
                     <ul class="toc-gene-list">
                         {% for gene in novel_categories.amber %}
-                        <li><a href="#novel-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -519,7 +523,7 @@
                 <div class="toc-section toc-novel-to-red">
                     <ul class="toc-gene-list">
                         {% for gene in novel_categories.red %}
-                        <li><a href="#novel-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -537,7 +541,7 @@
                 <div class="toc-section toc-red-to-green">
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.red_to_green %}
-                        <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -550,7 +554,7 @@
                 <div class="toc-section toc-amber-to-green">
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.amber_to_green %}
-                        <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -563,7 +567,7 @@
                 <div class="toc-section toc-red-to-amber">
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.red_to_amber %}
-                        <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -576,7 +580,7 @@
                 <div class="toc-section toc-no-change">
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.no_change_with_moi %}
-                        <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}<span class="moi-expansion-indicator">➕</span></a></li>
+                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}<span class="moi-expansion-indicator">➕</span></a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -591,7 +595,7 @@
                         <summary>Show gene list</summary>
                         <ul class="toc-gene-list">
                             {% for gene in known_categories.no_change_without_moi %}
-                            <li><a href="#known-gene-{{ gene.gene_symbol }}">{{ gene.gene_symbol }}</a></li>
+                            <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}</a></li>
                             {% endfor %}
                         </ul>
                     </details>
@@ -656,7 +660,7 @@
             <p><em>Genes not currently in any panel, sorted by potential rating (GREEN candidates first)</em></p>
 
             {% for gene in novel_categories.green + novel_categories.amber + novel_categories.red %}
-            <article class="gene-assessment" id="novel-gene-{{ gene.gene_symbol }}">
+            <article class="gene-assessment" id="novel-gene-{{ gene.hgnc_id }}">
                 <h3>
                     {{ gene_header(gene) }}
                     <span class="rating-badge rating-grey">Not in panel</span>
@@ -683,7 +687,7 @@
                 <h3><span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.red_to_green|length }})</h3>
             </div>
             {% for gene in known_categories.red_to_green %}
-            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
                 <h3>
                     {{ gene_header(gene) }}
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
@@ -703,7 +707,7 @@
                 <h3><span class="rating-badge rating-amber">AMBER</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.amber_to_green|length }})</h3>
             </div>
             {% for gene in known_categories.amber_to_green %}
-            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
                 <h3>
                     {{ gene_header(gene) }}
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
@@ -723,7 +727,7 @@
                 <h3><span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-amber">AMBER</span> Upgrades ({{ known_categories.red_to_amber|length }})</h3>
             </div>
             {% for gene in known_categories.red_to_amber %}
-            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
                 <h3>
                     {{ gene_header(gene) }}
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
@@ -743,7 +747,7 @@
                 <h3>No Rating Change - MoI Expansion ({{ known_categories.no_change_with_moi|length }})</h3>
             </div>
             {% for gene in known_categories.no_change_with_moi %}
-            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
                 <h3>
                     {{ gene_header(gene) }}
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
@@ -763,7 +767,7 @@
                 <h3>Additional Evidence - No Rating Change ({{ known_categories.no_change_without_moi|length }})</h3>
             </div>
             {% for gene in known_categories.no_change_without_moi %}
-            <article class="gene-assessment" id="known-gene-{{ gene.gene_symbol }}">
+            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
                 <h3>
                     {{ gene_header(gene) }}
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>

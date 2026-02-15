@@ -21,6 +21,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from palit.hgnc import HgncResolver
 from palit.normalize_variants import VariantNormalizer
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,8 @@ app = typer.Typer(help="Look up variant frequencies from gnomAD v4")
 class ExtractedVariant:
     """A variant extracted from evidence extraction."""
 
-    gene_symbol: str
+    hgnc_id: int
+    hgnc_symbol: str  # Current HGNC symbol, needed for variant normalizer
     variant_text: str
     box_id: int
 
@@ -42,7 +44,7 @@ class VariantFrequencyResult:
     """Result of looking up frequency for a single variant."""
 
     variant_id: str  # gnomAD pseudo-VCF format
-    gene_symbol: str
+    hgnc_id: int
     pmid: int
     box_id: int
     normalization: dict[str, Any]  # HGVS c/p information
@@ -59,7 +61,9 @@ class VariantProcessingResults:
     failed_normalizations: int
 
 
-def load_extracted_variants(db_path: Path) -> dict[int, list[ExtractedVariant]]:
+def load_extracted_variants(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> dict[int, list[ExtractedVariant]]:
     """Load variants from evidence extractions in the database.
 
     Returns dict mapping pmid to list of ExtractedVariant objects.
@@ -89,13 +93,15 @@ def load_extracted_variants(db_path: Path) -> dict[int, list[ExtractedVariant]]:
                 logger.warning(f"Failed to parse evidence extraction for PMID {pmid}")
                 continue
 
-            # Extract variants from each gene evaluation
+            # Extract variants from each gene evaluation (only resolved ones with hgnc_id)
             gene_evaluations = extraction_data.get("gene_evaluations", [])
 
             for eval_data in gene_evaluations:
-                gene_symbol = eval_data.get("gene")
-                if not gene_symbol:
+                hgnc_id = eval_data.get("hgnc_id")
+                if hgnc_id is None:
                     continue
+
+                hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
 
                 # Get variants array with box_ids
                 variant_entries = eval_data.get("variants", [])
@@ -109,7 +115,8 @@ def load_extracted_variants(db_path: Path) -> dict[int, list[ExtractedVariant]]:
                             variants_by_pmid[pmid] = []
                         variants_by_pmid[pmid].append(
                             ExtractedVariant(
-                                gene_symbol=gene_symbol,
+                                hgnc_id=hgnc_id,
+                                hgnc_symbol=hgnc_symbol,
                                 variant_text=variant_text,
                                 box_id=box_id,
                             )
@@ -211,17 +218,18 @@ def process_variants_for_pmid(
     total_variants = len(variants)
 
     for variant in variants:
-        gene_symbol = variant.gene_symbol
+        hgnc_id = variant.hgnc_id
+        hgnc_symbol = variant.hgnc_symbol
         variant_text = variant.variant_text
         box_id = variant.box_id
 
         try:
             # Step 1: Normalize variant to get HGVS and pseudo-VCF
             logger.debug(
-                f"Normalizing variant '{variant_text}' for gene {gene_symbol} from PMID {pmid}"
+                f"Normalizing variant '{variant_text}' for gene {hgnc_symbol} from PMID {pmid}"
             )
 
-            hgvs_variant = variant_normalizer.hgvs(variant_text, gene_symbol, None)
+            hgvs_variant = variant_normalizer.hgvs(variant_text, hgnc_symbol, None)
             p_vcfs = variant_normalizer.pseudo_vcf(hgvs_variant)
 
             if not p_vcfs:
@@ -279,7 +287,7 @@ def process_variants_for_pmid(
 
             result = VariantFrequencyResult(
                 variant_id=variant_id,
-                gene_symbol=gene_symbol,
+                hgnc_id=hgnc_id,
                 pmid=pmid,
                 box_id=box_id,
                 normalization=normalization,
@@ -289,7 +297,7 @@ def process_variants_for_pmid(
 
         except Exception as e:
             logger.debug(
-                f"Failed to process variant '{variant_text}' for gene {gene_symbol} from PMID {pmid}: {e}"
+                f"Failed to process variant '{variant_text}' for gene {hgnc_symbol} from PMID {pmid}: {e}"
             )
             failed_normalizations += 1
 
@@ -330,12 +338,12 @@ def store_results_for_pmid(pmid: int, results: list[VariantFrequencyResult], db_
             cursor.execute(
                 """
                 INSERT INTO variant_frequencies
-                (variant_id, panelapp_gene_symbol, pmid, box_id, normalization, gnomad)
+                (variant_id, hgnc_id, pmid, box_id, normalization, gnomad)
                 VALUES (?, ?, ?, ?, ?, ?)
             """,
                 (
                     result.variant_id,
-                    result.gene_symbol,
+                    result.hgnc_id,
                     result.pmid,
                     result.box_id,
                     json.dumps(result.normalization),
@@ -398,13 +406,13 @@ def print_summary_statistics(processing_results: VariantProcessingResults) -> No
             variant_data = result.gnomad.get("variant")
             if variant_data and variant_data.get("joint", {}).get("ac", 0) > 30:
                 high_freq_variants.append(
-                    (result.variant_id, variant_data["joint"]["ac"], result.gene_symbol)
+                    (result.variant_id, variant_data["joint"]["ac"], result.hgnc_id)
                 )
 
     if high_freq_variants:
         print(f"\n⚠️  High-frequency variants (AC > 30): {len(high_freq_variants)}")
-        for variant_id, ac, gene in high_freq_variants[:5]:
-            print(f"    {gene}: {variant_id} (AC={ac})")
+        for variant_id, ac, hgnc_id in high_freq_variants[:5]:
+            print(f"    HGNC:{hgnc_id}: {variant_id} (AC={ac})")
         if len(high_freq_variants) > 5:
             print(f"    ... and {len(high_freq_variants) - 5} more")
 
@@ -415,7 +423,7 @@ def _retry_errored_variants(db_path: Path) -> None:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, variant_id, panelapp_gene_symbol
+            SELECT id, variant_id, hgnc_id
             FROM variant_frequencies
             WHERE json_extract(gnomad, '$.error') IS NOT NULL
         """)
@@ -432,13 +440,13 @@ def _retry_errored_variants(db_path: Path) -> None:
     for row in error_rows:
         row_id = row["id"]
         variant_id = row["variant_id"]
-        gene = row["panelapp_gene_symbol"]
+        hgnc_id = row["hgnc_id"]
 
         gnomad_result = query_gnomad_v4(variant_id)
 
         if "error" in gnomad_result:
             still_errored += 1
-            print(f"  Still failing: {gene} {variant_id}: {gnomad_result['error']}")
+            print(f"  Still failing: HGNC:{hgnc_id} {variant_id}: {gnomad_result['error']}")
         else:
             fixed += 1
             with sqlite3.connect(db_path) as conn:
@@ -447,7 +455,7 @@ def _retry_errored_variants(db_path: Path) -> None:
                     (json.dumps(gnomad_result), row_id),
                 )
                 conn.commit()
-            print(f"  Fixed: {gene} {variant_id}")
+            print(f"  Fixed: HGNC:{hgnc_id} {variant_id}")
 
     print(f"\nDone. Fixed: {fixed}, still errored: {still_errored}")
 
@@ -476,7 +484,8 @@ def lookup(
         return
 
     # Step 1: Load variants from evidence extractions, grouped by pmid
-    variants_by_pmid = load_extracted_variants(db_path)
+    hgnc_resolver = HgncResolver.from_file()
+    variants_by_pmid = load_extracted_variants(db_path, hgnc_resolver)
 
     if not variants_by_pmid:
         logger.warning("No variants found in database")

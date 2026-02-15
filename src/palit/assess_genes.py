@@ -11,6 +11,7 @@ import typer
 from jinja2 import Environment, FileSystemLoader
 from tqdm import tqdm
 
+from palit.hgnc import HgncResolver
 from palit.mondo_lookup import MondoCandidate, MondoLookup
 from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
 from palit.panelapp_integration import MONDO_CATEGORIES
@@ -65,7 +66,7 @@ def resolve_mondo_names(parsed_json: dict[str, Any], name_to_id: dict[str, str])
 
 
 def find_gene_panel(
-    gene_symbol: str,
+    hgnc_id: int,
     target_panel_ids: list[int],
     panel_data: PanelGeneData,
 ) -> int | None:
@@ -75,14 +76,14 @@ def find_gene_panel(
     panel that contains the gene.
 
     Args:
-        gene_symbol: Gene symbol to look up
+        hgnc_id: HGNC ID of the gene to look up
         target_panel_ids: Ordered list of panel IDs to check
         panel_data: PanelApp gene data with panel mappings
 
     Returns:
         Panel ID if found, None if gene is novel (not in any target panel).
     """
-    gene_panels = panel_data.gene_panel_mapping.get(gene_symbol, set())
+    gene_panels = panel_data.gene_panel_mapping.get(hgnc_id, set())
     for panel_id in target_panel_ids:
         if panel_id in gene_panels:
             return panel_id
@@ -175,11 +176,11 @@ class PaperBatchProcessor:
         """Initialize with database path."""
         self.db_path = db_path
 
-    def get_evidence_for_gene(self, panelapp_gene_symbol: str) -> list[dict[str, Any]]:
+    def get_evidence_for_gene(self, hgnc_id: int) -> list[dict[str, Any]]:
         """Get all evidence extractions for a specific gene.
 
         Args:
-            panelapp_gene_symbol: PanelApp gene symbol to search for
+            hgnc_id: HGNC ID of the gene to search for
 
         Returns:
             List of dicts with pmid, evidence_extraction_json, and metadata
@@ -194,22 +195,21 @@ class PaperBatchProcessor:
                 SELECT DISTINCT p.pmid, p.entrez_date, p.title, p.evidence_extraction_json, gm.paper_gene_symbol
                 FROM papers p
                 JOIN gene_mentions gm ON p.pmid = gm.pmid
-                WHERE gm.panelapp_gene_symbol = ?
+                WHERE gm.hgnc_id = ?
                 AND p.evidence_extraction_json IS NOT NULL
                 ORDER BY p.pmid
             """,
-                (panelapp_gene_symbol,),
+                (hgnc_id,),
             )
 
             evidence_list = []
             for row in cursor.fetchall():
                 try:
                     evidence_json = json.loads(row["evidence_extraction_json"])
-                    # Filter to only include evaluations for this specific gene
-                    paper_gene_symbol = row["paper_gene_symbol"]
+                    # Filter to only include evaluations for this specific gene (by hgnc_id)
                     filtered_evaluations = []
                     for gene_eval in evidence_json.get("gene_evaluations", []):
-                        if gene_eval.get("gene", "").upper() == paper_gene_symbol.upper():
+                        if gene_eval.get("hgnc_id") == hgnc_id:
                             del gene_eval["variants"]  # Drop detailed variants from prompt.
                             filtered_evaluations.append(gene_eval)
 
@@ -219,7 +219,7 @@ class PaperBatchProcessor:
                                 "pmid": row["pmid"],
                                 "date": row["entrez_date"],
                                 "title": row["title"],
-                                "paper_gene_symbol": paper_gene_symbol,  # Include the actual symbol used in the paper
+                                "paper_gene_symbol": row["paper_gene_symbol"],
                                 "gene_evaluations": filtered_evaluations,
                             }
                         )
@@ -228,26 +228,24 @@ class PaperBatchProcessor:
                     logger.warning(f"Error parsing evidence for PMID {row['pmid']}: {e}")
                     continue
 
-            logger.debug(
-                f"Found {len(evidence_list)} papers with evidence for gene {panelapp_gene_symbol}"
-            )
+            logger.debug(f"Found {len(evidence_list)} papers with evidence for HGNC:{hgnc_id}")
             return evidence_list
 
     def update_gene_assessment(
         self,
-        panelapp_gene_symbol: str,
+        hgnc_id: int,
         assessment_data: tuple[str, dict[str, Any] | None],
     ) -> None:
         """Store aggregate assessment result in gene_assessments table.
 
         Args:
-            panelapp_gene_symbol: PanelApp gene symbol
+            hgnc_id: HGNC ID of the gene
             assessment_data: Tuple of (raw_response, parsed_json)
         """
         raw_response, json_data = assessment_data
 
         if not json_data:
-            logger.warning(f"No valid JSON data for {panelapp_gene_symbol}")
+            logger.warning(f"No valid JSON data for HGNC:{hgnc_id}")
             return
 
         with sqlite3.connect(self.db_path) as conn:
@@ -257,17 +255,17 @@ class PaperBatchProcessor:
                 cursor.execute(
                     """
                     INSERT OR REPLACE INTO gene_assessments
-                    (panelapp_gene_symbol, assessment_raw, assessment_json)
+                    (hgnc_id, assessment_raw, assessment_json)
                     VALUES (?, ?, ?)
                 """,
-                    (panelapp_gene_symbol, raw_response, json.dumps(json_data)),
+                    (hgnc_id, raw_response, json.dumps(json_data)),
                 )
 
                 conn.commit()
-                logger.info(f"Stored aggregate assessment for {panelapp_gene_symbol}")
+                logger.info(f"Stored aggregate assessment for HGNC:{hgnc_id}")
 
             except sqlite3.Error as e:
-                logger.error(f"Error storing aggregate assessment for {panelapp_gene_symbol}: {e}")
+                logger.error(f"Error storing aggregate assessment for HGNC:{hgnc_id}: {e}")
 
     def get_aggregate_assessment_statistics(self) -> dict[str, int]:
         """Get statistics about aggregate assessment progress."""
@@ -277,7 +275,7 @@ class PaperBatchProcessor:
             # Total unique genes in the working set (recent_evidence)
             cursor.execute(
                 """
-                SELECT COUNT(DISTINCT panelapp_gene_symbol)
+                SELECT COUNT(DISTINCT hgnc_id)
                 FROM gene_mentions
                 WHERE source = 'recent_evidence'
             """
@@ -344,7 +342,7 @@ def format_previous_reviews_data(existing_reviews: list[dict[str, Any]]) -> str:
 
 
 def prepare_aggregate_assessment_prompt(
-    panelapp_gene_symbol: str,
+    hgnc_symbol: str,
     evidence_list: list[dict[str, Any]],
     template_path: Path,
     existing_reviews: list[dict[str, Any]],
@@ -355,7 +353,7 @@ def prepare_aggregate_assessment_prompt(
     Prepare aggregate assessment prompt using Jinja2 template.
 
     Args:
-        panelapp_gene_symbol: PanelApp gene symbol being assessed
+        hgnc_symbol: Current HGNC symbol for the gene being assessed
         evidence_list: List of evidence extractions from multiple papers
         template_path: Path to Jinja2 template file
         existing_reviews: List of existing PanelApp reviews (empty for novel genes)
@@ -371,11 +369,14 @@ def prepare_aggregate_assessment_prompt(
         if "paper_gene_symbol" in evidence:
             paper_symbols.add(evidence["paper_gene_symbol"])
 
-    # Format gene symbol with aliases if they differ from PanelApp symbol
-    if paper_symbols and paper_symbols != {panelapp_gene_symbol}:
-        gene_symbol_with_aliases = f"{panelapp_gene_symbol} (also referred to as: {', '.join(sorted(paper_symbols))} in the papers)"
+    # Format gene symbol with aliases if they differ from current HGNC symbol
+    aliases = paper_symbols - {hgnc_symbol}
+    if aliases:
+        gene_symbol_with_aliases = (
+            f"{hgnc_symbol} (also referred to as: {', '.join(sorted(aliases))} in the papers)"
+        )
     else:
-        gene_symbol_with_aliases = panelapp_gene_symbol
+        gene_symbol_with_aliases = hgnc_symbol
 
     # Create structured JSON with all evidence
     evidence_extractions = json.dumps(evidence_list, indent=2)
@@ -492,16 +493,17 @@ def main(
     logger.info("Initializing MONDO lookup...")
     mondo_lookup = MondoLookup(cache_dir=db_path.parent)
 
+    # Load HGNC resolver for gene symbol lookup
+    hgnc_resolver = HgncResolver.from_file()
+    logger.info(f"  Loaded HgncResolver with {len(hgnc_resolver._by_symbol)} genes")
+
     # Initialize PanelApp client and fetch panel data
     logger.info(f"Fetching PanelApp gene data for {panel_date}...")
     panelapp_client = PanelAppClient(panel_date)
     panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
     logger.info(
-        f"  Loaded {len(panel_data.combined_gene_symbols)} genes from {len(panel_data.panel_ids)} target panels"
+        f"  Loaded {len(panel_data.gene_confidence)} genes from {len(panel_data.panel_ids)} target panels"
     )
-
-    # Build PanelApp→HGNC reverse mapping for MONDO lookups
-    panelapp_to_hgnc = {v: k for k, v in panel_data.hgnc_to_panelapp.items()}
 
     # Build panel_formatted for template (empty string if not scoping to a panel)
     if scope_panel_id is not None:
@@ -570,60 +572,60 @@ def main(
                 cursor = conn.cursor()
                 cursor.execute(
                     """
-                    SELECT DISTINCT panelapp_gene_symbol
+                    SELECT DISTINCT hgnc_id
                     FROM gene_mentions
                     WHERE source = 'recent_evidence'
-                    ORDER BY panelapp_gene_symbol
+                    ORDER BY hgnc_id
                 """
                 )
-                genes = [row[0] for row in cursor.fetchall()]
+                gene_hgnc_ids = [row[0] for row in cursor.fetchall()]
 
                 # Check which genes already assessed
                 cursor.execute(
                     """
-                    SELECT panelapp_gene_symbol
+                    SELECT hgnc_id
                     FROM gene_assessments
                 """
                 )
                 already_assessed = {row[0] for row in cursor.fetchall()}
 
-            genes_to_assess = [g for g in genes if g not in already_assessed]
-            logger.info(f"Found {len(genes_to_assess)} genes to assess")
+            hgnc_ids_to_assess = [g for g in gene_hgnc_ids if g not in already_assessed]
+            logger.info(f"Found {len(hgnc_ids_to_assess)} genes to assess")
 
-            if not genes_to_assess:
+            if not hgnc_ids_to_assess:
                 logger.info("No genes need assessment!")
                 break
 
             # Process each gene
             pass_processed = 0
-            failed_genes = []
+            failed_genes: list[int] = []
 
-            for gene_symbol in genes_to_assess:
-                logger.info(f"Processing {gene_symbol}")
+            for hgnc_id in hgnc_ids_to_assess:
+                hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
+                logger.info(f"Processing {hgnc_symbol} (HGNC:{hgnc_id})")
 
                 # Get evidence for this gene
-                evidence_list = db_processor.get_evidence_for_gene(gene_symbol)
+                evidence_list = db_processor.get_evidence_for_gene(hgnc_id)
 
                 if not evidence_list:
-                    logger.warning(f"No evidence found for {gene_symbol}")
-                    genes_without_evidence.add(gene_symbol)
+                    logger.warning(f"No evidence found for {hgnc_symbol}")
+                    genes_without_evidence.add(hgnc_id)
                     continue
 
                 # Check if gene exists in any target panel
-                existing_panel_id = find_gene_panel(gene_symbol, panel_data.panel_ids, panel_data)
+                existing_panel_id = find_gene_panel(hgnc_id, panel_data.panel_ids, panel_data)
 
                 # Fetch existing reviews for non-novel genes
                 existing_reviews: list[dict[str, Any]] = []
                 if existing_panel_id is not None:
                     existing_reviews = panelapp_client.get_gene_evaluations(
-                        existing_panel_id, gene_symbol
+                        existing_panel_id, hgnc_id
                     )
                     logger.info(
                         f"  Found {len(existing_reviews)} existing reviews in panel {existing_panel_id}"
                     )
 
-                # Look up MONDO candidates (resolve PanelApp→HGNC if needed)
-                hgnc_symbol = panelapp_to_hgnc.get(gene_symbol, gene_symbol)
+                # Look up MONDO candidates
                 mondo_candidates = mondo_lookup.get_candidates(hgnc_symbol)
                 mondo_name_to_id = build_mondo_name_to_id(mondo_candidates)
                 if mondo_candidates:
@@ -631,7 +633,7 @@ def main(
 
                 # Prepare aggregate assessment prompt
                 prompt = prepare_aggregate_assessment_prompt(
-                    gene_symbol,
+                    hgnc_symbol,
                     evidence_list,
                     prompt_path,
                     existing_reviews,
@@ -648,23 +650,23 @@ def main(
                     # Validate (pmid, box_id) pairs against database
                     valid_box_ids_by_pmid = fetch_valid_box_ids_by_pmid(db_path, evidence_list)
                     if not validate_box_ids_with_pmid(result.parsed_json, valid_box_ids_by_pmid):
-                        logger.warning(f"Invalid (pmid, box_id) pairs for {gene_symbol}")
-                        failed_genes.append(gene_symbol)
+                        logger.warning(f"Invalid (pmid, box_id) pairs for {hgnc_symbol}")
+                        failed_genes.append(hgnc_id)
                     # Resolve mondo_disease_name → mondo_id + mondo_label
                     elif unresolved := resolve_mondo_names(result.parsed_json, mondo_name_to_id):
                         logger.warning(
-                            f"Unresolved MONDO disease names for {gene_symbol}: {unresolved}"
+                            f"Unresolved MONDO disease names for {hgnc_symbol}: {unresolved}"
                         )
-                        failed_genes.append(gene_symbol)
+                        failed_genes.append(hgnc_id)
                     else:
                         db_processor.update_gene_assessment(
-                            gene_symbol, (result.raw_response, result.parsed_json)
+                            hgnc_id, (result.raw_response, result.parsed_json)
                         )
                         pass_processed += 1
                         pbar.update(1)
                 else:
-                    logger.warning(f"Failed to process aggregate assessment for {gene_symbol}")
-                    failed_genes.append(gene_symbol)
+                    logger.warning(f"Failed to process aggregate assessment for {hgnc_symbol}")
+                    failed_genes.append(hgnc_id)
 
             total_processed += pass_processed
 

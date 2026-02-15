@@ -10,6 +10,7 @@ from typing import Any
 import typer
 from tqdm import tqdm
 
+from palit.hgnc import HgncResolver
 from palit.ingest_pubmed import Article
 from palit.llm import HarmonyBatchProcessor
 from palit.tournament import TournamentOutcome, run_tournament_selection
@@ -19,13 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 def get_articles_for_gene(
-    baseline_db_path: Path, gene_symbol: str, limit: int, cutoff_date: str
+    baseline_db_path: Path, hgnc_id: int, limit: int, cutoff_date: str
 ) -> list[Article]:
     """Fetch articles for a gene from baseline screening database.
 
     Args:
         baseline_db_path: Path to baseline screening SQLite database
-        gene_symbol: Gene symbol to look up
+        hgnc_id: HGNC ID of the gene to look up
         limit: Maximum number of articles to return
         cutoff_date: Only include papers with entrez_date <= this date (YYYY-MM-DD)
 
@@ -40,12 +41,12 @@ def get_articles_for_gene(
             SELECT DISTINCT p.pmid, p.title, p.abstract, p.authors, p.journal, p.entrez_date
             FROM papers p
             JOIN gene_mentions gm ON p.pmid = gm.pmid
-            WHERE gm.panelapp_gene_symbol = ?
+            WHERE gm.hgnc_id = ?
               AND p.entrez_date <= ?
             ORDER BY p.entrez_date DESC, p.pmid DESC
             LIMIT ?
             """,
-            (gene_symbol, cutoff_date, limit),
+            (hgnc_id, cutoff_date, limit),
         )
 
         articles = []
@@ -59,11 +60,11 @@ def get_articles_for_gene(
                     journal=row["journal"],
                     entrez_date=row["entrez_date"],
                     source_type="expansion",
-                    source_details=gene_symbol,
+                    source_details=str(hgnc_id),
                 )
             )
 
-        logger.info(f"Found {len(articles)} articles for gene {gene_symbol}")
+        logger.info(f"Found {len(articles)} articles for HGNC:{hgnc_id}")
         return articles
 
 
@@ -119,7 +120,7 @@ def store_expansion_papers(db_path: Path, articles: list[Article], gene_symbol: 
 
 
 def _record_expansion_completion(
-    db_path: Path, gene_symbol: str, outcome: TournamentOutcome
+    db_path: Path, hgnc_id: int, outcome: TournamentOutcome
 ) -> None:
     """Persist tournament results so resumable runs skip completed genes."""
     with sqlite3.connect(db_path) as conn:
@@ -127,17 +128,17 @@ def _record_expansion_completion(
         cursor.execute(
             """
             INSERT INTO tournament_results (
-                panelapp_gene_symbol,
+                hgnc_id,
                 selected_pmids_json,
                 tournament_raw_responses_json
             )
             VALUES (?, ?, ?)
-            ON CONFLICT(panelapp_gene_symbol) DO UPDATE SET
+            ON CONFLICT(hgnc_id) DO UPDATE SET
                 selected_pmids_json = excluded.selected_pmids_json,
                 tournament_raw_responses_json = excluded.tournament_raw_responses_json
             """,
             (
-                gene_symbol,
+                hgnc_id,
                 json.dumps([a.pmid for a in outcome.selected_articles]),
                 json.dumps(outcome.raw_responses_by_round),
             ),
@@ -215,10 +216,10 @@ def main(
         "-l",
         help="Logging level",
     ),
-    force_gene: list[str] = typer.Option(
+    force_gene: list[int] = typer.Option(
         [],
         "--force-gene",
-        help="Re-run expansion for specific gene",
+        help="Re-run expansion for specific gene (HGNC ID)",
     ),
     force_all: bool = typer.Option(
         False,
@@ -270,20 +271,20 @@ def main(
         if force_gene:
             logger.info(f"Forcing reprocessing for {len(force_gene)} gene(s)")
             cursor.executemany(
-                "DELETE FROM tournament_results WHERE panelapp_gene_symbol = ?",
-                [(gene,) for gene in force_gene],
+                "DELETE FROM tournament_results WHERE hgnc_id = ?",
+                [(hgnc_id,) for hgnc_id in force_gene],
             )
             conn.commit()
 
         cursor.execute(
             """
-            SELECT DISTINCT gm.panelapp_gene_symbol
+            SELECT DISTINCT gm.hgnc_id
             FROM gene_mentions gm
             LEFT JOIN tournament_results er
-              ON gm.panelapp_gene_symbol = er.panelapp_gene_symbol
+              ON gm.hgnc_id = er.hgnc_id
             WHERE gm.source = 'recent_evidence'
-              AND er.panelapp_gene_symbol IS NULL
-            ORDER BY gm.panelapp_gene_symbol
+              AND er.hgnc_id IS NULL
+            ORDER BY gm.hgnc_id
             """
         )
         genes = [row[0] for row in cursor.fetchall()]
@@ -293,6 +294,9 @@ def main(
     if not genes:
         logger.info("No genes require expansion")
         return
+
+    # Load HGNC resolver for gene symbol lookup
+    hgnc_resolver = HgncResolver.from_file()
 
     # Initialize LLM processor
     logger.info("Initializing LLM processor...")
@@ -307,20 +311,21 @@ def main(
 
     total_papers_added = 0
 
-    for gene_symbol in tqdm(genes, desc="Expanding literature for genes"):
-        articles = get_articles_for_gene(baseline_db_path, gene_symbol, pmid_limit, cutoff_date)
+    for hgnc_id in tqdm(genes, desc="Expanding literature for genes"):
+        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
+        articles = get_articles_for_gene(baseline_db_path, hgnc_id, pmid_limit, cutoff_date)
 
         if not articles:
-            logger.warning(f"No articles found for {gene_symbol}")
+            logger.warning(f"No articles found for {hgnc_symbol} (HGNC:{hgnc_id})")
             _record_expansion_completion(
                 db_path,
-                gene_symbol,
+                hgnc_id,
                 TournamentOutcome(selected_articles=[], raw_responses_by_round=[]),
             )
             continue
 
         tournament_outcome = run_tournament_selection(
-            gene_symbol=gene_symbol,
+            gene_symbol=hgnc_symbol,
             articles=articles,
             llm_processor=inference_engine,
             prompt_template=template,
@@ -332,13 +337,13 @@ def main(
         )
 
         logger.info(
-            f"Selected {len(tournament_outcome.selected_articles)} papers for {gene_symbol}"
+            f"Selected {len(tournament_outcome.selected_articles)} papers for {hgnc_symbol}"
         )
 
-        store_expansion_papers(db_path, tournament_outcome.selected_articles, gene_symbol)
+        store_expansion_papers(db_path, tournament_outcome.selected_articles, hgnc_symbol)
         total_papers_added += len(tournament_outcome.selected_articles)
 
-        _record_expansion_completion(db_path, gene_symbol, tournament_outcome)
+        _record_expansion_completion(db_path, hgnc_id, tournament_outcome)
 
     logger.info("Literature expansion complete!")
     logger.info(f"Total genes processed: {len(genes)}")

@@ -137,7 +137,7 @@ Confidence reflects how sure you are about inclusion/exclusion, not the strength
   "confidence": "LOW|MEDIUM|HIGH",
   "rationale": "brief explanation",
   "associations": [
-    {{"gene": "gene symbol only", "disease": "disease/phenotype"}}
+    {{"gene_symbol": "gene symbol only", "disease": "disease/phenotype"}}
   ]
 }}
 ```

@@ -16,6 +16,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from palit.docling import parse_bbox_mapping_from_json
+from palit.hgnc import HgncResolver
 from palit.panelapp_client import (
     PanelAppClient,
     PanelGeneData,
@@ -186,7 +187,8 @@ class PanelMatch:
 class GeneAssessment:
     """Represents a gene's assessment (panel-agnostic)."""
 
-    gene_symbol: str
+    hgnc_id: int
+    hgnc_symbol: str
     assessment_json: dict[str, Any]
     existing_rating: int | None  # Current confidence level in panel (for known genes)
     existing_moi: str | None  # Current mode of inheritance from panel (mapped to enum)
@@ -302,23 +304,23 @@ def format_gene_with_aliases(gene_assessment: GeneAssessment) -> str:
     Returns:
         Formatted string like "PRKN (via alias: PARK2)" or just "PRKN"
     """
-    gene_symbol: str = gene_assessment.gene_symbol
+    hgnc_symbol: str = gene_assessment.hgnc_symbol
 
     # Collect all paper gene symbols from contributing papers
-    paper_symbols = set()
+    paper_gene_symbols = set()
     for paper in gene_assessment.contributing_papers:
         if paper.paper_gene_symbol:
-            paper_symbols.add(paper.paper_gene_symbol)
+            paper_gene_symbols.add(paper.paper_gene_symbol)
 
-    # Remove the panelapp symbol itself
-    paper_symbols.discard(gene_symbol)
+    # Remove the HGNC symbol itself
+    paper_gene_symbols.discard(hgnc_symbol)
 
-    if paper_symbols:
-        aliases = sorted(paper_symbols)
+    if paper_gene_symbols:
+        aliases = sorted(paper_gene_symbols)
         alias_str = ", ".join(aliases)
-        return f"{gene_symbol} <span class='gene-alias'>(via alias: {alias_str})</span>"
+        return f"{hgnc_symbol} <span class='gene-alias'>(via alias: {alias_str})</span>"
     else:
-        return gene_symbol
+        return hgnc_symbol
 
 
 POPULATION_NAMES = {
@@ -399,13 +401,13 @@ def _create_variant_frequency_from_db_row(
 
 
 def load_variant_frequencies_for_gene(
-    cursor: sqlite3.Cursor, gene_symbol: str, contributing_papers: list[DetailedPaper]
+    cursor: sqlite3.Cursor, hgnc_id: int, contributing_papers: list[DetailedPaper]
 ) -> list[VariantFrequency]:
     """Load variant frequency information for a specific gene.
 
     Args:
         cursor: Database cursor
-        gene_symbol: Gene symbol to load variants for
+        hgnc_id: HGNC ID of the gene to load variants for
         contributing_papers: Papers contributing to this gene assessment
 
     Returns:
@@ -427,10 +429,10 @@ def load_variant_frequencies_for_gene(
             vf.normalization,
             vf.gnomad
         FROM variant_frequencies vf
-        WHERE vf.panelapp_gene_symbol = ?
+        WHERE vf.hgnc_id = ?
         ORDER BY vf.pmid DESC, vf.variant_id
     """,
-        (gene_symbol,),
+        (hgnc_id,),
     )
 
     variant_frequencies = []
@@ -485,12 +487,11 @@ def load_variant_frequencies_for_paper(
         SELECT
             vf.variant_id,
             vf.box_id,
-            vf.panelapp_gene_symbol,
             vf.normalization,
             vf.gnomad
         FROM variant_frequencies vf
         WHERE vf.pmid = ?
-        ORDER BY vf.panelapp_gene_symbol, vf.variant_id
+        ORDER BY vf.hgnc_id, vf.variant_id
     """,
         (pmid,),
     )
@@ -528,7 +529,10 @@ def load_variant_frequencies_for_paper(
 
 
 def load_gene_assessments(
-    db_path: Path, panel_date: str, target_panel_ids: list[int] | None = None
+    db_path: Path,
+    panel_date: str,
+    hgnc_resolver: HgncResolver,
+    target_panel_ids: list[int] | None = None,
 ) -> GeneAssessmentResults:
     """Load assessments from gene_assessments table for genes from initial papers only.
 
@@ -547,7 +551,7 @@ def load_gene_assessments(
     target_panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
     all_panels_data = panelapp_client.get_all_panels_genes()
     logger.info(
-        f"Loaded {len(target_panel_data.combined_gene_symbols)} genes from target panels, {len(all_panels_data.gene_to_panels)} genes from all panels"
+        f"Loaded {len(target_panel_data.gene_confidence)} genes from target panels, {len(all_panels_data.gene_to_panels)} genes from all panels"
     )
 
     novel_genes = []
@@ -560,15 +564,15 @@ def load_gene_assessments(
         # Get all genes from gene_assessments (already filtered to working set during aggregate-assessment)
         cursor.execute("""
             SELECT
-                panelapp_gene_symbol,
+                hgnc_id,
                 assessment_json,
                 matched_panels_json
             FROM gene_assessments
-            ORDER BY panelapp_gene_symbol
+            ORDER BY hgnc_id
         """)
 
         for row in cursor.fetchall():
-            panelapp_gene_symbol = row["panelapp_gene_symbol"]
+            hgnc_id: int = row["hgnc_id"]
             assessment_json = json.loads(row["assessment_json"])
             matched_panels = json.loads(row["matched_panels_json"] or "[]")
 
@@ -577,7 +581,7 @@ def load_gene_assessments(
 
             # Get current panel membership from target panels only (for novel/known determination)
             # List preserves order from target_panel_ids
-            gene_panels = target_panel_data.gene_panel_mapping.get(panelapp_gene_symbol, set())
+            gene_panels = target_panel_data.gene_panel_mapping.get(hgnc_id, set())
             target_panel_membership = [
                 pid for pid in target_panel_data.panel_ids if pid in gene_panels
             ]
@@ -591,11 +595,11 @@ def load_gene_assessments(
                 rationale = match["rationale"]
 
                 # Check if gene is currently in this matched panel (from all panels data)
-                current_panels = all_panels_data.gene_to_panels.get(panelapp_gene_symbol, set())
+                current_panels = all_panels_data.gene_to_panels.get(hgnc_id, set())
                 panel_name = all_panels_data.panel_names.get(panel_id)
                 if panel_name is None:
                     logger.warning(
-                        f"Panel {panel_id} no longer exists in PanelApp, skipping match for {panelapp_gene_symbol}"
+                        f"Panel {panel_id} no longer exists in PanelApp, skipping match for HGNC:{hgnc_id}"
                     )
                     continue
 
@@ -638,11 +642,11 @@ def load_gene_assessments(
                     gm.paper_gene_symbol
                 FROM papers p
                 JOIN gene_mentions gm ON p.pmid = gm.pmid
-                WHERE gm.panelapp_gene_symbol = ?
+                WHERE gm.hgnc_id = ?
                 AND p.evidence_extraction_json IS NOT NULL
                 ORDER BY p.pmid DESC
             """,
-                (panelapp_gene_symbol,),
+                (hgnc_id,),
             )
 
             contributing_papers = []
@@ -672,9 +676,7 @@ def load_gene_assessments(
                 # (they may mention the gene but only have evidence for other genes)
                 if evidence_extraction:
                     gene_evals = evidence_extraction.get("gene_evaluations", [])
-                    has_gene_evidence = any(
-                        g["gene"] == paper_row["paper_gene_symbol"] for g in gene_evals
-                    )
+                    has_gene_evidence = any(g.get("hgnc_id") == hgnc_id for g in gene_evals)
                     if not has_gene_evidence:
                         continue
 
@@ -721,7 +723,7 @@ def load_gene_assessments(
 
             # Load variant frequencies for this gene
             variant_frequencies = load_variant_frequencies_for_gene(
-                cursor, panelapp_gene_symbol, contributing_papers
+                cursor, hgnc_id, contributing_papers
             )
 
             # Gene is novel if not in any target panel
@@ -731,11 +733,9 @@ def load_gene_assessments(
             existing_rating = None
             existing_moi = None
             if not is_novel:
-                existing_rating = target_panel_data.gene_confidence[panelapp_gene_symbol]
+                existing_rating = target_panel_data.gene_confidence[hgnc_id]
                 # Map PanelApp MoI to our enum
-                existing_moi = PANELAPP_MOI_TO_ENUM[
-                    target_panel_data.gene_moi[panelapp_gene_symbol]
-                ]
+                existing_moi = PANELAPP_MOI_TO_ENUM[target_panel_data.gene_moi[hgnc_id]]
 
             # Compute MoI comparison (precompute for sorting and display)
             disease_entities = assessment_json.get("disease_entities", [])
@@ -767,7 +767,7 @@ def load_gene_assessments(
                 prefill_form_type = "review"
 
             prefill_data = prepare_prefill_data(
-                gene_symbol=panelapp_gene_symbol,
+                hgnc_id=hgnc_id,
                 assessment_json=assessment_json,
                 form_type=prefill_form_type,
                 panel_id=prefill_panel_id,
@@ -777,7 +777,8 @@ def load_gene_assessments(
 
             # Create assessment
             assessment = GeneAssessment(
-                gene_symbol=panelapp_gene_symbol,
+                hgnc_id=hgnc_id,
+                hgnc_symbol=hgnc_resolver.get_symbol(hgnc_id),
                 assessment_json=assessment_json,
                 existing_rating=existing_rating,
                 existing_moi=existing_moi,
@@ -806,21 +807,23 @@ def load_gene_assessments(
             0
             if (g.moi_comparison and g.moi_comparison.get("highlighted"))
             else 1,  # Highlighted MoI changes first
-            g.gene_symbol,
+            g.hgnc_symbol,
         )
     )
 
     # Sort known genes: by existing rating (lowest first), then new rating (highest first), then highlighted MoI changes first, then gene name
     def known_sort_key(g: GeneAssessment) -> tuple:
         # Get confidence level from target panels
-        target_confidence = target_panel_data.gene_confidence.get(g.gene_symbol)
+        target_confidence = target_panel_data.gene_confidence.get(g.hgnc_id)
 
         if target_confidence is None:
-            raise ValueError(f"Known gene {g.gene_symbol} has no confidence level in target panels")
+            raise ValueError(
+                f"Known gene {g.hgnc_symbol} (HGNC:{g.hgnc_id}) has no confidence level in target panels"
+            )
 
         # Sort by existing confidence (ascending), new rating (descending), highlighted MoI (first), gene symbol
         has_highlighted_moi = 0 if (g.moi_comparison and g.moi_comparison.get("highlighted")) else 1
-        return (target_confidence, -g.new_rating, has_highlighted_moi, g.gene_symbol)
+        return (target_confidence, -g.new_rating, has_highlighted_moi, g.hgnc_symbol)
 
     known_genes.sort(key=known_sort_key)
 
@@ -1176,7 +1179,7 @@ def calculate_comprehensive_statistics(
         known_upgraded = 0
         for gene in results.known_genes:
             # Get current confidence from target panel data
-            current_confidence = results.target_panel_data.gene_confidence.get(gene.gene_symbol)
+            current_confidence = results.target_panel_data.gene_confidence.get(gene.hgnc_id)
             # Current is RED or AMBER (1, 2), new is GREEN (3)
             if current_confidence is not None and current_confidence < 3 and gene.new_rating == 3:
                 known_upgraded += 1
@@ -1394,8 +1397,9 @@ def build_report_config(
     """
     genes = {}
     for gene in novel_genes + known_genes:
-        genes[gene.gene_symbol] = {
-            "suggested_rating": panelapp_confidence_to_color(gene.new_rating).upper()
+        genes[f"HGNC:{gene.hgnc_id}"] = {
+            "hgnc_symbol": gene.hgnc_symbol,
+            "suggested_rating": panelapp_confidence_to_color(gene.new_rating).upper(),
         }
 
     config = {
@@ -1597,7 +1601,8 @@ def main(
     logger.info(f"Creating package from database: {db_path}")
 
     # Generate report
-    results = load_gene_assessments(db_path, panel_date, target_panel_ids)
+    hgnc_resolver = HgncResolver.from_file()
+    results = load_gene_assessments(db_path, panel_date, hgnc_resolver, target_panel_ids)
     panel_validation = load_panel_publications_validation(db_path, target_panel_ids)
     low_confidence_papers = load_low_confidence_irrelevant_papers(db_path)
     manual_download_papers = load_manual_download_papers(db_path)
@@ -1630,10 +1635,10 @@ def main(
     annotated_output.mkdir(exist_ok=True)
 
     # Collect all needed PDFs from assessments
-    # Aggregate PDFs: {gene}/{pmid}.pdf (from aggregate assessment citations)
+    # Aggregate PDFs: {hgnc_id}/{pmid}.pdf (from aggregate assessment citations)
     # Individual PDFs: individual/{pmid}.pdf (from contributing papers)
-    aggregate_pdfs = set()  # (gene, pmid) tuples
-    individual_pdfs = set()  # pmid values
+    aggregate_pdfs: set[tuple[int, int]] = set()  # (hgnc_id, pmid) tuples
+    individual_pdfs: set[int] = set()  # pmid values
 
     all_genes = results.novel_genes + results.known_genes
 
@@ -1642,33 +1647,31 @@ def main(
         cursor = conn.cursor()
 
         for assessment in all_genes:
-            gene = assessment.gene_symbol
-
             # Collect aggregate PDF needs from:
             # 1. Evidence criteria citations (PANELAPP_CRITERIA)
             for criterion_name in PANELAPP_CRITERIA:
                 criterion = assessment.assessment_json[criterion_name]
                 for citation in criterion.get("citations", []):
                     pmid = citation["pmid"]
-                    aggregate_pdfs.add((gene, pmid))
+                    aggregate_pdfs.add((assessment.hgnc_id, pmid))
 
             # 2. Disease entity citations
             for disease_entity in assessment.assessment_json.get("disease_entities", []):
                 for citation in disease_entity.get("citations", []):
                     pmid = citation["pmid"]
-                    aggregate_pdfs.add((gene, pmid))
+                    aggregate_pdfs.add((assessment.hgnc_id, pmid))
 
             # 3. Variant frequency papers (all papers with variants for this gene)
             cursor.execute(
                 """
                 SELECT DISTINCT pmid
                 FROM variant_frequencies
-                WHERE panelapp_gene_symbol = ?
+                WHERE hgnc_id = ?
             """,
-                (gene,),
+                (assessment.hgnc_id,),
             )
             for row in cursor.fetchall():
-                aggregate_pdfs.add((gene, row["pmid"]))
+                aggregate_pdfs.add((assessment.hgnc_id, row["pmid"]))
 
             # Collect individual PDF needs (from contributing papers)
             for paper in assessment.contributing_papers:
@@ -1678,9 +1681,10 @@ def main(
     copied = 0
     missing = []
 
-    for gene, pmid in aggregate_pdfs:
-        source_path = annotated_dir / gene / f"{pmid}.pdf"
-        dest_dir = annotated_output / gene
+    for hgnc_id, pmid in aggregate_pdfs:
+        hgnc_id_str = str(hgnc_id)
+        source_path = annotated_dir / hgnc_id_str / f"{pmid}.pdf"
+        dest_dir = annotated_output / hgnc_id_str
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_path = dest_dir / f"{pmid}.pdf"
 
@@ -1688,7 +1692,7 @@ def main(
             shutil.copy2(source_path, dest_path)
             copied += 1
         else:
-            missing.append(f"aggregate: {gene}/{pmid}.pdf")
+            missing.append(f"aggregate: {hgnc_id_str}/{pmid}.pdf")
 
     # Copy individual PDFs
     individual_dest = annotated_output / "individual"

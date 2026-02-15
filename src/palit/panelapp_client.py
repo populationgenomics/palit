@@ -4,7 +4,6 @@
 import json
 import logging
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -90,39 +89,27 @@ PANELAPP_BASE_URL = "https://panelapp-aus.org/api/v1"
 
 @dataclass(frozen=True)
 class ResolvedGene:
-    """A gene symbol resolved from paper mention to PanelApp form."""
+    """A gene resolved from paper mention to HGNC ID."""
 
-    panelapp_symbol: str  # Symbol as used in PanelApp (for matching/lookup)
+    hgnc_id: int  # HGNC ID (integer)
     paper_symbol: str  # Original symbol mentioned in paper
 
 
 @dataclass
-class NewNameTaggedGene:
-    """A gene tagged with 'new gene name' in PanelApp."""
-
-    panelapp_symbol: str
-    hgnc_id: str
-
-
-@dataclass
 class PanelGeneData:
-    """Combined gene data from PanelApp panels."""
+    """Combined gene data from PanelApp panels, keyed by HGNC ID."""
 
     panel_ids: list[int]  # Ordered list of panel IDs
-    combined_gene_symbols: set[
-        str
-    ]  # All unique gene symbols (PanelApp symbols + current HGNC aliases)
-    gene_confidence: dict[str, int]  # PanelApp symbol -> confidence level (integer)
-    hgnc_to_panelapp: dict[str, str]  # Current HGNC symbol -> PanelApp symbol mapping
-    gene_panel_mapping: dict[str, set[int]]  # Gene symbol -> set of panel IDs
-    gene_moi: dict[str, str]  # PanelApp symbol -> mode of inheritance
+    gene_confidence: dict[int, int]  # hgnc_id → confidence level
+    gene_panel_mapping: dict[int, set[int]]  # hgnc_id → set of panel IDs
+    gene_moi: dict[int, str]  # hgnc_id → mode of inheritance
 
 
 @dataclass
 class AllPanelsData:
     """Gene data from ALL panels with panel information."""
 
-    gene_to_panels: dict[str, set[int]]  # gene_symbol -> set of panel_ids
+    gene_to_panels: dict[int, set[int]]  # hgnc_id -> set of panel_ids
     panel_names: dict[int, str]  # panel_id -> panel name
 
 
@@ -172,28 +159,9 @@ def extract_panel_pmids(panel_data: dict[str, Any]) -> list[int]:
     return unique_pmids
 
 
-def resolve_gene_symbols(gene_symbols: set[str], panel_data: PanelGeneData) -> set[ResolvedGene]:
-    """Resolve a set of gene symbols using PanelApp alias mappings.
-
-    Args:
-        gene_symbols: Set of gene symbols from paper (case-insensitive)
-        panel_data: PanelApp gene data with alias mappings
-
-    Returns:
-        Set of ResolvedGene objects with both paper and panelapp symbols
-    """
-    resolved_genes = set()
-
-    for paper_symbol in gene_symbols:
-        if not paper_symbol:
-            continue
-
-        paper_symbol_upper = paper_symbol.upper()
-        # Resolve to PanelApp symbol if it's an alias
-        panelapp_symbol = panel_data.hgnc_to_panelapp.get(paper_symbol_upper, paper_symbol_upper)
-        resolved_genes.add(ResolvedGene(panelapp_symbol, paper_symbol_upper))
-
-    return resolved_genes
+def _parse_hgnc_id(hgnc_id_str: str) -> int:
+    """Parse PanelApp HGNC ID string (e.g. 'HGNC:8607') to integer."""
+    return int(hgnc_id_str.removeprefix("HGNC:"))
 
 
 def format_panel_for_prompt(panel_id: int, panel_info: dict[str, Any]) -> str:
@@ -328,124 +296,6 @@ class PanelAppClient:
 
         return all_panels
 
-    def get_genes_with_new_name_tag(self) -> list[NewNameTaggedGene]:
-        """Extract all genes with 'new gene name' tag from cached panel data."""
-        panel_data_cache = self._ensure_cache_loaded()
-
-        # First collect all genes with the tag to check for collisions
-        genes_by_hgnc = defaultdict(list)
-
-        for panel_id, panel_data in panel_data_cache.items():
-            all_entities = panel_data.get("genes", []) + panel_data.get("strs", [])
-
-            for entity in all_entities:
-                if "new gene name" in entity.get("tags", []):
-                    gene_data = entity.get("gene_data", {})
-                    gene_symbol = entity.get("entity_name")
-                    hgnc_id = gene_data.get("hgnc_id")
-
-                    if gene_symbol and hgnc_id:
-                        genes_by_hgnc[hgnc_id].append(
-                            {"panelapp_symbol": gene_symbol, "panel_id": panel_id}
-                        )
-
-        # Detect collisions: same HGNC ID with different PanelApp symbols
-        collisions = []
-        for hgnc_id, gene_list in genes_by_hgnc.items():
-            panelapp_symbols = {g["panelapp_symbol"] for g in gene_list}
-            if len(panelapp_symbols) > 1:
-                collisions.append((hgnc_id, gene_list))
-
-        if collisions:
-            error_msg = f"CRITICAL: Found {len(collisions)} HGNC ID collisions with different PanelApp symbols:\n"
-            for hgnc_id, gene_list in collisions:
-                error_msg += f"  HGNC {hgnc_id}:\n"
-                for gene in gene_list:
-                    error_msg += f"    Panel {gene['panel_id']}: {gene['panelapp_symbol']}\n"
-            error_msg += "This would cause incorrect alias mappings. Fix data inconsistency before proceeding."
-            raise ValueError(error_msg)
-
-        # Convert to list of unique genes (deduplicated by HGNC ID)
-        unique_genes = []
-        seen_hgnc_ids = set()
-
-        for hgnc_id, gene_list in genes_by_hgnc.items():
-            if hgnc_id not in seen_hgnc_ids:
-                seen_hgnc_ids.add(hgnc_id)
-                # Take the first occurrence (they should all be the same after collision check)
-                unique_genes.append(
-                    NewNameTaggedGene(
-                        panelapp_symbol=gene_list[0]["panelapp_symbol"], hgnc_id=hgnc_id
-                    )
-                )
-
-        return unique_genes
-
-    def load_hgnc_lookup_by_id(self) -> dict[str, str]:
-        """Build HGNC ID → current symbol lookup from local HGNC data."""
-        hgnc_file = Path("data/hgnc_complete_set.json")
-
-        if not hgnc_file.exists():
-            raise FileNotFoundError(f"HGNC data file not found at {hgnc_file}")
-
-        logger.info(f"Loading HGNC data from {hgnc_file}...")
-
-        with open(hgnc_file) as f:
-            hgnc_data: dict[str, Any] = json.load(f)
-
-        hgnc_by_id = {}
-        docs = hgnc_data.get("response", {}).get("docs", [])
-
-        for doc in docs:
-            hgnc_id = doc.get("hgnc_id")
-            symbol = doc.get("symbol")
-            if hgnc_id and symbol:
-                hgnc_by_id[hgnc_id] = symbol
-
-        logger.info(f"Loaded {len(hgnc_by_id)} HGNC ID mappings")
-        return hgnc_by_id
-
-    def get_hgnc_to_panelapp_mappings(self) -> dict[str, str]:
-        """Get mappings from current HGNC symbols to outdated PanelApp symbols.
-
-        For genes tagged with 'new gene name' in PanelApp, this fetches the current
-        HGNC symbol and creates a mapping to the outdated symbol still used in PanelApp.
-
-        Returns:
-            Dict mapping current HGNC symbol (uppercase) -> outdated PanelApp symbol (uppercase)
-            Example: {'RXYLT1': 'TMEM5', 'LARS1': 'LARS', 'CRPPA': 'ISPD', ...}
-        """
-        try:
-            tagged_genes = self.get_genes_with_new_name_tag()
-            hgnc_lookup = self.load_hgnc_lookup_by_id()
-
-            if not hgnc_lookup:
-                return {}
-
-            aliases = {}
-            no_change_genes = set()
-
-            for gene in tagged_genes:
-                current_symbol = hgnc_lookup.get(gene.hgnc_id)
-
-                if current_symbol:
-                    if current_symbol.upper() == gene.panelapp_symbol.upper():
-                        no_change_genes.add(f"{gene.panelapp_symbol} ({gene.hgnc_id})")
-                    else:
-                        aliases[current_symbol.upper()] = gene.panelapp_symbol.upper()
-
-            if no_change_genes:
-                logger.warning(
-                    f"{len(no_change_genes)} genes tagged 'new gene name' but have unchanged HGNC symbols: {', '.join(sorted(no_change_genes))}"
-                )
-
-            logger.info(f"Found {len(aliases)} HGNC-based gene aliases")
-            return aliases
-
-        except Exception as e:
-            logger.warning(f"Failed to get HGNC aliases: {e}")
-            return {}
-
     def get_panel_data(self, panel_id: int) -> dict[str, Any]:
         """Get panel data from cache.
 
@@ -463,136 +313,86 @@ class PanelAppClient:
         return panel_data_cache[panel_id]
 
     def get_target_panels_genes(self, panel_ids: list[int] | None = None) -> PanelGeneData:
-        """Get gene symbols and confidence levels from specified panels.
+        """Get gene data from specified panels, keyed by HGNC ID.
 
         This includes both genes and STRs (Short Tandem Repeats) from the panels.
-        Also collects gene aliases for improved matching.
 
         Args:
             panel_ids: List of panel IDs to include. If None, uses TARGET_PANEL_IDS.
 
         Returns:
-            PanelGeneData containing all gene symbols, confidence levels, and alias mappings.
+            PanelGeneData with confidence, panel mapping, and MoI keyed by HGNC ID.
         """
         if panel_ids is None:
             panel_ids = TARGET_PANEL_IDS
 
         panel_data_cache = self._ensure_cache_loaded()
 
-        combined_gene_symbols: set[str] = set()
-        combined_gene_confidence: dict[str, int] = {}
-        combined_gene_moi: dict[str, str] = {}  # Track mode of inheritance
-        hgnc_to_panelapp: dict[str, str] = {}  # Maps current HGNC symbols to PanelApp symbols
-        gene_sources: dict[str, set[int]] = {}  # Track which panels contribute each gene
-        gene_panel_mapping: dict[str, set[int]] = {}  # Track gene to panel mappings
-        panel_gene_counts: dict[int, int] = {}
+        gene_confidence: dict[int, int] = {}
+        gene_moi: dict[int, str] = {}
+        gene_panel_mapping: dict[int, set[int]] = {}
 
         for panel_id in panel_ids:
             panel_data = panel_data_cache[panel_id]
-
-            # Process all entities (genes and STRs) for this panel
-            panel_gene_count = 0
             all_entities = panel_data.get("genes", []) + panel_data.get("strs", [])
 
             for entity in all_entities:
                 gene_data = entity.get("gene_data", {})
-                gene_symbol = gene_data.get("gene_symbol")
+                hgnc_id_str = gene_data.get("hgnc_id")
+                if not hgnc_id_str:
+                    entity_name = entity.get("entity_name", "unknown")
+                    raise ValueError(f"Entity '{entity_name}' in panel {panel_id} has no hgnc_id")
+
+                hgnc_id = _parse_hgnc_id(hgnc_id_str)
+
                 confidence_level = entity.get("confidence_level")
                 if confidence_level is None:
+                    entity_name = entity.get("entity_name", "unknown")
                     raise ValueError(
-                        f"Gene '{gene_symbol}' has no confidence_level in API response"
+                        f"Entity '{entity_name}' in panel {panel_id} has no confidence_level"
                     )
 
-                if gene_symbol:
-                    gene_symbol_upper = gene_symbol.upper()
-                    combined_gene_symbols.add(gene_symbol_upper)
-                    panel_gene_count += 1
+                gene_panel_mapping.setdefault(hgnc_id, set()).add(panel_id)
 
-                    # Track which panels contribute this gene
-                    if gene_symbol_upper not in gene_sources:
-                        gene_sources[gene_symbol_upper] = set()
-                        gene_panel_mapping[gene_symbol_upper] = set()
-                    gene_sources[gene_symbol_upper].add(panel_id)
-                    gene_panel_mapping[gene_symbol_upper].add(panel_id)
+                # Use highest confidence across panels; track MoI from the same entity
+                confidence_int = int(confidence_level)
+                if hgnc_id not in gene_confidence or confidence_int > gene_confidence[hgnc_id]:
+                    gene_confidence[hgnc_id] = confidence_int
+                    moi = entity.get("mode_of_inheritance") or "Unknown"
+                    gene_moi[hgnc_id] = moi
 
-                    # Handle confidence level conflicts - use highest confidence
-                    # Also track MoI from the same entity that provides the highest confidence
-                    confidence_int = int(confidence_level)
-                    if (
-                        gene_symbol_upper not in combined_gene_confidence
-                        or confidence_int > combined_gene_confidence[gene_symbol_upper]
-                    ):
-                        combined_gene_confidence[gene_symbol_upper] = confidence_int
-                        # Store MoI from same entity that provides confidence
-                        moi = entity.get("mode_of_inheritance") or "Unknown"
-                        combined_gene_moi[gene_symbol_upper] = moi
-
-            panel_gene_counts[panel_id] = panel_gene_count
-
-        # Add current HGNC symbols that map to outdated PanelApp symbols
-        all_hgnc_to_panelapp = self.get_hgnc_to_panelapp_mappings()
-
-        # Filter to only include aliases where the PanelApp symbol is in our target panels
-        hgnc_to_panelapp = {
-            hgnc_symbol: panelapp_symbol
-            for hgnc_symbol, panelapp_symbol in all_hgnc_to_panelapp.items()
-            if panelapp_symbol in combined_gene_confidence
-        }
-
-        logger.info(
-            f"Filtered aliases to target panels: {len(hgnc_to_panelapp)} (from {len(all_hgnc_to_panelapp)})"
-        )
-        combined_gene_symbols = combined_gene_symbols.union(hgnc_to_panelapp.keys())
-
-        # Update gene panel mappings for aliases
-        for hgnc_symbol, panelapp_symbol in hgnc_to_panelapp.items():
-            if panelapp_symbol in gene_panel_mapping:
-                gene_panel_mapping[hgnc_symbol] = gene_panel_mapping[panelapp_symbol].copy()
-
-        # Calculate overlap
-        len([gene for gene, sources in gene_sources.items() if len(sources) > 1])
+        logger.info(f"Loaded {len(gene_confidence)} genes from {len(panel_ids)} target panels")
 
         return PanelGeneData(
             panel_ids=panel_ids,
-            combined_gene_symbols=combined_gene_symbols,
-            gene_confidence=combined_gene_confidence,
-            hgnc_to_panelapp=hgnc_to_panelapp,
+            gene_confidence=gene_confidence,
             gene_panel_mapping=gene_panel_mapping,
-            gene_moi=combined_gene_moi,
+            gene_moi=gene_moi,
         )
 
     def get_all_panels_genes(self) -> AllPanelsData:
-        """Get genes from ALL panels using cached data.
+        """Get genes from ALL panels using cached data, keyed by HGNC ID.
 
         Returns:
             AllPanelsData containing gene-to-panels mapping and panel names
         """
         panel_data_cache = self._ensure_cache_loaded()
 
-        # Build mapping: gene -> panels it belongs to and collect panel names
-        gene_to_panels: dict[str, set[int]] = {}
+        gene_to_panels: dict[int, set[int]] = {}
         panel_names: dict[int, str] = {}
 
         for panel_id, panel_data in panel_data_cache.items():
-            # Store panel name
             panel_names[panel_id] = panel_data.get("name", f"Panel {panel_id}")
 
-            # Process all entities (genes and STRs) for this panel
             all_entities = panel_data.get("genes", []) + panel_data.get("strs", [])
 
             for entity in all_entities:
                 gene_data = entity.get("gene_data", {})
-                gene_symbol = gene_data.get("gene_symbol")
-
-                if gene_symbol:
-                    gene_symbol_upper = gene_symbol.upper()
-
-                    # Initialize gene entry if needed
-                    if gene_symbol_upper not in gene_to_panels:
-                        gene_to_panels[gene_symbol_upper] = set()
-
-                    # Store panel membership
-                    gene_to_panels[gene_symbol_upper].add(panel_id)
+                hgnc_id_str = gene_data.get("hgnc_id")
+                if not hgnc_id_str:
+                    continue  # Skip entities without HGNC ID in non-target panels
+                hgnc_id = _parse_hgnc_id(hgnc_id_str)
+                gene_to_panels.setdefault(hgnc_id, set()).add(panel_id)
 
         return AllPanelsData(gene_to_panels=gene_to_panels, panel_names=panel_names)
 
@@ -673,7 +473,7 @@ class PanelAppClient:
 
         return panels
 
-    def get_gene_evaluations(self, panel_id: int, gene_symbol: str) -> list[dict[str, Any]]:
+    def get_gene_evaluations(self, panel_id: int, hgnc_id: int) -> list[dict[str, Any]]:
         """Fetch evaluations with comments for a gene in a panel.
 
         Makes a live API call (not cached) to get the current evaluations
@@ -681,13 +481,13 @@ class PanelAppClient:
 
         Args:
             panel_id: Panel ID
-            gene_symbol: Gene symbol to look up
+            hgnc_id: HGNC ID of the gene
 
         Returns:
             List of evaluation dicts with comments, ordered by most recent first.
             Returns empty list if gene is not in the panel (404).
         """
-        url = f"{self.base_url}/panels/{panel_id}/genes/{gene_symbol}/evaluations/?include_comments=true"
+        url = f"{self.base_url}/panels/{panel_id}/genes/HGNC:{hgnc_id}/evaluations/?include_comments=true"
 
         with httpx.Client(timeout=self.timeout) as client:
             try:
@@ -699,8 +499,7 @@ class PanelAppClient:
                 return results
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
-                    # Gene not in panel - this is expected for novel genes
-                    logger.debug(f"Gene {gene_symbol} not found in panel {panel_id}")
+                    logger.debug(f"HGNC:{hgnc_id} not found in panel {panel_id}")
                     return []
                 raise
 

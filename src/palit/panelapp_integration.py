@@ -70,7 +70,7 @@ class PrefillData:
 
     form_type: str  # "add" or "review"
     panel_id: int
-    gene_symbol: str
+    hgnc_id: str  # "HGNC:8607" format for PanelApp
     rating: str  # "GREEN", "AMBER", "RED"
     moi: str  # Full PanelApp MoI string
     mode_of_pathogenicity: str | None
@@ -168,7 +168,7 @@ def count_families_by_moi(disease_entities: list[dict[str, Any]]) -> dict[str, i
 
 
 def prepare_prefill_data(
-    gene_symbol: str,
+    hgnc_id: int,
     assessment_json: dict[str, Any],
     form_type: str,
     panel_id: int,
@@ -177,7 +177,7 @@ def prepare_prefill_data(
     """Prepare prefill form data from gene assessment.
 
     Args:
-        gene_symbol: Gene symbol
+        hgnc_id: HGNC ID (integer) of the gene
         assessment_json: Assessment JSON with criteria evaluations
         form_type: "add" or "review"
         panel_id: Target panel ID
@@ -217,7 +217,7 @@ def prepare_prefill_data(
     return PrefillData(
         form_type=form_type,
         panel_id=panel_id,
-        gene_symbol=gene_symbol,
+        hgnc_id=f"HGNC:{hgnc_id}",
         rating=rating_str,
         moi=moi,
         mode_of_pathogenicity=mode_of_pathogenicity,

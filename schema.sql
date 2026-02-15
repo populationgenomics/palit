@@ -38,23 +38,23 @@ CREATE TABLE papers (
 -- Query relevance_assessment_json.associations or evidence_extraction_json.disease_entities for actual disease associations
 CREATE TABLE gene_mentions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    panelapp_gene_symbol TEXT NOT NULL,  -- Symbol as used in PanelApp (for novelty detection)
+    hgnc_id INTEGER NOT NULL,
     paper_gene_symbol TEXT NOT NULL,     -- Original symbol mentioned in paper (may be alias)
     pmid INTEGER NOT NULL,
     source TEXT CHECK(source IN ('recent_evidence', 'expansion_evidence', 'relevance_assessment')) NOT NULL,
 
     FOREIGN KEY (pmid) REFERENCES papers(pmid),
-    UNIQUE(pmid, panelapp_gene_symbol, source)
+    UNIQUE(pmid, hgnc_id, source)
 );
 
-CREATE INDEX idx_gene_mentions_panelapp ON gene_mentions(panelapp_gene_symbol);
+CREATE INDEX idx_gene_mentions_hgnc_id ON gene_mentions(hgnc_id);
 CREATE INDEX idx_gene_mentions_paper ON gene_mentions(paper_gene_symbol);
 CREATE INDEX idx_gene_mentions_pmid ON gene_mentions(pmid);
-CREATE INDEX idx_gene_mentions_source_gene ON gene_mentions(source, panelapp_gene_symbol);
+CREATE INDEX idx_gene_mentions_source_gene ON gene_mentions(source, hgnc_id);
 
 -- Track completed tournament selection runs per gene (used for resumability)
 CREATE TABLE tournament_results (
-    panelapp_gene_symbol TEXT PRIMARY KEY,
+    hgnc_id INTEGER PRIMARY KEY,
     selected_pmids_json JSON,
     tournament_raw_responses_json JSON  -- Includes LLM reasoning content
 );
@@ -79,7 +79,7 @@ CREATE INDEX idx_papers_has_evidence ON papers(evidence_extraction_json)
 
 -- Single assessment per gene with matched panels
 CREATE TABLE gene_assessments (
-    panelapp_gene_symbol TEXT PRIMARY KEY,  -- Symbol as used in PanelApp
+    hgnc_id INTEGER PRIMARY KEY,
     assessment_raw TEXT,   -- Raw LLM response including reasoning
     assessment_json JSON,  -- Contains full aggregate assessment
     matched_panels_raw TEXT,  -- Raw LLM response for panel matching including reasoning
@@ -94,7 +94,7 @@ CREATE INDEX idx_gene_assessments_unmatched ON gene_assessments(matched_panels_j
 CREATE TABLE variant_frequencies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- Auto-incrementing primary key
     variant_id TEXT NOT NULL,  -- gnomAD pseudo-VCF style (chr-pos-ref-alt)
-    panelapp_gene_symbol TEXT NOT NULL,  -- For report generation and indexing
+    hgnc_id INTEGER NOT NULL,  -- For report generation and indexing
     pmid INTEGER NOT NULL,  -- Paper where variant was mentioned
     box_id INTEGER NOT NULL,  -- For PDF citation linking
     normalization JSON NOT NULL,  -- HGVS c/p from variant normalizer
@@ -105,5 +105,5 @@ CREATE TABLE variant_frequencies (
 );
 
 CREATE INDEX idx_variant_frequencies_variant_id ON variant_frequencies(variant_id);
-CREATE INDEX idx_variant_frequencies_gene ON variant_frequencies(panelapp_gene_symbol);
+CREATE INDEX idx_variant_frequencies_hgnc_id ON variant_frequencies(hgnc_id);
 CREATE INDEX idx_variant_frequencies_pmid ON variant_frequencies(pmid);

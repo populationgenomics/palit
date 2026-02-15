@@ -57,13 +57,13 @@ def batch_sql_update(
 
 
 def read_pmids_from_db(
-    db_path: Path, skip_genes: list[str] | None = None, expansion_only: bool = False
+    db_path: Path, skip_hgnc_ids: list[int] | None = None, expansion_only: bool = False
 ) -> list[str]:
     """Read PMIDs from database where papers require manual download.
 
     Args:
         db_path: Path to database
-        skip_genes: Optional list of working set gene symbols to skip papers for
+        skip_hgnc_ids: Optional list of HGNC IDs to skip papers for
         expansion_only: Only include papers with source_type='expansion'
     """
     if not db_path.exists():
@@ -79,9 +79,9 @@ def read_pmids_from_db(
 
         base_where = " AND ".join(where_clauses)
 
-        if skip_genes:
-            # Exclude PMIDs that are associated with skip_genes from working set
-            placeholders = ",".join("?" * len(skip_genes))
+        if skip_hgnc_ids:
+            # Exclude PMIDs that are associated with skip_hgnc_ids
+            placeholders = ",".join("?" * len(skip_hgnc_ids))
             query = f"""
                 SELECT DISTINCT p.pmid
                 FROM papers p
@@ -89,11 +89,11 @@ def read_pmids_from_db(
                 AND p.pmid NOT IN (
                     SELECT DISTINCT gm.pmid
                     FROM gene_mentions gm
-                    WHERE gm.panelapp_gene_symbol IN ({placeholders})
+                    WHERE gm.hgnc_id IN ({placeholders})
                 )
                 ORDER BY p.pmid
             """
-            cursor.execute(query, skip_genes)
+            cursor.execute(query, skip_hgnc_ids)
         else:
             query = f"""
                 SELECT pmid FROM papers p
@@ -106,20 +106,20 @@ def read_pmids_from_db(
 
     if not pmids:
         logger.warning("No papers with download_status='manual_required' in database")
-    elif skip_genes:
-        logger.info(f"Excluding papers for genes: {', '.join(skip_genes)}")
+    elif skip_hgnc_ids:
+        logger.info(f"Excluding papers for HGNC IDs: {skip_hgnc_ids}")
 
     return pmids
 
 
 def read_pmids_and_titles_from_db(
-    db_path: Path, skip_genes: list[str] | None = None
+    db_path: Path, skip_hgnc_ids: list[int] | None = None
 ) -> dict[str, str]:
     """Read PMIDs and titles from database where papers have non-NULL download_status.
 
     Args:
         db_path: Path to database
-        skip_genes: Optional list of working set gene symbols to skip papers for
+        skip_hgnc_ids: Optional list of HGNC IDs to skip papers for
 
     Returns:
         Dict mapping PMID (as string) to title
@@ -130,9 +130,9 @@ def read_pmids_and_titles_from_db(
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        if skip_genes:
-            # Exclude PMIDs that are associated with skip_genes from working set
-            placeholders = ",".join("?" * len(skip_genes))
+        if skip_hgnc_ids:
+            # Exclude PMIDs that are associated with skip_hgnc_ids
+            placeholders = ",".join("?" * len(skip_hgnc_ids))
             query = f"""
                 SELECT DISTINCT p.pmid, p.title
                 FROM papers p
@@ -140,11 +140,11 @@ def read_pmids_and_titles_from_db(
                 AND p.pmid NOT IN (
                     SELECT DISTINCT gm.pmid
                     FROM gene_mentions gm
-                    WHERE gm.panelapp_gene_symbol IN ({placeholders})
+                    WHERE gm.hgnc_id IN ({placeholders})
                 )
                 ORDER BY p.pmid
             """
-            cursor.execute(query, skip_genes)
+            cursor.execute(query, skip_hgnc_ids)
         else:
             cursor.execute("""
                 SELECT pmid, title FROM papers
@@ -156,8 +156,8 @@ def read_pmids_and_titles_from_db(
 
     if not pmid_to_title:
         logger.warning("No papers with non-NULL download_status in database")
-    elif skip_genes:
-        logger.info(f"Excluding papers for genes: {', '.join(skip_genes)}")
+    elif skip_hgnc_ids:
+        logger.info(f"Excluding papers for HGNC IDs: {skip_hgnc_ids}")
 
     return pmid_to_title
 
@@ -172,29 +172,26 @@ def check_existing_files(pmid: str, download_dir: Path) -> list[str]:
     return existing
 
 
-def get_green_genes_from_panel(panel_date: str) -> list[str]:
-    """Get list of genes with GREEN (3) confidence rating from target panels.
+def get_green_hgnc_ids_from_panel(panel_date: str) -> list[int]:
+    """Get HGNC IDs of genes with GREEN (3) confidence rating from target panels.
 
     Args:
         panel_date: Date in YYYY-MM-DD format for panel state
 
     Returns:
-        List of PanelApp gene symbols with confidence level 3 (GREEN) in target panels
+        List of HGNC IDs with confidence level 3 (GREEN) in target panels
     """
     panelapp_client = PanelAppClient(panel_date)
     target_panel_data = panelapp_client.get_target_panels_genes()
 
-    # Filter to genes with confidence == 3 (GREEN)
-    green_panelapp_gene_symbols = [
-        panelapp_gene_symbol
-        for panelapp_gene_symbol, confidence in target_panel_data.gene_confidence.items()
+    green_hgnc_ids = [
+        hgnc_id
+        for hgnc_id, confidence in target_panel_data.gene_confidence.items()
         if confidence == 3
     ]
 
-    logger.info(
-        f"Found {len(green_panelapp_gene_symbols)} GREEN genes in target panels for {panel_date}"
-    )
-    return green_panelapp_gene_symbols
+    logger.info(f"Found {len(green_hgnc_ids)} GREEN genes in target panels for {panel_date}")
+    return green_hgnc_ids
 
 
 @app.command("open-browser")
@@ -209,10 +206,10 @@ def open_browser(
     browser_delay: float = typer.Option(
         1.0, "--browser-delay", help="Delay in seconds between opening browser tabs"
     ),
-    skip_genes: str = typer.Option(
+    skip_hgnc_ids: str = typer.Option(
         None,
-        "--skip-genes",
-        help="Comma-separated list of gene symbols to skip (e.g., ARMC5,BCL2L11)",
+        "--skip-hgnc-ids",
+        help="Comma-separated list of HGNC IDs to skip (e.g., 700,994)",
     ),
     exclude_green: bool = typer.Option(
         False,
@@ -242,18 +239,18 @@ def open_browser(
         console.print("[red]Error: --panel-date is required when using --exclude-green[/red]")
         raise typer.Exit(1)
 
-    # Parse skip_genes from command line
-    skip_gene_list = [g.strip().upper() for g in skip_genes.split(",")] if skip_genes else []
+    # Parse skip HGNC IDs from command line
+    skip_id_list = [int(x.strip()) for x in skip_hgnc_ids.split(",")] if skip_hgnc_ids else []
 
     # Add GREEN genes from panel if --exclude-green is set
     if exclude_green:
-        green_genes = get_green_genes_from_panel(panel_date)
-        skip_gene_list.extend(green_genes)
+        green_ids = get_green_hgnc_ids_from_panel(panel_date)
+        skip_id_list.extend(green_ids)
         console.print(
-            f"[cyan]Excluding {len(green_genes)} GREEN genes from panel at {panel_date}[/cyan]"
+            f"[cyan]Excluding {len(green_ids)} GREEN genes from panel at {panel_date}[/cyan]"
         )
 
-    pmids = read_pmids_from_db(db_path, skip_gene_list, expansion_only)
+    pmids = read_pmids_from_db(db_path, skip_id_list, expansion_only)
     if not dry_run:
         console.print(f"[bold]Found {len(pmids)} PMIDs marked for download in database[/bold]")
     if expansion_only:

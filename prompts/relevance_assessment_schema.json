@@ -8,8 +8,8 @@
             "type": "array",
             "items": {
                 "type": "object",
-                "properties": {"gene": {"type": "string"}, "disease": {"type": "string"}},
-                "required": ["gene", "disease"]
+                "properties": {"gene_symbol": {"type": "string"}, "disease": {"type": "string"}},
+                "required": ["gene_symbol", "disease"]
             }
         }
     },

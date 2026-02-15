@@ -48,11 +48,11 @@ class PaperBatchProcessor:
             cursor.execute(
                 """
                 SELECT
-                    panelapp_gene_symbol,
+                    hgnc_id,
                     assessment_json
                 FROM gene_assessments
                 WHERE matched_panels_json IS NULL
-                ORDER BY panelapp_gene_symbol
+                ORDER BY hgnc_id
             """
             )
 
@@ -67,7 +67,7 @@ class PaperBatchProcessor:
                     if not disease_entities:
                         # Skip genes without phenotype information - can't match to panels
                         logger.warning(
-                            f"Skipping {row['panelapp_gene_symbol']}: no disease_entities in assessment"
+                            f"Skipping {row['hgnc_id']}: no disease_entities in assessment"
                         )
                         continue
 
@@ -83,14 +83,14 @@ class PaperBatchProcessor:
 
                     genes.append(
                         {
-                            "gene_symbol": row["panelapp_gene_symbol"],
+                            "hgnc_id": row["hgnc_id"],
                             "summary": summary,
                             "disease_description": disease_description,
                         }
                     )
                 except (json.JSONDecodeError, KeyError) as e:
                     logger.warning(
-                        f"Error parsing assessment for {row['panelapp_gene_symbol']}: {e}"
+                        f"Error parsing assessment for {row['hgnc_id']}: {e}"
                     )
                     continue
 
@@ -98,7 +98,7 @@ class PaperBatchProcessor:
 
     def update_matched_panels(
         self,
-        panelapp_gene_symbol: str,
+        hgnc_id: int,
         matched_panels: list[dict[str, Any]],
         raw_response: str,
     ) -> None:
@@ -111,18 +111,18 @@ class PaperBatchProcessor:
                     """
                     UPDATE gene_assessments
                     SET matched_panels_json = ?, matched_panels_raw = ?
-                    WHERE panelapp_gene_symbol = ?
+                    WHERE hgnc_id = ?
                     """,
-                    (json.dumps(matched_panels), raw_response, panelapp_gene_symbol),
+                    (json.dumps(matched_panels), raw_response, hgnc_id),
                 )
 
                 conn.commit()
                 logger.info(
-                    f"Updated matched panels for {panelapp_gene_symbol}: {len(matched_panels)} panels"
+                    f"Updated matched panels for {hgnc_id}: {len(matched_panels)} panels"
                 )
 
             except sqlite3.Error as e:
-                logger.error(f"Error updating matched panels for {panelapp_gene_symbol}: {e}")
+                logger.error(f"Error updating matched panels for {hgnc_id}: {e}")
 
 
 @app.callback(invoke_without_command=True)
@@ -270,7 +270,7 @@ def main(
 
                 # Validate and update database with matches
                 for gene_info, result in zip(batch, results, strict=True):
-                    gene_symbol = gene_info["gene_symbol"]
+                    hgnc_id = gene_info["hgnc_id"]
 
                     if result is not None and "matched_panels" in result.parsed_json:
                         llm_matches = result.parsed_json["matched_panels"]
@@ -294,21 +294,21 @@ def main(
                         if not all_valid:
                             # Invalid panel names - treat as failure, do NOT update DB
                             logger.warning(
-                                f"Invalid panel names for {gene_symbol}: {invalid_names} - treating as failure"
+                                f"Invalid panel names for HGNC:{hgnc_id}: {invalid_names} - treating as failure"
                             )
                         else:
                             # All panel names resolved - update DB with IDs
                             db_processor.update_matched_panels(
-                                gene_symbol, resolved_matches, result.raw_response
+                                hgnc_id, resolved_matches, result.raw_response
                             )
                             pass_processed += 1
                             pbar.update(1)
                             if not resolved_matches:
                                 logger.info(
-                                    f"No panel matches for {gene_symbol} (empty list is valid)"
+                                    f"No panel matches for HGNC:{hgnc_id} (empty list is valid)"
                                 )
                     else:
-                        logger.warning(f"Failed to get valid JSON response for {gene_symbol}")
+                        logger.warning(f"Failed to get valid JSON response for HGNC:{hgnc_id}")
 
             total_processed += pass_processed
 

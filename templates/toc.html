@@ -112,6 +112,14 @@
             color: #666;
         }
 
+        .subsection-heading {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #455a64;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
         .toc-section {
             margin-bottom: 2rem;
         }
@@ -155,6 +163,23 @@
 
         .panel-link:hover {
             background: #c8e6c9;
+            border-color: #4caf50;
+            transform: translateX(4px);
+        }
+
+        .upgrade-link {
+            display: block;
+            padding: 1.25rem;
+            background: linear-gradient(to right, #fff3cd 0%, #d4edda 100%);
+            border: 1px solid #a5d6a7;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #2c3e50;
+            transition: all 0.2s ease;
+        }
+
+        .upgrade-link:hover {
+            background: linear-gradient(to right, #ffe69c 0%, #c8e6c9 100%);
             border-color: #4caf50;
             transform: translateX(4px);
         }
@@ -293,11 +318,6 @@
             <h2 class="section-heading">Panel-Scoped Reviews</h2>
             <ul class="reports-list">
                 <li class="report-item">
-                    <a href="panel_adrenal_insufficiency/index.html" class="panel-link">
-                        <div class="link-title">Adrenal Insufficiency</div>
-                    </a>
-                </li>
-                <li class="report-item">
                     <a href="panel_arthrogryposis/index.html" class="panel-link">
                         <div class="link-title">Arthrogryposis</div>
                     </a>
@@ -313,23 +333,42 @@
                     </a>
                 </li>
                 <li class="report-item">
-                    <a href="panel_congenital_hypothyroidism/index.html" class="panel-link">
-                        <div class="link-title">Congenital Hypothyroidism</div>
-                    </a>
-                </li>
-                <li class="report-item">
                     <a href="panel_diamond_blackfan_anaemia/index.html" class="panel-link">
                         <div class="link-title">Diamond Blackfan Anaemia</div>
                     </a>
                 </li>
                 <li class="report-item">
-                    <a href="panel_hypogonadotropic_hypogonadism/index.html" class="panel-link">
-                        <div class="link-title">Hypogonadotropic Hypogonadism</div>
+                    <a href="panel_mito/index.html" class="panel-link">
+                        <div class="link-title">Mitochondrial Disease</div>
                     </a>
                 </li>
                 <li class="report-item">
-                    <a href="panel_mito/index.html" class="panel-link">
-                        <div class="link-title">Mitochondrial Disease</div>
+                    <a href="panel_osteopetrosis/index.html" class="panel-link">
+                        <div class="link-title">Osteopetrosis</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="panel_pulmonary_fibrosis/index.html" class="panel-link">
+                        <div class="link-title">Pulmonary Fibrosis</div>
+                    </a>
+                </li>
+            </ul>
+
+            <h3 class="subsection-heading">Endocrine</h3>
+            <ul class="reports-list">
+                <li class="report-item">
+                    <a href="panel_adrenal_insufficiency/index.html" class="panel-link">
+                        <div class="link-title">Adrenal Insufficiency</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="panel_congenital_hypothyroidism/index.html" class="panel-link">
+                        <div class="link-title">Congenital Hypothyroidism</div>
+                    </a>
+                </li>
+                <li class="report-item">
+                    <a href="panel_hypogonadotropic_hypogonadism/index.html" class="panel-link">
+                        <div class="link-title">Hypogonadotropic Hypogonadism</div>
                     </a>
                 </li>
                 <li class="report-item">
@@ -343,23 +382,24 @@
                     </a>
                 </li>
                 <li class="report-item">
-                    <a href="panel_osteopetrosis/index.html" class="panel-link">
-                        <div class="link-title">Osteopetrosis</div>
-                    </a>
-                </li>
-                <li class="report-item">
                     <a href="panel_pituitary_hormone_deficiency/index.html" class="panel-link">
                         <div class="link-title">Pituitary Hormone Deficiency</div>
                     </a>
                 </li>
                 <li class="report-item">
-                    <a href="panel_pulmonary_fibrosis/index.html" class="panel-link">
-                        <div class="link-title">Pulmonary Fibrosis</div>
-                    </a>
-                </li>
-                <li class="report-item">
                     <a href="panel_skeletal_dysplasia/index.html" class="panel-link">
                         <div class="link-title">Skeletal Dysplasia</div>
+                    </a>
+                </li>
+            </ul>
+        </div>
+
+        <div class="toc-section">
+            <h2 class="section-heading">Upgrades</h2>
+            <ul class="reports-list">
+                <li class="report-item">
+                    <a href="report_2026-02-upgrade/index.html" class="upgrade-link">
+                        <div class="link-title">Amber upgrades</div>
                     </a>
                 </li>
             </ul>

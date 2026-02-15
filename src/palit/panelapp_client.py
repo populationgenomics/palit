@@ -524,9 +524,8 @@ class PanelAppClient:
                     ):
                         combined_gene_confidence[gene_symbol_upper] = confidence_int
                         # Store MoI from same entity that provides confidence
-                        moi = entity.get("mode_of_inheritance")
-                        if moi:
-                            combined_gene_moi[gene_symbol_upper] = moi
+                        moi = entity.get("mode_of_inheritance") or "Unknown"
+                        combined_gene_moi[gene_symbol_upper] = moi
 
             panel_gene_counts[panel_id] = panel_gene_count
 

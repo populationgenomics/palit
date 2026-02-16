@@ -15,6 +15,23 @@ HGNC_DATA_PATH = Path("data/hgnc_complete_set.json")
 # Add entries as real cases are encountered.
 KNOWN_MISSPELLING_PREFIXES: dict[str, str] = {
     "ERRC": "ERCC",
+    "SERBIN": "SERPIN",  # SERBINB7 → SERPINB7
+    "TBCID": "TBC1D",  # TBCID24 → TBC1D24
+    "ZYFVE": "ZFYVE",  # ZYFVE26 → ZFYVE26
+}
+
+# Known LLM exact misspellings: wrong symbol → correct symbol.
+# Character transpositions, missing characters, O/0 confusion, etc.
+KNOWN_EXACT_MISSPELLINGS: dict[str, str] = {
+    "VSP33B": "VPS33B",
+    "WSF1": "WFS1",
+    "PI3KR1": "PIK3R1",
+    "GPIBB": "GP1BB",
+    "SR5A2": "SRD5A2",
+    "PDCH15": "PCDH15",
+    "SSPL2C": "SPPL2C",
+    "NROB1": "NR0B1",  # letter O vs digit 0
+    "SMARCAL": "SMARCAL1",
 }
 
 
@@ -104,19 +121,27 @@ class HgncResolver:
 
     def resolve(self, symbol: str) -> HgncEntry | None:
         """Resolve arbitrary gene symbol to HGNC entry. Returns None if unresolved."""
-        upper = symbol.upper()
+        normalized = _normalize_unicode(symbol)
+        upper = normalized.upper()
 
         # Steps 1-3: exact lookups
         entry = self._resolve_exact(upper)
         if entry is not None:
             return entry
 
-        # Step 4: try known misspelling corrections
-        corrected = _apply_known_misspelling_prefixes(upper)
-        if corrected != upper:
+        # Step 4: try known exact misspellings, then prefix corrections
+        corrected = KNOWN_EXACT_MISSPELLINGS.get(upper)
+        if corrected is not None:
             entry = self._resolve_exact(corrected)
             if entry is not None:
-                logger.info(f"Resolved '{symbol}' via misspelling correction → '{entry.symbol}'")
+                logger.info(f"Resolved '{symbol}' via exact misspelling → '{entry.symbol}'")
+                return entry
+
+        corrected_prefix = _apply_known_misspelling_prefixes(upper)
+        if corrected_prefix != upper:
+            entry = self._resolve_exact(corrected_prefix)
+            if entry is not None:
+                logger.info(f"Resolved '{symbol}' via prefix misspelling → '{entry.symbol}'")
                 return entry
 
         return None
@@ -149,6 +174,40 @@ class HgncResolver:
             return None
 
         return None
+
+
+# Unicode characters that LLMs sometimes substitute for ASCII equivalents.
+_UNICODE_REPLACEMENTS: dict[str, str] = {
+    "\u2011": "-",  # non-breaking hyphen
+    "\u2013": "-",  # en dash
+    "\u2014": "-",  # em dash
+    "\u200b": "",  # zero-width space
+    "\u200c": "",  # zero-width non-joiner
+    "\u200d": "",  # zero-width joiner
+    "\ufeff": "",  # BOM / zero-width no-break space
+    ".": "-",  # dots in gene symbols (NKX2.1 → NKX2-1)
+}
+
+# Greek letters (alpha, beta, gamma, delta, epsilon) that LLMs sometimes
+# use instead of Latin equivalents.
+_GREEK_TO_LATIN: dict[str, str] = {
+    "\u03b1": "A",
+    "\u03b2": "B",
+    "\u03b3": "G",
+    "\u03b4": "D",
+    "\u03b5": "E",
+}
+
+
+def _normalize_unicode(symbol: str) -> str:
+    """Clean unicode artifacts from LLM-extracted gene symbols."""
+    for char, replacement in _UNICODE_REPLACEMENTS.items():
+        if char in symbol:
+            symbol = symbol.replace(char, replacement)
+    for greek, latin in _GREEK_TO_LATIN.items():
+        if greek in symbol:
+            symbol = symbol.replace(greek, latin)
+    return symbol
 
 
 def _apply_known_misspelling_prefixes(symbol: str) -> str:

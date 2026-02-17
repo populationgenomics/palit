@@ -83,7 +83,6 @@ def extract_citations_from_individual_assessment(
 
                 citations.append(
                     AnnotationCitation(
-
                         title=f"{hgnc_symbol} - {criterion_name} ({result_status}) - Individual",
                         content=citation["commentary"],
                         box_id=box_id,
@@ -115,7 +114,6 @@ def extract_citations_from_individual_assessment(
 
                 citations.append(
                     AnnotationCitation(
-
                         title=f"{hgnc_symbol} - Disease: {description} - Individual",
                         content=citation["commentary"],
                         box_id=box_id,
@@ -147,7 +145,6 @@ def extract_citations_from_individual_assessment(
 
                 citations.append(
                     AnnotationCitation(
-
                         title=f"{hgnc_symbol} - Quality Concern - Individual",
                         content=f"{concern_text}: {citation['commentary']}",
                         box_id=box_id,

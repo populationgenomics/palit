@@ -89,9 +89,7 @@ class PaperBatchProcessor:
                         }
                     )
                 except (json.JSONDecodeError, KeyError) as e:
-                    logger.warning(
-                        f"Error parsing assessment for {row['hgnc_id']}: {e}"
-                    )
+                    logger.warning(f"Error parsing assessment for {row['hgnc_id']}: {e}")
                     continue
 
             return genes
@@ -117,9 +115,7 @@ class PaperBatchProcessor:
                 )
 
                 conn.commit()
-                logger.info(
-                    f"Updated matched panels for {hgnc_id}: {len(matched_panels)} panels"
-                )
+                logger.info(f"Updated matched panels for {hgnc_id}: {len(matched_panels)} panels")
 
             except sqlite3.Error as e:
                 logger.error(f"Error updating matched panels for {hgnc_id}: {e}")

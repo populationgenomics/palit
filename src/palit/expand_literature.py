@@ -119,9 +119,7 @@ def store_expansion_papers(db_path: Path, articles: list[Article], gene_symbol: 
         logger.info(f"Added {new_papers} new expansion papers")
 
 
-def _record_expansion_completion(
-    db_path: Path, hgnc_id: int, outcome: TournamentOutcome
-) -> None:
+def _record_expansion_completion(db_path: Path, hgnc_id: int, outcome: TournamentOutcome) -> None:
     """Persist tournament results so resumable runs skip completed genes."""
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()

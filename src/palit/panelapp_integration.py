@@ -39,7 +39,7 @@ MONDO_CATEGORIES = {
 # Canonical mapping from evidence extraction enum to PanelApp long-form MoI
 # Evidence extraction uses: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR"
 ENUM_TO_PANELAPP_MOI = {
-    "Monoallelic": "MONOALLELIC, autosomal or pseudoautosomal, imprinted status unknown",
+    "Monoallelic": "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted",
     "Biallelic": "BIALLELIC, autosomal or pseudoautosomal",
     "Monoallelic_and_biallelic": "BOTH monoallelic and biallelic, autosomal or pseudoautosomal",
     "X-linked": "X-LINKED: hemizygous mutation in males, monoallelic mutations in females may cause disease (may be less severe, later onset than males)",

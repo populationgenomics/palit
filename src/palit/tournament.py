@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from palit.ingest_pubmed import Article
+from palit.ingest_pubmed import Paper
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class TournamentPromptResult:
     """Result of a single tournament prompt."""
 
-    selected_articles: list[Article]
+    selected_papers: list[Paper]
     raw_response: str
 
 
@@ -22,15 +22,15 @@ class TournamentPromptResult:
 class TournamentOutcome:
     """Final outcome of the tournament across all rounds."""
 
-    selected_articles: list[Article]
+    selected_papers: list[Paper]
     raw_responses_by_round: list[list[str]]
 
 
-def format_papers_for_prompt(papers: list[Article]) -> str:
+def format_papers_for_prompt(papers: list[Paper]) -> str:
     """Format papers as XML-style list for LLM prompt using indices instead of PMIDs.
 
     Args:
-        papers: List of Article objects
+        papers: List of Paper objects
 
     Returns:
         Formatted string like:
@@ -59,7 +59,7 @@ def format_papers_for_prompt(papers: list[Article]) -> str:
 
 def run_tournament_selection(
     gene_symbol: str,
-    articles: list[Article],
+    papers: list[Paper],
     llm_processor: Any,
     prompt_template: str,
     schema: dict[str, Any],
@@ -72,7 +72,7 @@ def run_tournament_selection(
 
     Args:
         gene_symbol: Gene symbol being processed
-        articles: List of articles to run tournament on
+        papers: List of papers to run tournament on
         llm_processor: HarmonyBatchProcessor instance
         prompt_template: Prompt template string
         schema: JSON schema for LLM output
@@ -82,23 +82,23 @@ def run_tournament_selection(
         max_retries: Max retries per batch
 
     Returns:
-        TournamentOutcome with selected articles and raw responses
+        TournamentOutcome with selected papers and raw responses
     """
-    if len(articles) <= max_papers:
+    if len(papers) <= max_papers:
         logger.info(f"Gene has ≤{max_papers} papers, skipping tournament")
-        return TournamentOutcome(selected_articles=articles, raw_responses_by_round=[])
+        return TournamentOutcome(selected_papers=papers, raw_responses_by_round=[])
 
-    current_round_articles = articles
+    current_round_papers = papers
     round_num = 0
     raw_responses_by_round: list[list[str]] = []
 
     while True:
         round_num += 1
-        logger.info(f"Round {round_num}: {len(current_round_articles)} papers")
+        logger.info(f"Round {round_num}: {len(current_round_papers)} papers")
 
         batches = [
-            current_round_articles[i : i + papers_per_round]
-            for i in range(0, len(current_round_articles), papers_per_round)
+            current_round_papers[i : i + papers_per_round]
+            for i in range(0, len(current_round_papers), papers_per_round)
         ]
         logger.info(f"  Processing {len(batches)} batches...")
 
@@ -116,19 +116,19 @@ def run_tournament_selection(
         if prompt_results:
             raw_responses_by_round.append([result.raw_response for result in prompt_results])
 
-        next_round_articles = []
+        next_round_papers = []
         for result in prompt_results:
-            next_round_articles.extend(result.selected_articles)
+            next_round_papers.extend(result.selected_papers)
 
-        current_round_articles = next_round_articles
-        logger.info(f"  Round {round_num} result: {len(current_round_articles)} papers")
+        current_round_papers = next_round_papers
+        logger.info(f"  Round {round_num} result: {len(current_round_papers)} papers")
 
         if len(batches) <= 1:
             break
 
-    logger.info(f"Tournament complete: {len(current_round_articles)} final papers")
+    logger.info(f"Tournament complete: {len(current_round_papers)} final papers")
     return TournamentOutcome(
-        selected_articles=current_round_articles,
+        selected_papers=current_round_papers,
         raw_responses_by_round=raw_responses_by_round,
     )
 
@@ -139,7 +139,7 @@ def _process_batches(
     llm_processor: Any,
     prompt_template: str,
     schema: dict[str, Any],
-    batches: list[list[Article]],
+    batches: list[list[Paper]],
     max_papers: int,
     max_concurrent_batches: int,
     max_retries: int,
@@ -175,7 +175,7 @@ def _process_chunk(
     llm_processor: Any,
     prompt_template: str,
     schema: dict[str, Any],
-    chunk_batches: list[list[Article]],
+    chunk_batches: list[list[Paper]],
     chunk_offset: int,
     max_papers: int,
     max_retries: int,
@@ -228,14 +228,14 @@ def _process_chunk(
                 continue
 
             selected_indices = result.parsed_json.get("papers", [])[:max_papers]
-            batch_articles = chunk_batches[local_idx]
+            batch_papers = chunk_batches[local_idx]
 
             invalid_indices = [
-                idx for idx in selected_indices if idx < 0 or idx >= len(batch_articles)
+                idx for idx in selected_indices if idx < 0 or idx >= len(batch_papers)
             ]
             if invalid_indices:
                 failure_reason = (
-                    f"Invalid indices: {invalid_indices} (batch has {len(batch_articles)} papers)"
+                    f"Invalid indices: {invalid_indices} (batch has {len(batch_papers)} papers)"
                 )
                 failure_reasons[local_idx] = failure_reason
 
@@ -244,7 +244,7 @@ def _process_chunk(
                     global_batch_idx + 1,
                     invalid_indices,
                 )
-                logger.error("      Valid range: 0-%d", len(batch_articles) - 1)
+                logger.error("      Valid range: 0-%d", len(batch_papers) - 1)
                 logger.error("      All returned indices: %s", selected_indices)
 
                 retry_counts[local_idx] += 1
@@ -266,15 +266,15 @@ def _process_chunk(
                     )
                 continue
 
-            selected_articles = [batch_articles[idx] for idx in selected_indices]
+            selected_papers = [batch_papers[idx] for idx in selected_indices]
 
             logger.info(
                 "    Batch %s: Selected %s papers",
                 global_batch_idx + 1,
-                len(selected_articles),
+                len(selected_papers),
             )
             results[local_idx] = TournamentPromptResult(
-                selected_articles=selected_articles,
+                selected_papers=selected_papers,
                 raw_response=result.raw_response,
             )
 
@@ -299,7 +299,7 @@ def _process_chunk(
 
 
 def _build_prompt(
-    *, gene_symbol: str, prompt_template: str, max_papers: int, batch: list[Article]
+    *, gene_symbol: str, prompt_template: str, max_papers: int, batch: list[Paper]
 ) -> str:
     papers_list = format_papers_for_prompt(batch)
     return prompt_template.format(

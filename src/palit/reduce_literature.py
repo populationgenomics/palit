@@ -11,7 +11,7 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.ingest_pubmed import Article
+from palit.ingest_pubmed import Paper
 from palit.llm import HarmonyBatchProcessor
 from palit.tournament import TournamentOutcome, run_tournament_selection
 
@@ -19,16 +19,16 @@ app = typer.Typer(help="Reduce literature using tournament selection to minimize
 logger = logging.getLogger(__name__)
 
 
-def get_articles_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Article]:
-    """Fetch all articles for a gene, regardless of download status.
+def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
+    """Fetch all papers for a gene, regardless of download status.
 
     Args:
         db_path: Path to SQLite database
         hgnc_id: HGNC ID of the gene to look up
-        limit: Maximum number of articles to return
+        limit: Maximum number of papers to return
 
     Returns:
-        List of up to `limit` newest articles mentioning this gene
+        List of up to `limit` newest papers mentioning this gene
     """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -45,10 +45,10 @@ def get_articles_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Artic
             (hgnc_id, limit),
         )
 
-        articles = []
+        papers = []
         for row in cursor.fetchall():
-            articles.append(
-                Article(
+            papers.append(
+                Paper(
                     pmid=row["pmid"],
                     title=row["title"],
                     abstract=row["abstract"],
@@ -60,8 +60,8 @@ def get_articles_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Artic
                 )
             )
 
-        logger.info(f"Found {len(articles)} articles for HGNC:{hgnc_id}")
-        return articles
+        logger.info(f"Found {len(papers)} papers for HGNC:{hgnc_id}")
+        return papers
 
 
 def clear_unselected_papers(db_path: Path, all_selected_pmids: set[int]) -> dict[str, int]:
@@ -158,7 +158,7 @@ def _record_reduction_completion(db_path: Path, hgnc_id: int, outcome: Tournamen
             """,
             (
                 hgnc_id,
-                json.dumps([a.pmid for a in outcome.selected_articles]),
+                json.dumps([a.pmid for a in outcome.selected_papers]),
                 json.dumps(outcome.raw_responses_by_round),
             ),
         )
@@ -345,15 +345,15 @@ def main(
     # Phase 1b: Run tournament selection for genes with many papers
     for hgnc_id, paper_count in tqdm(genes_with_counts, desc="Reducing literature"):
         hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-        articles = get_articles_for_gene(db_path, hgnc_id, pmid_limit)
+        papers = get_papers_for_gene(db_path, hgnc_id, pmid_limit)
 
-        if not articles:
-            logger.warning(f"No articles found for {hgnc_symbol} (HGNC:{hgnc_id})")
+        if not papers:
+            logger.warning(f"No papers found for {hgnc_symbol} (HGNC:{hgnc_id})")
             continue
 
         tournament_outcome = run_tournament_selection(
             gene_symbol=hgnc_symbol,
-            articles=articles,
+            papers=papers,
             llm_processor=inference_engine,
             prompt_template=template,
             schema=schema,
@@ -363,7 +363,7 @@ def main(
             max_retries=max_retries,
         )
 
-        selected_pmids = {a.pmid for a in tournament_outcome.selected_articles}
+        selected_pmids = {a.pmid for a in tournament_outcome.selected_papers}
         all_selected_pmids.update(selected_pmids)
 
         logger.info(

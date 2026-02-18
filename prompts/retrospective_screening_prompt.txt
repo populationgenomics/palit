@@ -25,7 +25,7 @@ Begin with a concise checklist (3-7 bullets) of what you will do; keep items con
 - EXCLUDE gene-disease associations based solely on deletions, duplications, or CNVs.
   - Exclude microdeletions, microduplications, chromosomal deletions/duplications, or complex rearrangements.
   - Exclude CNVs even if described as "novel," "genome-wide significant," or "first association."
-  - Exclude even if the article pinpoints specific genes within the CNV region.
+  - Exclude even if the paper pinpoints specific genes within the CNV region.
   - Example exclusions: 17q12 duplication, 22q11.2 deletion, 16p11.2 duplication.
 - IMPORTANT: If a paper covers BOTH CNVs AND sequence-level variants (SNVs, small indels, point mutations), the paper IS RELEVANT for its SNV content.
   - Assess the paper as relevant if it contains valid SNV-based gene-disease associations.
@@ -106,16 +106,16 @@ Based on title and abstract, provide:
 1. A relevance assessment based on the inclusion and exclusion criteria (true/false).
 2. Confidence level for your decision (LOW / MEDIUM / HIGH).
 3. A brief rationale for your judgment.
-4. All gene-disease associations mentioned (only if the article is relevant, otherwise empty list).
+4. All gene-disease associations mentioned (only if the paper is relevant, otherwise empty list).
 
 After each assessment, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
 
 **Confidence Level Definitions**
-- HIGH: Strong certainty. The article clearly fits or does not fit the criteria (e.g., non-human, educational, or evidently rare disease genetics papers with specific genes).
+- HIGH: Strong certainty. The paper clearly fits or does not fit the criteria (e.g., non-human, educational, or evidently rare disease genetics papers with specific genes).
 - MEDIUM: Some ambiguity; the abstract might lack clarity on focus or evidence strength.
 - LOW: Judgement can't be reasonably made due to vagueness or conflicting signals.
 
-Confidence reflects how sure you are about inclusion/exclusion, not the strength of the article's evidence.
+Confidence reflects how sure you are about inclusion/exclusion, not the strength of the paper's evidence.
 
 **Gene Extraction Rules**
 - Always extract gene symbols using the official gene nomenclature.

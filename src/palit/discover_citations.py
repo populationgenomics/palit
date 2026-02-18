@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.progress import track
 
 from palit.hgnc import HgncResolver
-from palit.ingest_pubmed import Article, extract_articles_from_xml
+from palit.ingest_pubmed import Paper, extract_papers_from_xml
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 
@@ -163,7 +163,7 @@ def search_pubmed_by_title(title: str) -> int | None:
         return None
 
 
-def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_pmid: int | str) -> Article | None:
+def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_pmid: int | str) -> Paper | None:
     """Fetch paper metadata from PubMed using efetch.
 
     Args:
@@ -172,7 +172,7 @@ def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_pmid: int | str) -> Art
         citing_pmid: PMID of paper citing this reference, or "manual" for manually added papers
 
     Returns:
-        Article object if successful, None otherwise
+        Paper object if successful, None otherwise
     """
     try:
         # Use efetch to get XML
@@ -188,20 +188,20 @@ def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_pmid: int | str) -> Art
             logger.warning(f"efetch failed for PMID {pmid}")
             return None
 
-        # Parse articles using existing function
-        # Allow articles without abstracts for cited papers (case reports, etc.)
-        articles = extract_articles_from_xml(
+        # Parse papers using existing function
+        # Allow papers without abstracts for cited papers (case reports, etc.)
+        papers = extract_papers_from_xml(
             result.stdout,
             source_type="expansion",
             source_details=f"referenced:{hgnc_id}:{citing_pmid}",
             require_abstract=False,
         )
 
-        if not articles:
-            logger.warning(f"No article data extracted for PMID {pmid}")
+        if not papers:
+            logger.warning(f"No paper data extracted for PMID {pmid}")
             return None
 
-        return articles[0]
+        return papers[0]
 
     except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as e:
         logger.warning(f"Failed to fetch metadata for PMID {pmid}: {e}")
@@ -224,14 +224,12 @@ def check_pmid_exists(db_path: Path, pmid: int) -> bool:
         return cursor.fetchone() is not None
 
 
-def store_referenced_paper(db_path: Path, article: Article) -> bool:
+def store_referenced_paper(db_path: Path, paper: Paper) -> bool:
     """Store a referenced paper in the database.
 
     Args:
         db_path: Path to SQLite database
-        article: Article object to store
-        gene_symbol: Gene symbol this paper was referenced for
-        citing_pmid: PMID of the paper that cited this one
+        paper: Paper object to store
 
     Returns:
         True if paper was newly inserted, False if already existed
@@ -247,14 +245,14 @@ def store_referenced_paper(db_path: Path, article: Article) -> bool:
             ON CONFLICT(pmid) DO NOTHING
             """,
             (
-                article.pmid,
-                article.title,
-                article.abstract,
-                article.authors,
-                article.journal,
-                article.entrez_date,
-                article.source_type,
-                article.source_details,
+                paper.pmid,
+                paper.title,
+                paper.abstract,
+                paper.authors,
+                paper.journal,
+                paper.entrez_date,
+                paper.source_type,
+                paper.source_details,
             ),
         )
 
@@ -324,8 +322,8 @@ def discover(
             continue
 
         # Fetch metadata
-        article = fetch_paper_metadata(pmid, source.hgnc_id, source.citing_pmid)
-        if article is None:
+        paper = fetch_paper_metadata(pmid, source.hgnc_id, source.citing_pmid)
+        if paper is None:
             logger.warning(f"Failed to fetch metadata for PMID {pmid}")
             not_found += 1
             failures_by_gene.setdefault(source.hgnc_id, []).append(
@@ -334,7 +332,7 @@ def discover(
             continue
 
         # Store in database
-        inserted = store_referenced_paper(db_path, article)
+        inserted = store_referenced_paper(db_path, paper)
         if inserted:
             logger.info(
                 f"Added PMID {pmid} for {gene_display} (HGNC:{source.hgnc_id}) "
@@ -407,15 +405,15 @@ def add(
             continue
 
         # Fetch metadata using "manual" as the citing PMID
-        article = fetch_paper_metadata(pmid, hgnc_id, citing_pmid="manual")
+        paper = fetch_paper_metadata(pmid, hgnc_id, citing_pmid="manual")
 
-        if article is None:
+        if paper is None:
             logger.error(f"Failed to fetch metadata for PMID {pmid}")
             failed += 1
             continue
 
         # Store in database
-        inserted = store_referenced_paper(db_path, article)
+        inserted = store_referenced_paper(db_path, paper)
         if inserted:
             logger.info(f"Added PMID {pmid} for {gene_display} (HGNC:{hgnc_id})")
             added += 1

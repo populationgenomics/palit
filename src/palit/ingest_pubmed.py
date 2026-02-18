@@ -28,7 +28,7 @@ MAX_RETRIES = 5
 RETRY_DELAY = 2  # Seconds between retries
 
 
-# Article extraction functions (merged from extract_articles.py)
+# Paper extraction functions
 
 
 def extract_text_content(element: etree._Element | None) -> str:
@@ -99,8 +99,8 @@ def extract_date(date_element: etree._Element | None) -> str | None:
 
 
 @dataclass
-class Article:
-    """Article data extracted from PubMed XML."""
+class Paper:
+    """Paper data extracted from PubMed XML."""
 
     pmid: int
     entrez_date: str
@@ -112,19 +112,19 @@ class Article:
     source_details: str
 
 
-def extract_article(
+def extract_paper(
     article_elem: etree._Element,
     source_type: str,
     source_details: str,
     require_abstract: bool = True,
-) -> Article | None:
-    """Extract article data from PubmedArticle element.
+) -> Paper | None:
+    """Extract paper data from PubmedArticle element.
 
     Args:
-        article_elem: The XML element containing the article data
+        article_elem: The XML element containing the paper data
         source_type: Type of source (e.g., "initial", "expansion")
         source_details: Details about the source
-        require_abstract: If True, skip articles without abstracts. Default True.
+        require_abstract: If True, skip papers without abstracts. Default True.
     """
     # Extract PMID from MedlineCitation/PMID
     pmid_elem = article_elem.find(".//MedlineCitation/PMID")
@@ -155,15 +155,15 @@ def extract_article(
     authors = extract_authors(article_elem)
     journal = extract_journal(article_elem)
 
-    # Skip articles without title
+    # Skip papers without title
     if not title:
         return None
 
-    # Skip articles without abstract only if required
+    # Skip papers without abstract only if required
     if require_abstract and not abstract:
         return None
 
-    return Article(
+    return Paper(
         pmid=pmid,
         entrez_date=entrez_date,
         title=title,
@@ -175,24 +175,24 @@ def extract_article(
     )
 
 
-def extract_articles_from_xml(
+def extract_papers_from_xml(
     xml_content: bytes,
     source_type: str,
     source_details: str,
     require_abstract: bool = True,
     min_year: int | None = None,
-) -> list[Article]:
-    """Extract articles from XML bytes content.
+) -> list[Paper]:
+    """Extract papers from XML bytes content.
 
     Args:
         xml_content: XML content as bytes
         source_type: Type of source (e.g., "initial", "expansion")
         source_details: Details about the source (e.g., filename, gene name)
-        require_abstract: If True, skip articles without abstracts. Default True.
-        min_year: If provided, only include articles with entrez_date >= this year
+        require_abstract: If True, skip papers without abstracts. Default True.
+        min_year: If provided, only include papers with entrez_date >= this year
 
     Returns:
-        List of Article objects extracted from XML
+        List of Paper objects extracted from XML
     """
     # Parse XML
     parser = etree.XMLParser(recover=True, resolve_entities=False)
@@ -202,25 +202,25 @@ def extract_articles_from_xml(
         return []
 
     # Find all PubmedArticle elements
-    articles = []
+    papers = []
     article_elements = root.findall(".//PubmedArticle")
 
     for article_elem in article_elements:
-        article_data = extract_article(article_elem, source_type, source_details, require_abstract)
-        if article_data:
+        paper_data = extract_paper(article_elem, source_type, source_details, require_abstract)
+        if paper_data:
             # Filter by year if min_year is specified
             if min_year is not None:
-                article_year = int(article_data.entrez_date[:4])
-                if article_year < min_year:
+                paper_year = int(paper_data.entrez_date[:4])
+                if paper_year < min_year:
                     continue
 
-            articles.append(article_data)
+            papers.append(paper_data)
 
-    return articles
+    return papers
 
 
 def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: Path) -> None:
-    """Process XML file and extract articles within date range."""
+    """Process XML file and extract papers within date range."""
     logger.info(f"Processing XML file: {xml_path}")
     logger.debug(f"Date range: {start_date} to {end_date}")
     logger.debug(f"Output database: {output_db}")
@@ -236,18 +236,18 @@ def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: 
         # For initial papers, use the filename as source_details
         source_type = "initial"
         source_details = xml_path.name
-        all_articles = extract_articles_from_xml(xml_content, source_type, source_details)
-        logger.debug(f"Found {len(all_articles)} total articles")
+        all_papers = extract_papers_from_xml(xml_content, source_type, source_details)
+        logger.debug(f"Found {len(all_papers)} total papers")
 
-        articles = [
-            article
-            for article in all_articles
-            if article.entrez_date and start_date <= article.entrez_date <= end_date
+        papers = [
+            paper
+            for paper in all_papers
+            if paper.entrez_date and start_date <= paper.entrez_date <= end_date
         ]
-        logger.debug(f"Found {len(articles)} articles in date range")
+        logger.debug(f"Found {len(papers)} papers in date range")
 
-        # Insert articles into database
-        if articles:
+        # Insert papers into database
+        if papers:
             cursor = conn.cursor()
             cursor.executemany(
                 """
@@ -281,12 +281,12 @@ def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: 
                         a.source_type,
                         a.source_details,
                     )
-                    for a in articles
+                    for a in papers
                 ],
             )
             conn.commit()
 
-        logger.info(f"Inserted {len(articles)} articles into database")
+        logger.info(f"Inserted {len(papers)} papers into database")
 
     finally:
         conn.close()
@@ -417,10 +417,10 @@ def download_day(year: int, month: int, day: int, output_dir: Path) -> DownloadR
     )
 
 
-def extract_articles(
+def extract_papers(
     xml_files: list[Path], start_date: str, end_date: str, db_path: Path, parallel_jobs: int
 ) -> None:
-    """Extract articles from XML files in parallel.
+    """Extract papers from XML files in parallel.
 
     Args:
         xml_files: List of XML files to process
@@ -430,7 +430,7 @@ def extract_articles(
         parallel_jobs: Number of parallel jobs
     """
     with Progress(console=console) as progress:
-        task = progress.add_task("Extracting articles...", total=len(xml_files))
+        task = progress.add_task("Extracting papers...", total=len(xml_files))
 
         with ProcessPoolExecutor(max_workers=parallel_jobs) as executor:
             futures = {
@@ -458,7 +458,7 @@ def main(
     This command:
     1. Downloads PubMed XML files for the specified date range (one file per day)
     2. Retries downloads for files smaller than expected size
-    3. Extracts articles from XML files into the database in parallel
+    3. Extracts papers from XML files into the database in parallel
     """
 
     # Parse dates
@@ -542,17 +542,17 @@ def main(
         skipped_days = ", ".join(f"day {r.day}" for r in skipped)
         console.print(f"[yellow]⚠[/yellow] Skipped (no data after retries): {skipped_days}")
 
-    # Step 2: Extract articles from downloaded files
-    console.print("\n[bold]Step 2: Extracting articles to database...[/bold]")
+    # Step 2: Extract papers from downloaded files
+    console.print("\n[bold]Step 2: Extracting papers to database...[/bold]")
 
     xml_files = sorted(output_dir.glob("*.xml.gz"))
     if not xml_files:
         console.print("[red]No XML files found to extract[/red]")
         raise typer.Exit(1)
 
-    extract_articles(xml_files, start_date, end_date, db_path, parallel_jobs)
+    extract_papers(xml_files, start_date, end_date, db_path, parallel_jobs)
 
-    console.print(f"[green]✓[/green] Extracted articles from {len(xml_files)} files")
+    console.print(f"[green]✓[/green] Extracted papers from {len(xml_files)} files")
     console.print(f"\n[green]✓ Ingestion complete! Database ready at: {db_path}[/green]")
 
 

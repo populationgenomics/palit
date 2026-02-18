@@ -29,7 +29,7 @@ from rich.progress import (
 from torch.utils.data import DataLoader
 from transformers import DataCollatorWithPadding
 
-from palit.ingest_pubmed import Article, extract_articles_from_xml
+from palit.ingest_pubmed import Paper, extract_papers_from_xml
 from palit.screening_classifier.inference import (
     LabeledPaper,
     LoadedCheckpoint,
@@ -104,7 +104,7 @@ def mark_file_processing(
 
 def insert_relevant_papers(
     db_path: Path,
-    papers: list[Article],
+    papers: list[Paper],
     probabilities: list[float],
     source_file: str,
 ) -> int:
@@ -170,7 +170,7 @@ def process_file(
     with gzip.open(xml_path, "rb") as f:
         xml_content = f.read()
 
-    articles = extract_articles_from_xml(
+    papers = extract_papers_from_xml(
         xml_content,
         source_type="baseline_screening",
         source_details=xml_path.name,
@@ -178,22 +178,22 @@ def process_file(
         min_year=min_year,
     )
 
-    if not articles:
+    if not papers:
         return 0, 0
 
     # Convert to LabeledPaper format (with dummy labels for inference)
-    papers = [
+    labeled_papers = [
         LabeledPaper(
-            pmid=article.pmid,
-            title=article.title,
-            abstract=article.abstract,
+            pmid=paper.pmid,
+            title=paper.title,
+            abstract=paper.abstract,
             is_relevant=0,  # Dummy label for inference
         )
-        for article in articles
+        for paper in papers
     ]
 
     # Create dataset and dataloader
-    dataset = PaperDataset(papers, ckpt.tokenizer, max_length=1024)
+    dataset = PaperDataset(labeled_papers, ckpt.tokenizer, max_length=1024)
     data_collator = DataCollatorWithPadding(tokenizer=ckpt.tokenizer)
     dataloader = DataLoader(
         dataset,
@@ -218,14 +218,14 @@ def process_file(
 
     # Filter to only relevant papers (those passing threshold)
     relevant_indices = [i for i, prob in enumerate(all_probabilities) if prob >= ckpt.threshold]
-    relevant_articles = [articles[i] for i in relevant_indices]
+    relevant_papers = [papers[i] for i in relevant_indices]
     relevant_probs = [all_probabilities[i] for i in relevant_indices]
 
     # Insert only relevant papers into database
-    if relevant_articles:
-        insert_relevant_papers(db_path, relevant_articles, relevant_probs, xml_path.name)
+    if relevant_papers:
+        insert_relevant_papers(db_path, relevant_papers, relevant_probs, xml_path.name)
 
-    return len(articles), len(relevant_articles)
+    return len(papers), len(relevant_papers)
 
 
 @app.callback(invoke_without_command=True)

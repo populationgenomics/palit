@@ -118,20 +118,20 @@ def fetch_pmids_batch(pmids: list[int]) -> dict[int, tuple[str, str | None]]:
         root = ET.fromstring(xml_data)
 
         results = {}
-        for article in root.findall(".//PubmedArticle"):
+        for paper_elem in root.findall(".//PubmedArticle"):
             # Extract PMID
-            pmid_elem = article.find(".//PMID")
+            pmid_elem = paper_elem.find(".//PMID")
             if pmid_elem is None or pmid_elem.text is None:
                 continue
             pmid = int(pmid_elem.text)
 
             # Extract title
-            title_elem = article.find(".//ArticleTitle")
+            title_elem = paper_elem.find(".//ArticleTitle")
             title = title_elem.text if title_elem is not None and title_elem.text else ""
 
             # Extract abstract
             abstract_parts = []
-            for abstract_text in article.findall(".//AbstractText"):
+            for abstract_text in paper_elem.findall(".//AbstractText"):
                 if abstract_text.text:
                     abstract_parts.append(abstract_text.text)
             abstract = " ".join(abstract_parts) if abstract_parts else None

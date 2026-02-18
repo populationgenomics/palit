@@ -1,5 +1,5 @@
 -- Minimal schema for relevance screening classifier training
--- Stores PubMed articles (PMID, title, abstract) and labels for training data
+-- Stores PubMed papers (PMID, title, abstract) and labels for training data
 
 CREATE TABLE papers (
     pmid INTEGER PRIMARY KEY,

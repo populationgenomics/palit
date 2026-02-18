@@ -546,7 +546,7 @@ def download_single_pmid(
         response.raise_for_status()
         oa_data = response.text
 
-        # Step 3: Look for TGZ link (includes main article + supplements)
+        # Step 3: Look for TGZ link (includes main paper + supplements)
         tgz_match = re.search(r'<link[^>]*format="tgz"[^>]*href="([^"]+)"[^>]*/>', oa_data)
 
         if not tgz_match:

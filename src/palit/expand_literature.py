@@ -11,7 +11,7 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.ingest_pubmed import Article
+from palit.ingest_pubmed import Paper
 from palit.llm import HarmonyBatchProcessor
 from palit.tournament import TournamentOutcome, run_tournament_selection
 
@@ -19,19 +19,19 @@ app = typer.Typer(help="Tournament-based literature expansion using hierarchical
 logger = logging.getLogger(__name__)
 
 
-def get_articles_for_gene(
+def get_papers_for_gene(
     baseline_db_path: Path, hgnc_id: int, limit: int, cutoff_date: str
-) -> list[Article]:
-    """Fetch articles for a gene from baseline screening database.
+) -> list[Paper]:
+    """Fetch papers for a gene from baseline screening database.
 
     Args:
         baseline_db_path: Path to baseline screening SQLite database
         hgnc_id: HGNC ID of the gene to look up
-        limit: Maximum number of articles to return
+        limit: Maximum number of papers to return
         cutoff_date: Only include papers with entrez_date <= this date (YYYY-MM-DD)
 
     Returns:
-        List of up to `limit` newest articles mentioning this gene, using the "expansion" source type
+        List of up to `limit` newest papers mentioning this gene, using the "expansion" source type
     """
     with sqlite3.connect(baseline_db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -49,10 +49,10 @@ def get_articles_for_gene(
             (hgnc_id, cutoff_date, limit),
         )
 
-        articles = []
+        papers = []
         for row in cursor.fetchall():
-            articles.append(
-                Article(
+            papers.append(
+                Paper(
                     pmid=row["pmid"],
                     title=row["title"],
                     abstract=row["abstract"],
@@ -64,26 +64,26 @@ def get_articles_for_gene(
                 )
             )
 
-        logger.info(f"Found {len(articles)} articles for HGNC:{hgnc_id}")
-        return articles
+        logger.info(f"Found {len(papers)} papers for HGNC:{hgnc_id}")
+        return papers
 
 
-def store_expansion_papers(db_path: Path, articles: list[Article], gene_symbol: str) -> None:
+def store_expansion_papers(db_path: Path, papers: list[Paper], gene_symbol: str) -> None:
     """Store expansion papers in database.
 
     Args:
         db_path: Path to SQLite database
-        articles: List of Article objects to store
+        papers: List of Paper objects to store
         gene_symbol: Gene symbol these papers were found for
     """
-    logger.info(f"Storing {len(articles)} expansion papers for gene {gene_symbol}")
+    logger.info(f"Storing {len(papers)} expansion papers for gene {gene_symbol}")
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
         new_papers = 0
 
-        for article in articles:
+        for paper in papers:
             cursor.execute(
                 """
                 INSERT INTO papers
@@ -101,14 +101,14 @@ def store_expansion_papers(db_path: Path, articles: list[Article], gene_symbol: 
                   AND excluded.source_details > papers.source_details
                 """,
                 (
-                    article.pmid,
-                    article.title,
-                    article.abstract,
-                    article.authors,
-                    article.journal,
-                    article.entrez_date,
-                    article.source_type,
-                    article.source_details,
+                    paper.pmid,
+                    paper.title,
+                    paper.abstract,
+                    paper.authors,
+                    paper.journal,
+                    paper.entrez_date,
+                    paper.source_type,
+                    paper.source_details,
                 ),
             )
 
@@ -137,7 +137,7 @@ def _record_expansion_completion(db_path: Path, hgnc_id: int, outcome: Tournamen
             """,
             (
                 hgnc_id,
-                json.dumps([a.pmid for a in outcome.selected_articles]),
+                json.dumps([a.pmid for a in outcome.selected_papers]),
                 json.dumps(outcome.raw_responses_by_round),
             ),
         )
@@ -311,20 +311,20 @@ def main(
 
     for hgnc_id in tqdm(genes, desc="Expanding literature for genes"):
         hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-        articles = get_articles_for_gene(baseline_db_path, hgnc_id, pmid_limit, cutoff_date)
+        papers = get_papers_for_gene(baseline_db_path, hgnc_id, pmid_limit, cutoff_date)
 
-        if not articles:
-            logger.warning(f"No articles found for {hgnc_symbol} (HGNC:{hgnc_id})")
+        if not papers:
+            logger.warning(f"No papers found for {hgnc_symbol} (HGNC:{hgnc_id})")
             _record_expansion_completion(
                 db_path,
                 hgnc_id,
-                TournamentOutcome(selected_articles=[], raw_responses_by_round=[]),
+                TournamentOutcome(selected_papers=[], raw_responses_by_round=[]),
             )
             continue
 
         tournament_outcome = run_tournament_selection(
             gene_symbol=hgnc_symbol,
-            articles=articles,
+            papers=papers,
             llm_processor=inference_engine,
             prompt_template=template,
             schema=schema,
@@ -334,12 +334,10 @@ def main(
             max_retries=max_retries,
         )
 
-        logger.info(
-            f"Selected {len(tournament_outcome.selected_articles)} papers for {hgnc_symbol}"
-        )
+        logger.info(f"Selected {len(tournament_outcome.selected_papers)} papers for {hgnc_symbol}")
 
-        store_expansion_papers(db_path, tournament_outcome.selected_articles, hgnc_symbol)
-        total_papers_added += len(tournament_outcome.selected_articles)
+        store_expansion_papers(db_path, tournament_outcome.selected_papers, hgnc_symbol)
+        total_papers_added += len(tournament_outcome.selected_papers)
 
         _record_expansion_completion(db_path, hgnc_id, tournament_outcome)
 

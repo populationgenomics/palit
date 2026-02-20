@@ -113,50 +113,57 @@ class AllPanelsData:
     panel_names: dict[int, str]  # panel_id -> panel name
 
 
-def clean_panel_publications(pmids: list[str]) -> list[int]:
-    """Clean and extract PMIDs from panel publication strings.
+@dataclass
+class PanelPublications:
+    """Publication identifiers extracted from PanelApp panels."""
 
-    Splits on both comma and space, filters for digits only.
+    pmids: set[int]
+    dois: set[str]
+
+
+def _is_doi(token: str) -> bool:
+    """Check if a token looks like a DOI (e.g. '10.1002/ajmg.a.63982')."""
+    return token.startswith("10.") and "/" in token
+
+
+def clean_panel_publications(publications: list[str]) -> PanelPublications:
+    """Clean and extract PMIDs and DOIs from panel publication strings.
+
+    PanelApp publication fields are free-text. Entries may be PMIDs (all digits),
+    DOIs (starting with '10.' and containing '/'), or other text (ignored).
     """
-    result: list[int] = []
-    for pmid in pmids:
-        # Split on both comma and space, filter for digits only
-        tokens = pmid.replace(",", " ").split()
-        result.extend(int(token) for token in tokens if token.isdigit())
-    return result
+    pmids: set[int] = set()
+    dois: set[str] = set()
+    for entry in publications:
+        # If the whole entry looks like a DOI, take it as-is
+        stripped = entry.strip()
+        if _is_doi(stripped):
+            dois.add(stripped)
+            continue
+        # Otherwise split on commas/spaces and classify each token
+        tokens = stripped.replace(",", " ").split()
+        for token in tokens:
+            if token.isdigit():
+                pmids.add(int(token))
+            elif _is_doi(token):
+                dois.add(token)
+    return PanelPublications(pmids=pmids, dois=dois)
 
 
-def extract_panel_pmids(panel_data: dict[str, Any]) -> list[int]:
-    """Extract all PMIDs from panel genes, strs, and regions publications."""
-    all_pmids = []
+def extract_panel_publications(panel_data: dict[str, Any]) -> PanelPublications:
+    """Extract all PMIDs and DOIs from panel genes, strs, and regions publications."""
+    all_pmids: set[int] = set()
+    all_dois: set[str] = set()
 
-    # Extract from genes
-    genes = panel_data.get("genes", [])
-    for gene in genes:
-        publications = gene.get("publications", [])
-        if publications:
-            clean_pmids = clean_panel_publications(publications)
-            all_pmids.extend(clean_pmids)
+    for entity_key in ("genes", "strs", "regions"):
+        for entity in panel_data.get(entity_key, []):
+            publications = entity.get("publications", [])
+            if publications:
+                result = clean_panel_publications(publications)
+                all_pmids.update(result.pmids)
+                all_dois.update(result.dois)
 
-    # Extract from STRs
-    strs = panel_data.get("strs", [])
-    for str_entry in strs:
-        publications = str_entry.get("publications", [])
-        if publications:
-            clean_pmids = clean_panel_publications(publications)
-            all_pmids.extend(clean_pmids)
-
-    # Extract from regions
-    regions = panel_data.get("regions", [])
-    for region in regions:
-        publications = region.get("publications", [])
-        if publications:
-            clean_pmids = clean_panel_publications(publications)
-            all_pmids.extend(clean_pmids)
-
-    # Remove duplicates while preserving order
-    unique_pmids = list(dict.fromkeys(all_pmids))
-    return unique_pmids
+    return PanelPublications(pmids=all_pmids, dois=all_dois)
 
 
 def _parse_hgnc_id(hgnc_id_str: str) -> int:
@@ -504,33 +511,35 @@ class PanelAppClient:
                 raise
 
 
-def get_current_panel_pmids(panel_ids: list[int] | None = None, timeout: float = 60.0) -> set[int]:
-    """Fetch PMIDs from current/latest panel versions without caching.
+def get_current_panel_publications(
+    panel_ids: list[int] | None = None, timeout: float = 60.0
+) -> PanelPublications:
+    """Fetch publication identifiers from current/latest panel versions.
 
     This function always fetches fresh data from the API and is used for
     validation against the most current panel publications.
 
     Args:
-        panel_ids: List of panel IDs to extract PMIDs from. If None, uses TARGET_PANEL_IDS.
+        panel_ids: List of panel IDs to extract publications from. If None, uses TARGET_PANEL_IDS.
         timeout: Request timeout in seconds
 
     Returns:
-        Set of unique PMIDs from the specified panels.
+        PanelPublications with unique PMIDs and DOIs from the specified panels.
     """
     if panel_ids is None:
         panel_ids = TARGET_PANEL_IDS
 
     all_pmids: set[int] = set()
+    all_dois: set[str] = set()
 
     with httpx.Client(timeout=timeout) as client:
         for panel_id in panel_ids:
-            # Fetch current panel data (no version parameter)
             panel_url = f"{PANELAPP_BASE_URL}/panels/{panel_id}/"
             response = _request_with_retry(client, panel_url, timeout=timeout)
             panel_data = response.json()
 
-            # Extract PMIDs using the free function
-            panel_pmids = extract_panel_pmids(panel_data)
-            all_pmids.update(panel_pmids)
+            pubs = extract_panel_publications(panel_data)
+            all_pmids.update(pubs.pmids)
+            all_dois.update(pubs.dois)
 
-    return all_pmids
+    return PanelPublications(pmids=all_pmids, dois=all_dois)

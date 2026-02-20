@@ -20,7 +20,7 @@ from palit.hgnc import HgncResolver
 from palit.panelapp_client import (
     PanelAppClient,
     PanelGeneData,
-    get_current_panel_pmids,
+    get_current_panel_publications,
 )
 from palit.panelapp_integration import (
     MONDO_CATEGORIES,
@@ -32,6 +32,7 @@ from palit.panelapp_integration import (
     panelapp_confidence_to_color,
     prepare_prefill_data,
 )
+from palit.papers import doi_to_path, generate_paper_ids, is_preprint
 from palit.relevance import compute_relevance_majority_vote
 
 logger = logging.getLogger(__name__)
@@ -130,12 +131,21 @@ def compare_moi(
     }
 
 
+@dataclass(frozen=True)
+class CitationLink:
+    """A resolved link from an assessment citation to an annotated PDF page."""
+
+    paper_id: str  # AuthorYear short ID
+    doi: str
+    page: int
+
+
 @dataclass
 class VariantFrequency:
     """Variant frequency information from gnomAD."""
 
     variant_id: str  # gnomAD pseudo-VCF format
-    pmid: int
+    doi: str
     box_id: int
     hgvs_c: str | None
     hgvs_p: str | None
@@ -157,21 +167,22 @@ class VariantFrequency:
 class DetailedPaper:
     """Complete paper information for detailed display."""
 
-    pmid: int
+    doi: str
     title: str
     abstract: str | None
     authors: str | None
     journal: str | None
-    entrez_date: str | None
+    source_date: str | None
     source_type: str | None
     source_details: str | None
     relevance_assessment: dict[str, Any] | None
     evidence_extraction: dict[str, Any] | None
     citation_pages: dict[int, int] | None  # box_id -> page number
-    paper_gene_symbol: str | None = None  # Original gene symbol from paper
-    variant_frequencies: list[VariantFrequency] = field(
-        default_factory=list
-    )  # Variants mentioned in this paper
+    preprint: bool = False
+    pmid: int | None = None  # For PubMed display links
+    paper_id: str = ""  # AuthorYear short ID (computed per gene context)
+    paper_gene_symbol: str | None = None
+    variant_frequencies: list[VariantFrequency] = field(default_factory=list)
 
 
 @dataclass
@@ -197,7 +208,6 @@ class GeneAssessment:
     moi_comparison: dict[str, Any] | None  # Precomputed MoI comparison result
     new_rating: int  # Calculated confidence level: 1 (RED), 2 (AMBER), 3 (GREEN)
     contributing_papers: list[DetailedPaper]
-    cited_pmids: list[int]  # PMIDs actually cited in the aggregate assessment
     variant_frequencies: list[VariantFrequency]  # Variants with frequency data
     missing_panels: list[PanelMatch]  # Suggested panels gene is not in
     existing_panels: list[PanelMatch]  # Panels gene is already in
@@ -217,7 +227,7 @@ class GeneAssessmentResults:
 class PanelValidationResult:
     """Panel publication validation results."""
 
-    total_panel_pmids: int
+    total_panel_papers: int
     panel_papers_in_db: int
     false_negatives: list[DetailedPaper]
     true_positives: list[DetailedPaper]
@@ -235,7 +245,7 @@ class ComprehensiveStats:
     total_contributing_papers: int
 
     # Panel validation stats
-    total_panel_pmids: int
+    total_panel_papers: int
     panel_papers_in_db: int
     validation_sensitivity_pct: float
     false_negatives_count: int
@@ -338,7 +348,7 @@ POPULATION_NAMES = {
 
 def _create_variant_frequency_from_db_row(
     variant_id: str,
-    pmid: int,
+    doi: str,
     box_id: int,
     normalization: dict[str, Any],
     gnomad: dict[str, Any],
@@ -381,7 +391,7 @@ def _create_variant_frequency_from_db_row(
 
     return VariantFrequency(
         variant_id=variant_id,
-        pmid=pmid,
+        doi=doi,
         box_id=box_id,
         hgvs_c=normalization.get("hgvs_c"),
         hgvs_p=normalization.get("hgvs_p"),
@@ -417,20 +427,20 @@ def load_variant_frequencies_for_gene(
     bbox_mappings = {}
     for paper in contributing_papers:
         if paper.citation_pages:
-            bbox_mappings[paper.pmid] = paper.citation_pages
+            bbox_mappings[paper.doi] = paper.citation_pages
 
     # Load variant frequencies from database
     cursor.execute(
         """
         SELECT
             vf.variant_id,
-            vf.pmid,
+            vf.paper_doi,
             vf.box_id,
             vf.normalization,
             vf.gnomad
         FROM variant_frequencies vf
         WHERE vf.hgnc_id = ?
-        ORDER BY vf.pmid DESC, vf.variant_id
+        ORDER BY vf.paper_doi DESC, vf.variant_id
     """,
         (hgnc_id,),
     )
@@ -438,7 +448,7 @@ def load_variant_frequencies_for_gene(
     variant_frequencies = []
     for row in cursor.fetchall():
         variant_id = row["variant_id"]
-        pmid = row["pmid"]
+        doi = row["paper_doi"]
         box_id = row["box_id"]
 
         # Parse JSON fields
@@ -451,13 +461,13 @@ def load_variant_frequencies_for_gene(
 
         # Get citation page from bbox mapping
         citation_page = None
-        if pmid in bbox_mappings and box_id in bbox_mappings[pmid]:
-            citation_page = bbox_mappings[pmid][box_id]
+        if doi in bbox_mappings and box_id in bbox_mappings[doi]:
+            citation_page = bbox_mappings[doi][box_id]
 
         # Create variant frequency object using helper
         variant_freq = _create_variant_frequency_from_db_row(
             variant_id=variant_id,
-            pmid=pmid,
+            doi=doi,
             box_id=box_id,
             normalization=normalization,
             gnomad=gnomad,
@@ -469,13 +479,13 @@ def load_variant_frequencies_for_gene(
 
 
 def load_variant_frequencies_for_paper(
-    cursor: sqlite3.Cursor, pmid: int, citation_pages: dict[int, int] | None
+    cursor: sqlite3.Cursor, doi: str, citation_pages: dict[int, int] | None
 ) -> list[VariantFrequency]:
     """Load variant frequency information for a specific paper.
 
     Args:
         cursor: Database cursor
-        pmid: Paper PMID to load variants for
+        doi: Paper DOI to load variants for
         citation_pages: Bbox mapping for citation page lookups
 
     Returns:
@@ -490,10 +500,10 @@ def load_variant_frequencies_for_paper(
             vf.normalization,
             vf.gnomad
         FROM variant_frequencies vf
-        WHERE vf.pmid = ?
+        WHERE vf.paper_doi = ?
         ORDER BY vf.hgnc_id, vf.variant_id
     """,
-        (pmid,),
+        (doi,),
     )
 
     variant_frequencies = []
@@ -506,7 +516,7 @@ def load_variant_frequencies_for_paper(
             normalization = json.loads(row["normalization"])
             gnomad = json.loads(row["gnomad"])
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON for variant {variant_id} in paper {pmid}: {e}")
+            logger.warning(f"Failed to parse JSON for variant {variant_id} in paper {doi}: {e}")
             continue
 
         # Get citation page from bbox mapping
@@ -517,7 +527,7 @@ def load_variant_frequencies_for_paper(
         # Create variant frequency object using helper
         variant_freq = _create_variant_frequency_from_db_row(
             variant_id=variant_id,
-            pmid=pmid,
+            doi=doi,
             box_id=box_id,
             normalization=normalization,
             gnomad=gnomad,
@@ -628,23 +638,24 @@ def load_gene_assessments(
             cursor.execute(
                 """
                 SELECT DISTINCT
-                    p.pmid,
+                    p.doi,
                     p.title,
                     p.abstract,
                     p.authors,
                     p.journal,
-                    p.entrez_date,
+                    p.source_date,
                     p.source_type,
                     p.source_details,
+                    p.pmid,
                     p.relevance_assessment_json,
                     p.evidence_extraction_json,
                     p.bbox_mapping,
                     gm.paper_gene_symbol
                 FROM papers p
-                JOIN gene_mentions gm ON p.pmid = gm.pmid
+                JOIN gene_mentions gm ON p.doi = gm.paper_doi
                 WHERE gm.hgnc_id = ?
                 AND p.evidence_extraction_json IS NOT NULL
-                ORDER BY p.pmid DESC
+                ORDER BY p.source_date DESC, p.doi DESC
             """,
                 (hgnc_id,),
             )
@@ -660,7 +671,7 @@ def load_gene_assessments(
                         )
                     except json.JSONDecodeError:
                         logger.warning(
-                            f"Failed to parse relevance assessment for PMID {paper_row['pmid']}"
+                            f"Failed to parse relevance assessment for DOI {paper_row['doi']}"
                         )
 
                 evidence_extraction = None
@@ -669,7 +680,7 @@ def load_gene_assessments(
                         evidence_extraction = json.loads(paper_row["evidence_extraction_json"])
                     except json.JSONDecodeError:
                         logger.warning(
-                            f"Failed to parse evidence extraction for PMID {paper_row['pmid']}"
+                            f"Failed to parse evidence extraction for DOI {paper_row['doi']}"
                         )
 
                 # Skip papers that don't have evidence extraction for this specific gene
@@ -684,42 +695,51 @@ def load_gene_assessments(
                 if paper_row["bbox_mapping"]:
                     try:
                         bbox_data = parse_bbox_mapping_from_json(paper_row["bbox_mapping"])
-                        # Extract just the page numbers
                         citation_pages = {
                             box_id: info["page"] for box_id, info in bbox_data.items()
                         }
                     except json.JSONDecodeError as e:
                         logger.warning(
-                            f"Failed to parse bbox mapping for PMID {paper_row['pmid']}: {e}"
+                            f"Failed to parse bbox mapping for DOI {paper_row['doi']}: {e}"
                         )
 
                 # Load variant frequencies for this paper
                 paper_variant_frequencies = load_variant_frequencies_for_paper(
-                    cursor, paper_row["pmid"], citation_pages
+                    cursor, paper_row["doi"], citation_pages
                 )
 
                 detailed_paper = DetailedPaper(
-                    pmid=paper_row["pmid"],
+                    doi=paper_row["doi"],
                     title=paper_row["title"] or "Unknown Title",
                     abstract=paper_row["abstract"],
                     authors=paper_row["authors"],
                     journal=paper_row["journal"],
-                    entrez_date=paper_row["entrez_date"],
+                    source_date=paper_row["source_date"],
                     source_type=paper_row["source_type"],
                     source_details=paper_row["source_details"],
                     relevance_assessment=relevance_assessment,
                     evidence_extraction=evidence_extraction,
                     citation_pages=citation_pages,
+                    preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
+                    pmid=paper_row["pmid"],
                     paper_gene_symbol=paper_row["paper_gene_symbol"],
                     variant_frequencies=paper_variant_frequencies,
                 )
                 contributing_papers.append(detailed_paper)
 
-            # Sort contributing papers by PMID (descending)
-            contributing_papers.sort(key=lambda p: p.pmid, reverse=True)
-
-            # Derive cited PMIDs from contributing papers
-            cited_pmids = [p.pmid for p in contributing_papers]
+            # Compute AuthorYear paper IDs for this gene's contributing papers
+            _, doi_to_paper_id = generate_paper_ids(
+                [
+                    {
+                        "doi": p.doi,
+                        "authors": p.authors or "",
+                        "date": p.source_date or "",
+                    }
+                    for p in contributing_papers
+                ]
+            )
+            for paper in contributing_papers:
+                paper.paper_id = doi_to_paper_id[paper.doi]
 
             # Load variant frequencies for this gene
             variant_frequencies = load_variant_frequencies_for_gene(
@@ -771,7 +791,7 @@ def load_gene_assessments(
                 assessment_json=assessment_json,
                 form_type=prefill_form_type,
                 panel_id=prefill_panel_id,
-                cited_pmids=cited_pmids,
+                cited_papers=[(p.doi, p.pmid) for p in contributing_papers],
             )
             prefill_json = json.dumps(asdict(prefill_data))
 
@@ -787,7 +807,6 @@ def load_gene_assessments(
                 moi_comparison=moi_comparison,
                 new_rating=new_rating,
                 contributing_papers=contributing_papers,
-                cited_pmids=cited_pmids,
                 variant_frequencies=variant_frequencies,
                 missing_panels=missing_panels,
                 existing_panels=existing_panels,
@@ -850,56 +869,73 @@ def load_panel_publications_validation(
     """
     logger.info("Loading panel publications validation...")
 
-    # Get panel PMIDs from PanelApp (using current/latest data)
-    panel_pmids = get_current_panel_pmids(target_panel_ids)
-    logger.info(f"Found {len(panel_pmids)} PMIDs in PanelApp panels")
+    # Get panel publications from PanelApp (using current/latest data)
+    panel_pubs = get_current_panel_publications(target_panel_ids)
+    total_panel_refs = len(panel_pubs.pmids) + len(panel_pubs.dois)
+    logger.info(
+        f"Found {len(panel_pubs.pmids)} PMIDs and {len(panel_pubs.dois)} DOIs in PanelApp panels"
+    )
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # Find panel publications in recent literature (source_type filtering)
-        if not panel_pmids:
+        if not total_panel_refs:
             return PanelValidationResult(
-                total_panel_pmids=0,
+                total_panel_papers=0,
                 panel_papers_in_db=0,
                 false_negatives=[],
                 true_positives=[],
                 sensitivity_pct=0.0,
             )
 
-        # Get panel papers from recent literature with relevance assessments
+        # Match panel publications against our DB by both PMID and DOI
         chunk_size = 999  # SQLite parameter limit
-        all_panel_papers = []
-        pmids_list = list(panel_pmids)
+        seen_dois: set[str] = set()
+        all_panel_papers: list[sqlite3.Row] = []
 
+        def _collect(rows: list[sqlite3.Row]) -> None:
+            for row in rows:
+                doi = row["doi"]
+                if doi not in seen_dois:
+                    seen_dois.add(doi)
+                    all_panel_papers.append(row)
+
+        _panel_cols = """p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
+            p.source_date, p.source_type, p.source_details,
+            p.relevance_assessment_json, p.evidence_extraction_json, p.bbox_mapping"""
+
+        # Match PMIDs
+        pmids_list = list(panel_pubs.pmids)
         for i in range(0, len(pmids_list), chunk_size):
-            chunk = pmids_list[i : i + chunk_size]
-            placeholders = ",".join("?" * len(chunk))
-
+            pmid_chunk = pmids_list[i : i + chunk_size]
+            placeholders = ",".join("?" * len(pmid_chunk))
             cursor.execute(
                 f"""
-                SELECT
-                    p.pmid,
-                    p.title,
-                    p.abstract,
-                    p.authors,
-                    p.journal,
-                    p.entrez_date,
-                    p.source_type,
-                    p.source_details,
-                    p.relevance_assessment_json,
-                    p.evidence_extraction_json,
-                    p.bbox_mapping
-                FROM papers p
+                SELECT {_panel_cols} FROM papers p
                 WHERE p.pmid IN ({placeholders})
                 AND p.source_type = 'initial'
                 AND p.relevance_assessment_json IS NOT NULL
             """,
-                chunk,
+                pmid_chunk,
             )
+            _collect(cursor.fetchall())
 
-            all_panel_papers.extend(cursor.fetchall())
+        # Match DOIs
+        dois_list = list(panel_pubs.dois)
+        for i in range(0, len(dois_list), chunk_size):
+            doi_chunk = dois_list[i : i + chunk_size]
+            placeholders = ",".join("?" * len(doi_chunk))
+            cursor.execute(
+                f"""
+                SELECT {_panel_cols} FROM papers p
+                WHERE p.doi IN ({placeholders})
+                AND p.source_type = 'initial'
+                AND p.relevance_assessment_json IS NOT NULL
+            """,
+                doi_chunk,
+            )
+            _collect(cursor.fetchall())
 
         logger.info(f"Found {len(all_panel_papers)} panel papers in initial set with assessments")
 
@@ -908,47 +944,46 @@ def load_panel_publications_validation(
         true_positives = []
 
         for row in all_panel_papers:
-            # Parse relevance assessment
             relevance_assessment = None
             try:
                 relevance_assessment = compute_relevance_majority_vote(
                     json.loads(row["relevance_assessment_json"])
                 )
             except json.JSONDecodeError:
-                logger.warning(f"Failed to parse relevance assessment for panel PMID {row['pmid']}")
+                logger.warning(f"Failed to parse relevance assessment for panel DOI {row['doi']}")
                 continue
 
-            # Parse other fields
             evidence_extraction = None
             if row["evidence_extraction_json"]:
                 try:
                     evidence_extraction = json.loads(row["evidence_extraction_json"])
                 except json.JSONDecodeError:
                     logger.warning(
-                        f"Failed to parse evidence extraction for panel PMID {row['pmid']}"
+                        f"Failed to parse evidence extraction for panel DOI {row['doi']}"
                     )
 
             citation_pages = None
             if row["bbox_mapping"]:
                 try:
                     bbox_data = parse_bbox_mapping_from_json(row["bbox_mapping"])
-                    # Extract just the page numbers
                     citation_pages = {box_id: info["page"] for box_id, info in bbox_data.items()}
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse bbox mapping for panel PMID {row['pmid']}")
+                    logger.warning(f"Failed to parse bbox mapping for panel DOI {row['doi']}")
 
             detailed_paper = DetailedPaper(
-                pmid=row["pmid"],
+                doi=row["doi"],
                 title=row["title"] or "Unknown Title",
                 abstract=row["abstract"],
                 authors=row["authors"],
                 journal=row["journal"],
-                entrez_date=row["entrez_date"],
+                source_date=row["source_date"],
                 source_type=row["source_type"],
                 source_details=row["source_details"],
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=evidence_extraction,
                 citation_pages=citation_pages,
+                preprint=is_preprint(row["journal"], row["pmid"]),
+                pmid=row["pmid"],
             )
 
             # Categorize by LLM assessment
@@ -956,10 +991,6 @@ def load_panel_publications_validation(
                 true_positives.append(detailed_paper)
             else:
                 false_negatives.append(detailed_paper)
-
-        # Sort papers by PMID (descending) for consistent display
-        false_negatives.sort(key=lambda p: p.pmid, reverse=True)
-        true_positives.sort(key=lambda p: p.pmid, reverse=True)
 
         # Calculate metrics
         total_assessed = len(false_negatives) + len(true_positives)
@@ -973,7 +1004,7 @@ def load_panel_publications_validation(
         logger.info(f"Sensitivity: {sensitivity_pct:.1f}%")
 
         return PanelValidationResult(
-            total_panel_pmids=len(panel_pmids),
+            total_panel_papers=total_panel_refs,
             panel_papers_in_db=total_assessed,
             false_negatives=false_negatives,
             true_positives=true_positives,
@@ -992,12 +1023,13 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
         # Get all papers with relevance assessments (filter in Python using majority vote)
         cursor.execute("""
             SELECT
+                p.doi,
                 p.pmid,
                 p.title,
                 p.abstract,
                 p.authors,
                 p.journal,
-                p.entrez_date,
+                p.source_date,
                 p.source_type,
                 p.source_details,
                 p.relevance_assessment_json,
@@ -1005,32 +1037,28 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                 p.bbox_mapping
             FROM papers p
             WHERE p.relevance_assessment_json IS NOT NULL
-            ORDER BY p.entrez_date DESC, p.pmid DESC
+            ORDER BY p.source_date DESC, p.doi DESC
         """)
 
         low_confidence_papers = []
         for row in cursor.fetchall():
-            # Parse relevance assessment
             relevance_assessment = None
             try:
                 relevance_assessment = compute_relevance_majority_vote(
                     json.loads(row["relevance_assessment_json"])
                 )
             except json.JSONDecodeError:
-                logger.warning(f"Failed to parse relevance assessment for PMID {row['pmid']}")
+                logger.warning(f"Failed to parse relevance assessment for DOI {row['doi']}")
                 continue
 
             # Filter: only include if majority is NOT relevant AND LOW confidence
             if not relevance_assessment["relevant"] and relevance_assessment["confidence"] == "LOW":
-                # Parse other fields
                 evidence_extraction = None
                 if row["evidence_extraction_json"]:
                     try:
                         evidence_extraction = json.loads(row["evidence_extraction_json"])
                     except json.JSONDecodeError:
-                        logger.warning(
-                            f"Failed to parse evidence extraction for PMID {row['pmid']}"
-                        )
+                        logger.warning(f"Failed to parse evidence extraction for DOI {row['doi']}")
 
                 citation_pages = None
                 if row["bbox_mapping"]:
@@ -1040,25 +1068,24 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                             box_id: info["page"] for box_id, info in bbox_data.items()
                         }
                     except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse bbox mapping for PMID {row['pmid']}")
+                        logger.warning(f"Failed to parse bbox mapping for DOI {row['doi']}")
 
                 detailed_paper = DetailedPaper(
-                    pmid=row["pmid"],
+                    doi=row["doi"],
                     title=row["title"] or "Unknown Title",
                     abstract=row["abstract"],
                     authors=row["authors"],
                     journal=row["journal"],
-                    entrez_date=row["entrez_date"],
+                    source_date=row["source_date"],
                     source_type=row["source_type"],
                     source_details=row["source_details"],
                     relevance_assessment=relevance_assessment,
                     evidence_extraction=evidence_extraction,
                     citation_pages=citation_pages,
+                    preprint=is_preprint(row["journal"], row["pmid"]),
+                    pmid=row["pmid"],
                 )
                 low_confidence_papers.append(detailed_paper)
-
-        # Sort by PMID (descending) for consistent display
-        low_confidence_papers.sort(key=lambda p: p.pmid, reverse=True)
 
         logger.info(f"Found {len(low_confidence_papers)} low-confidence irrelevant papers")
         return low_confidence_papers
@@ -1079,24 +1106,24 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
         # Get papers from recent literature with manual_required download status
         cursor.execute("""
             SELECT
+                p.doi,
                 p.pmid,
                 p.title,
                 p.abstract,
                 p.authors,
                 p.journal,
-                p.entrez_date,
+                p.source_date,
                 p.source_type,
                 p.source_details,
                 p.relevance_assessment_json
             FROM papers p
             WHERE p.source_type = 'initial'
             AND p.download_status = 'manual_required'
-            ORDER BY p.pmid DESC
+            ORDER BY p.source_date DESC, p.doi DESC
         """)
 
         manual_download_papers = []
         for row in cursor.fetchall():
-            # Parse relevance assessment
             relevance_assessment = None
             if row["relevance_assessment_json"]:
                 try:
@@ -1104,20 +1131,22 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
                         json.loads(row["relevance_assessment_json"])
                     )
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse relevance assessment for PMID {row['pmid']}")
+                    logger.warning(f"Failed to parse relevance assessment for DOI {row['doi']}")
 
             detailed_paper = DetailedPaper(
-                pmid=row["pmid"],
+                doi=row["doi"],
                 title=row["title"] or "Unknown Title",
                 abstract=row["abstract"],
                 authors=row["authors"],
                 journal=row["journal"],
-                entrez_date=row["entrez_date"],
+                source_date=row["source_date"],
                 source_type=row["source_type"],
                 source_details=row["source_details"],
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=None,
                 citation_pages=None,
+                preprint=is_preprint(row["journal"], row["pmid"]),
+                pmid=row["pmid"],
             )
             manual_download_papers.append(detailed_paper)
 
@@ -1194,7 +1223,7 @@ def calculate_comprehensive_statistics(
         cursor.execute("""
             SELECT
                 source_type,
-                COUNT(DISTINCT pmid) as count
+                COUNT(DISTINCT doi) as count
             FROM papers
             WHERE evidence_extraction_json IS NOT NULL
             GROUP BY source_type
@@ -1202,10 +1231,10 @@ def calculate_comprehensive_statistics(
         source_counts = dict(cursor.fetchall())
 
         # Papers contributing to assessments
-        all_pmids = set()
+        all_dois = set()
         for gene in all_genes:
             for p in gene.contributing_papers:
-                all_pmids.add(p.pmid)
+                all_dois.add(p.doi)
 
         # Count MoI changes
         moi_expansions = 0
@@ -1222,9 +1251,9 @@ def calculate_comprehensive_statistics(
             total_genes_assessed=total_genes,
             novel_genes_count=novel_genes,
             known_genes_upgraded=known_upgraded,
-            total_contributing_papers=len(all_pmids),
+            total_contributing_papers=len(all_dois),
             # Panel validation stats
-            total_panel_pmids=panel_validation.total_panel_pmids,
+            total_panel_papers=panel_validation.total_panel_papers,
             panel_papers_in_db=panel_validation.panel_papers_in_db,
             validation_sensitivity_pct=panel_validation.sensitivity_pct,
             false_negatives_count=len(panel_validation.false_negatives),
@@ -1343,39 +1372,37 @@ def get_variant_frequency_flag(variant: VariantFrequency, inheritance_mode: str)
 
 def prepare_aggregate_citation_links(
     citations: list[dict], contributing_papers: list[DetailedPaper]
-) -> list[tuple[int, int]]:
+) -> list[CitationLink]:
     """Prepare deduplicated citation links for aggregate assessment citations.
 
-    Aggregate citations include a pmid field specifying which paper the citation comes from.
-    This function collects all citations and returns deduplicated (pmid, page) links.
+    Aggregate citations include a doi field specifying which paper the citation comes from.
+    This function resolves box_ids to PDF page numbers via contributing papers' bbox mappings.
 
     Args:
-        citations: List of citation dicts, each with pmid and box_id fields
+        citations: List of citation dicts, each with doi and box_id fields
         contributing_papers: List of papers that might contain these citations
 
     Returns:
-        Deduplicated list of (pmid, page) tuples, sorted by pmid then page
+        Deduplicated CitationLink list, sorted by paper_id then page
     """
-    links_set = set()
+    links: set[CitationLink] = set()
 
     for citation in citations:
         box_id = citation.get("box_id")
-        citation_pmid = citation.get("pmid")
+        citation_doi = citation.get("doi")
 
-        if box_id and citation_pmid:
-            # Find the specific paper mentioned in the citation
+        if box_id and citation_doi:
             for paper in contributing_papers:
                 if (
-                    paper.pmid == citation_pmid
+                    paper.doi == citation_doi
                     and paper.citation_pages
                     and box_id in paper.citation_pages
                 ):
                     page = paper.citation_pages[box_id]
-                    links_set.add((paper.pmid, page))
-                    break  # Only one paper should match
+                    links.add(CitationLink(paper_id=paper.paper_id, doi=paper.doi, page=page))
+                    break
 
-    # Return sorted list for consistent display
-    return sorted(links_set)
+    return sorted(links, key=lambda link: (link.paper_id, link.page))
 
 
 def build_report_config(
@@ -1635,10 +1662,8 @@ def main(
     annotated_output.mkdir(exist_ok=True)
 
     # Collect all needed PDFs from assessments
-    # Aggregate PDFs: {hgnc_id}/{pmid}.pdf (from aggregate assessment citations)
-    # Individual PDFs: individual/{pmid}.pdf (from contributing papers)
-    aggregate_pdfs: set[tuple[int, int]] = set()  # (hgnc_id, pmid) tuples
-    individual_pdfs: set[int] = set()  # pmid values
+    aggregate_pdfs: set[tuple[int, str]] = set()  # (hgnc_id, doi) tuples
+    individual_pdfs: set[str] = set()  # doi values
 
     all_genes = results.novel_genes + results.known_genes
 
@@ -1647,66 +1672,65 @@ def main(
         cursor = conn.cursor()
 
         for assessment in all_genes:
-            # Collect aggregate PDF needs from:
             # 1. Evidence criteria citations (PANELAPP_CRITERIA)
             for criterion_name in PANELAPP_CRITERIA:
                 criterion = assessment.assessment_json[criterion_name]
                 for citation in criterion.get("citations", []):
-                    pmid = citation["pmid"]
-                    aggregate_pdfs.add((assessment.hgnc_id, pmid))
+                    aggregate_pdfs.add((assessment.hgnc_id, citation["doi"]))
 
             # 2. Disease entity citations
             for disease_entity in assessment.assessment_json.get("disease_entities", []):
                 for citation in disease_entity.get("citations", []):
-                    pmid = citation["pmid"]
-                    aggregate_pdfs.add((assessment.hgnc_id, pmid))
+                    aggregate_pdfs.add((assessment.hgnc_id, citation["doi"]))
 
             # 3. Variant frequency papers (all papers with variants for this gene)
             cursor.execute(
                 """
-                SELECT DISTINCT pmid
+                SELECT DISTINCT paper_doi
                 FROM variant_frequencies
                 WHERE hgnc_id = ?
             """,
                 (assessment.hgnc_id,),
             )
             for row in cursor.fetchall():
-                aggregate_pdfs.add((assessment.hgnc_id, row["pmid"]))
+                aggregate_pdfs.add((assessment.hgnc_id, row["paper_doi"]))
 
             # Collect individual PDF needs (from contributing papers)
             for paper in assessment.contributing_papers:
-                individual_pdfs.add(paper.pmid)
+                individual_pdfs.add(paper.doi)
 
     # Copy aggregate PDFs maintaining gene hierarchy
     copied = 0
     missing = []
 
-    for hgnc_id, pmid in aggregate_pdfs:
+    for hgnc_id, doi in aggregate_pdfs:
         hgnc_id_str = str(hgnc_id)
-        source_path = annotated_dir / hgnc_id_str / f"{pmid}.pdf"
-        dest_dir = annotated_output / hgnc_id_str
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = dest_dir / f"{pmid}.pdf"
+        gene_dir = annotated_dir / hgnc_id_str
+        source_path = doi_to_path(doi, gene_dir, ".pdf")
+        dest_gene_dir = annotated_output / hgnc_id_str
+        dest_path = doi_to_path(doi, dest_gene_dir, ".pdf")
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         if source_path.exists():
             shutil.copy2(source_path, dest_path)
             copied += 1
         else:
-            missing.append(f"aggregate: {hgnc_id_str}/{pmid}.pdf")
+            missing.append(f"aggregate: {source_path}")
 
     # Copy individual PDFs
+    individual_source = annotated_dir / "individual"
     individual_dest = annotated_output / "individual"
-    individual_dest.mkdir(parents=True, exist_ok=True)
 
-    for pmid in individual_pdfs:
-        source_path = annotated_dir / "individual" / f"{pmid}.pdf"
-        dest_path = individual_dest / f"{pmid}.pdf"
+    for doi in individual_pdfs:
+        source_path = doi_to_path(doi, individual_source, ".pdf")
+        dest_path = doi_to_path(doi, individual_dest, ".pdf")
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         if source_path.exists():
             shutil.copy2(source_path, dest_path)
             copied += 1
         else:
-            missing.append(f"individual: {pmid}.pdf")
+            missing.append(f"individual: {source_path}")
 
     if missing:
         logger.warning(f"Missing {len(missing)} annotated PDFs:")

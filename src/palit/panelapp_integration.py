@@ -74,7 +74,7 @@ class PrefillData:
     rating: str  # "GREEN", "AMBER", "RED"
     moi: str  # Full PanelApp MoI string
     mode_of_pathogenicity: str | None
-    publications: str  # semicolon-separated PMIDs
+    publications: str  # semicolon-separated identifiers (PMIDs where available, DOIs otherwise)
     phenotypes: str  # semicolon-separated "description, MONDO_ID" pairs
     comments: str  # summary text
 
@@ -172,7 +172,7 @@ def prepare_prefill_data(
     assessment_json: dict[str, Any],
     form_type: str,
     panel_id: int,
-    cited_pmids: list[int],
+    cited_papers: list[tuple[str, int | None]],
 ) -> PrefillData:
     """Prepare prefill form data from gene assessment.
 
@@ -181,7 +181,7 @@ def prepare_prefill_data(
         assessment_json: Assessment JSON with criteria evaluations
         form_type: "add" or "review"
         panel_id: Target panel ID
-        cited_pmids: List of PMIDs cited in the assessment
+        cited_papers: List of (doi, pmid) pairs for papers cited in the assessment
 
     Returns:
         PrefillData object ready for form rendering
@@ -198,8 +198,8 @@ def prepare_prefill_data(
     # Get mode of pathogenicity if present
     mode_of_pathogenicity = assessment_json.get("mode_of_pathogenicity")
 
-    # Format publications as semicolon-separated PMIDs
-    publications = ";".join(str(pmid) for pmid in cited_pmids)
+    # Format publications: use PMID where available, DOI otherwise
+    publications = ";".join(str(pmid) if pmid is not None else doi for doi, pmid in cited_papers)
 
     # Format phenotypes as semicolon-separated "label, MONDO_ID" pairs
     disease_entities = assessment_json["disease_entities"]

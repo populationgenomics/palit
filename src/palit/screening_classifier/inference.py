@@ -22,7 +22,7 @@ from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
 class LabeledPaper:
     """Paper with relevance label for training/evaluation."""
 
-    pmid: int
+    doi: str
     title: str
     abstract: str
     is_relevant: int
@@ -104,7 +104,7 @@ class PaperDataset(Dataset):
             "input_ids": encoding["input_ids"].squeeze(0),
             "attention_mask": encoding["attention_mask"].squeeze(0),
             "labels": torch.tensor(paper.is_relevant, dtype=torch.float32),
-            "pmid": paper.pmid,
+            "doi": paper.doi,
         }
 
 
@@ -193,19 +193,19 @@ def predict_batch(
 
     Args:
         model: Screening classifier model
-        batch: Batch dictionary with input_ids, attention_mask, pmid
+        batch: Batch dictionary with input_ids, attention_mask, doi
         device: Device to run inference on
         threshold: Classification threshold
 
     Returns:
-        (pmids, probabilities) for papers in batch
+        (dois, probabilities) for papers in batch
     """
     input_ids = batch["input_ids"].to(device)
     attention_mask = batch["attention_mask"].to(device)
-    pmids = batch["pmid"]
+    dois = batch["doi"]
 
     with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         logits = model(input_ids, attention_mask)
         probs = torch.sigmoid(logits).cpu().tolist()
 
-    return pmids, probs
+    return dois, probs

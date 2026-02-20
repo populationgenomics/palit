@@ -63,14 +63,14 @@ IMPORTANT: This is a [List of Evidence Extractions] -> [Single Evidence Evaluati
 
 CITATION REQUIREMENTS:
 For each criterion that evaluates to TRUE, you MUST provide specific citations from the source papers. For each citation:
-- Provide the PMID and box ID number (from the original paper's <b id=N> tags)
+- Provide the paper_id and box ID number (from the original paper's <b id=N> tags)
 - Include brief commentary explaining what this specific text section demonstrates
 
 Example citation format:
 {% raw %}
 "citations": [
-  {"pmid": 12345, "box_id": 42, "commentary": "Reports 5 unrelated families with pathogenic variants"},
-  {"pmid": 67890, "box_id": 18, "commentary": "Confirms segregation analysis with LOD score 3.2"}
+  {"paper_id": "Smith2024", "box_id": 42, "commentary": "Reports 5 unrelated families with pathogenic variants"},
+  {"paper_id": "Jones2023", "box_id": 18, "commentary": "Confirms segregation analysis with LOD score 3.2"}
 ]
 {% endraw %}
 
@@ -181,13 +181,13 @@ The following specific MONDO disease names are known for {{ gene_symbol }}. For 
   * disease_mechanism: molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in papers. Synthesize ONLY from paper content.
   * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome). Use "Other" for post-zygotic mosaic/somatic variants.
   * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity", "post-zygotic mosaic") or empty string ""
-  * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions AND mechanisms. Each citation must include pmid, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
+  * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions AND mechanisms. Each citation must include paper_id, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
   Examples:
 {% raw %}
-  - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 12345, "box_id": 42, "commentary": "clinical features and patient counts"}, {"pmid": 67890, "box_id": 18, "commentary": "family counts"}]}]
-  - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"pmid": 11111, "box_id": 23, "commentary": "phenotype description"}]}]
-  - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 8, "family_count": 5, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 22222, "box_id": 34, "commentary": "ALS phenotype and counts"}, {"pmid": 33333, "box_id": 56, "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_disease_name": "Syndromic disease", "patient_count": 10, "family_count": 3, "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 44444, "box_id": 78, "commentary": "dental phenotype and family data"}]}]
-  - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 6, "family_count": 6, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"pmid": 41133935, "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 1, "family_count": 1, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"pmid": 38149472, "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
+  - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Smith2024", "box_id": 42, "commentary": "clinical features and patient counts"}, {"paper_id": "Jones2023", "box_id": 18, "commentary": "family counts"}]}]
+  - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"paper_id": "Lee2022", "box_id": 23, "commentary": "phenotype description"}]}]
+  - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 8, "family_count": 5, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Kim2024", "box_id": 34, "commentary": "ALS phenotype and counts"}, {"paper_id": "Park2023", "box_id": 56, "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_disease_name": "Syndromic disease", "patient_count": 10, "family_count": 3, "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Wang2022", "box_id": 78, "commentary": "dental phenotype and family data"}]}]
+  - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 6, "family_count": 6, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Chen2024", "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 1, "family_count": 1, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Li2023", "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
 {% endraw %}
 - variants: list all variants reported across papers WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
 - population_freq: ONLY if papers report gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
@@ -204,7 +204,7 @@ STRUCTURE:
 1. **Protein function** (if discussed in papers): When contributing papers describe protein function/pathway, start with 1-2 sentences summarizing what protein the gene encodes and its biological function. Include gene name. Synthesize ONLY from paper content - omit if not discussed.
 
 2. **Evidence summary**: Synthesize the key evidence in natural, flowing prose. Include the following information categories when available (omit any that are not present or not applicable):
-   - PMIDs and patient/family counts
+   - Paper references and patient/family counts
    - Inheritance pattern: monoallelic, biallelic, X-linked, de novo, mosaic/somatic, etc.
    - Disease mechanism: gain-of-function, loss-of-function, loss-of-function (haploinsufficiency), dominant-negative, etc.
    - Variant types: missense, nonsense, frameshift, splice-site, deletion, etc.
@@ -213,24 +213,24 @@ STRUCTURE:
    - Notable specifics (founder variants, population findings, prior reports, etc.)
 
    GENERAL TEMPLATE (flexible - adapt as needed for natural prose):
-   [PMID(s)] report [N] individuals from [N] unrelated families with [inheritance] [mechanism] [variant-types] variants presenting with [phenotype]. [Clinical details]. [Functional evidence]. [Notable specifics].
+   [paper_id(s)] report [N] individuals from [N] unrelated families with [inheritance] [mechanism] [variant-types] variants presenting with [phenotype]. [Clinical details]. [Functional evidence]. [Notable specifics].
 
    EXAMPLES showing different combinations of information:
 
    ✓ Single mechanism, single variant type:
-     "PMID 41133935 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. Functional assays demonstrate constitutive activation."
+     "[Smith2024] reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. Functional assays demonstrate constitutive activation."
 
    ✓ Single mechanism, multiple variant types:
-     "PMID 41234456 reports 27 individuals from 24 families with biallelic loss-of-function nonsense, frameshift, and splice-site variants causing Stargardt disease type 1, an autosomal recessive progressive macular dystrophy with childhood- or early adulthood-onset central vision loss."
+     "[Jones2024] reports 27 individuals from 24 families with biallelic loss-of-function nonsense, frameshift, and splice-site variants causing Stargardt disease type 1, an autosomal recessive progressive macular dystrophy with childhood- or early adulthood-onset central vision loss."
 
    ✓ With detailed mechanism, omitting variant types:
-     "PMID 41189326 reports 5 individuals from 4 families with heterozygous loss-of-function (haploinsufficiency) variants presenting with severe congenital microcephaly, intellectual disability and developmental delay. Zebrafish knockdown recapitulates reduced CNS size and behavioral deficits."
+     "[Kim2024] reports 5 individuals from 4 families with heterozygous loss-of-function (haploinsufficiency) variants presenting with severe congenital microcephaly, intellectual disability and developmental delay. Zebrafish knockdown recapitulates reduced CNS size and behavioral deficits."
 
    ✓ Multiple mechanisms (organize by mechanism):
-     "BAIAP2 encodes a brain-specific angiogenesis inhibitor binding protein. PMID 41133935 reports 6 individuals with de novo gain-of-function missense variants causing developmental and epileptic encephalopathy. PMID 38149472 reports 1 individual with a loss-of-function missense variant causing lissencephaly with posterior-anterior gradient."
+     "BAIAP2 encodes a brain-specific angiogenesis inhibitor binding protein. [Chen2024] reports 6 individuals with de novo gain-of-function missense variants causing developmental and epileptic encephalopathy. [Li2023] reports 1 individual with a loss-of-function missense variant causing lissencephaly with posterior-anterior gradient."
 
    ✓ Mechanism not reported (omit naturally):
-     "PMID 41212051 reports 3 individuals from 1 family with a heterozygous missense variant (c.349G>T, p.Asp117Tyr) presenting with premature ovarian insufficiency. Mouse knock-in model recapitulates age-dependent subfertility and follicle depletion."
+     "[Wang2024] reports 3 individuals from 1 family with a heterozygous missense variant (c.349G>T, p.Asp117Tyr) presenting with premature ovarian insufficiency. Mouse knock-in model recapitulates age-dependent subfertility and follicle depletion."
 
    When disease_mechanism is "NR", simply omit it and include other available information. When multiple distinct mechanisms exist, organize by mechanism to clarify the genotype-phenotype relationship.
 
@@ -249,17 +249,17 @@ STRUCTURE:
 EXAMPLES:
 
 ✓ CORRECT - Adding to existing:
-  "Beyond the previously reviewed cardiomyopathy evidence, PMIDs 38311799 and 39812845 add 16 families with ACTN2 skeletal myopathy. The skeletal phenotype includes adult-onset limb-girdle weakness with dominant and recessive inheritance. Combined with the cardiomyopathy families, this brings the total to ~30 unrelated families."
+  "Beyond the previously reviewed cardiomyopathy evidence, [Park2024] and [Lee2024] add 16 families with ACTN2 skeletal myopathy. The skeletal phenotype includes adult-onset limb-girdle weakness with dominant and recessive inheritance. Combined with the cardiomyopathy families, this brings the total to ~30 unrelated families."
 
 ✓ CORRECT - Referencing prior functional work:
-  "Building on the iPSC-CM functional validation (PMID 34802252, previously reviewed), PMIDs 39812845 and 38311799 establish skeletal myopathy as a distinct ACTN2-associated phenotype with 16 families."
+  "Building on the iPSC-CM functional validation ([Brown2021], previously reviewed), [Lee2024] and [Park2024] establish skeletal myopathy as a distinct ACTN2-associated phenotype with 16 families."
 
 ✓ CORRECT - Acknowledging what remains unchanged:
-  "The cardiomyopathy evidence remains as previously reviewed. PMIDs 39812845 and 38311799 add a skeletal myopathy phenotype: 11 dominant families and 5 recessive families respectively."
+  "The cardiomyopathy evidence remains as previously reviewed. [Lee2024] and [Park2024] add a skeletal myopathy phenotype: 11 dominant families and 5 recessive families respectively."
 
 ✗ WRONG - Treating previously reviewed as new:
-  "PMID 34802252 reports 2 families with cardiomyopathy..."
-  (This PMID is already reviewed - don't present its families as new findings)
+  "[Brown2021] reports 2 families with cardiomyopathy..."
+  (This paper is already reviewed - don't present its families as new findings)
 
 ✗ WRONG - Ignoring existing reviews:
   "22 families total across all papers..."
@@ -277,19 +277,19 @@ Provide a prose narrative that synthesizes the gene-disease evidence AND explain
 {{ panel_formatted }}
 
 STRUCTURE:
-1. **Evidence summary**: Synthesize key evidence (PMIDs, family counts, inheritance, phenotype, functional evidence)
+1. **Evidence summary**: Synthesize key evidence (paper references, family counts, inheritance, phenotype, functional evidence)
 2. **Panel relevance**: Explain WHY this gene's phenotype aligns with this panel's scope, referencing the panel's relevant disorders, disease group, or description
 
 EXAMPLES:
 
 ✓ CORRECT - Evidence + explicit panel relevance:
-  "PMID 41133935 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. This gene is relevant to the Genetic Epilepsy panel because DEE is a core epileptic encephalopathy within the panel's scope of seizure disorders with genetic etiology."
+  "[Smith2024] reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. This gene is relevant to the Genetic Epilepsy panel because DEE is a core epileptic encephalopathy within the panel's scope of seizure disorders with genetic etiology."
 
 ✓ CORRECT - Multiple phenotypes, panel-specific focus:
   "BAIAP2 variants cause two distinct phenotypes: developmental epileptic encephalopathy (6 families, GoF) and lissencephaly (1 family, LoF). Both phenotypes are relevant to the Neurodevelopmental Disorders panel as they involve abnormal brain development and intellectual disability, which are core features of the panel's scope."
 
 ✓ CORRECT - Explaining borderline relevance:
-  "PMID 38149472 reports 4 families with hereditary spastic paraplegia presenting with progressive lower limb spasticity and mild cognitive impairment. While HSP is primarily a motor neuron disorder, this gene is relevant to the Intellectual Disability panel because affected individuals consistently show mild-to-moderate ID as part of the clinical presentation."
+  "[Li2023] reports 4 families with hereditary spastic paraplegia presenting with progressive lower limb spasticity and mild cognitive impairment. While HSP is primarily a motor neuron disorder, this gene is relevant to the Intellectual Disability panel because affected individuals consistently show mild-to-moderate ID as part of the clinical presentation."
 
 ✗ WRONG - No panel connection:
   "Reports 5 individuals from 4 families with heterozygous variants presenting with microcephaly."
@@ -315,18 +315,18 @@ STRUCTURE:
 EXAMPLES:
 
 ✓ CORRECT - Delta + panel relevance:
-  "Beyond the previously reviewed dilated cardiomyopathy evidence, PMIDs 38311799 and 39812845 add 16 families with ACTN2 skeletal myopathy. This strengthens the gene's relevance to the Inherited Muscle Disorders panel, as both cardiac and skeletal muscle phenotypes fall within the panel's scope."
+  "Beyond the previously reviewed dilated cardiomyopathy evidence, [Park2024] and [Lee2024] add 16 families with ACTN2 skeletal myopathy. This strengthens the gene's relevance to the Inherited Muscle Disorders panel, as both cardiac and skeletal muscle phenotypes fall within the panel's scope."
 
 ✓ CORRECT - No substantive new evidence, but confirming panel fit:
   "The evidence remains as previously reviewed (3 families with dilated cardiomyopathy). This gene is relevant to the Inherited Cardiomyopathies panel because DCM is a core phenotype within the panel's scope of genetic cardiomyopathies."
 
 ✗ WRONG - Delta without panel connection:
-  "PMIDs 38311799 and 39812845 add 16 families with skeletal myopathy."
+  "[Park2024] and [Lee2024] add 16 families with skeletal myopathy."
   (Fails to explain why this is relevant to the specific panel)
 
 ✗ WRONG - Treating previously reviewed as new:
-  "PMID 34802252 reports 2 families with cardiomyopathy..."
-  (This PMID is already reviewed - don't present its findings as new)
+  "[Brown2021] reports 2 families with cardiomyopathy..."
+  (This paper is already reviewed - don't present its findings as new)
 
 3. {{ change_summary_guidance() }}
 {% endif %}
@@ -362,7 +362,7 @@ that emerge from cross-paper comparison.
 
 1. **Significant concerns from individual papers**
    Carry forward the most impactful concerns from contributing papers, referencing
-   specific PMIDs. Do not repeat every concern—focus on issues that materially affect
+   specific paper IDs. Do not repeat every concern—focus on issues that materially affect
    the aggregate evidence interpretation.
 
 2. **Cross-paper contradictions** (new issues to identify)
@@ -388,7 +388,7 @@ Respond in JSON format with your aggregate evaluation:
 
 {% raw %}
 {
-  "summary": "[PMID(s)] report [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. [Clinical features]. [Functional evidence]. [Notable specifics].",
+  "summary": "[paper_id(s)] report [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. [Clinical features]. [Functional evidence]. [Notable specifics].",
   "families": "N families (N unrelated) aggregated across all papers",
   "variants": "all variants reported across papers (type)",
   "population_freq": "gnomAD: frequencies when reported",
@@ -396,16 +396,16 @@ Respond in JSON format with your aggregate evaluation:
   "functional": "all functional experiments across papers",
   "prior_reports": "assessment of literature overlap and novel families",
   "disease_entities": [
-    {"description": "disease name 1 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid1, "box_id": box_id, "commentary": "description"}, {"pmid": pmid2, "box_id": box_id, "commentary": "description"}]},
-    {"description": "disease name 2 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"pmid": pmid3, "box_id": box_id, "commentary": "description"}]}
+    {"description": "disease name 1 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"paper_id": "Author2024", "box_id": box_id, "commentary": "description"}, {"paper_id": "Author2023", "box_id": box_id, "commentary": "description"}]},
+    {"description": "disease name 2 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"paper_id": "Author2022", "box_id": box_id, "commentary": "description"}]}
   ],
   "criterion_A": {
     "result": boolean,
     "rationale": "detailed explanation combining evidence from all papers",
     "confidence": "HIGH|MEDIUM|LOW",
     "citations": [
-      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"},
-      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"},
+      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
     ]
   },
   "criterion_B": {
@@ -413,7 +413,7 @@ Respond in JSON format with your aggregate evaluation:
     "rationale": "detailed explanation combining evidence from all papers",
     "confidence": "HIGH|MEDIUM|LOW",
     "citations": [
-      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
     ]
   },
   "criterion_C": {
@@ -421,7 +421,7 @@ Respond in JSON format with your aggregate evaluation:
     "rationale": "detailed explanation combining evidence from all papers",
     "confidence": "HIGH|MEDIUM|LOW",
     "citations": [
-      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
     ]
   },
   "criterion_D": {
@@ -429,7 +429,7 @@ Respond in JSON format with your aggregate evaluation:
     "rationale": "detailed explanation combining evidence from all papers",
     "confidence": "HIGH|MEDIUM|LOW",
     "citations": [
-      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
     ]
   },
   "criterion_E": {
@@ -437,14 +437,14 @@ Respond in JSON format with your aggregate evaluation:
     "rationale": "detailed explanation combining evidence from all papers",
     "confidence": "HIGH|MEDIUM|LOW",
     "citations": [
-      {"pmid": integer, "box_id": integer, "commentary": "explanation of what this evidence shows"}
+      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
     ]
   },
   "quality_concerns": [
     {
-      "concern": "description of the issue, referencing specific PMIDs",
-      "pmids": [integer],
-      "citations": [{"pmid": integer, "box_id": integer, "commentary": "where the problematic claim appears"}]
+      "concern": "description of the issue, referencing specific paper IDs",
+      "paper_ids": ["AuthorYear"],
+      "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "where the problematic claim appears"}]
     }
   ]
 }

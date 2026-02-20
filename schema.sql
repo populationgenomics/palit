@@ -9,19 +9,28 @@ PRAGMA journal_mode=WAL;
 
 -- Core papers table
 CREATE TABLE papers (
-    pmid INTEGER PRIMARY KEY,
+    doi TEXT PRIMARY KEY,
+    pmid INTEGER,
     title TEXT NOT NULL,
     abstract TEXT,
     authors TEXT,
     journal TEXT,
-    entrez_date DATE,
+
+    -- Where the paper came from ('pubmed', 'biorxiv', 'medrxiv', etc.)
+    source TEXT NOT NULL,
+
+    -- Source-specific date (e.g., entrez_date for PubMed, posted_date for preprints)
+    source_date DATE,
+
+    -- Source-specific metadata as JSON (e.g., {"pmid": 12345, "pmcid": "PMC...", "version": "1"})
+    source_metadata JSON,
 
     -- Where the paper came from ('initial' for primary search, 'expansion' for supplementary literature)
     source_type TEXT,
     source_details TEXT,
 
     -- Download status tracking
-    download_status TEXT CHECK(download_status IN ('scheduled', 'pmc_downloaded', 'manual_required', 'manual_downloaded')),
+    download_status TEXT CHECK(download_status IN ('scheduled', 'downloaded', 'manual_required')),
 
     -- Main assessment fields (arrays of 3 results for majority voting)
     relevance_assessment_raw JSON,  -- Array of 3 raw text responses, including LLM reasoning content
@@ -40,26 +49,29 @@ CREATE TABLE gene_mentions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hgnc_id INTEGER NOT NULL,
     paper_gene_symbol TEXT NOT NULL,     -- Original symbol mentioned in paper (may be alias)
-    pmid INTEGER NOT NULL,
+    paper_doi TEXT NOT NULL,
     source TEXT CHECK(source IN ('recent_evidence', 'expansion_evidence', 'relevance_assessment')) NOT NULL,
 
-    FOREIGN KEY (pmid) REFERENCES papers(pmid),
-    UNIQUE(pmid, hgnc_id, source)
+    FOREIGN KEY (paper_doi) REFERENCES papers(doi),
+    UNIQUE(paper_doi, hgnc_id, source)
 );
 
 CREATE INDEX idx_gene_mentions_hgnc_id ON gene_mentions(hgnc_id);
 CREATE INDEX idx_gene_mentions_paper ON gene_mentions(paper_gene_symbol);
-CREATE INDEX idx_gene_mentions_pmid ON gene_mentions(pmid);
+CREATE INDEX idx_gene_mentions_paper_doi ON gene_mentions(paper_doi);
 CREATE INDEX idx_gene_mentions_source_gene ON gene_mentions(source, hgnc_id);
 
 -- Track completed tournament selection runs per gene (used for resumability)
 CREATE TABLE tournament_results (
     hgnc_id INTEGER PRIMARY KEY,
-    selected_pmids_json JSON,
+    selected_dois_json JSON,
     tournament_raw_responses_json JSON  -- Includes LLM reasoning content
 );
 
+CREATE INDEX idx_papers_pmid ON papers(pmid) WHERE pmid IS NOT NULL;
+
 -- Indexes for source tracking
+CREATE INDEX idx_papers_source ON papers(source);
 CREATE INDEX idx_papers_source_type ON papers(source_type);
 CREATE INDEX idx_papers_source_details ON papers(source_details);
 CREATE INDEX idx_papers_download_status ON papers(download_status);
@@ -95,15 +107,15 @@ CREATE TABLE variant_frequencies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- Auto-incrementing primary key
     variant_id TEXT NOT NULL,  -- gnomAD pseudo-VCF style (chr-pos-ref-alt)
     hgnc_id INTEGER NOT NULL,  -- For report generation and indexing
-    pmid INTEGER NOT NULL,  -- Paper where variant was mentioned
+    paper_doi TEXT NOT NULL,  -- Paper where variant was mentioned
     box_id INTEGER NOT NULL,  -- For PDF citation linking
     normalization JSON NOT NULL,  -- HGVS c/p from variant normalizer
     gnomad JSON NOT NULL,  -- Raw gnomAD API response or error message
 
-    FOREIGN KEY (pmid) REFERENCES papers(pmid),
-    UNIQUE(variant_id, pmid, box_id)  -- Allow same variant in paper if different box_id
+    FOREIGN KEY (paper_doi) REFERENCES papers(doi),
+    UNIQUE(variant_id, paper_doi, box_id)  -- Allow same variant in paper if different box_id
 );
 
 CREATE INDEX idx_variant_frequencies_variant_id ON variant_frequencies(variant_id);
 CREATE INDEX idx_variant_frequencies_hgnc_id ON variant_frequencies(hgnc_id);
-CREATE INDEX idx_variant_frequencies_pmid ON variant_frequencies(pmid);
+CREATE INDEX idx_variant_frequencies_paper_doi ON variant_frequencies(paper_doi);

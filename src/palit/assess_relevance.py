@@ -40,7 +40,7 @@ class PaperBatchProcessor:
             shard_index: Shard index (0-based) for parallel processing
             num_shards: Total number of shards
 
-        Returns list of papers with pmid, title, abstract.
+        Returns list of papers with doi, title, abstract.
         """
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -48,13 +48,13 @@ class PaperBatchProcessor:
 
             cursor.execute(
                 """
-                SELECT pmid, title, abstract
+                SELECT doi, title, abstract
                 FROM papers
                 WHERE relevance_assessment_json IS NULL
                 AND title IS NOT NULL
                 AND abstract IS NOT NULL
-                AND pmid % ? = ?
-                ORDER BY pmid
+                AND rowid % ? = ?
+                ORDER BY doi
                 LIMIT ?
             """,
                 (num_shards, shard_index, batch_size),
@@ -74,7 +74,7 @@ class PaperBatchProcessor:
         Also populates gene_mentions with source='relevance_assessment'.
 
         Args:
-            papers: List of paper dicts with PMIDs
+            papers: List of paper dicts with DOIs
             all_results: List of 3-tuples of PromptResult objects or None, same order as papers
             hgnc_resolver: HGNC resolver for gene symbol normalization
         """
@@ -92,7 +92,7 @@ class PaperBatchProcessor:
                 if not all(result is not None for result in results_triple):
                     continue
 
-                pmid = paper["pmid"]
+                doi = paper["doi"]
 
                 # Store arrays of raw and parsed results
                 raw_array = [result.raw_response for result in results_triple if result]
@@ -113,13 +113,13 @@ class PaperBatchProcessor:
                             WHEN ? = 1 AND download_status IS NULL THEN 'scheduled'
                             ELSE download_status
                         END
-                    WHERE pmid = ?
+                    WHERE doi = ?
                 """,
                     (
                         json.dumps(raw_array),
                         json.dumps(json_array),
                         1 if is_relevant else 0,
-                        pmid,
+                        doi,
                     ),
                 )
 
@@ -130,16 +130,16 @@ class PaperBatchProcessor:
                         entry = hgnc_resolver.resolve(paper_gene_symbol)
                         if entry is None:
                             logger.debug(
-                                f"Unresolved gene symbol '{paper_gene_symbol}' in PMID {pmid}"
+                                f"Unresolved gene symbol '{paper_gene_symbol}' in DOI {doi}"
                             )
                             continue
                         cursor.execute(
                             """
                             INSERT OR IGNORE INTO gene_mentions
-                            (hgnc_id, paper_gene_symbol, pmid, source)
+                            (hgnc_id, paper_gene_symbol, paper_doi, source)
                             VALUES (?, ?, ?, 'relevance_assessment')
                             """,
-                            (entry.hgnc_id, paper_gene_symbol.upper(), pmid),
+                            (entry.hgnc_id, paper_gene_symbol.upper(), doi),
                         )
 
                 successful_updates += 1
@@ -158,7 +158,7 @@ class PaperBatchProcessor:
             # Total papers
             logger.debug("  Counting total papers...")
             cursor.execute(
-                "SELECT COUNT(*) FROM papers WHERE pmid % ? = ?", (num_shards, shard_index)
+                "SELECT COUNT(*) FROM papers WHERE rowid % ? = ?", (num_shards, shard_index)
             )
             total_papers = cursor.fetchone()[0]
 
@@ -168,7 +168,7 @@ class PaperBatchProcessor:
                 """
                 SELECT COUNT(*) FROM papers
                 WHERE title IS NOT NULL AND abstract IS NOT NULL
-                AND pmid % ? = ?
+                AND rowid % ? = ?
             """,
                 (num_shards, shard_index),
             )
@@ -180,7 +180,7 @@ class PaperBatchProcessor:
                 """
                 SELECT COUNT(*) FROM papers
                 WHERE relevance_assessment_json IS NOT NULL
-                AND pmid % ? = ?
+                AND rowid % ? = ?
             """,
                 (num_shards, shard_index),
             )
@@ -194,7 +194,7 @@ class PaperBatchProcessor:
                 WHERE relevance_assessment_json IS NULL
                 AND title IS NOT NULL
                 AND abstract IS NOT NULL
-                AND pmid % ? = ?
+                AND rowid % ? = ?
             """,
                 (num_shards, shard_index),
             )
@@ -237,7 +237,7 @@ def prepare_prompts_for_papers(
         # Truncate excessively long abstracts
         if len(abstract) > MAX_ABSTRACT_CHARS:
             logger.warning(
-                f"Truncating abstract for PMID {paper['pmid']} from {len(abstract)} to {MAX_ABSTRACT_CHARS} chars"
+                f"Truncating abstract for DOI {paper['doi']} from {len(abstract)} to {MAX_ABSTRACT_CHARS} chars"
             )
             abstract = abstract[:MAX_ABSTRACT_CHARS] + "... [truncated]"
 

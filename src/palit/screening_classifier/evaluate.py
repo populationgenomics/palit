@@ -79,13 +79,13 @@ def evaluate(
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute("SELECT pmid, title, abstract, is_relevant FROM papers WHERE split = 'test'")
+    cursor.execute("SELECT doi, title, abstract, is_relevant FROM papers WHERE split = 'test'")
     rows = cursor.fetchall()
     conn.close()
 
     test_papers = [
         LabeledPaper(
-            pmid=row["pmid"],
+            doi=row["doi"],
             title=row["title"],
             abstract=row["abstract"],
             is_relevant=row["is_relevant"],

@@ -3,6 +3,7 @@
 
 import gzip
 import io
+import json
 import logging
 import sqlite3
 import subprocess
@@ -16,6 +17,8 @@ import typer
 from lxml import etree
 from rich.console import Console
 from rich.progress import Progress
+
+from palit.papers import Paper, SkipReason
 
 console = Console()
 app = typer.Typer(help="Download and ingest PubMed papers")
@@ -98,26 +101,12 @@ def extract_date(date_element: etree._Element | None) -> str | None:
         return None
 
 
-@dataclass
-class Paper:
-    """Paper data extracted from PubMed XML."""
-
-    pmid: int
-    entrez_date: str
-    title: str
-    abstract: str
-    authors: str
-    journal: str
-    source_type: str
-    source_details: str
-
-
 def extract_paper(
     article_elem: etree._Element,
     source_type: str,
     source_details: str,
     require_abstract: bool = True,
-) -> Paper | None:
+) -> Paper | SkipReason:
     """Extract paper data from PubmedArticle element.
 
     Args:
@@ -126,53 +115,72 @@ def extract_paper(
         source_details: Details about the source
         require_abstract: If True, skip papers without abstracts. Default True.
     """
-    # Extract PMID from MedlineCitation/PMID
-    pmid_elem = article_elem.find(".//MedlineCitation/PMID")
-    if pmid_elem is None or not pmid_elem.text:
-        return None
+    # Extract article IDs (DOI, PMID, PMCID) from ArticleIdList
+    article_ids: dict[str, str] = {}
+    for article_id in article_elem.findall(".//PubmedData/ArticleIdList/ArticleId"):
+        id_type = article_id.get("IdType")
+        if id_type and article_id.text:
+            article_ids[id_type] = article_id.text.strip()
 
-    try:
-        pmid = int(pmid_elem.text)
-    except ValueError:
-        return None
+    doi = article_ids.get("doi")
+    if not doi:
+        return SkipReason.NO_DOI
 
     # Extract entrez date from PubmedData/History/PubMedPubDate[@PubStatus="entrez"]
     entrez_date_elem = article_elem.find('.//PubmedData/History/PubMedPubDate[@PubStatus="entrez"]')
-    entrez_date = extract_date(entrez_date_elem)
-    if not entrez_date:
-        return None
+    source_date = extract_date(entrez_date_elem)
+    if not source_date:
+        return SkipReason.NO_DATE
 
     # Extract title from MedlineCitation/Article/ArticleTitle
     title_elem = article_elem.find(".//MedlineCitation/Article/ArticleTitle")
     title = extract_text_content(title_elem)
+    if not title:
+        return SkipReason.NO_TITLE
 
     # Extract abstract from MedlineCitation/Article/Abstract/AbstractText elements
     abstract_elems = article_elem.findall(".//MedlineCitation/Article/Abstract/AbstractText")
     abstract_parts = [extract_text_content(elem) for elem in abstract_elems]
     abstract = " ".join(abstract_parts).strip()
 
+    if require_abstract and not abstract:
+        return SkipReason.NO_ABSTRACT
+
     # Extract authors and journal
     authors = extract_authors(article_elem)
     journal = extract_journal(article_elem)
 
-    # Skip papers without title
-    if not title:
-        return None
+    # Extract PMID and build source_metadata for remaining IDs
+    pmid_str = article_ids.get("pubmed")
+    pmid = int(pmid_str) if pmid_str else None
 
-    # Skip papers without abstract only if required
-    if require_abstract and not abstract:
-        return None
+    source_metadata: dict[str, object] = {}
+    pmcid = article_ids.get("pmc")
+    if pmcid:
+        source_metadata["pmcid"] = pmcid
 
     return Paper(
+        doi=doi,
         pmid=pmid,
-        entrez_date=entrez_date,
         title=title,
         abstract=abstract,
         authors=authors,
         journal=journal,
+        source="pubmed",
+        source_date=source_date,
+        source_metadata=source_metadata,
         source_type=source_type,
         source_details=source_details,
     )
+
+
+@dataclass
+class ExtractionStats:
+    """Statistics from paper extraction."""
+
+    total_articles: int
+    extracted: int
+    skipped: dict[SkipReason, int]
 
 
 def extract_papers_from_xml(
@@ -181,7 +189,7 @@ def extract_papers_from_xml(
     source_details: str,
     require_abstract: bool = True,
     min_year: int | None = None,
-) -> list[Paper]:
+) -> tuple[list[Paper], ExtractionStats]:
     """Extract papers from XML bytes content.
 
     Args:
@@ -189,34 +197,52 @@ def extract_papers_from_xml(
         source_type: Type of source (e.g., "initial", "expansion")
         source_details: Details about the source (e.g., filename, gene name)
         require_abstract: If True, skip papers without abstracts. Default True.
-        min_year: If provided, only include papers with entrez_date >= this year
+        min_year: If provided, only include papers with source_date >= this year
 
     Returns:
-        List of Paper objects extracted from XML
+        Tuple of (list of Paper objects, extraction statistics)
     """
     # Parse XML
     parser = etree.XMLParser(recover=True, resolve_entities=False)
     tree = etree.parse(io.BytesIO(xml_content), parser)
     root = tree.getroot()
     if root is None:
-        return []
+        return [], ExtractionStats(total_articles=0, extracted=0, skipped={})
 
     # Find all PubmedArticle elements
     papers = []
+    skipped: dict[SkipReason, int] = {}
     article_elements = root.findall(".//PubmedArticle")
 
     for article_elem in article_elements:
-        paper_data = extract_paper(article_elem, source_type, source_details, require_abstract)
-        if paper_data:
-            # Filter by year if min_year is specified
-            if min_year is not None:
-                paper_year = int(paper_data.entrez_date[:4])
-                if paper_year < min_year:
-                    continue
+        result = extract_paper(article_elem, source_type, source_details, require_abstract)
+        if isinstance(result, SkipReason):
+            skipped[result] = skipped.get(result, 0) + 1
+            continue
 
-            papers.append(paper_data)
+        # Filter by year if min_year is specified
+        if min_year is not None:
+            paper_year = int(result.source_date[:4])
+            if paper_year < min_year:
+                continue
 
-    return papers
+        papers.append(result)
+
+    stats = ExtractionStats(
+        total_articles=len(article_elements),
+        extracted=len(papers),
+        skipped=skipped,
+    )
+    if skipped:
+        skip_summary = ", ".join(
+            f"{r.value}: {n}" for r, n in sorted(skipped.items(), key=lambda x: -x[1])
+        )
+        logger.info(
+            f"Skipped {sum(skipped.values())}/{len(article_elements)} articles "
+            f"from {source_details} ({skip_summary})"
+        )
+
+    return papers, stats
 
 
 def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: Path) -> None:
@@ -236,14 +262,10 @@ def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: 
         # For initial papers, use the filename as source_details
         source_type = "initial"
         source_details = xml_path.name
-        all_papers = extract_papers_from_xml(xml_content, source_type, source_details)
-        logger.debug(f"Found {len(all_papers)} total papers")
+        all_papers, stats = extract_papers_from_xml(xml_content, source_type, source_details)
+        logger.debug(f"Found {stats.extracted} papers (from {stats.total_articles} articles)")
 
-        papers = [
-            paper
-            for paper in all_papers
-            if paper.entrez_date and start_date <= paper.entrez_date <= end_date
-        ]
+        papers = [paper for paper in all_papers if start_date <= paper.source_date <= end_date]
         logger.debug(f"Found {len(papers)} papers in date range")
 
         # Insert papers into database
@@ -252,14 +274,17 @@ def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: 
             cursor.executemany(
                 """
                 INSERT INTO papers
-                (pmid, entrez_date, title, abstract, authors, journal, source_type, source_details)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(pmid) DO UPDATE SET
-                    entrez_date = excluded.entrez_date,
+                (doi, pmid, title, abstract, authors, journal, source, source_date,
+                 source_metadata, source_type, source_details)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(doi) DO UPDATE SET
+                    pmid = excluded.pmid,
                     title = excluded.title,
                     abstract = excluded.abstract,
                     authors = excluded.authors,
                     journal = excluded.journal,
+                    source_date = excluded.source_date,
+                    source_metadata = excluded.source_metadata,
                     source_type = excluded.source_type,
                     source_details = excluded.source_details
                 -- Only update if both old and new records are from initial
@@ -272,16 +297,19 @@ def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: 
             """,
                 [
                     (
-                        a.pmid,
-                        a.entrez_date,
-                        a.title,
-                        a.abstract,
-                        a.authors,
-                        a.journal,
-                        a.source_type,
-                        a.source_details,
+                        p.doi,
+                        p.pmid,
+                        p.title,
+                        p.abstract,
+                        p.authors,
+                        p.journal,
+                        p.source,
+                        p.source_date,
+                        json.dumps(p.source_metadata),
+                        p.source_type,
+                        p.source_details,
                     )
-                    for a in papers
+                    for p in papers
                 ],
             )
             conn.commit()

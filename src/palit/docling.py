@@ -221,7 +221,7 @@ def convert_pdfs(
         console.print(f"[red]Directory not found: {papers_dir}[/red]")
         raise typer.Exit(1)
 
-    pdf_files = list(papers_dir.glob("*.pdf"))
+    pdf_files = list(papers_dir.rglob("*.pdf"))
 
     if not pdf_files:
         console.print(f"[red]No PDF files found in {papers_dir}[/red]")

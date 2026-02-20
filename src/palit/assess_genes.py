@@ -15,6 +15,7 @@ from palit.hgnc import HgncResolver
 from palit.mondo_lookup import MondoCandidate, MondoLookup
 from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
 from palit.panelapp_integration import MONDO_CATEGORIES
+from palit.papers import generate_paper_ids
 
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
 logger = logging.getLogger(__name__)
@@ -38,6 +39,49 @@ def build_mondo_name_to_id(candidates: list[MondoCandidate]) -> dict[str, str]:
     for c in candidates:
         name_to_id[c.title.lower()] = c.mondo_id
     return name_to_id
+
+
+def _replace_citation_paper_id(
+    citation: dict[str, Any], paper_id_to_doi: dict[str, str], unknown_ids: list[str]
+) -> None:
+    """Replace paper_id with doi in a single citation dict. Mutates in place."""
+    paper_id = citation.pop("paper_id")
+    doi = paper_id_to_doi.get(paper_id)
+    if doi:
+        citation["doi"] = doi
+    else:
+        unknown_ids.append(paper_id)
+
+
+def replace_paper_ids_with_dois(
+    parsed_json: dict[str, Any], paper_id_to_doi: dict[str, str]
+) -> list[str]:
+    """Replace all paper_id fields with doi fields in parsed LLM output.
+
+    Mutates parsed_json in place. Returns list of unknown paper_ids (empty = success).
+    Non-empty means the LLM hallucinated paper IDs — caller should retry.
+    """
+    unknown_ids: list[str] = []
+
+    # disease_entities[].citations[]
+    for entity in parsed_json.get("disease_entities", []):
+        for citation in entity.get("citations", []):
+            _replace_citation_paper_id(citation, paper_id_to_doi, unknown_ids)
+
+    # criterion_A through criterion_E citations
+    for criterion in ("criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"):
+        for citation in parsed_json.get(criterion, {}).get("citations", []):
+            _replace_citation_paper_id(citation, paper_id_to_doi, unknown_ids)
+
+    # quality_concerns[].paper_ids list + citations[]
+    for concern in parsed_json.get("quality_concerns", []):
+        paper_ids_list = concern.pop("paper_ids", None)
+        if paper_ids_list is not None:
+            concern["dois"] = [paper_id_to_doi.get(pid, pid) for pid in paper_ids_list]
+        for citation in concern.get("citations", []):
+            _replace_citation_paper_id(citation, paper_id_to_doi, unknown_ids)
+
+    return unknown_ids
 
 
 def resolve_mondo_names(parsed_json: dict[str, Any], name_to_id: dict[str, str]) -> list[str]:
@@ -90,83 +134,84 @@ def find_gene_panel(
     return None
 
 
-def validate_box_ids_with_pmid(data: Any, valid_box_ids_by_pmid: dict[int, set[int]]) -> bool:
-    """
-    Recursively check all (pmid, box_id) pairs in citation structures are valid.
-    Returns False immediately on first invalid pair (fail-fast).
+def validate_box_ids_with_doi(
+    parsed_json: dict[str, Any], valid_box_ids_by_doi: dict[str, set[int]]
+) -> bool:
+    """Check all (doi, box_id) pairs in citation structures are valid.
 
     Args:
-        data: JSON data structure (dict, list, or primitive)
-        valid_box_ids_by_pmid: Map from PMID to set of valid box IDs for that paper
+        parsed_json: Parsed LLM output (after paper_id→doi replacement)
+        valid_box_ids_by_doi: Map from DOI to set of valid box IDs for that paper
 
     Returns:
         True if all pairs are valid, False otherwise
     """
 
-    def recurse(obj: Any) -> bool:
-        if isinstance(obj, dict):
-            # Check if this dict has both 'pmid' and 'box_id' fields (citation structure)
-            if "pmid" in obj and "box_id" in obj:
-                pmid = obj["pmid"]
-                box_id = obj["box_id"]
-                if isinstance(pmid, int) and isinstance(box_id, int):
-                    valid_box_ids = valid_box_ids_by_pmid.get(pmid)
-                    if valid_box_ids is None or box_id not in valid_box_ids:
-                        return False
-            # Recurse into all values
-            for value in obj.values():
-                if not recurse(value):
-                    return False
-        elif isinstance(obj, list):
-            # Recurse into all list items
-            for item in obj:
-                if not recurse(item):
-                    return False
-        # Primitives: return True
+    def check_citation(citation: dict[str, Any]) -> bool:
+        doi = citation.get("doi")
+        box_id = citation.get("box_id")
+        if isinstance(doi, str) and isinstance(box_id, int):
+            valid_box_ids = valid_box_ids_by_doi.get(doi)
+            if valid_box_ids is None or box_id not in valid_box_ids:
+                return False
         return True
 
-    return recurse(data)
+    # disease_entities[].citations[]
+    for entity in parsed_json.get("disease_entities", []):
+        for citation in entity.get("citations", []):
+            if not check_citation(citation):
+                return False
+
+    # criterion_A through criterion_E citations
+    for criterion in ("criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"):
+        for citation in parsed_json.get(criterion, {}).get("citations", []):
+            if not check_citation(citation):
+                return False
+
+    # quality_concerns[].citations[]
+    for concern in parsed_json.get("quality_concerns", []):
+        for citation in concern.get("citations", []):
+            if not check_citation(citation):
+                return False
+
+    return True
 
 
-def fetch_valid_box_ids_by_pmid(
+def fetch_valid_box_ids_by_doi(
     db_path: Path, evidence_list: list[dict[str, Any]]
-) -> dict[int, set[int]]:
-    """
-    Query database to get valid box IDs for each paper in evidence_list.
+) -> dict[str, set[int]]:
+    """Query database to get valid box IDs for each paper in evidence_list.
 
     Args:
         db_path: Path to SQLite database
-        evidence_list: List of evidence dicts containing PMIDs
+        evidence_list: List of evidence dicts containing DOIs
 
     Returns:
-        Map from PMID to set of valid box IDs for that paper
+        Map from DOI to set of valid box IDs for that paper
     """
-    # Extract PMIDs from evidence list
-    pmids = {evidence["pmid"] for evidence in evidence_list}
+    dois = {evidence["doi"] for evidence in evidence_list}
 
-    if not pmids:
+    if not dois:
         return {}
 
-    valid_box_ids_by_pmid: dict[int, set[int]] = {}
+    valid_box_ids_by_doi: dict[str, set[int]] = {}
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        # Fetch bbox_mapping for each PMID
-        for pmid in pmids:
-            cursor.execute("SELECT bbox_mapping FROM papers WHERE pmid = ?", (pmid,))
+        for doi in dois:
+            cursor.execute("SELECT bbox_mapping FROM papers WHERE doi = ?", (doi,))
             row = cursor.fetchone()
 
             if row and row[0]:
                 try:
                     bbox_mapping = json.loads(row[0])
-                    # Store the set of valid box IDs for this PMID
-                    valid_box_ids_by_pmid[pmid] = {int(box_id) for box_id in bbox_mapping.keys()}
+                    valid_box_ids_by_doi[doi] = {int(box_id) for box_id in bbox_mapping.keys()}
                 except (json.JSONDecodeError, ValueError) as e:
-                    logger.warning(f"Error parsing bbox_mapping for PMID {pmid}: {e}")
+                    logger.warning(f"Error parsing bbox_mapping for DOI {doi}: {e}")
                     continue
 
-    return valid_box_ids_by_pmid
+    return valid_box_ids_by_doi
 
 
 class PaperBatchProcessor:
@@ -183,21 +228,21 @@ class PaperBatchProcessor:
             hgnc_id: HGNC ID of the gene to search for
 
         Returns:
-            List of dicts with pmid, evidence_extraction_json, and metadata
+            List of dicts with doi, date, title, authors, paper_gene_symbol, gene_evaluations
         """
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            # Get evidence from papers that mention this gene
             cursor.execute(
                 """
-                SELECT DISTINCT p.pmid, p.entrez_date, p.title, p.evidence_extraction_json, gm.paper_gene_symbol
+                SELECT DISTINCT p.doi, p.source_date, p.title, p.authors,
+                       p.evidence_extraction_json, gm.paper_gene_symbol
                 FROM papers p
-                JOIN gene_mentions gm ON p.pmid = gm.pmid
+                JOIN gene_mentions gm ON p.doi = gm.paper_doi
                 WHERE gm.hgnc_id = ?
                 AND p.evidence_extraction_json IS NOT NULL
-                ORDER BY p.pmid
+                ORDER BY p.doi
             """,
                 (hgnc_id,),
             )
@@ -216,16 +261,17 @@ class PaperBatchProcessor:
                     if filtered_evaluations:
                         evidence_list.append(
                             {
-                                "pmid": row["pmid"],
-                                "date": row["entrez_date"],
+                                "doi": row["doi"],
+                                "date": row["source_date"],
                                 "title": row["title"],
+                                "authors": row["authors"],
                                 "paper_gene_symbol": row["paper_gene_symbol"],
                                 "gene_evaluations": filtered_evaluations,
                             }
                         )
 
                 except (json.JSONDecodeError, KeyError) as e:
-                    logger.warning(f"Error parsing evidence for PMID {row['pmid']}: {e}")
+                    logger.warning(f"Error parsing evidence for DOI {row['doi']}: {e}")
                     continue
 
             logger.debug(f"Found {len(evidence_list)} papers with evidence for HGNC:{hgnc_id}")
@@ -348,9 +394,11 @@ def prepare_aggregate_assessment_prompt(
     existing_reviews: list[dict[str, Any]],
     panel_formatted: str,
     mondo_candidates: list[MondoCandidate],
-) -> str:
-    """
-    Prepare aggregate assessment prompt using Jinja2 template.
+) -> tuple[str, dict[str, str]]:
+    """Prepare aggregate assessment prompt using Jinja2 template.
+
+    Generates {LastName}{Year} paper IDs for LLM-friendly citation. The LLM cites
+    by paper_id; caller maps back to DOI after receiving the response.
 
     Args:
         hgnc_symbol: Current HGNC symbol for the gene being assessed
@@ -361,8 +409,23 @@ def prepare_aggregate_assessment_prompt(
         mondo_candidates: MONDO disease candidates for this gene from GenCC
 
     Returns:
-        Rendered prompt string
+        Tuple of (rendered prompt string, paper_id → DOI mapping)
     """
+    # Generate paper IDs and build mappings
+    paper_id_to_doi, doi_to_paper_id = generate_paper_ids(evidence_list)
+
+    # Build prompt evidence: replace doi with paper_id, drop fields only needed for ID generation
+    prompt_evidence = []
+    for evidence in evidence_list:
+        prompt_evidence.append(
+            {
+                "paper_id": doi_to_paper_id[evidence["doi"]],
+                "date": evidence["date"],
+                "title": evidence["title"],
+                "gene_evaluations": evidence["gene_evaluations"],
+            }
+        )
+
     # Extract unique paper gene symbols (aliases) from evidence
     paper_symbols = set()
     for evidence in evidence_list:
@@ -378,8 +441,8 @@ def prepare_aggregate_assessment_prompt(
     else:
         gene_symbol_with_aliases = hgnc_symbol
 
-    # Create structured JSON with all evidence
-    evidence_extractions = json.dumps(evidence_list, indent=2)
+    # Create structured JSON with prompt evidence (paper_id, not doi)
+    evidence_extractions = json.dumps(prompt_evidence, indent=2)
 
     # Format previous reviews data (empty string for novel genes)
     previous_reviews_section = format_previous_reviews_data(existing_reviews)
@@ -388,7 +451,7 @@ def prepare_aggregate_assessment_prompt(
     env = Environment(loader=FileSystemLoader(template_path.parent), autoescape=False)
     template = env.get_template(template_path.name)
 
-    return template.render(
+    rendered = template.render(
         gene_symbol=gene_symbol_with_aliases,
         evidence_extractions=evidence_extractions,
         has_previous_reviews=bool(existing_reviews),
@@ -396,6 +459,8 @@ def prepare_aggregate_assessment_prompt(
         panel_formatted=panel_formatted,
         mondo_candidates=mondo_candidates,
     )
+
+    return rendered, paper_id_to_doi
 
 
 @app.callback(invoke_without_command=True)
@@ -632,7 +697,7 @@ def main(
                     logger.info(f"  {len(mondo_candidates)} MONDO candidates for {hgnc_symbol}")
 
                 # Prepare aggregate assessment prompt
-                prompt = prepare_aggregate_assessment_prompt(
+                prompt, paper_id_to_doi = prepare_aggregate_assessment_prompt(
                     hgnc_symbol,
                     evidence_list,
                     prompt_path,
@@ -647,10 +712,19 @@ def main(
                 # Validate and update database
                 if results and results[0] is not None:
                     result = results[0]
-                    # Validate (pmid, box_id) pairs against database
-                    valid_box_ids_by_pmid = fetch_valid_box_ids_by_pmid(db_path, evidence_list)
-                    if not validate_box_ids_with_pmid(result.parsed_json, valid_box_ids_by_pmid):
-                        logger.warning(f"Invalid (pmid, box_id) pairs for {hgnc_symbol}")
+                    # Map paper_id → doi in LLM output
+                    unknown_paper_ids = replace_paper_ids_with_dois(
+                        result.parsed_json, paper_id_to_doi
+                    )
+                    if unknown_paper_ids:
+                        logger.warning(f"Unknown paper IDs for {hgnc_symbol}: {unknown_paper_ids}")
+                        failed_genes.append(hgnc_id)
+                    # Validate (doi, box_id) pairs against database
+                    elif not validate_box_ids_with_doi(
+                        result.parsed_json,
+                        fetch_valid_box_ids_by_doi(db_path, evidence_list),
+                    ):
+                        logger.warning(f"Invalid (doi, box_id) pairs for {hgnc_symbol}")
                         failed_genes.append(hgnc_id)
                     # Resolve mondo_disease_name → mondo_id + mondo_label
                     elif unresolved := resolve_mondo_names(result.parsed_json, mondo_name_to_id):

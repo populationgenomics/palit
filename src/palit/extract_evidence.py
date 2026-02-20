@@ -20,6 +20,7 @@ from palit.panelapp_client import (
     PanelAppClient,
     format_panel_for_prompt,
 )
+from palit.papers import doi_to_path
 
 app = typer.Typer(help="Extract structured evidence from full-text papers using vLLM")
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class PaperPrompt:
     """A paper prepared for processing with its metadata."""
 
     prompt: str
-    pmid: int
+    doi: str
     bbox_mapping: dict[int, dict[str, Any]]
 
 
@@ -39,7 +40,7 @@ class DeepAnalysisPreparation:
     """Result from preparing deep analysis prompts."""
 
     paper_prompts: list[PaperPrompt]
-    missing_pmids: list[int]
+    missing_dois: list[str]
 
 
 def validate_box_ids(data: Any, valid_box_ids: set[int]) -> bool:
@@ -138,7 +139,7 @@ class PaperBatchProcessor:
         """
         Get papers that have been downloaded and haven't been processed for evidence extraction.
 
-        Returns list of papers with pmid, title, abstract.
+        Returns list of papers with doi, source_date, title, abstract.
         """
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -146,11 +147,11 @@ class PaperBatchProcessor:
 
             cursor.execute(
                 """
-                SELECT pmid, entrez_date, title, abstract
+                SELECT doi, source_date, title, abstract
                 FROM papers
-                WHERE download_status IN ('pmc_downloaded', 'manual_downloaded')
+                WHERE download_status = 'downloaded'
                 AND evidence_extraction_json IS NULL
-                ORDER BY pmid
+                ORDER BY doi
                 """
             )
 
@@ -167,7 +168,7 @@ class PaperBatchProcessor:
         Update evidence extraction and automatically sync gene_mentions with source.
 
         Args:
-            paper_prompts: List of PaperPrompt objects with PMIDs and bbox mappings
+            paper_prompts: List of PaperPrompt objects with DOIs and bbox mappings
             results: List of PromptResult objects or None, same order as paper_prompts
             hgnc_resolver: HGNC resolver for gene symbol normalization
         """
@@ -183,18 +184,18 @@ class PaperBatchProcessor:
                 if result is None:
                     continue
 
-                pmid = paper_prompt.pmid
+                doi = paper_prompt.doi
                 bbox_mapping_str = json.dumps(paper_prompt.bbox_mapping)
 
                 # Get source_type to determine gene_mentions source
-                cursor.execute("SELECT source_type FROM papers WHERE pmid = ?", (pmid,))
+                cursor.execute("SELECT source_type FROM papers WHERE doi = ?", (doi,))
                 row = cursor.fetchone()
                 if not row:
-                    raise ValueError(f"Paper PMID {pmid} not found in database")
+                    raise ValueError(f"Paper DOI {doi} not found in database")
 
                 source_type = row["source_type"]
                 if not source_type:
-                    raise ValueError(f"Paper PMID {pmid} has NULL source_type")
+                    raise ValueError(f"Paper DOI {doi} has NULL source_type")
 
                 if source_type == "initial":
                     gene_source = "recent_evidence"
@@ -202,7 +203,7 @@ class PaperBatchProcessor:
                     gene_source = "expansion_evidence"
                 else:
                     raise ValueError(
-                        f"Unknown source_type '{source_type}' for PMID {pmid}. "
+                        f"Unknown source_type '{source_type}' for DOI {doi}. "
                         f"Expected 'initial' or 'expansion'"
                     )
 
@@ -211,7 +212,7 @@ class PaperBatchProcessor:
                     result.parsed_json, hgnc_resolver
                 )
                 if unresolved_symbols:
-                    logger.warning(f"PMID {pmid}: unresolved gene symbols: {unresolved_symbols}")
+                    logger.warning(f"DOI {doi}: unresolved gene symbols: {unresolved_symbols}")
 
                 # Update papers table
                 cursor.execute(
@@ -220,20 +221,20 @@ class PaperBatchProcessor:
                     SET evidence_extraction_raw = ?,
                         evidence_extraction_json = ?,
                         bbox_mapping = ?
-                    WHERE pmid = ?
+                    WHERE doi = ?
                     """,
                     (
                         result.raw_response,
                         json.dumps(normalized_json),
                         bbox_mapping_str,
-                        pmid,
+                        doi,
                     ),
                 )
 
                 # Sync gene_mentions: delete existing, insert for resolved genes with patient data
                 cursor.execute(
-                    "DELETE FROM gene_mentions WHERE pmid = ? AND source = ?",
-                    (pmid, gene_source),
+                    "DELETE FROM gene_mentions WHERE paper_doi = ? AND source = ?",
+                    (doi, gene_source),
                 )
 
                 for gene_eval in normalized_json.get("gene_evaluations", []):
@@ -246,13 +247,13 @@ class PaperBatchProcessor:
                     cursor.execute(
                         """
                         INSERT OR IGNORE INTO gene_mentions
-                        (hgnc_id, paper_gene_symbol, pmid, source)
+                        (hgnc_id, paper_gene_symbol, paper_doi, source)
                         VALUES (?, ?, ?, ?)
                         """,
                         (
                             hgnc_id,
                             gene_eval["paper_gene_symbol"],
-                            pmid,
+                            doi,
                             gene_source,
                         ),
                     )
@@ -275,7 +276,7 @@ class PaperBatchProcessor:
             cursor.execute(
                 """
                 SELECT COUNT(*) FROM papers
-                WHERE download_status IN ('pmc_downloaded', 'manual_downloaded')
+                WHERE download_status = 'downloaded'
                 """
             )
             eligible_papers = cursor.fetchone()[0]
@@ -295,7 +296,7 @@ class PaperBatchProcessor:
             cursor.execute(
                 """
                 SELECT COUNT(*) FROM papers
-                WHERE download_status IN ('pmc_downloaded', 'manual_downloaded')
+                WHERE download_status = 'downloaded'
                 AND evidence_extraction_json IS NULL
             """
             )
@@ -321,7 +322,7 @@ def prepare_deep_analysis_prompts(
     Prepare prompts for deep analysis with full text from Docling JSON files.
 
     Args:
-        papers: List of paper dicts with pmid, title, abstract, entrez_date
+        papers: List of paper dicts with doi, title, abstract, source_date
         template_path: Path to Jinja2 prompt template
         panel_formatted: Formatted panel description (empty string if not scoping)
         papers_dir: Directory containing Docling JSON files
@@ -330,30 +331,30 @@ def prepare_deep_analysis_prompts(
         max_tokens: Maximum tokens to generate
 
     Returns:
-        DeepAnalysisPreparation with prepared prompts and missing PMIDs
+        DeepAnalysisPreparation with prepared prompts and missing DOIs
     """
     # Load Jinja2 template
     env = Environment(loader=FileSystemLoader(template_path.parent), autoescape=False)
     template = env.get_template(template_path.name)
 
     paper_prompts = []
-    missing_pmids = []
+    missing_dois = []
 
     for paper in papers:
-        pmid = paper["pmid"]
-        json_file = papers_dir / f"{pmid}.json"
+        doi = paper["doi"]
+        json_file = doi_to_path(doi, papers_dir, ".json")
 
         if not json_file.exists():
-            logger.warning(f"Missing JSON file for PMID {pmid}: {json_file}")
-            missing_pmids.append(pmid)
+            logger.warning(f"Missing JSON file for DOI {doi}: {json_file}")
+            missing_dois.append(doi)
             continue
 
         try:
             # Use the Docling serializer to get text with bbox IDs
             full_text, bbox_mapping = serialize_with_bbox_ids(json_file)
         except Exception as e:
-            logger.error(f"Failed to serialize JSON file for PMID {pmid}: {e}")
-            missing_pmids.append(pmid)
+            logger.error(f"Failed to serialize JSON file for DOI {doi}: {e}")
+            missing_dois.append(doi)
             continue
 
         # Truncate full_text if it exceeds token budget
@@ -363,7 +364,7 @@ def prepare_deep_analysis_prompts(
 
         if len(full_text_tokens) > available_tokens:
             logger.warning(
-                f"Truncating PMID {pmid}: {len(full_text_tokens)} -> {available_tokens} tokens"
+                f"Truncating DOI {doi}: {len(full_text_tokens)} -> {available_tokens} tokens"
             )
             truncated_tokens = full_text_tokens[:available_tokens]
             full_text = (
@@ -374,15 +375,15 @@ def prepare_deep_analysis_prompts(
         # Render the Jinja2 template
         prompt = template.render(
             title=paper["title"],
-            date=paper["entrez_date"],
+            date=paper["source_date"],
             abstract=paper["abstract"],
             full_text=full_text,
             panel_formatted=panel_formatted,
         )
 
-        paper_prompts.append(PaperPrompt(prompt, pmid, bbox_mapping))
+        paper_prompts.append(PaperPrompt(prompt, doi, bbox_mapping))
 
-    return DeepAnalysisPreparation(paper_prompts, missing_pmids)
+    return DeepAnalysisPreparation(paper_prompts, missing_dois)
 
 
 @app.callback(invoke_without_command=True)
@@ -527,7 +528,7 @@ def main(
 
     initial_remaining = stats["remaining_papers"]
     total_processed = 0
-    all_missing_pmids = set()
+    all_missing_dois: set[str] = set()
     consecutive_failures = 0
     retry_attempt = 0
 
@@ -565,9 +566,9 @@ def main(
                 max_tokens,
             )
             logger.info(f"  Successfully prepared {len(preparation.paper_prompts)} prompts")
-            logger.info(f"  Missing JSON files: {len(preparation.missing_pmids)}")
+            logger.info(f"  Missing JSON files: {len(preparation.missing_dois)}")
 
-            all_missing_pmids.update(preparation.missing_pmids)
+            all_missing_dois.update(preparation.missing_dois)
 
             if not preparation.paper_prompts:
                 logger.error("No papers could be processed - all JSON files are missing")
@@ -575,10 +576,10 @@ def main(
 
             # Process papers individually
             pass_processed = 0
-            failed_papers = []
+            failed_papers: list[str] = []
 
             for paper_prompt in preparation.paper_prompts:
-                logger.info(f"Processing PMID {paper_prompt.pmid}")
+                logger.info(f"Processing DOI {paper_prompt.doi}")
 
                 # Process single paper
                 results = inference_engine.process_batch([paper_prompt.prompt], schema)
@@ -589,8 +590,8 @@ def main(
                     # Validate box IDs against paper's bbox_mapping
                     valid_box_ids = set(paper_prompt.bbox_mapping.keys())
                     if not validate_box_ids(result.parsed_json, valid_box_ids):
-                        logger.warning(f"Invalid box IDs for PMID {paper_prompt.pmid}")
-                        failed_papers.append(paper_prompt.pmid)
+                        logger.warning(f"Invalid box IDs for DOI {paper_prompt.doi}")
+                        failed_papers.append(paper_prompt.doi)
                     else:
                         db_processor.update_paper_evidence_extraction(
                             [paper_prompt], [result], hgnc_resolver
@@ -598,8 +599,8 @@ def main(
                         pass_processed += 1
                         pbar.update(1)
                 else:
-                    logger.warning(f"Failed to process PMID {paper_prompt.pmid}")
-                    failed_papers.append(paper_prompt.pmid)
+                    logger.warning(f"Failed to process DOI {paper_prompt.doi}")
+                    failed_papers.append(paper_prompt.doi)
 
             total_processed += pass_processed
 
@@ -620,15 +621,15 @@ def main(
     logger.info("Deep analysis complete!")
     logger.info("Final statistics:")
     logger.info(f"  Successfully processed: {total_processed:,}")
-    logger.info(f"  Missing JSON files: {len(all_missing_pmids):,}")
+    logger.info(f"  Missing JSON files: {len(all_missing_dois):,}")
     logger.info(f"  Still remaining: {final_stats['remaining_papers']:,}")
 
-    if all_missing_pmids:
-        missing_list = list(all_missing_pmids)
+    if all_missing_dois:
+        missing_list = sorted(all_missing_dois)
         logger.info(
-            f"  PMIDs with missing JSON files: {missing_list[:10]}..."
+            f"  DOIs with missing JSON files: {missing_list[:10]}..."
             if len(missing_list) > 10
-            else f"  PMIDs with missing JSON files: {missing_list}"
+            else f"  DOIs with missing JSON files: {missing_list}"
         )
 
     if final_stats["remaining_papers"] > 0:

@@ -719,6 +719,36 @@ details.panel-recommendations .panel-details {
     background: #fafafa;
 }
 
+.detailed-paper.paper-preprint {
+    border-left: 4px solid #f0ad4e;
+    background: #fffdf5;
+}
+
+.preprint-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.7em;
+    font-weight: 600;
+    text-transform: uppercase;
+    background: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffc107;
+    vertical-align: middle;
+    margin-right: 4px;
+}
+
+.contributing-preprints {
+    margin-top: 20px;
+    padding-top: 15px;
+    border-top: 2px dashed #f0ad4e;
+}
+
+.contributing-preprints > h5 {
+    color: #856404;
+    margin-top: 0;
+}
+
 .paper-header h6 {
     margin: 0 0 10px 0;
     color: #2c3e50;

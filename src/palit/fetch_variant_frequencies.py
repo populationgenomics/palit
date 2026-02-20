@@ -46,7 +46,7 @@ class VariantFrequencyResult:
 
     variant_id: str  # gnomAD pseudo-VCF format
     hgnc_id: int
-    pmid: int
+    doi: str
     box_id: int
     normalization: dict[str, Any]  # HGVS c/p information
     gnomad: dict[str, Any]  # gnomAD response or error
@@ -64,14 +64,14 @@ class VariantProcessingResults:
 
 def load_extracted_variants(
     db_path: Path, hgnc_resolver: HgncResolver
-) -> dict[int, list[ExtractedVariant]]:
+) -> dict[str, list[ExtractedVariant]]:
     """Load variants from evidence extractions in the database.
 
-    Returns dict mapping pmid to list of ExtractedVariant objects.
+    Returns dict mapping DOI to list of ExtractedVariant objects.
     """
     logger.info(f"Loading extracted variants from {db_path}...")
 
-    variants_by_pmid: dict[int, list[ExtractedVariant]] = {}
+    variants_by_doi: dict[str, list[ExtractedVariant]] = {}
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -79,19 +79,19 @@ def load_extracted_variants(
 
         # Get all papers with evidence extraction
         cursor.execute("""
-            SELECT pmid, evidence_extraction_json
+            SELECT doi, evidence_extraction_json
             FROM papers
             WHERE evidence_extraction_json IS NOT NULL
-            ORDER BY pmid DESC
+            ORDER BY doi DESC
         """)
 
         for row in cursor.fetchall():
-            pmid = row["pmid"]
+            doi = row["doi"]
 
             try:
                 extraction_data = json.loads(row["evidence_extraction_json"])
             except json.JSONDecodeError:
-                logger.warning(f"Failed to parse evidence extraction for PMID {pmid}")
+                logger.warning(f"Failed to parse evidence extraction for DOI {doi}")
                 continue
 
             genome_build: str | None = extraction_data.get("genome_build")
@@ -116,9 +116,9 @@ def load_extracted_variants(
                     box_id = variant_entry.get("box_id")
 
                     if variant_text and box_id is not None:
-                        if pmid not in variants_by_pmid:
-                            variants_by_pmid[pmid] = []
-                        variants_by_pmid[pmid].append(
+                        if doi not in variants_by_doi:
+                            variants_by_doi[doi] = []
+                        variants_by_doi[doi].append(
                             ExtractedVariant(
                                 hgnc_id=hgnc_id,
                                 hgnc_symbol=hgnc_symbol,
@@ -128,16 +128,16 @@ def load_extracted_variants(
                             )
                         )
 
-    total_variants = sum(len(variants) for variants in variants_by_pmid.values())
-    logger.info(f"Loaded {total_variants} variants from {len(variants_by_pmid)} papers")
-    return variants_by_pmid
+    total_variants = sum(len(variants) for variants in variants_by_doi.values())
+    logger.info(f"Loaded {total_variants} variants from {len(variants_by_doi)} papers")
+    return variants_by_doi
 
 
-def get_processed_pmids(db_path: Path) -> set[int]:
-    """Get set of all pmids that have already been processed."""
+def get_processed_dois(db_path: Path) -> set[str]:
+    """Get set of all DOIs that have already been processed."""
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT pmid FROM variant_frequencies")
+        cursor.execute("SELECT DISTINCT paper_doi FROM variant_frequencies")
         return {row[0] for row in cursor.fetchall()}
 
 
@@ -211,10 +211,10 @@ def query_gnomad_v4(variant_id: str) -> dict[str, Any]:
         return {"error": f"Unexpected error: {e!s}"}
 
 
-def process_variants_for_pmid(
-    pmid: int, variants: list[ExtractedVariant], variant_normalizer: VariantNormalizer
+def process_variants_for_doi(
+    doi: str, variants: list[ExtractedVariant], variant_normalizer: VariantNormalizer
 ) -> VariantProcessingResults:
-    """Process all variants for a single pmid through normalization and gnomAD lookup.
+    """Process all variants for a single paper through normalization and gnomAD lookup.
 
     Processes variants sequentially within a paper. Papers themselves are processed
     in parallel by the caller.
@@ -233,7 +233,7 @@ def process_variants_for_pmid(
         try:
             # Step 1: Normalize variant to get HGVS and pseudo-VCF
             logger.debug(
-                f"Normalizing variant '{variant_text}' for gene {hgnc_symbol} from PMID {pmid}"
+                f"Normalizing variant '{variant_text}' for gene {hgnc_symbol} from DOI {doi}"
             )
 
             hgvs_variant = variant_normalizer.hgvs(variant_text, hgnc_symbol, genome_build)
@@ -295,7 +295,7 @@ def process_variants_for_pmid(
             result = VariantFrequencyResult(
                 variant_id=variant_id,
                 hgnc_id=hgnc_id,
-                pmid=pmid,
+                doi=doi,
                 box_id=box_id,
                 normalization=normalization,
                 gnomad=gnomad_result,
@@ -304,7 +304,7 @@ def process_variants_for_pmid(
 
         except Exception as e:
             logger.debug(
-                f"Failed to process variant '{variant_text}' for gene {hgnc_symbol} from PMID {pmid}: {e}"
+                f"Failed to process variant '{variant_text}' for gene {hgnc_symbol} from DOI {doi}: {e}"
             )
             failed_normalizations += 1
 
@@ -313,19 +313,19 @@ def process_variants_for_pmid(
     )
 
 
-def store_results_for_pmid(pmid: int, results: list[VariantFrequencyResult], db_path: Path) -> None:
-    """Store variant frequency results for a single pmid atomically in a transaction."""
+def store_results_for_doi(doi: str, results: list[VariantFrequencyResult], db_path: Path) -> None:
+    """Store variant frequency results for a single paper atomically in a transaction."""
     if not results:
-        logger.debug(f"No results to store for PMID {pmid}")
+        logger.debug(f"No results to store for DOI {doi}")
         return
 
-    # Deduplicate by (variant_id, pmid, box_id) - keep first occurrence
-    seen_keys: set[tuple[str, int, int]] = set()
+    # Deduplicate by (variant_id, doi, box_id) - keep first occurrence
+    seen_keys: set[tuple[str, str, int]] = set()
     unique_results = []
     duplicates_skipped = 0
 
     for result in results:
-        key = (result.variant_id, result.pmid, result.box_id)
+        key = (result.variant_id, result.doi, result.box_id)
         if key not in seen_keys:
             seen_keys.add(key)
             unique_results.append(result)
@@ -333,25 +333,25 @@ def store_results_for_pmid(pmid: int, results: list[VariantFrequencyResult], db_
             duplicates_skipped += 1
 
     if duplicates_skipped > 0:
-        logger.debug(f"Skipped {duplicates_skipped} duplicate entries for PMID {pmid}")
+        logger.debug(f"Skipped {duplicates_skipped} duplicate entries for DOI {doi}")
 
-    logger.debug(f"Storing {len(unique_results)} variant frequency results for PMID {pmid}...")
+    logger.debug(f"Storing {len(unique_results)} variant frequency results for DOI {doi}...")
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        # Insert all unique results for this pmid atomically
+        # Insert all unique results for this paper atomically
         for result in unique_results:
             cursor.execute(
                 """
                 INSERT INTO variant_frequencies
-                (variant_id, hgnc_id, pmid, box_id, normalization, gnomad)
+                (variant_id, hgnc_id, paper_doi, box_id, normalization, gnomad)
                 VALUES (?, ?, ?, ?, ?, ?)
             """,
                 (
                     result.variant_id,
                     result.hgnc_id,
-                    result.pmid,
+                    result.doi,
                     result.box_id,
                     json.dumps(result.normalization),
                     json.dumps(result.gnomad),
@@ -360,7 +360,7 @@ def store_results_for_pmid(pmid: int, results: list[VariantFrequencyResult], db_
 
         conn.commit()
 
-    logger.debug(f"✅ Stored {len(unique_results)} variant frequency results for PMID {pmid}")
+    logger.debug(f"Stored {len(unique_results)} variant frequency results for DOI {doi}")
 
 
 def print_summary_statistics(processing_results: VariantProcessingResults) -> None:
@@ -490,45 +490,45 @@ def lookup(
         _retry_errored_variants(db_path)
         return
 
-    # Step 1: Load variants from evidence extractions, grouped by pmid
+    # Step 1: Load variants from evidence extractions, grouped by DOI
     hgnc_resolver = HgncResolver.from_file()
-    variants_by_pmid = load_extracted_variants(db_path, hgnc_resolver)
+    variants_by_doi = load_extracted_variants(db_path, hgnc_resolver)
 
-    if not variants_by_pmid:
+    if not variants_by_doi:
         logger.warning("No variants found in database")
         print("No variants found in database")
         return
 
-    # Step 2: Filter out already processed pmids
-    processed_pmids = get_processed_pmids(db_path)
-    pmids_to_process = [pmid for pmid in variants_by_pmid.keys() if pmid not in processed_pmids]
+    # Step 2: Filter out already processed DOIs
+    processed_dois = get_processed_dois(db_path)
+    dois_to_process = [doi for doi in variants_by_doi if doi not in processed_dois]
 
-    if not pmids_to_process:
+    if not dois_to_process:
         logger.info("All papers already processed")
         print("All papers already processed")
         return
 
-    skipped_count = len(variants_by_pmid) - len(pmids_to_process)
+    skipped_count = len(variants_by_doi) - len(dois_to_process)
     if skipped_count > 0:
         logger.info(f"Skipping {skipped_count} already processed papers")
 
-    logger.info(f"Processing {len(pmids_to_process)} papers with {max_workers} parallel workers")
+    logger.info(f"Processing {len(dois_to_process)} papers with {max_workers} parallel workers")
 
     # Step 3: Process papers in parallel
     variant_normalizer = VariantNormalizer()
-    all_results = []
+    all_results: list[VariantFrequencyResult] = []
     total_failed_normalizations = 0
     total_variants_processed = 0
 
-    def process_and_store_pmid(pmid: int) -> VariantProcessingResults:
+    def process_and_store_doi(doi: str) -> VariantProcessingResults:
         """Process a single paper and store results (called in worker thread)."""
-        variants = variants_by_pmid[pmid]
+        variants = variants_by_doi[doi]
 
-        # Process all variants for this pmid
-        processing_results = process_variants_for_pmid(pmid, variants, variant_normalizer)
+        # Process all variants for this paper
+        processing_results = process_variants_for_doi(doi, variants, variant_normalizer)
 
-        # Store results atomically for this pmid
-        store_results_for_pmid(pmid, processing_results.results, db_path)
+        # Store results atomically for this paper
+        store_results_for_doi(doi, processing_results.results, db_path)
 
         return processing_results
 
@@ -540,17 +540,17 @@ def lookup(
         TextColumn("({task.completed}/{task.total})"),
         TimeRemainingColumn(),
     ) as progress:
-        task = progress.add_task("Processing papers...", total=len(pmids_to_process))
+        task = progress.add_task("Processing papers...", total=len(dois_to_process))
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all papers to the worker pool
-            future_to_pmid = {
-                executor.submit(process_and_store_pmid, pmid): pmid for pmid in pmids_to_process
+            future_to_doi = {
+                executor.submit(process_and_store_doi, doi): doi for doi in dois_to_process
             }
 
             # Main thread: sequentially pull completed results from queue
-            for future in as_completed(future_to_pmid):
-                pmid = future_to_pmid[future]
+            for future in as_completed(future_to_doi):
+                doi = future_to_doi[future]
                 processing_results = future.result()
                 num_variants = processing_results.total_variants
 
@@ -563,7 +563,7 @@ def lookup(
                 progress.update(
                     task,
                     advance=1,
-                    description=f"[green]Completed PMID {pmid} ({num_variants} variants)",
+                    description=f"[green]Completed DOI {doi} ({num_variants} variants)",
                 )
 
     # Step 4: Print summary statistics

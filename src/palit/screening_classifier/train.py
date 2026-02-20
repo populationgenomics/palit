@@ -75,14 +75,14 @@ def load_data(db_path: Path, split: str) -> list[LabeledPaper]:
     cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT pmid, title, abstract, is_relevant FROM papers WHERE split = ?", (split,)
+        "SELECT doi, title, abstract, is_relevant FROM papers WHERE split = ?", (split,)
     )
     rows = cursor.fetchall()
     conn.close()
 
     return [
         LabeledPaper(
-            pmid=row["pmid"],
+            doi=row["doi"],
             title=row["title"],
             abstract=row["abstract"],
             is_relevant=row["is_relevant"],

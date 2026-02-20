@@ -3,7 +3,7 @@
     "properties": {
         "summary": {
             "type": "string",
-            "description": "Prose narrative summarizing the gene-disease evidence. Should be brief by default (2-3 sentences), but allow more detail when warranted. Follow style: [PMID(s)] report [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. Include key clinical features, functional evidence, and notable specifics."
+            "description": "Prose narrative summarizing the gene-disease evidence. Should be brief by default (2-3 sentences), but allow more detail when warranted. Follow style: [paper_id(s)] report [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. Include key clinical features, functional evidence, and notable specifics."
         },
         "families": {"type": "string"},
         "variants": {"type": "string"},
@@ -60,9 +60,9 @@
                         "items": {
                             "type": "object",
                             "properties": {
-                                "pmid": {
-                                    "type": "integer",
-                                    "description": "PMID of the paper containing this citation"
+                                "paper_id": {
+                                    "type": "string",
+                                    "description": "Paper ID (e.g. 'Smith2024') of the paper containing this citation"
                                 },
                                 "box_id": {
                                     "type": "integer",
@@ -73,7 +73,7 @@
                                     "description": "Brief description of what this citation shows"
                                 }
                             },
-                            "required": ["pmid", "box_id", "commentary"]
+                            "required": ["paper_id", "box_id", "commentary"]
                         }
                     }
                 },
@@ -91,11 +91,11 @@
                     "items": {
                         "type": "object",
                         "properties": {
-                            "pmid": {"type": "integer"},
+                            "paper_id": {"type": "string"},
                             "box_id": {"type": "integer"},
                             "commentary": {"type": "string"}
                         },
-                        "required": ["pmid", "box_id", "commentary"]
+                        "required": ["paper_id", "box_id", "commentary"]
                     }
                 }
             },
@@ -112,11 +112,11 @@
                     "items": {
                         "type": "object",
                         "properties": {
-                            "pmid": {"type": "integer"},
+                            "paper_id": {"type": "string"},
                             "box_id": {"type": "integer"},
                             "commentary": {"type": "string"}
                         },
-                        "required": ["pmid", "box_id", "commentary"]
+                        "required": ["paper_id", "box_id", "commentary"]
                     }
                 }
             },
@@ -133,11 +133,11 @@
                     "items": {
                         "type": "object",
                         "properties": {
-                            "pmid": {"type": "integer"},
+                            "paper_id": {"type": "string"},
                             "box_id": {"type": "integer"},
                             "commentary": {"type": "string"}
                         },
-                        "required": ["pmid", "box_id", "commentary"]
+                        "required": ["paper_id", "box_id", "commentary"]
                     }
                 }
             },
@@ -154,11 +154,11 @@
                     "items": {
                         "type": "object",
                         "properties": {
-                            "pmid": {"type": "integer"},
+                            "paper_id": {"type": "string"},
                             "box_id": {"type": "integer"},
                             "commentary": {"type": "string"}
                         },
-                        "required": ["pmid", "box_id", "commentary"]
+                        "required": ["paper_id", "box_id", "commentary"]
                     }
                 }
             },
@@ -175,11 +175,11 @@
                     "items": {
                         "type": "object",
                         "properties": {
-                            "pmid": {"type": "integer"},
+                            "paper_id": {"type": "string"},
                             "box_id": {"type": "integer"},
                             "commentary": {"type": "string"}
                         },
-                        "required": ["pmid", "box_id", "commentary"]
+                        "required": ["paper_id", "box_id", "commentary"]
                     }
                 }
             },
@@ -193,12 +193,12 @@
                 "properties": {
                     "concern": {
                         "type": "string",
-                        "description": "Description of the issue, referencing specific PMIDs where relevant"
+                        "description": "Description of the issue, referencing specific paper IDs where relevant"
                     },
-                    "pmids": {
+                    "paper_ids": {
                         "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "PMIDs of papers where this concern applies"
+                        "items": {"type": "string"},
+                        "description": "Paper IDs of papers where this concern applies"
                     },
                     "citations": {
                         "type": "array",
@@ -206,9 +206,9 @@
                         "items": {
                             "type": "object",
                             "properties": {
-                                "pmid": {
-                                    "type": "integer",
-                                    "description": "PMID of the paper"
+                                "paper_id": {
+                                    "type": "string",
+                                    "description": "Paper ID of the paper"
                                 },
                                 "box_id": {
                                     "type": "integer",
@@ -219,11 +219,11 @@
                                     "description": "Brief explanation of what this citation demonstrates"
                                 }
                             },
-                            "required": ["pmid", "box_id", "commentary"]
+                            "required": ["paper_id", "box_id", "commentary"]
                         }
                     }
                 },
-                "required": ["concern", "pmids", "citations"]
+                "required": ["concern", "paper_ids", "citations"]
             }
         }
     },

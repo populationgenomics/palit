@@ -11,8 +11,8 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.ingest_pubmed import Paper
 from palit.llm import HarmonyBatchProcessor
+from palit.papers import Paper
 from palit.tournament import TournamentOutcome, run_tournament_selection
 
 app = typer.Typer(help="Tournament-based literature expansion using hierarchical LLM filtering")
@@ -28,7 +28,7 @@ def get_papers_for_gene(
         baseline_db_path: Path to baseline screening SQLite database
         hgnc_id: HGNC ID of the gene to look up
         limit: Maximum number of papers to return
-        cutoff_date: Only include papers with entrez_date <= this date (YYYY-MM-DD)
+        cutoff_date: Only include papers with source_date <= this date (YYYY-MM-DD)
 
     Returns:
         List of up to `limit` newest papers mentioning this gene, using the "expansion" source type
@@ -38,12 +38,13 @@ def get_papers_for_gene(
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT DISTINCT p.pmid, p.title, p.abstract, p.authors, p.journal, p.entrez_date
+            SELECT DISTINCT p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
+                   p.source, p.source_date, p.source_metadata
             FROM papers p
-            JOIN gene_mentions gm ON p.pmid = gm.pmid
+            JOIN gene_mentions gm ON p.doi = gm.paper_doi
             WHERE gm.hgnc_id = ?
-              AND p.entrez_date <= ?
-            ORDER BY p.entrez_date DESC, p.pmid DESC
+              AND p.source_date <= ?
+            ORDER BY p.source_date DESC, p.doi DESC
             LIMIT ?
             """,
             (hgnc_id, cutoff_date, limit),
@@ -51,14 +52,18 @@ def get_papers_for_gene(
 
         papers = []
         for row in cursor.fetchall():
+            source_metadata = json.loads(row["source_metadata"]) if row["source_metadata"] else {}
             papers.append(
                 Paper(
+                    doi=row["doi"],
                     pmid=row["pmid"],
                     title=row["title"],
                     abstract=row["abstract"],
                     authors=row["authors"],
                     journal=row["journal"],
-                    entrez_date=row["entrez_date"],
+                    source=row["source"],
+                    source_date=row["source_date"],
+                    source_metadata=source_metadata,
                     source_type="expansion",
                     source_details=str(hgnc_id),
                 )
@@ -87,9 +92,10 @@ def store_expansion_papers(db_path: Path, papers: list[Paper], gene_symbol: str)
             cursor.execute(
                 """
                 INSERT INTO papers
-                (pmid, title, abstract, authors, journal, entrez_date, source_type, source_details, download_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
-                ON CONFLICT(pmid) DO UPDATE SET
+                (doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata,
+                 source_type, source_details, download_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+                ON CONFLICT(doi) DO UPDATE SET
                     source_type = excluded.source_type,
                     source_details = excluded.source_details,
                     download_status = CASE
@@ -101,12 +107,15 @@ def store_expansion_papers(db_path: Path, papers: list[Paper], gene_symbol: str)
                   AND excluded.source_details > papers.source_details
                 """,
                 (
+                    paper.doi,
                     paper.pmid,
                     paper.title,
                     paper.abstract,
                     paper.authors,
                     paper.journal,
-                    paper.entrez_date,
+                    paper.source,
+                    paper.source_date,
+                    json.dumps(paper.source_metadata),
                     paper.source_type,
                     paper.source_details,
                 ),
@@ -127,17 +136,17 @@ def _record_expansion_completion(db_path: Path, hgnc_id: int, outcome: Tournamen
             """
             INSERT INTO tournament_results (
                 hgnc_id,
-                selected_pmids_json,
+                selected_dois_json,
                 tournament_raw_responses_json
             )
             VALUES (?, ?, ?)
             ON CONFLICT(hgnc_id) DO UPDATE SET
-                selected_pmids_json = excluded.selected_pmids_json,
+                selected_dois_json = excluded.selected_dois_json,
                 tournament_raw_responses_json = excluded.tournament_raw_responses_json
             """,
             (
                 hgnc_id,
-                json.dumps([a.pmid for a in outcome.selected_papers]),
+                json.dumps([p.doi for p in outcome.selected_papers]),
                 json.dumps(outcome.raw_responses_by_round),
             ),
         )
@@ -224,9 +233,9 @@ def main(
         "--force-all",
         help="Re-run expansion for all genes",
     ),
-    pmid_limit: int = typer.Option(
+    paper_limit: int = typer.Option(
         10000,
-        "--pmid-limit",
+        "--paper-limit",
         help="Maximum number of papers to consider per gene",
     ),
 ) -> None:
@@ -311,7 +320,7 @@ def main(
 
     for hgnc_id in tqdm(genes, desc="Expanding literature for genes"):
         hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-        papers = get_papers_for_gene(baseline_db_path, hgnc_id, pmid_limit, cutoff_date)
+        papers = get_papers_for_gene(baseline_db_path, hgnc_id, paper_limit, cutoff_date)
 
         if not papers:
             logger.warning(f"No papers found for {hgnc_symbol} (HGNC:{hgnc_id})")

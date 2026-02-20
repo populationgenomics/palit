@@ -963,7 +963,7 @@ class _VariantNormalizationResult:
 class _PaperVariants:
     """Variants extracted from a single paper."""
 
-    pmid: int
+    doi: str
     genome_build: str | None
     gene_variants: list[tuple[int, list[str]]] = field(default_factory=list)  # (hgnc_id, variants)
 
@@ -972,14 +972,14 @@ class _PaperVariants:
 class _PaperVariantStats:
     """Statistics for variants from a single paper."""
 
-    pmid: int
+    doi: str
     total_variants: int
     successful_normalizations: int
     failed_normalizations: int
 
 
 def _load_extracted_variants(db_path: Path) -> list[_PaperVariants]:
-    """Load extracted variants from database grouped by PMID.
+    """Load extracted variants from database grouped by DOI.
 
     Args:
         db_path: Path to SQLite database
@@ -997,19 +997,19 @@ def _load_extracted_variants(db_path: Path) -> list[_PaperVariants]:
 
         # Get all papers with evidence extraction
         cursor.execute("""
-            SELECT pmid, evidence_extraction_json
+            SELECT doi, evidence_extraction_json
             FROM papers
             WHERE evidence_extraction_json IS NOT NULL
-            ORDER BY pmid DESC
+            ORDER BY doi DESC
         """)
 
         for row in cursor.fetchall():
-            pmid = row["pmid"]
+            doi = row["doi"]
 
             try:
                 extraction_data = json.loads(row["evidence_extraction_json"])
             except json.JSONDecodeError:
-                logger.warning(f"Failed to parse evidence extraction for PMID {pmid}")
+                logger.warning(f"Failed to parse evidence extraction for DOI {doi}")
                 continue
 
             # Get genome build (may be None or "unknown")
@@ -1031,7 +1031,7 @@ def _load_extracted_variants(db_path: Path) -> list[_PaperVariants]:
 
             if gene_variants_list:
                 paper_variants = _PaperVariants(
-                    pmid=pmid, genome_build=genome_build, gene_variants=gene_variants_list
+                    doi=doi, genome_build=genome_build, gene_variants=gene_variants_list
                 )
                 paper_variants_list.append(paper_variants)
 
@@ -1042,7 +1042,7 @@ def _load_extracted_variants(db_path: Path) -> list[_PaperVariants]:
 def _process_variants(
     paper_variants_list: list[_PaperVariants],
     hgnc_resolver: HgncResolver,
-) -> tuple[dict[int, list[_VariantNormalizationResult]], list[_PaperVariantStats]]:
+) -> tuple[dict[str, list[_VariantNormalizationResult]], list[_PaperVariantStats]]:
     """Process and normalize variants.
 
     Args:
@@ -1050,12 +1050,12 @@ def _process_variants(
         hgnc_resolver: HGNC resolver for gene symbol lookup
 
     Returns:
-        Tuple of (normalization results by PMID, statistics per paper)
+        Tuple of (normalization results by DOI, statistics per paper)
     """
 
     variant_normalizer = VariantNormalizer()
 
-    results_by_pmid: dict[int, list[_VariantNormalizationResult]] = {}
+    results_by_doi: dict[str, list[_VariantNormalizationResult]] = {}
     stats_per_paper: list[_PaperVariantStats] = []
 
     # Calculate total variants to process
@@ -1092,12 +1092,12 @@ def _process_variants(
                     # Update variant progress description
                     progress.update(
                         variant_task,
-                        description=f"[yellow]PMID {paper.pmid}: {variant_text[:30]}...",
+                        description=f"[yellow]DOI {paper.doi}: {variant_text[:30]}...",
                     )
 
                     try:
                         logger.debug(
-                            f"Normalizing variant '{variant_text}' for HGNC:{hgnc_id} from PMID {paper.pmid}"
+                            f"Normalizing variant '{variant_text}' for HGNC:{hgnc_id} from DOI {paper.doi}"
                         )
 
                         hgvs_variant = variant_normalizer.hgvs(
@@ -1134,17 +1134,17 @@ def _process_variants(
 
                         failed += 1
                         logger.debug(
-                            f"Failed to normalize variant '{variant_text}' for HGNC:{hgnc_id} from PMID {paper.pmid}: {e}"
+                            f"Failed to normalize variant '{variant_text}' for HGNC:{hgnc_id} from DOI {paper.doi}: {e}"
                         )
 
                     # Update variant progress
                     progress.update(variant_task, advance=1)
 
             if paper_results:
-                results_by_pmid[paper.pmid] = paper_results
+                results_by_doi[paper.doi] = paper_results
                 stats_per_paper.append(
                     _PaperVariantStats(
-                        pmid=paper.pmid,
+                        doi=paper.doi,
                         total_variants=total_variants,
                         successful_normalizations=successful,
                         failed_normalizations=failed,
@@ -1154,25 +1154,25 @@ def _process_variants(
             # Update paper progress
             progress.update(paper_task, advance=1)
 
-    return results_by_pmid, stats_per_paper
+    return results_by_doi, stats_per_paper
 
 
 def _print_results(
-    results_by_pmid: dict[int, list[_VariantNormalizationResult]],
+    results_by_doi: dict[str, list[_VariantNormalizationResult]],
     stats_per_paper: list[_PaperVariantStats],
 ) -> None:
     """Print normalized variants and statistics to stdout.
 
     Args:
-        results_by_pmid: Normalization results grouped by PMID
+        results_by_doi: Normalization results grouped by DOI
         stats_per_paper: Statistics for each paper
     """
-    # Print results by PMID
-    for pmid in sorted(results_by_pmid.keys(), reverse=True):
-        print(f"\n## PMID {pmid}")
+    # Print results by DOI
+    for doi in sorted(results_by_doi.keys(), reverse=True):
+        print(f"\n## DOI {doi}")
         print("-" * 40)
 
-        for result in results_by_pmid[pmid]:
+        for result in results_by_doi[doi]:
             if result.normalized is not None:
                 assert result.p_vcf is not None
                 print(
@@ -1235,7 +1235,7 @@ def normalize(
 
         paper_variants_list = [
             _PaperVariants(
-                pmid=40947452,
+                doi="10.1002/ajmg.a.63982",
                 genome_build="GRCh38",
                 gene_variants=[
                     (
@@ -1269,10 +1269,10 @@ def normalize(
         return
 
     # Process and normalize variants
-    results_by_pmid, stats_per_paper = _process_variants(paper_variants_list, hgnc_resolver)
+    results_by_doi, stats_per_paper = _process_variants(paper_variants_list, hgnc_resolver)
 
     # Print results
-    _print_results(results_by_pmid, stats_per_paper)
+    _print_results(results_by_doi, stats_per_paper)
 
     logger.info("✅ Variant normalization complete")
 

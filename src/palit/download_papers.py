@@ -23,6 +23,7 @@ from rich.progress import Progress
 from urllib3.util.retry import Retry
 
 from palit.panelapp_client import PanelAppClient
+from palit.papers import doi_to_path
 
 console = Console()
 app = typer.Typer(help="Download papers workflow: Automated PMC download and PDF matching")
@@ -30,36 +31,10 @@ app = typer.Typer(help="Download papers workflow: Automated PMC download and PDF
 logger = logging.getLogger(__name__)
 
 
-def batch_sql_update(
-    cursor: sqlite3.Cursor, query_template: str, pmid_list: list[str], batch_size: int = 900
-) -> int:
-    """Execute a SQL UPDATE query in batches to handle large PMID lists.
-
-    Args:
-        cursor: SQLite cursor
-        query_template: SQL template with {placeholders} to be filled with "?, ?, ..."
-        pmid_list: List of PMIDs to process
-        batch_size: Maximum number of parameters per batch (default 900 to stay under SQLite's 999 limit)
-
-    Returns:
-        Total number of rows affected across all batches
-    """
-    total_affected = 0
-
-    for i in range(0, len(pmid_list), batch_size):
-        batch = pmid_list[i : i + batch_size]
-        placeholders = ",".join("?" * len(batch))
-        query = query_template.format(placeholders=placeholders)
-        cursor.execute(query, batch)
-        total_affected += cursor.rowcount
-
-    return total_affected
-
-
-def read_pmids_from_db(
+def read_dois_from_db(
     db_path: Path, skip_hgnc_ids: list[int] | None = None, expansion_only: bool = False
 ) -> list[str]:
-    """Read PMIDs from database where papers require manual download.
+    """Read DOIs from database where papers require manual download.
 
     Args:
         db_path: Path to database
@@ -80,94 +55,43 @@ def read_pmids_from_db(
         base_where = " AND ".join(where_clauses)
 
         if skip_hgnc_ids:
-            # Exclude PMIDs that are associated with skip_hgnc_ids
             placeholders = ",".join("?" * len(skip_hgnc_ids))
             query = f"""
-                SELECT DISTINCT p.pmid
+                SELECT DISTINCT p.doi
                 FROM papers p
                 WHERE {base_where}
-                AND p.pmid NOT IN (
-                    SELECT DISTINCT gm.pmid
+                AND p.doi NOT IN (
+                    SELECT DISTINCT gm.paper_doi
                     FROM gene_mentions gm
                     WHERE gm.hgnc_id IN ({placeholders})
                 )
-                ORDER BY p.pmid
+                ORDER BY p.doi
             """
             cursor.execute(query, skip_hgnc_ids)
         else:
             query = f"""
-                SELECT pmid FROM papers p
+                SELECT doi FROM papers p
                 WHERE {base_where}
-                ORDER BY pmid
+                ORDER BY doi
             """
             cursor.execute(query)
 
-        pmids = [str(row[0]) for row in cursor.fetchall()]
+        dois = [row[0] for row in cursor.fetchall()]
 
-    if not pmids:
+    if not dois:
         logger.warning("No papers with download_status='manual_required' in database")
     elif skip_hgnc_ids:
         logger.info(f"Excluding papers for HGNC IDs: {skip_hgnc_ids}")
 
-    return pmids
+    return dois
 
 
-def read_pmids_and_titles_from_db(
-    db_path: Path, skip_hgnc_ids: list[int] | None = None
-) -> dict[str, str]:
-    """Read PMIDs and titles from database where papers have non-NULL download_status.
-
-    Args:
-        db_path: Path to database
-        skip_hgnc_ids: Optional list of HGNC IDs to skip papers for
-
-    Returns:
-        Dict mapping PMID (as string) to title
-    """
-    if not db_path.exists():
-        raise FileNotFoundError(f"Database not found: {db_path}")
-
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-
-        if skip_hgnc_ids:
-            # Exclude PMIDs that are associated with skip_hgnc_ids
-            placeholders = ",".join("?" * len(skip_hgnc_ids))
-            query = f"""
-                SELECT DISTINCT p.pmid, p.title
-                FROM papers p
-                WHERE p.download_status IS NOT NULL
-                AND p.pmid NOT IN (
-                    SELECT DISTINCT gm.pmid
-                    FROM gene_mentions gm
-                    WHERE gm.hgnc_id IN ({placeholders})
-                )
-                ORDER BY p.pmid
-            """
-            cursor.execute(query, skip_hgnc_ids)
-        else:
-            cursor.execute("""
-                SELECT pmid, title FROM papers
-                WHERE download_status IS NOT NULL
-                ORDER BY pmid
-            """)
-
-        pmid_to_title = {str(row[0]): row[1] for row in cursor.fetchall()}
-
-    if not pmid_to_title:
-        logger.warning("No papers with non-NULL download_status in database")
-    elif skip_hgnc_ids:
-        logger.info(f"Excluding papers for HGNC IDs: {skip_hgnc_ids}")
-
-    return pmid_to_title
-
-
-def check_existing_files(pmid: str, download_dir: Path) -> list[str]:
-    """Check which file types exist for a PMID."""
+def check_existing_files(doi: str, download_dir: Path) -> list[str]:
+    """Check which file types exist for a DOI."""
     existing = []
-    if (download_dir / f"{pmid}.pdf").exists():
+    if doi_to_path(doi, download_dir, ".pdf").exists():
         existing.append("pdf")
-    if (download_dir / f"{pmid}.json").exists():
+    if doi_to_path(doi, download_dir, ".json").exists():
         existing.append("json")
     return existing
 
@@ -198,7 +122,7 @@ def get_green_hgnc_ids_from_panel(panel_date: str) -> list[int]:
 def open_browser(
     db_path: Path = typer.Option(
         default=Path("data/db.sqlite"),
-        help="Database path to read PMIDs from papers assessed as relevant",
+        help="Database path to read DOIs from papers assessed as relevant",
     ),
     target_dir: Path = typer.Option(
         Path("data/papers"), "--target-dir", "-t", help="Directory to check for existing PDFs"
@@ -232,7 +156,7 @@ def open_browser(
         help="Print URLs that would be opened without actually opening browser",
     ),
 ) -> None:
-    """Open PubMed links in browser for manual PDF download."""
+    """Open DOI links in browser for manual PDF download."""
 
     # Validate parameters
     if exclude_green and not panel_date:
@@ -250,58 +174,56 @@ def open_browser(
             f"[cyan]Excluding {len(green_ids)} GREEN genes from panel at {panel_date}[/cyan]"
         )
 
-    pmids = read_pmids_from_db(db_path, skip_id_list, expansion_only)
+    dois = read_dois_from_db(db_path, skip_id_list, expansion_only)
     if not dry_run:
-        console.print(f"[bold]Found {len(pmids)} PMIDs marked for download in database[/bold]")
+        console.print(f"[bold]Found {len(dois)} papers marked for download in database[/bold]")
     if expansion_only:
         console.print("[cyan]Filtering to expansion papers only (source_type='expansion')[/cyan]")
 
-    # Filter out PMIDs that already have PDFs
-    pmids_needing_download = []
+    # Filter out papers that already have PDFs
+    dois_needing_download = []
     existing_pdfs = 0
 
-    for pmid in pmids:
-        existing = check_existing_files(pmid, target_dir)
+    for doi in dois:
+        existing = check_existing_files(doi, target_dir)
         if "pdf" not in existing:
-            pmids_needing_download.append(pmid)
+            dois_needing_download.append(doi)
         else:
             existing_pdfs += 1
 
     if existing_pdfs > 0:
         console.print(
-            f"[dim]Skipping {existing_pdfs} PMIDs that already have PDFs in {target_dir}[/dim]"
+            f"[dim]Skipping {existing_pdfs} papers that already have PDFs in {target_dir}[/dim]"
         )
 
-    if not pmids_needing_download:
-        console.print("[green]All PMIDs already have PDFs - no downloads needed![/green]")
+    if not dois_needing_download:
+        console.print("[green]All papers already have PDFs - no downloads needed![/green]")
         return
 
     # If dry-run, just print URLs and exit
     if dry_run:
-        for pmid in pmids_needing_download:
-            url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-            console.print(url)
-
+        for doi in dois_needing_download:
+            console.print(f"https://doi.org/{doi}")
         return
 
     console.print(
-        f"\n[yellow]Opening {len(pmids_needing_download)} PubMed links in browser for manual PDF download...[/yellow]"
+        f"\n[yellow]Opening {len(dois_needing_download)} DOI links in browser for manual PDF download...[/yellow]"
     )
     console.print(f"[dim]Browser delay: {browser_delay} seconds between tabs[/dim]\n")
 
-    for i, pmid in enumerate(pmids_needing_download, 1):
-        url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-        console.print(f"[{i}/{len(pmids_needing_download)}] Opening: {url}")
+    for i, doi in enumerate(dois_needing_download, 1):
+        url = f"https://doi.org/{doi}"
+        console.print(f"[{i}/{len(dois_needing_download)}] Opening: {url}")
         webbrowser.open(url)
 
-        if i < len(pmids_needing_download) and browser_delay > 0:
+        if i < len(dois_needing_download) and browser_delay > 0:
             time.sleep(browser_delay)
 
     console.print(
-        f"\n[bold green]✅ Opened {len(pmids_needing_download)} PubMed links in browser[/bold green]"
+        f"\n[bold green]Opened {len(dois_needing_download)} DOI links in browser[/bold green]"
     )
     console.print("\n[yellow]Next steps:[/yellow]")
-    console.print("  1. Download PDFs manually to data/papers with PMID.pdf naming")
+    console.print("  1. Download PDFs manually to data/papers/")
     console.print("  2. Convert PDFs: [dim]uv run palit docling convert[/dim]")
     console.print("  3. Register papers: [dim]uv run palit download-papers register[/dim]")
 
@@ -316,68 +238,54 @@ def register_papers(
         help="Database path",
     ),
 ) -> None:
-    """Register converted papers by updating download_status for PMIDs with JSON files."""
+    """Register converted papers by updating download_status for DOIs with JSON files."""
 
     if not papers_dir.exists():
         console.print(f"[red]Papers directory not found: {papers_dir}[/red]")
         raise typer.Exit(1)
 
-    # Find all JSON files that match PMID pattern (numeric filenames)
-    json_files = [f for f in papers_dir.glob("*.json") if f.stem.isdigit()]
-
-    if not json_files:
-        console.print(f"[yellow]No PMID JSON files found in {papers_dir}[/yellow]")
-        return
-
-    console.print(f"[cyan]Found {len(json_files)} PMID JSON files in {papers_dir}[/cyan]")
-
-    registered_count = 0
-    not_in_db = []
-
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        for json_path in json_files:
-            pmid = json_path.stem
+        # Find papers that need registration
+        cursor.execute("""
+            SELECT doi, download_status FROM papers
+            WHERE download_status IN ('scheduled', 'manual_required')
+        """)
+        candidates = cursor.fetchall()
 
-            # Check if PMID exists in database
-            cursor.execute("SELECT download_status FROM papers WHERE pmid = ?", (pmid,))
-            row = cursor.fetchone()
+        if not candidates:
+            console.print("[green]No papers pending registration.[/green]")
+            return
 
-            if not row:
-                not_in_db.append(pmid)
+        registered_count = 0
+        missing_json = 0
+
+        for row in candidates:
+            doi = row["doi"]
+            json_path = doi_to_path(doi, papers_dir, ".json")
+
+            if not json_path.exists():
+                missing_json += 1
                 continue
 
-            current_status = row["download_status"]
-
-            # Only update if status is 'scheduled' or 'manual_required'
-            if current_status in ("scheduled", "manual_required"):
-                cursor.execute(
-                    "UPDATE papers SET download_status = 'manual_downloaded' WHERE pmid = ?",
-                    (pmid,),
-                )
-                logger.info(f"✅ Registered PMID {pmid} (was: {current_status})")
-                registered_count += 1
-            else:
-                logger.debug(f"Skipped PMID {pmid} (status already: {current_status})")
+            cursor.execute(
+                "UPDATE papers SET download_status = 'downloaded' WHERE doi = ?",
+                (doi,),
+            )
+            logger.info(f"Registered DOI {doi} (was: {row['download_status']})")
+            registered_count += 1
 
         conn.commit()
 
     console.print("\n[bold]Registration Summary:[/bold]")
-    console.print(f"  ✅ Registered papers: {registered_count}")
-    console.print(
-        f"  • Skipped (already registered): {len(json_files) - registered_count - len(not_in_db)}"
-    )
-
-    if not_in_db:
-        console.print(f"  ⚠️ Not in database: {len(not_in_db)}")
-        for pmid in sorted(not_in_db):
-            console.print(f"     • {pmid}")
+    console.print(f"  Registered papers: {registered_count}")
+    console.print(f"  Still missing JSON: {missing_json}")
 
     if registered_count > 0:
         console.print(
-            "\n[green]✅ Registration complete! Papers ready for evidence extraction.[/green]"
+            "\n[green]Registration complete! Papers ready for evidence extraction.[/green]"
         )
 
 
@@ -443,8 +351,8 @@ def concatenate_pdfs(pdf_paths: list[Path], output_path: Path) -> None:
 class PmcDownloadResult:
     """Result of attempting to download a single paper from PMC."""
 
-    pmid: str
-    status: str  # 'pmc_downloaded' | 'manual_required' | 'error'
+    doi: str
+    status: str  # 'downloaded' | 'manual_required' | 'error'
     message: str
 
 
@@ -497,18 +405,25 @@ def process_tgz_archive(tgz_content: bytes, output_path: Path) -> tuple[bool, st
             return False, f"Failed to concatenate PDFs: {e}"
 
 
-def download_single_pmid(
-    pmid: str,
+def download_pmc_paper(
+    doi: str,
+    pmcid: str | None,
     db_path: Path,
     target_dir: Path,
     timeout: float,
-    tool: str,
-    email: str,
 ) -> PmcDownloadResult:
-    """Download a single paper from PMC.
+    """Download a single paper from PMC using its PMCID.
 
     Creates its own requests session (not thread-safe) and updates the database.
     """
+    if not pmcid:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
+                (doi,),
+            )
+        return PmcDownloadResult(doi, "manual_required", "No PMCID in source_metadata")
+
     # Create session with retry strategy (requests.Session is not thread-safe)
     session = requests.Session()
     retry_strategy = Retry(
@@ -522,40 +437,22 @@ def download_single_pmid(
     session.mount("https://", adapter)
 
     try:
-        # Step 1: Get PMCID from idconv API
-        idconv_url = f"https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/?ids={pmid}&idtype=pmid&format=json&tool={tool}&email={email}"
-        response = session.get(idconv_url, timeout=timeout)
-        response.raise_for_status()
-        idconv_data = response.json()
-
-        # Extract PMCID
-        records = idconv_data.get("records", [])
-        if not records or not records[0].get("pmcid"):
-            with sqlite3.connect(db_path) as conn:
-                conn.execute(
-                    "UPDATE papers SET download_status = 'manual_required' WHERE pmid = ?",
-                    (pmid,),
-                )
-            return PmcDownloadResult(pmid, "manual_required", "No PMCID found")
-
-        pmcid = records[0]["pmcid"]
-
-        # Step 2: Get PDF link from OA API
+        # Get PDF link from OA API
         oa_url = f"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={pmcid}"
         response = session.get(oa_url, timeout=timeout)
         response.raise_for_status()
         oa_data = response.text
 
-        # Step 3: Look for TGZ link (includes main paper + supplements)
+        # Look for TGZ link (includes main paper + supplements)
         tgz_match = re.search(r'<link[^>]*format="tgz"[^>]*href="([^"]+)"[^>]*/>', oa_data)
 
         if not tgz_match:
             with sqlite3.connect(db_path) as conn:
                 conn.execute(
-                    "UPDATE papers SET download_status = 'manual_required' WHERE pmid = ?",
-                    (pmid,),
+                    "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
+                    (doi,),
                 )
-            return PmcDownloadResult(pmid, "manual_required", f"No TGZ link in OA ({pmcid})")
+            return PmcDownloadResult(doi, "manual_required", f"No TGZ link in OA ({pmcid})")
 
         tgz_url = tgz_match.group(1)
 
@@ -568,28 +465,29 @@ def download_single_pmid(
         tgz_response.raise_for_status()
 
         # Process TGZ: extract, find main PDF, concatenate with supplements
-        pdf_path = target_dir / f"{pmid}.pdf"
+        pdf_path = doi_to_path(doi, target_dir, ".pdf")
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
         success, message = process_tgz_archive(tgz_response.content, pdf_path)
 
         if not success:
             with sqlite3.connect(db_path) as conn:
                 conn.execute(
-                    "UPDATE papers SET download_status = 'manual_required' WHERE pmid = ?",
-                    (pmid,),
+                    "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
+                    (doi,),
                 )
-            return PmcDownloadResult(pmid, "manual_required", f"TGZ processing failed: {message}")
+            return PmcDownloadResult(doi, "manual_required", f"TGZ processing failed: {message}")
 
-        # Update status to pmc_downloaded
+        # Update status to downloaded
         with sqlite3.connect(db_path) as conn:
             conn.execute(
-                "UPDATE papers SET download_status = 'pmc_downloaded' WHERE pmid = ?",
-                (pmid,),
+                "UPDATE papers SET download_status = 'downloaded' WHERE doi = ?",
+                (doi,),
             )
 
-        return PmcDownloadResult(pmid, "pmc_downloaded", f"Downloaded ({pmcid}) - {message}")
+        return PmcDownloadResult(doi, "downloaded", f"Downloaded ({pmcid}) - {message}")
 
     except Exception as e:
-        return PmcDownloadResult(pmid, "error", str(e))
+        return PmcDownloadResult(doi, "error", str(e))
 
 
 @app.command("attempt-pmc")
@@ -602,21 +500,14 @@ def attempt_pmc(
         Path("data/papers"), "--target-dir", "-t", help="Directory to save PDFs"
     ),
     timeout: float = typer.Option(30.0, "--timeout", help="HTTP request timeout in seconds"),
-    email: str = typer.Option(
-        "panelapp-support@mcri.edu.au", "--email", help="Email for NCBI API identification"
-    ),
-    tool: str = typer.Option(
-        "panelapp-literature-search", "--tool", help="Tool name for NCBI API identification"
-    ),
     max_workers: int = typer.Option(5, "--max-workers", "-w", help="Number of parallel downloads"),
 ) -> None:
     """Attempt automated PMC download for scheduled papers.
 
-    For each paper with download_status='scheduled' and missing PDF:
-    1. Query idconv API for PMCID
-    2. Query OA API for PDF download link
-    3. Download PDF if available
-    4. Update status to 'pmc_downloaded' or 'manual_required'
+    For each paper with download_status='scheduled', PMCID in source_metadata, and missing PDF:
+    1. Query OA API for PDF download link using stored PMCID
+    2. Download PDF if available
+    3. Update status to 'downloaded' or 'manual_required'
     """
     if not db_path.exists():
         raise FileNotFoundError(f"Database not found: {db_path}")
@@ -626,69 +517,70 @@ def attempt_pmc(
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        # Get papers scheduled for download that don't have PDFs
         cursor.execute("""
-            SELECT pmid
+            SELECT doi, json_extract(source_metadata, '$.pmcid') AS pmcid
             FROM papers
             WHERE download_status = 'scheduled'
-            ORDER BY pmid
+            ORDER BY doi
         """)
-        scheduled_pmids = [row[0] for row in cursor.fetchall()]
+        scheduled = cursor.fetchall()
 
-    if not scheduled_pmids:
+    if not scheduled:
         console.print("[yellow]No papers with download_status='scheduled'[/yellow]")
         return
 
-    # Filter out PMIDs that already have PDFs
-    pmids_needing_download = [
-        pmid for pmid in scheduled_pmids if not (target_dir / f"{pmid}.pdf").exists()
+    # Filter out papers that already have PDFs
+    papers_needing_download = [
+        (doi, pmcid)
+        for doi, pmcid in scheduled
+        if not doi_to_path(doi, target_dir, ".pdf").exists()
     ]
 
-    if not pmids_needing_download:
+    if not papers_needing_download:
         console.print("[green]All scheduled papers already have PDFs![/green]")
         return
 
     console.print(
-        f"[cyan]Attempting PMC download for {len(pmids_needing_download)} papers "
+        f"[cyan]Attempting PMC download for {len(papers_needing_download)} papers "
         f"({max_workers} workers)[/cyan]"
     )
 
-    pmc_downloaded = 0
+    downloaded = 0
     manual_required = 0
     errors: list[tuple[str, str]] = []
 
     with Progress() as progress:
-        task = progress.add_task("Downloading...", total=len(pmids_needing_download))
+        task = progress.add_task("Downloading...", total=len(papers_needing_download))
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
-                    download_single_pmid, pmid, db_path, target_dir, timeout, tool, email
-                ): pmid
-                for pmid in pmids_needing_download
+                    download_pmc_paper, doi, pmcid, db_path, target_dir, timeout
+                ): doi
+                for doi, pmcid in papers_needing_download
             }
 
             for future in as_completed(futures):
                 result = future.result()
-                if result.status == "pmc_downloaded":
-                    pmc_downloaded += 1
-                    logger.info(f"✅ PMID {result.pmid}: {result.message}")
+                if result.status == "downloaded":
+                    downloaded += 1
+                    logger.info(f"DOI {result.doi}: {result.message}")
                 elif result.status == "manual_required":
                     manual_required += 1
-                    logger.info(f"PMID {result.pmid}: {result.message}")
+                    logger.info(f"DOI {result.doi}: {result.message}")
                 else:  # error
-                    errors.append((result.pmid, result.message))
-                    logger.error(f"❌ PMID {result.pmid}: {result.message}")
+                    errors.append((result.doi, result.message))
+                    logger.error(f"DOI {result.doi}: {result.message}")
                 progress.advance(task)
 
     # Summary
     console.print("\n[bold]PMC Download Summary:[/bold]")
-    console.print(f"  ✅ PMC downloaded: {pmc_downloaded}")
-    console.print(f"  📝 Manual required: {manual_required}")
+    console.print(f"  Downloaded: {downloaded}")
+    console.print(f"  Manual required: {manual_required}")
     if errors:
-        console.print(f"  ❌ Errors: {len(errors)}")
-        for pmid, error in errors[:5]:  # Show first 5 errors
-            console.print(f"     PMID {pmid}: {error}")
+        console.print(f"  Errors: {len(errors)}")
+        for doi, error in errors[:5]:
+            console.print(f"     {doi}: {error}")
         if len(errors) > 5:
             console.print(f"     ... and {len(errors) - 5} more errors")
 

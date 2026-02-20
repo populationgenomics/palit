@@ -21,6 +21,7 @@ from pypdf.generic import (
 from palit.docling import parse_bbox_mapping_from_json
 from palit.hgnc import HgncResolver
 from palit.panelapp_integration import PANELAPP_CRITERIA
+from palit.papers import doi_to_path
 
 app = typer.Typer(help="Create annotated PDFs with citation highlighting")
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ class AnnotationCitation:
 def extract_citations_from_individual_assessment(
     evidence_json: dict[str, Any],
     bbox_mapping: dict[int, dict[str, Any]],
-    current_pmid: int,
+    current_doi: str,
     hgnc_resolver: HgncResolver,
 ) -> list[AnnotationCitation]:
     """
@@ -48,7 +49,7 @@ def extract_citations_from_individual_assessment(
     Args:
         evidence_json: The evidence extraction JSON for one paper
         bbox_mapping: Bbox mapping for the current paper
-        current_pmid: PMID of the current paper being processed
+        current_doi: DOI of the current paper being processed
         hgnc_resolver: HGNC resolver for gene symbol display
 
     Returns:
@@ -74,7 +75,7 @@ def extract_citations_from_individual_assessment(
                 # Check if box_id exists in current paper's bbox_mapping
                 if box_id not in bbox_mapping:
                     logger.warning(
-                        f"Box ID {box_id} not found in bbox mapping for PMID {current_pmid}"
+                        f"Box ID {box_id} not found in bbox mapping for DOI {current_doi}"
                     )
                     continue
 
@@ -106,7 +107,7 @@ def extract_citations_from_individual_assessment(
                 # Check if box_id exists in current paper's bbox_mapping
                 if box_id not in bbox_mapping:
                     logger.warning(
-                        f"Phenotype box ID {box_id} not found in bbox mapping for PMID {current_pmid}"
+                        f"Phenotype box ID {box_id} not found in bbox mapping for DOI {current_doi}"
                     )
                     continue
 
@@ -137,7 +138,7 @@ def extract_citations_from_individual_assessment(
                 # Check if box_id exists in current paper's bbox_mapping
                 if box_id not in bbox_mapping:
                     logger.warning(
-                        f"Quality concern box ID {box_id} not found in bbox mapping for PMID {current_pmid}"
+                        f"Quality concern box ID {box_id} not found in bbox mapping for DOI {current_doi}"
                     )
                     continue
 
@@ -158,7 +159,7 @@ def extract_citations_from_individual_assessment(
 def extract_citations_from_aggregate_assessment(
     assessment_json: dict[str, Any],
     bbox_mapping: dict[int, dict[str, Any]],
-    current_pmid: int,
+    current_doi: str,
     hgnc_symbol: str,
 ) -> list[AnnotationCitation]:
     """
@@ -167,7 +168,7 @@ def extract_citations_from_aggregate_assessment(
     Args:
         assessment_json: The aggregate assessment JSON for one gene
         bbox_mapping: Bbox mapping for the current paper only
-        current_pmid: PMID of the current paper being processed
+        current_doi: DOI of the current paper being processed
         hgnc_symbol: Current HGNC symbol for display
 
     Returns:
@@ -180,7 +181,7 @@ def extract_citations_from_aggregate_assessment(
 
         for citation in criterion["citations"]:
             # Only process citations from the current paper
-            if citation["pmid"] != current_pmid:
+            if citation["doi"] != current_doi:
                 continue
 
             box_id = citation["box_id"]
@@ -202,7 +203,7 @@ def extract_citations_from_aggregate_assessment(
 
         for citation in disease_entity.get("citations", []):
             # Only process citations from the current paper
-            if citation["pmid"] != current_pmid:
+            if citation["doi"] != current_doi:
                 continue
 
             box_id = citation["box_id"]
@@ -223,7 +224,7 @@ def extract_citations_from_aggregate_assessment(
 
         for citation in concern.get("citations", []):
             # Only process citations from the current paper
-            if citation["pmid"] != current_pmid:
+            if citation["doi"] != current_doi:
                 continue
 
             box_id = citation["box_id"]
@@ -244,7 +245,7 @@ def extract_citations_from_aggregate_assessment(
 def extract_variant_citations(
     db_cursor: Any,
     bbox_mapping: dict[int, dict[str, Any]],
-    current_pmid: int,
+    current_doi: str,
     hgnc_resolver: HgncResolver,
 ) -> list[AnnotationCitation]:
     """
@@ -253,7 +254,7 @@ def extract_variant_citations(
     Args:
         db_cursor: Database cursor for querying variant frequencies
         bbox_mapping: Bbox mapping for the current paper
-        current_pmid: PMID of the current paper being processed
+        current_doi: DOI of the current paper being processed
         hgnc_resolver: HGNC resolver for gene symbol display
 
     Returns:
@@ -271,10 +272,10 @@ def extract_variant_citations(
             vf.normalization,
             vf.gnomad
         FROM variant_frequencies vf
-        WHERE vf.pmid = ?
+        WHERE vf.paper_doi = ?
         ORDER BY vf.hgnc_id, vf.variant_id
     """,
-        (current_pmid,),
+        (current_doi,),
     )
 
     for row in db_cursor.fetchall():
@@ -285,7 +286,7 @@ def extract_variant_citations(
         # Check if box_id exists in current paper's bbox_mapping
         if box_id not in bbox_mapping:
             logger.warning(
-                f"Variant box ID {box_id} not found in bbox mapping for PMID {current_pmid}"
+                f"Variant box ID {box_id} not found in bbox mapping for DOI {current_doi}"
             )
             continue
 
@@ -319,7 +320,7 @@ def extract_variant_citations(
 
         except Exception as e:
             logger.warning(
-                f"Failed to parse variant data for PMID {current_pmid}, variant {variant_id}: {e}"
+                f"Failed to parse variant data for DOI {current_doi}, variant {variant_id}: {e}"
             )
             commentary = f"Variant: {variant_id} | Data parsing error"
 
@@ -445,7 +446,7 @@ def main(
 ) -> None:
     """Create gene-centric annotated PDFs with simple directory structure.
 
-    Creates annotated PDFs in structure: {output_dir}/{hgnc_id}/{pmid}.pdf
+    Creates annotated PDFs in structure: {output_dir}/{hgnc_id}/{doi}.pdf
     Each PDF contains highlights relevant to the specific gene.
     """
 
@@ -472,28 +473,28 @@ def main(
             SELECT DISTINCT
                 ga.hgnc_id,
                 ga.assessment_json,
-                p.pmid,
+                p.doi,
                 p.bbox_mapping
             FROM gene_assessments ga
             JOIN gene_mentions gm ON ga.hgnc_id = gm.hgnc_id
-            JOIN papers p ON gm.pmid = p.pmid
+            JOIN papers p ON gm.paper_doi = p.doi
             WHERE p.bbox_mapping IS NOT NULL
-            ORDER BY ga.hgnc_id, p.pmid
+            ORDER BY ga.hgnc_id, p.doi
         """)
 
         # Process gene assessments
         gene_data = {}
         for row in cursor.fetchall():
             hgnc_id = row["hgnc_id"]
-            pmid = row["pmid"]
+            doi = row["doi"]
             assessment_json = json.loads(row["assessment_json"])
             bbox_mapping = parse_bbox_mapping_from_json(row["bbox_mapping"])
 
-            key = (hgnc_id, pmid)
+            key = (hgnc_id, doi)
             if key not in gene_data:
                 gene_data[key] = {
                     "hgnc_id": hgnc_id,
-                    "pmid": pmid,
+                    "doi": doi,
                     "assessment_json": assessment_json,
                     "bbox_mapping": bbox_mapping,
                     "type": "aggregate",
@@ -502,24 +503,24 @@ def main(
         # Get all papers with individual evidence extractions (separate query, not gene-scoped)
         cursor.execute("""
             SELECT
-                p.pmid,
+                p.doi,
                 p.bbox_mapping,
                 p.evidence_extraction_json
             FROM papers p
             WHERE p.bbox_mapping IS NOT NULL
             AND p.evidence_extraction_json IS NOT NULL
-            ORDER BY p.pmid
+            ORDER BY p.doi
         """)
 
         # Process individual assessments
         individual_data = {}
         for row in cursor.fetchall():
-            pmid = row["pmid"]
+            doi = row["doi"]
             evidence_json = json.loads(row["evidence_extraction_json"])
             bbox_mapping = parse_bbox_mapping_from_json(row["bbox_mapping"])
 
-            individual_data[pmid] = {
-                "pmid": pmid,
+            individual_data[doi] = {
+                "doi": doi,
                 "evidence_json": evidence_json,
                 "bbox_mapping": bbox_mapping,
                 "type": "individual",
@@ -537,53 +538,53 @@ def main(
     skipped_annotations = 0
 
     for task in all_annotation_tasks:
-        pmid = task["pmid"]
+        doi = task["doi"]
         task_type = task["type"]
 
         if task_type == "aggregate":
             hgnc_id = task["hgnc_id"]
             hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-            logger.debug(f"Processing gene assessment: {hgnc_symbol} / PMID {pmid}")
+            logger.debug(f"Processing gene assessment: {hgnc_symbol} / DOI {doi}")
 
             # Create output directory structure for gene
             gene_dir = output_dir / str(hgnc_id)
-            gene_dir.mkdir(parents=True, exist_ok=True)
-            output_path = gene_dir / f"{pmid}.pdf"
+            output_path = doi_to_path(doi, gene_dir, ".pdf")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Extract aggregate citations
             citations = extract_citations_from_aggregate_assessment(
-                task["assessment_json"], task["bbox_mapping"], pmid, hgnc_symbol
+                task["assessment_json"], task["bbox_mapping"], doi, hgnc_symbol
             )
 
             # Add variant citations from variant_frequencies table
             variant_citations = extract_variant_citations(
-                cursor, task["bbox_mapping"], pmid, hgnc_resolver
+                cursor, task["bbox_mapping"], doi, hgnc_resolver
             )
             citations.extend(variant_citations)
 
         else:  # individual
-            logger.debug(f"Processing individual: PMID {pmid}")
+            logger.debug(f"Processing individual: DOI {doi}")
 
             # Create output directory structure for individual
             individual_dir = output_dir / "individual"
-            individual_dir.mkdir(parents=True, exist_ok=True)
-            output_path = individual_dir / f"{pmid}.pdf"
+            output_path = doi_to_path(doi, individual_dir, ".pdf")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Extract individual citations
             citations = extract_citations_from_individual_assessment(
-                task["evidence_json"], task["bbox_mapping"], pmid, hgnc_resolver
+                task["evidence_json"], task["bbox_mapping"], doi, hgnc_resolver
             )
 
             # Add variant citations from variant_frequencies table
             variant_citations = extract_variant_citations(
-                cursor, task["bbox_mapping"], pmid, hgnc_resolver
+                cursor, task["bbox_mapping"], doi, hgnc_resolver
             )
             citations.extend(variant_citations)
 
         # Check if original PDF exists
-        pdf_path = papers_dir / f"{pmid}.pdf"
+        pdf_path = doi_to_path(doi, papers_dir, ".pdf")
         if not pdf_path.exists():
-            logger.warning(f"PDF not found for PMID {pmid}: {pdf_path}")
+            logger.warning(f"PDF not found for DOI {doi}: {pdf_path}")
             failed_annotations += 1
             continue
 
@@ -594,11 +595,11 @@ def main(
             continue
 
         if not citations:
-            logger.debug(f"No citations for {task_type} assessment PMID {pmid}")
+            logger.debug(f"No citations for {task_type} assessment DOI {doi}")
             skipped_annotations += 1
             continue
 
-        logger.info(f"Creating {len(citations)} {task_type} annotations for PMID {pmid}")
+        logger.info(f"Creating {len(citations)} {task_type} annotations for DOI {doi}")
 
         # Create annotated PDF
         success = create_pdf_annotations(pdf_path, citations, task["bbox_mapping"], output_path)

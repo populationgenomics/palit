@@ -27,6 +27,11 @@
     </script>
     {% endif %}
 
+    {# Macro for linking to a paper: PubMed if PMID available, DOI otherwise #}
+    {% macro paper_link(paper) %}
+    {% if paper.pmid %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ paper.pmid }}/" target="_blank">{{ paper.pmid }}</a>{% else %}<a href="https://doi.org/{{ paper.doi }}" target="_blank">{{ paper.doi }}</a>{% endif %}
+    {%- endmacro %}
+
     {# Macro for rendering MoI comparison badge #}
     {% macro moi_comparison_badge(moi_comp) %}
     {% if moi_comp %}
@@ -93,7 +98,7 @@
                     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
                     <td>{{ entity.patient_count }}</td>
                     <td {% if entity.family_count is not none and entity.family_count == max_family_count and max_family_count > 0 %}class="disease-entity-max-family-count" data-title="Maximum family count - used for classification"{% endif %}>{% if entity.family_count is not none %}{{ entity.family_count }}{% else %}NR{% endif %}</td>
-                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for pmid, page in citation_links %}<a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
+                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for link in citation_links %}<a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ link.doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.paper_id }}:p{{ link.page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
@@ -116,8 +121,13 @@
             <li><strong>Segregation:</strong> {{ gene.assessment_json.segregation }}</li>
             <li><strong>Functional Studies:</strong> {{ gene.assessment_json.functional }}</li>
             <li><strong>Prior Reports:</strong> {{ gene.assessment_json.prior_reports }}</li>
-            {% if gene.cited_pmids %}
-            <li><strong>Publications (PMID):</strong> {% for pmid in gene.cited_pmids %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ pmid }}/" target="_blank">{{ pmid }}</a>{% if not loop.last %};{% endif %}{% endfor %}</li>
+            {% set published_papers = gene.contributing_papers | rejectattr('preprint') | list %}
+            {% set preprint_papers = gene.contributing_papers | selectattr('preprint') | list %}
+            {% if published_papers %}
+            <li><strong>Publications:</strong> {% for paper in published_papers %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}</li>
+            {% endif %}
+            {% if preprint_papers %}
+            <li><strong>Preprints:</strong> {% for paper in preprint_papers %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}</li>
             {% endif %}
         </ul>
 
@@ -143,8 +153,8 @@
                     {{ concern.concern }}
                     {% if concern.citations %}
                     {% set citation_links = concern.citations | prepare_citation_links(gene.contributing_papers) %}
-                    {% for pmid, page in citation_links %}
-                    <a href="{{ pdf_base_path }}/{{ gene.hgnc_id }}/{{ pmid }}.pdf#page={{ page }}" target="_blank">[{{ pmid }}:p{{ page }}]</a>
+                    {% for link in citation_links %}
+                    <a href="{{ pdf_base_path }}/{{ gene.hgnc_id }}/{{ link.doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.paper_id }}:p{{ link.page }}]</a>
                     {% endfor %}
                     {% endif %}
                 </li>
@@ -156,7 +166,7 @@
     {% endmacro %}
 
     {# Macro for rendering criteria assessment grid - handles both aggregate and individual paper assessments #}
-    {% macro criteria_grid(assessment, hgnc_id, pdf_base_path, contributing_papers=none, citation_pages=none, pmid=none) %}
+    {% macro criteria_grid(assessment, hgnc_id, pdf_base_path, contributing_papers=none, citation_pages=none, doi=none, paper_id=none) %}
     <div class="criteria-grid">
         {% for crit_name, crit_label, separator in [
             ('criterion_A', 'Criterion A - Multiple Unrelated Cases', 'OR'),
@@ -174,23 +184,22 @@
             <div class="evidence-card">
                 <ul>
                     {% if contributing_papers %}
-                        {# Aggregate mode: use prepare_citation_links filter #}
-                        {% set citation_links = crit.citations | prepare_citation_links(contributing_papers) %}
                         {% for citation in crit.citations %}
                         <li>
                             {{ citation.commentary }}
-                            {% for cite_pmid, page in citation_links %}
-                            <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ cite_pmid }}.pdf#page={{ page }}" target="_blank">[{{ cite_pmid }}:p{{ page }}]</a>
+                            {% set citation_links = [citation] | prepare_citation_links(contributing_papers) %}
+                            {% for link in citation_links %}
+                            <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ link.doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.paper_id }}:p{{ link.page }}]</a>
                             {% endfor %}
                         </li>
                         {% endfor %}
-                    {% elif citation_pages and pmid %}
+                    {% elif citation_pages and doi %}
                         {# Individual mode: use citation.box_id and paper.citation_pages #}
                         {% for citation in crit.citations %}
                         <li>
                             {{ citation.commentary }}
                             {% if citation.box_id and citation.box_id in citation_pages %}
-                            <a href="{{ pdf_base_path }}/individual/{{ pmid }}.pdf#page={{ citation_pages[citation.box_id] }}" target="_blank">[{{ pmid }}:p{{ citation_pages[citation.box_id] }}]</a>
+                            <a href="{{ pdf_base_path }}/individual/{{ doi }}.pdf#page={{ citation_pages[citation.box_id] }}" target="_blank">[{{ paper_id }}:p{{ citation_pages[citation.box_id] }}]</a>
                             {% endif %}
                         </li>
                         {% endfor %}
@@ -267,9 +276,23 @@
 
         <details>
             <summary><strong>Contributing papers ({{ gene.contributing_papers|length }})</strong></summary>
-            {% for paper in gene.contributing_papers %}
-            {{ paper_display(paper, include_evidence=true, gene=gene, pdf_base_path=pdf_base_path) }}
-            {% endfor %}
+            {% set published_papers = gene.contributing_papers | rejectattr('preprint') | list %}
+            {% set preprint_papers = gene.contributing_papers | selectattr('preprint') | list %}
+            {% if published_papers %}
+            <div class="contributing-published">
+                {% for paper in published_papers %}
+                {{ paper_display(paper, include_evidence=true, gene=gene, pdf_base_path=pdf_base_path) }}
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if preprint_papers %}
+            <div class="contributing-preprints">
+                <h5><strong>Preprints ({{ preprint_papers|length }})</strong></h5>
+                {% for paper in preprint_papers %}
+                {{ paper_display(paper, include_evidence=true, gene=gene, pdf_base_path=pdf_base_path) }}
+                {% endfor %}
+            </div>
+            {% endif %}
         </details>
     {% endmacro %}
 
@@ -361,9 +384,7 @@
                 <td>
                     <a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>
                     {% if variant.citation_page %}
-                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ variant.pmid }}.pdf#page={{ variant.citation_page }}" target="_blank">[{{ variant.pmid }}:p{{ variant.citation_page }}]</a>
-                    {% elif variant.pmid %}
-                        | <a href="https://pubmed.ncbi.nlm.nih.gov/{{ variant.pmid }}/" target="_blank">[{{ variant.pmid }}]</a>
+                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ variant.doi }}.pdf#page={{ variant.citation_page }}" target="_blank">[p{{ variant.citation_page }}]</a>
                     {% endif %}
                 </td>
             </tr>
@@ -374,16 +395,17 @@
 
     {# Unified macro for displaying papers - used across all sections #}
     {% macro paper_display(paper, include_evidence=false, gene=none, pdf_base_path="") %}
-    <article class="detailed-paper">
+    <article class="detailed-paper{% if paper.preprint %} paper-preprint{% endif %}">
         <header class="paper-header">
             <h6>
-                <a href="https://pubmed.ncbi.nlm.nih.gov/{{ paper.pmid }}/" target="_blank">{{ paper.pmid }}</a>: {{ paper.title }}
+                {% if paper.preprint %}<span class="preprint-badge">Preprint</span> {% endif %}
+                {% if paper.paper_id %}{{ paper.paper_id }}: {% endif %}{{ paper_link(paper) }} — {{ paper.title }}
             </h6>
             <div class="paper-metadata">
                 <ul>
                     {% if paper.authors %}<li><strong>Authors:</strong> {{ paper.authors }}</li>{% endif %}
                     {% if paper.journal %}<li><strong>Journal:</strong> {{ paper.journal }}</li>{% endif %}
-                    <li><strong>Date:</strong> {{ paper.entrez_date or 'Unknown' }}</li>
+                    <li><strong>Date:</strong> {{ paper.source_date or 'Unknown' }}</li>
                     <li><strong>Why considered:</strong>
                         {% if paper.source_type == 'initial' %}Initial literature search
                         {% elif paper.source_type == 'expansion' %}Literature expansion
@@ -448,7 +470,7 @@
                                 {% if concern.citations and paper.citation_pages %}
                                 {% for citation in concern.citations %}
                                 {% if citation.box_id and citation.box_id in paper.citation_pages %}
-                                <a href="{{ pdf_base_path }}/individual/{{ paper.pmid }}.pdf#page={{ paper.citation_pages[citation.box_id] }}" target="_blank">[{{ paper.pmid }}:p{{ paper.citation_pages[citation.box_id] }}]</a>
+                                <a href="{{ pdf_base_path }}/individual/{{ paper.doi }}.pdf#page={{ paper.citation_pages[citation.box_id] }}" target="_blank">[{{ paper.paper_id }}:p{{ paper.citation_pages[citation.box_id] }}]</a>
                                 {% endif %}
                                 {% endfor %}
                                 {% endif %}
@@ -459,7 +481,7 @@
                     {% endif %}
                 </div>
 
-                {{ criteria_grid(gene_eval, gene.hgnc_id, pdf_base_path, citation_pages=paper.citation_pages, pmid=paper.pmid) }}
+                {{ criteria_grid(gene_eval, gene.hgnc_id, pdf_base_path, citation_pages=paper.citation_pages, doi=paper.doi, paper_id=paper.paper_id) }}
 
                 <div class="variant-frequency-section">
                     <h6><strong>gnomAD v4 frequencies</strong></h6>
@@ -643,7 +665,7 @@
                 <div class="stats-card">
                     <h3>Panel Publication Validation</h3>
                     <ul>
-                        <li>Total panel publications: {{ statistics.total_panel_pmids }}</li>
+                        <li>Total panel publications: {{ statistics.total_panel_papers }}</li>
                         <li>Found in recent literature: {{ statistics.panel_papers_in_db }}</li>
                         <li>Correctly identified as relevant: {{ statistics.true_positives_count }}</li>
                         <li>Missed (false negatives): {{ statistics.false_negatives_count }}</li>

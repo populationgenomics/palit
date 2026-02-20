@@ -11,8 +11,8 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.ingest_pubmed import Paper
 from palit.llm import HarmonyBatchProcessor
+from palit.papers import Paper
 from palit.tournament import TournamentOutcome, run_tournament_selection
 
 app = typer.Typer(help="Reduce literature using tournament selection to minimize manual downloads")
@@ -35,11 +35,12 @@ def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT DISTINCT p.pmid, p.title, p.abstract, p.authors, p.journal, p.entrez_date
+            SELECT DISTINCT p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
+                   p.source, p.source_date, p.source_metadata
             FROM papers p
-            JOIN gene_mentions gm ON p.pmid = gm.pmid
+            JOIN gene_mentions gm ON p.doi = gm.paper_doi
             WHERE gm.hgnc_id = ?
-            ORDER BY p.entrez_date DESC, p.pmid DESC
+            ORDER BY p.source_date DESC, p.doi DESC
             LIMIT ?
             """,
             (hgnc_id, limit),
@@ -47,14 +48,18 @@ def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
 
         papers = []
         for row in cursor.fetchall():
+            source_metadata = json.loads(row["source_metadata"]) if row["source_metadata"] else {}
             papers.append(
                 Paper(
+                    doi=row["doi"],
                     pmid=row["pmid"],
                     title=row["title"],
                     abstract=row["abstract"],
                     authors=row["authors"],
                     journal=row["journal"],
-                    entrez_date=row["entrez_date"],
+                    source=row["source"],
+                    source_date=row["source_date"],
+                    source_metadata=source_metadata,
                     source_type="initial",
                     source_details=str(hgnc_id),
                 )
@@ -64,7 +69,7 @@ def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
         return papers
 
 
-def clear_unselected_papers(db_path: Path, all_selected_pmids: set[int]) -> dict[str, int]:
+def clear_unselected_papers(db_path: Path, all_selected_dois: set[str]) -> dict[str, int]:
     """Clear download_status for papers not selected by any gene.
 
     The aggregation step has a practical limit of ~30-40 papers per gene due to
@@ -76,7 +81,7 @@ def clear_unselected_papers(db_path: Path, all_selected_pmids: set[int]) -> dict
 
     Args:
         db_path: Path to SQLite database
-        all_selected_pmids: Union of all PMIDs selected across all genes
+        all_selected_dois: Union of all DOIs selected across all genes
 
     Returns:
         Dict with counts by previous download_status
@@ -95,7 +100,7 @@ def clear_unselected_papers(db_path: Path, all_selected_pmids: set[int]) -> dict
         )
         status_counts_before = dict(cursor.fetchall())
 
-        if not all_selected_pmids:
+        if not all_selected_dois:
             # No papers selected - clear all
             cursor.execute(
                 "UPDATE papers SET download_status = NULL WHERE download_status IS NOT NULL"
@@ -104,15 +109,15 @@ def clear_unselected_papers(db_path: Path, all_selected_pmids: set[int]) -> dict
             return {f"cleared_{k}": v for k, v in status_counts_before.items()}
 
         # Clear download_status for papers not in the selected set
-        placeholders = ",".join("?" * len(all_selected_pmids))
+        placeholders = ",".join("?" * len(all_selected_dois))
         cursor.execute(
             f"""
             UPDATE papers
             SET download_status = NULL
             WHERE download_status IS NOT NULL
-            AND pmid NOT IN ({placeholders})
+            AND doi NOT IN ({placeholders})
             """,
-            tuple(all_selected_pmids),
+            tuple(all_selected_dois),
         )
         cleared_count = cursor.rowcount
 
@@ -148,17 +153,17 @@ def _record_reduction_completion(db_path: Path, hgnc_id: int, outcome: Tournamen
             """
             INSERT INTO tournament_results (
                 hgnc_id,
-                selected_pmids_json,
+                selected_dois_json,
                 tournament_raw_responses_json
             )
             VALUES (?, ?, ?)
             ON CONFLICT(hgnc_id) DO UPDATE SET
-                selected_pmids_json = excluded.selected_pmids_json,
+                selected_dois_json = excluded.selected_dois_json,
                 tournament_raw_responses_json = excluded.tournament_raw_responses_json
             """,
             (
                 hgnc_id,
-                json.dumps([a.pmid for a in outcome.selected_papers]),
+                json.dumps([p.doi for p in outcome.selected_papers]),
                 json.dumps(outcome.raw_responses_by_round),
             ),
         )
@@ -225,9 +230,9 @@ def main(
         "-l",
         help="Logging level",
     ),
-    pmid_limit: int = typer.Option(
+    paper_limit: int = typer.Option(
         10000,
-        "--pmid-limit",
+        "--paper-limit",
         help="Maximum number of papers to consider per gene",
     ),
     dry_run: bool = typer.Option(
@@ -272,7 +277,7 @@ def main(
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT gm.hgnc_id, COUNT(DISTINCT gm.pmid) as paper_count
+            SELECT gm.hgnc_id, COUNT(DISTINCT gm.paper_doi) as paper_count
             FROM gene_mentions gm
             LEFT JOIN tournament_results er
               ON gm.hgnc_id = er.hgnc_id
@@ -318,34 +323,34 @@ def main(
         reasoning_effort="medium",
     )
 
-    # Phase 1a: Collect PMIDs for genes that don't need reduction (≤max_papers)
+    # Phase 1a: Collect DOIs for genes that don't need reduction (≤max_papers)
     # These genes implicitly have all their papers selected
-    all_selected_pmids: set[int] = set()
+    all_selected_dois: set[str] = set()
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT DISTINCT gm.pmid
+            SELECT DISTINCT gm.paper_doi
             FROM gene_mentions gm
             WHERE gm.hgnc_id IN (
                 SELECT hgnc_id
                 FROM gene_mentions
                 GROUP BY hgnc_id
-                HAVING COUNT(DISTINCT pmid) <= ?
+                HAVING COUNT(DISTINCT paper_doi) <= ?
             )
             """,
             (max_papers,),
         )
-        small_gene_pmids = {row[0] for row in cursor.fetchall()}
-        all_selected_pmids.update(small_gene_pmids)
+        small_gene_dois = {row[0] for row in cursor.fetchall()}
+        all_selected_dois.update(small_gene_dois)
         logger.info(
-            f"Auto-selected {len(small_gene_pmids)} papers from genes with ≤{max_papers} papers"
+            f"Auto-selected {len(small_gene_dois)} papers from genes with ≤{max_papers} papers"
         )
 
     # Phase 1b: Run tournament selection for genes with many papers
     for hgnc_id, paper_count in tqdm(genes_with_counts, desc="Reducing literature"):
         hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-        papers = get_papers_for_gene(db_path, hgnc_id, pmid_limit)
+        papers = get_papers_for_gene(db_path, hgnc_id, paper_limit)
 
         if not papers:
             logger.warning(f"No papers found for {hgnc_symbol} (HGNC:{hgnc_id})")
@@ -363,22 +368,22 @@ def main(
             max_retries=max_retries,
         )
 
-        selected_pmids = {a.pmid for a in tournament_outcome.selected_papers}
-        all_selected_pmids.update(selected_pmids)
+        selected_dois = {p.doi for p in tournament_outcome.selected_papers}
+        all_selected_dois.update(selected_dois)
 
         logger.info(
-            f"{hgnc_symbol} (HGNC:{hgnc_id}): {paper_count} -> {len(selected_pmids)} selected"
+            f"{hgnc_symbol} (HGNC:{hgnc_id}): {paper_count} -> {len(selected_dois)} selected"
         )
 
         _record_reduction_completion(db_path, hgnc_id, tournament_outcome)
 
     # Phase 2: Clear download_status for papers not selected by ANY gene
     logger.info("Clearing download_status for unselected papers...")
-    clear_stats = clear_unselected_papers(db_path, all_selected_pmids)
+    clear_stats = clear_unselected_papers(db_path, all_selected_dois)
 
     logger.info("Literature reduction complete!")
     logger.info(f"Total genes processed: {len(genes_with_counts)}")
-    logger.info(f"Total papers selected: {len(all_selected_pmids)}")
+    logger.info(f"Total papers selected: {len(all_selected_dois)}")
     for key, value in clear_stats.items():
         logger.info(f"  {key}: {value}")
 

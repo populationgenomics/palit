@@ -29,7 +29,8 @@ from rich.progress import (
 from torch.utils.data import DataLoader
 from transformers import DataCollatorWithPadding
 
-from palit.ingest_pubmed import Paper, extract_papers_from_xml
+from palit.ingest_pubmed import extract_papers_from_xml
+from palit.papers import Paper
 from palit.screening_classifier.inference import (
     LabeledPaper,
     LoadedCheckpoint,
@@ -118,12 +119,15 @@ def insert_relevant_papers(
 
     rows = [
         (
+            paper.doi,
             paper.pmid,
             paper.title,
             paper.abstract,
             paper.authors,
             paper.journal,
-            paper.entrez_date,
+            paper.source,
+            paper.source_date,
+            json.dumps(paper.source_metadata),
             paper.source_type,
             paper.source_details,
         )
@@ -139,9 +143,10 @@ def insert_relevant_papers(
         cursor.executemany(
             """
             INSERT INTO papers
-            (pmid, title, abstract, authors, journal, entrez_date, source_type, source_details)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(pmid) DO NOTHING
+            (doi, pmid, title, abstract, authors, journal, source, source_date,
+             source_metadata, source_type, source_details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(doi) DO NOTHING
             """,
             batch,
         )
@@ -170,7 +175,7 @@ def process_file(
     with gzip.open(xml_path, "rb") as f:
         xml_content = f.read()
 
-    papers = extract_papers_from_xml(
+    papers, _stats = extract_papers_from_xml(
         xml_content,
         source_type="baseline_screening",
         source_details=xml_path.name,
@@ -184,7 +189,7 @@ def process_file(
     # Convert to LabeledPaper format (with dummy labels for inference)
     labeled_papers = [
         LabeledPaper(
-            pmid=paper.pmid,
+            doi=paper.doi,
             title=paper.title,
             abstract=paper.abstract,
             is_relevant=0,  # Dummy label for inference
@@ -247,7 +252,7 @@ def main(
     compile_model: bool = typer.Option(
         True, "--compile/--no-compile", help="Use torch.compile for optimization"
     ),
-    min_year: int = typer.Option(2000, "--min-year", help="Minimum publication year (entrez date)"),
+    min_year: int = typer.Option(2000, "--min-year", help="Minimum publication year (source date)"),
 ) -> None:
     """Screen PubMed baseline snapshot through relevance classifier."""
     # Disable tokenizer parallelism to avoid fork warnings with DataLoader workers
@@ -268,7 +273,9 @@ def main(
     if compile_model:
         console.print("[bold]Warming up compiled model...[/bold]")
         dummy_papers = [
-            LabeledPaper(pmid=1, title="Test paper", abstract="Test abstract", is_relevant=0)
+            LabeledPaper(
+                doi="10.0000/test", title="Test paper", abstract="Test abstract", is_relevant=0
+            )
         ]
         dummy_dataset = PaperDataset(dummy_papers, ckpt.tokenizer, max_length=1024)
         dummy_collator = DataCollatorWithPadding(tokenizer=ckpt.tokenizer)

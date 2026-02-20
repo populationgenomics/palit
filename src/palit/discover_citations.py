@@ -14,7 +14,8 @@ from rich.console import Console
 from rich.progress import track
 
 from palit.hgnc import HgncResolver
-from palit.ingest_pubmed import Paper, extract_papers_from_xml
+from palit.ingest_pubmed import extract_papers_from_xml
+from palit.papers import Paper
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 
@@ -31,7 +32,7 @@ class ReferencedSource:
     title: str
     context: str
     hgnc_id: int
-    citing_pmid: int
+    citing_doi: str
 
 
 def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
@@ -54,22 +55,22 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
         cursor.execute(
             """
             SELECT DISTINCT
-                p.pmid,
+                p.doi,
                 gm.hgnc_id,
                 p.evidence_extraction_json
             FROM papers p
-            JOIN gene_mentions gm ON p.pmid = gm.pmid
+            JOIN gene_mentions gm ON p.doi = gm.paper_doi
             WHERE p.evidence_extraction_json IS NOT NULL
             """
         )
 
         for row in cursor.fetchall():
-            pmid, hgnc_id, evidence_json = row
+            doi, hgnc_id, evidence_json = row
 
             try:
                 evidence = json.loads(evidence_json)
             except json.JSONDecodeError:
-                logger.warning(f"Skipping PMID {pmid}: invalid JSON in evidence_extraction")
+                logger.warning(f"Skipping DOI {doi}: invalid JSON in evidence_extraction")
                 continue
 
             # Look for gene evaluations
@@ -92,7 +93,7 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
                                     title=title,
                                     context=context,
                                     hgnc_id=hgnc_id,
-                                    citing_pmid=pmid,
+                                    citing_doi=doi,
                                 )
                             )
 
@@ -163,19 +164,18 @@ def search_pubmed_by_title(title: str) -> int | None:
         return None
 
 
-def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_pmid: int | str) -> Paper | None:
+def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_doi: str) -> Paper | None:
     """Fetch paper metadata from PubMed using efetch.
 
     Args:
         pmid: PubMed ID
         hgnc_id: HGNC ID for source_details
-        citing_pmid: PMID of paper citing this reference, or "manual" for manually added papers
+        citing_doi: DOI of paper citing this reference, or "manual" for manually added papers
 
     Returns:
-        Paper object if successful, None otherwise
+        Paper object if successful (and has a DOI), None otherwise
     """
     try:
-        # Use efetch to get XML
         efetch_cmd = ["efetch", "-db", "pubmed", "-id", str(pmid), "-format", "xml"]
 
         result = subprocess.run(
@@ -188,17 +188,16 @@ def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_pmid: int | str) -> Pap
             logger.warning(f"efetch failed for PMID {pmid}")
             return None
 
-        # Parse papers using existing function
         # Allow papers without abstracts for cited papers (case reports, etc.)
-        papers = extract_papers_from_xml(
+        papers, _stats = extract_papers_from_xml(
             result.stdout,
             source_type="expansion",
-            source_details=f"referenced:{hgnc_id}:{citing_pmid}",
+            source_details=f"referenced:{hgnc_id}:{citing_doi}",
             require_abstract=False,
         )
 
         if not papers:
-            logger.warning(f"No paper data extracted for PMID {pmid}")
+            logger.warning(f"No paper data extracted for PMID {pmid} (may lack DOI)")
             return None
 
         return papers[0]
@@ -208,19 +207,19 @@ def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_pmid: int | str) -> Pap
         return None
 
 
-def check_pmid_exists(db_path: Path, pmid: int) -> bool:
-    """Check if a PMID already exists in the database.
+def check_doi_exists(db_path: Path, doi: str) -> bool:
+    """Check if a DOI already exists in the database.
 
     Args:
         db_path: Path to SQLite database
-        pmid: PubMed ID to check
+        doi: DOI to check
 
     Returns:
-        True if PMID exists, False otherwise
+        True if DOI exists, False otherwise
     """
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM papers WHERE pmid = ?", (pmid,))
+        cursor.execute("SELECT 1 FROM papers WHERE doi = ?", (doi,))
         return cursor.fetchone() is not None
 
 
@@ -240,17 +239,21 @@ def store_referenced_paper(db_path: Path, paper: Paper) -> bool:
         cursor.execute(
             """
             INSERT INTO papers
-            (pmid, title, abstract, authors, journal, entrez_date, source_type, source_details, download_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
-            ON CONFLICT(pmid) DO NOTHING
+            (doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata,
+             source_type, source_details, download_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+            ON CONFLICT(doi) DO NOTHING
             """,
             (
+                paper.doi,
                 paper.pmid,
                 paper.title,
                 paper.abstract,
                 paper.authors,
                 paper.journal,
-                paper.entrez_date,
+                paper.source,
+                paper.source_date,
+                json.dumps(paper.source_metadata),
                 paper.source_type,
                 paper.source_details,
             ),
@@ -303,26 +306,20 @@ def discover(
     for source in track(unique_sources.values(), description="Searching PubMed..."):
         gene_display = hgnc_resolver.get_symbol(source.hgnc_id)
 
-        # Search for PMID
+        # Search for PMID (PubMed title search still returns PMIDs)
         pmid = search_pubmed_by_title(source.title)
 
         if pmid is None:
             logger.info(
                 f"Could not find PMID for '{source.title}' "
-                f"(gene: {gene_display}, cited by: {source.citing_pmid})"
+                f"(gene: {gene_display}, cited by: {source.citing_doi})"
             )
             not_found += 1
             failures_by_gene.setdefault(source.hgnc_id, []).append(source.title)
             continue
 
-        # Check if already in database
-        if check_pmid_exists(db_path, pmid):
-            logger.debug(f"PMID {pmid} already in database, skipping")
-            already_exists += 1
-            continue
-
-        # Fetch metadata
-        paper = fetch_paper_metadata(pmid, source.hgnc_id, source.citing_pmid)
+        # Fetch metadata (efetch returns XML from which we extract DOI)
+        paper = fetch_paper_metadata(pmid, source.hgnc_id, source.citing_doi)
         if paper is None:
             logger.warning(f"Failed to fetch metadata for PMID {pmid}")
             not_found += 1
@@ -331,12 +328,18 @@ def discover(
             )
             continue
 
+        # Check if already in database (by DOI)
+        if check_doi_exists(db_path, paper.doi):
+            logger.debug(f"DOI {paper.doi} already in database, skipping")
+            already_exists += 1
+            continue
+
         # Store in database
         inserted = store_referenced_paper(db_path, paper)
         if inserted:
             logger.info(
-                f"Added PMID {pmid} for {gene_display} (HGNC:{source.hgnc_id}) "
-                f"(referenced by PMID {source.citing_pmid})"
+                f"Added DOI {paper.doi} for {gene_display} (HGNC:{source.hgnc_id}) "
+                f"(referenced by DOI {source.citing_doi})"
             )
             new_papers += 1
         else:
@@ -362,6 +365,7 @@ def discover(
         console.print(
             "[dim]  uv run palit discover-citations add --hgnc-id HGNC_ID PMID1 PMID2 ...[/dim]"
         )
+        console.print("[dim]  (Papers without a DOI in PubMed will be skipped)[/dim]")
 
     if new_papers > 0:
         console.print(
@@ -398,24 +402,24 @@ def add(
     failed = 0
 
     for pmid in pmids:
-        # Check if already exists
-        if check_pmid_exists(db_path, pmid):
-            logger.info(f"PMID {pmid} already in database, skipping")
-            skipped += 1
-            continue
-
-        # Fetch metadata using "manual" as the citing PMID
-        paper = fetch_paper_metadata(pmid, hgnc_id, citing_pmid="manual")
+        # Fetch metadata using "manual" as the citing source
+        paper = fetch_paper_metadata(pmid, hgnc_id, citing_doi="manual")
 
         if paper is None:
             logger.error(f"Failed to fetch metadata for PMID {pmid}")
             failed += 1
             continue
 
+        # Check if already exists (by DOI)
+        if check_doi_exists(db_path, paper.doi):
+            logger.info(f"DOI {paper.doi} already in database, skipping")
+            skipped += 1
+            continue
+
         # Store in database
         inserted = store_referenced_paper(db_path, paper)
         if inserted:
-            logger.info(f"Added PMID {pmid} for {gene_display} (HGNC:{hgnc_id})")
+            logger.info(f"Added DOI {paper.doi} for {gene_display} (HGNC:{hgnc_id})")
             added += 1
         else:
             skipped += 1

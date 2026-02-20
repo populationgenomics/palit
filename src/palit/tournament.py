@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from palit.ingest_pubmed import Paper
+from palit.papers import Paper
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class TournamentOutcome:
 
 
 def format_papers_for_prompt(papers: list[Paper]) -> str:
-    """Format papers as XML-style list for LLM prompt using indices instead of PMIDs.
+    """Format papers as XML-style list for LLM prompt using sequential indices.
 
     Args:
         papers: List of Paper objects
@@ -37,21 +37,21 @@ def format_papers_for_prompt(papers: list[Paper]) -> str:
         <paper id=0><date>2024-01-15</date><title>...</title><abstract>...</abstract></paper>
         <paper id=1><date>2024-02-20</date><title>...</title><abstract>...</abstract></paper>
 
-    Note: Uses sequential indices (0, 1, 2...) to avoid LLM transcription errors with
-    similar-looking 8-digit PMIDs. Caller maps indices back to PMIDs.
+    Uses sequential indices (0, 1, 2...) to avoid LLM transcription errors with
+    long identifiers. Caller maps indices back to papers.
     """
     lines = []
     for idx, paper in enumerate(papers):
         title = paper.title
         abstract = paper.abstract or ""
-        entrez_date = paper.entrez_date
+        source_date = paper.source_date
 
         # Truncate abstract if too long
         if abstract and len(abstract) > 1000:
             abstract = abstract[:1000] + "..."
 
         lines.append(
-            f"<paper id={idx}><date>{entrez_date}</date><title>{title}</title><abstract>{abstract}</abstract></paper>"
+            f"<paper id={idx}><date>{source_date}</date><title>{title}</title><abstract>{abstract}</abstract></paper>"
         )
 
     return "\n".join(lines)

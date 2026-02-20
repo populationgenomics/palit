@@ -57,6 +57,92 @@ _PROTEIN_LETTERS_1TO3 = {
     "Y": "Tyr",
 }
 
+# Chromosome → NC_ accession mapping per genome build.
+_CHR_TO_NC: dict[str, dict[str, str]] = {
+    "GRCh37": {
+        "chr1": "NC_000001.10",
+        "chr2": "NC_000002.11",
+        "chr3": "NC_000003.11",
+        "chr4": "NC_000004.11",
+        "chr5": "NC_000005.9",
+        "chr6": "NC_000006.11",
+        "chr7": "NC_000007.13",
+        "chr8": "NC_000008.10",
+        "chr9": "NC_000009.11",
+        "chr10": "NC_000010.10",
+        "chr11": "NC_000011.9",
+        "chr12": "NC_000012.11",
+        "chr13": "NC_000013.10",
+        "chr14": "NC_000014.8",
+        "chr15": "NC_000015.9",
+        "chr16": "NC_000016.9",
+        "chr17": "NC_000017.10",
+        "chr18": "NC_000018.9",
+        "chr19": "NC_000019.9",
+        "chr20": "NC_000020.10",
+        "chr21": "NC_000021.8",
+        "chr22": "NC_000022.10",
+        "chrX": "NC_000023.10",
+        "chrY": "NC_000024.9",
+    },
+    "GRCh38": {
+        "chr1": "NC_000001.11",
+        "chr2": "NC_000002.12",
+        "chr3": "NC_000003.12",
+        "chr4": "NC_000004.12",
+        "chr5": "NC_000005.10",
+        "chr6": "NC_000006.12",
+        "chr7": "NC_000007.14",
+        "chr8": "NC_000008.11",
+        "chr9": "NC_000009.12",
+        "chr10": "NC_000010.11",
+        "chr11": "NC_000011.10",
+        "chr12": "NC_000012.12",
+        "chr13": "NC_000013.11",
+        "chr14": "NC_000014.9",
+        "chr15": "NC_000015.10",
+        "chr16": "NC_000016.10",
+        "chr17": "NC_000017.11",
+        "chr18": "NC_000018.10",
+        "chr19": "NC_000019.10",
+        "chr20": "NC_000020.11",
+        "chr21": "NC_000021.9",
+        "chr22": "NC_000022.11",
+        "chrX": "NC_000023.11",
+        "chrY": "NC_000024.10",
+    },
+}
+
+_BUILD_ALIASES: dict[str, str] = {"hg19": "GRCh37", "hg38": "GRCh38"}
+
+
+def _chr_to_nc_accession(chr_refseq: str, genome_build: str | None) -> str:
+    """Resolve a chromosome designation (e.g. 'chr7') to an NC_ accession using genome build."""
+    if not genome_build:
+        raise ValueError(
+            f"Chromosome-style refseq '{chr_refseq}' requires a genome build, but none was provided"
+        )
+    normalized_build = _BUILD_ALIASES.get(genome_build, genome_build)
+    build_map = _CHR_TO_NC.get(normalized_build)
+    if not build_map:
+        raise ValueError(
+            f"Unknown genome build '{genome_build}' for chromosome refseq '{chr_refseq}'"
+        )
+    # Normalize chrX/chrY/chr1 etc. — strip anything after the chromosome number/letter
+    chr_key = re.match(r"(chr[\dXY]+)", chr_refseq, re.IGNORECASE)
+    if not chr_key:
+        raise ValueError(f"Cannot parse chromosome from refseq '{chr_refseq}'")
+    nc = build_map.get(chr_key.group(1).lower().replace("chr", "chr"))
+    # Try case-insensitive lookup
+    if not nc:
+        for k, v in build_map.items():
+            if k.lower() == chr_key.group(1).lower():
+                nc = v
+                break
+    if not nc:
+        raise ValueError(f"Unknown chromosome '{chr_key.group(1)}' for build '{normalized_build}'")
+    return nc
+
 
 @dataclass(frozen=True)
 class HGVSVariant:
@@ -122,14 +208,21 @@ class VariantNormalizer:
                 lookup_key = "mitochondrial_variant_1"
             entry = response.get(lookup_key)
 
-            # VariantValidator returns results keyed by transcript only, even when we send
-            # a genomic-wrapped format like NC_000007.14(NM_003592.3):c.483+1G>A.
-            # Try the transcript-only key as fallback.
+            # VariantValidator returns results keyed by transcript, not by the submitted
+            # variant description. Try known fallback patterns.
             if entry is None and "(" in hgvs_variant.refseq:
+                # Genomic-wrapped format: NC_000007.14(NM_003592.3):c.483+1G>A
                 transcript = hgvs_variant.refseq.split("(")[1].rstrip(")")
                 transcript_key = f"{transcript}:{hgvs_variant.hgvs_desc}"
-                entry = response.get(transcript_key, {})
-            elif entry is None:
+                entry = response.get(transcript_key)
+            if entry is None:
+                # Genomic g. variants: response is keyed by the transcript variant
+                # (e.g. NM_xxx:c.xxx). Find the first NM_ key.
+                for key in response:
+                    if key.startswith("NM_"):
+                        entry = response[key]
+                        break
+            if entry is None:
                 entry = {}
 
             vcf = entry.get("primary_assembly_loci", {}).get("grch38", {}).get("vcf")
@@ -204,10 +297,11 @@ class VariantNormalizer:
         if not re.search(r"[A-Za-z]", variant_str):
             raise ValueError(f"Variant string '{variant_str}' appears unparsable.")
 
-        # If the refseq looks like a chromosome designation, we've got to figure out the corresponding refseq, which
-        # will depend on the genome build.
-        if refseq and refseq.find("chr") >= 0:
-            refseq = f"{genome_build}({refseq})"
+        # If the refseq looks like a chromosome designation, resolve to the actual NC_ accession.
+        is_chromosomal = refseq is not None and "chr" in refseq
+        if is_chromosomal:
+            assert refseq is not None
+            refseq = _chr_to_nc_accession(refseq, genome_build)
         # Otherwise, it should begin with NM_, NP_, or NC_, otherwise we'll ignore it.
         elif refseq and not re.match(r"(NM_|NP_|NC_)", refseq):
             logger.debug(f"Ignoring potentially invalid refseq: {refseq}")
@@ -228,14 +322,15 @@ class VariantNormalizer:
         if re.search(r"^[A-Za-z]+\d+[A-Za-z]+$", variant_str):
             variant_str = "p." + variant_str
 
-        # Occassionally, coding level descriptions do not include the c. prefix, add it if it's missing.
-        # This will only currently handle fairly simple coding level descriptions.
+        # Occassionally, coding/genomic level descriptions do not include the c./g. prefix.
+        # Use g. for chromosomal refseqs, c. for transcript refseqs.
+        bare_prefix = "g." if is_chromosomal else "c."
         if re.search(r"^\d+[ACGT]>[ACGT]$", variant_str):
-            variant_str = "c." + variant_str
+            variant_str = bare_prefix + variant_str
         if re.search(r"^\d+(_\d+)?del[ACGT]*$", variant_str):
-            variant_str = "c." + variant_str
+            variant_str = bare_prefix + variant_str
         if re.search(r"^\d+ins[ACGT]*$", variant_str):
-            variant_str = "c." + variant_str
+            variant_str = bare_prefix + variant_str
 
         # Single-letter protein level descriptions should use * for a stop codon, not X or stop.
         variant_str = re.sub(r"(p\.[A-Z]\d+)X", r"\1*", variant_str)
@@ -793,8 +888,8 @@ class _MutalyzerClient:
             response = self._web_client.get(url, content_type="json")
         except (HTTPError, RetryError) as e:
             logger.debug(f"{url} returned an error: {e}")
-            if isinstance(e, HTTPError) and e.response.status_code == 500:
-                return {"error_message": "Mutalyzer system error"}
+            if isinstance(e, HTTPError) and e.response.status_code in (422, 500):
+                return {"error_message": f"Mutalyzer error ({e.response.status_code})"}
             elif isinstance(e, RetryError) and "500 error" in str(e):
                 return {"error_message": "Mutalyzer system error"}
             else:

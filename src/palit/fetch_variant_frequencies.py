@@ -36,6 +36,7 @@ class ExtractedVariant:
     hgnc_id: int
     hgnc_symbol: str  # Current HGNC symbol, needed for variant normalizer
     variant_text: str
+    genome_build: str | None  # From evidence extraction (e.g. "GRCh38"), None if unknown
     box_id: int
 
 
@@ -93,6 +94,10 @@ def load_extracted_variants(
                 logger.warning(f"Failed to parse evidence extraction for PMID {pmid}")
                 continue
 
+            genome_build: str | None = extraction_data.get("genome_build")
+            if genome_build == "unknown":
+                genome_build = None
+
             # Extract variants from each gene evaluation (only resolved ones with hgnc_id)
             gene_evaluations = extraction_data.get("gene_evaluations", [])
 
@@ -118,6 +123,7 @@ def load_extracted_variants(
                                 hgnc_id=hgnc_id,
                                 hgnc_symbol=hgnc_symbol,
                                 variant_text=variant_text,
+                                genome_build=genome_build,
                                 box_id=box_id,
                             )
                         )
@@ -221,6 +227,7 @@ def process_variants_for_pmid(
         hgnc_id = variant.hgnc_id
         hgnc_symbol = variant.hgnc_symbol
         variant_text = variant.variant_text
+        genome_build = variant.genome_build
         box_id = variant.box_id
 
         try:
@@ -229,7 +236,7 @@ def process_variants_for_pmid(
                 f"Normalizing variant '{variant_text}' for gene {hgnc_symbol} from PMID {pmid}"
             )
 
-            hgvs_variant = variant_normalizer.hgvs(variant_text, hgnc_symbol, None)
+            hgvs_variant = variant_normalizer.hgvs(variant_text, hgnc_symbol, genome_build)
             p_vcfs = variant_normalizer.pseudo_vcf(hgvs_variant)
 
             if not p_vcfs:

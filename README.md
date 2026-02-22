@@ -52,7 +52,7 @@ for i in 0 1; do sbatch -p GPU-H100 --gpus=1 -t 24:00:00 -J "assess-relevance-sh
 # 3. Download full-text papers (automated PMC + manual fallback)
 uv run palit download-papers attempt-pmc
 uv run palit download-papers open-browser
-# ... manually download PDFs to data/papers with PMID.pdf naming ...
+# ... manually download PDFs to data/papers/ ...
 uv run palit docling convert
 uv run palit download-papers register
 
@@ -71,7 +71,7 @@ uv run palit expand-literature --cutoff-date $PANEL_DATE
 # 7. Download expansion papers (same workflow as step 3)
 uv run palit download-papers attempt-pmc
 uv run palit download-papers open-browser --expansion-only
-# ... manually download PDFs to data/papers with PMID.pdf naming ...
+# ... manually download PDFs to data/papers/ ...
 uv run palit docling convert
 uv run palit download-papers register
 
@@ -235,22 +235,22 @@ uv run palit assess-relevance \
 uv run palit reduce-literature --db-path data/$PANEL_NAME.sqlite
 
 # 4. Download full-text papers (now reduced set if step 3 was run)
-uv run palit download-papers attempt-pmc --db-path data/$PANEL_NAME.sqlite --target-dir data/papers_$PANEL_NAME
-uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite --target-dir data/papers_$PANEL_NAME
+uv run palit download-papers attempt-pmc --db-path data/$PANEL_NAME.sqlite
+uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite
 # ... manually download PDFs ...
-uv run palit docling convert --db-path data/$PANEL_NAME.sqlite --papers-dir data/papers_$PANEL_NAME
-uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite --target-dir data/papers_$PANEL_NAME
+uv run palit docling convert --db-path data/$PANEL_NAME.sqlite
+uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 
 # 5. Extract evidence and assess genes (panel-scoped)
-uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --papers-dir data/papers_$PANEL_NAME --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
+uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID --scope-panel-id $PANEL_ID
 
 # 6. Generate report package with panel-scoped novelty detection
-uv run palit annotate-pdfs --db-path data/$PANEL_NAME.sqlite --papers-dir data/papers_$PANEL_NAME --output-dir data/papers_$PANEL_NAME/annotated
+uv run palit annotate-pdfs --db-path data/$PANEL_NAME.sqlite --output-dir data/annotated_$PANEL_NAME
 uv run palit generate-report \
   --report-id panel_$PANEL_NAME \
   --db-path data/$PANEL_NAME.sqlite \
   --panel-date $PANEL_DATE \
   --target-panel-ids $PANEL_ID \
-  --annotated-dir data/papers_$PANEL_NAME/annotated
+  --annotated-dir data/annotated_$PANEL_NAME
 ```

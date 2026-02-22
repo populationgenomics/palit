@@ -4,7 +4,6 @@
 import json
 import logging
 import os
-import shutil
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -1650,14 +1649,13 @@ def main(
     index_file = output_dir / "index.html"
     index_file.write_text(html_content)
 
-    # Create annotated directory
-    annotated_output = output_dir / "annotated"
-    annotated_output.mkdir(exist_ok=True)
+    # Symlink annotated PDFs directory into report (resolved at S3 upload time)
+    annotated_link = output_dir / "annotated"
+    os.symlink(annotated_dir.resolve(), annotated_link)
 
-    # Collect all needed PDFs from assessments
-    aggregate_pdfs: set[tuple[int, str]] = set()  # (hgnc_id, doi) tuples
-    individual_pdfs: set[str] = set()  # doi values
-
+    # Validate that expected annotated PDFs exist
+    missing = []
+    found = 0
     all_genes = results.novel_genes + results.known_genes
 
     with sqlite3.connect(db_path) as conn:
@@ -1665,76 +1663,63 @@ def main(
         cursor = conn.cursor()
 
         for assessment in all_genes:
-            # 1. Evidence criteria citations (PANELAPP_CRITERIA)
             for criterion_name in PANELAPP_CRITERIA:
                 criterion = assessment.assessment_json[criterion_name]
                 for citation in criterion.get("citations", []):
-                    aggregate_pdfs.add((assessment.hgnc_id, citation["doi"]))
+                    path = doi_to_path(
+                        citation["doi"],
+                        annotated_dir / str(assessment.hgnc_id),
+                        ".pdf",
+                    )
+                    if path.exists():
+                        found += 1
+                    else:
+                        missing.append(str(path))
 
-            # 2. Disease entity citations
             for disease_entity in assessment.assessment_json.get("disease_entities", []):
                 for citation in disease_entity.get("citations", []):
-                    aggregate_pdfs.add((assessment.hgnc_id, citation["doi"]))
+                    path = doi_to_path(
+                        citation["doi"],
+                        annotated_dir / str(assessment.hgnc_id),
+                        ".pdf",
+                    )
+                    if path.exists():
+                        found += 1
+                    else:
+                        missing.append(str(path))
 
-            # 3. Variant frequency papers (all papers with variants for this gene)
             cursor.execute(
-                """
-                SELECT DISTINCT paper_doi
-                FROM variant_frequencies
-                WHERE hgnc_id = ?
-            """,
+                "SELECT DISTINCT paper_doi FROM variant_frequencies WHERE hgnc_id = ?",
                 (assessment.hgnc_id,),
             )
             for row in cursor.fetchall():
-                aggregate_pdfs.add((assessment.hgnc_id, row["paper_doi"]))
+                path = doi_to_path(
+                    row["paper_doi"],
+                    annotated_dir / str(assessment.hgnc_id),
+                    ".pdf",
+                )
+                if path.exists():
+                    found += 1
+                else:
+                    missing.append(str(path))
 
-            # Collect individual PDF needs (from contributing papers)
             for paper in assessment.contributing_papers:
-                individual_pdfs.add(paper.doi)
-
-    # Copy aggregate PDFs maintaining gene hierarchy
-    copied = 0
-    missing = []
-
-    for hgnc_id, doi in aggregate_pdfs:
-        hgnc_id_str = str(hgnc_id)
-        gene_dir = annotated_dir / hgnc_id_str
-        source_path = doi_to_path(doi, gene_dir, ".pdf")
-        dest_gene_dir = annotated_output / hgnc_id_str
-        dest_path = doi_to_path(doi, dest_gene_dir, ".pdf")
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if source_path.exists():
-            shutil.copy2(source_path, dest_path)
-            copied += 1
-        else:
-            missing.append(f"aggregate: {source_path}")
-
-    # Copy individual PDFs
-    individual_source = annotated_dir / "individual"
-    individual_dest = annotated_output / "individual"
-
-    for doi in individual_pdfs:
-        source_path = doi_to_path(doi, individual_source, ".pdf")
-        dest_path = doi_to_path(doi, individual_dest, ".pdf")
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if source_path.exists():
-            shutil.copy2(source_path, dest_path)
-            copied += 1
-        else:
-            missing.append(f"individual: {source_path}")
+                path = doi_to_path(paper.doi, annotated_dir / "individual", ".pdf")
+                if path.exists():
+                    found += 1
+                else:
+                    missing.append(str(path))
 
     if missing:
         logger.warning(f"Missing {len(missing)} annotated PDFs:")
-        for path in missing[:5]:
-            logger.warning(f"  {path}")
+        for missing_path in missing[:5]:
+            logger.warning(f"  {missing_path}")
         if len(missing) > 5:
             logger.warning(f"  ... and {len(missing) - 5} more")
 
-    logger.info("✅ Package created successfully!")
+    logger.info("Package created successfully!")
     logger.info(f"   Output: {output_dir}")
-    logger.info(f"   Contents: 1 HTML report + {copied} annotated PDFs")
+    logger.info(f"   Contents: 1 HTML report + {found} annotated PDFs (symlinked)")
 
 
 if __name__ == "__main__":

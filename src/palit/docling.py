@@ -4,6 +4,7 @@
 import json
 import logging
 import re
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -24,6 +25,8 @@ from docling_core.types.doc import DoclingDocument, PictureItem, TableItem, Text
 from pydantic import Field
 from rich.console import Console
 from rich.progress import Progress
+
+from palit.papers import doi_to_path
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +214,10 @@ def convert_pdfs(
     papers_dir: Path = typer.Option(
         default=Path("data/papers"), help="Directory containing PDF files"
     ),
+    db_path: Path = typer.Option(
+        default=Path("data/db.sqlite"),
+        help="Database path (used to find papers needing conversion)",
+    ),
     force: bool = typer.Option(
         False, "--force", "-f", help="Re-convert PDFs even if JSON already exists"
     ),
@@ -221,16 +228,24 @@ def convert_pdfs(
         console.print(f"[red]Directory not found: {papers_dir}[/red]")
         raise typer.Exit(1)
 
-    pdf_files = list(papers_dir.rglob("*.pdf"))
-
-    if not pdf_files:
-        console.print(f"[red]No PDF files found in {papers_dir}[/red]")
+    if not db_path.exists():
+        console.print(f"[red]Database not found: {db_path}[/red]")
         raise typer.Exit(1)
 
-    # Filter PDFs that need conversion
+    # Query DB for papers that have been downloaded
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT doi FROM papers WHERE download_status = 'downloaded'"
+        ).fetchall()
+
+    # Filter to PDFs that exist and need conversion
     pdfs_to_convert = []
-    for pdf_path in pdf_files:
-        json_path = pdf_path.with_suffix(".json")
+    for row in rows:
+        pdf_path = doi_to_path(row["doi"], papers_dir, ".pdf")
+        if not pdf_path.exists():
+            continue
+        json_path = doi_to_path(row["doi"], papers_dir, ".json")
         if force or not json_path.exists():
             pdfs_to_convert.append(pdf_path)
 

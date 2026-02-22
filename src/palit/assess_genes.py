@@ -41,47 +41,39 @@ def build_mondo_name_to_id(candidates: list[MondoCandidate]) -> dict[str, str]:
     return name_to_id
 
 
-def _replace_citation_paper_id(
-    citation: dict[str, Any], paper_id_to_doi: dict[str, str], unknown_ids: list[str]
-) -> None:
-    """Replace paper_id with doi in a single citation dict. Mutates in place."""
-    paper_id = citation.pop("paper_id")
+def _resolve_paper_id(paper_id: str, paper_id_to_doi: dict[str, str]) -> str:
+    """Look up DOI for a paper_id. Raises ValueError if unknown."""
     doi = paper_id_to_doi.get(paper_id)
-    if doi:
-        citation["doi"] = doi
-    else:
-        unknown_ids.append(paper_id)
+    if doi is None:
+        raise ValueError(f"Unknown paper_id: {paper_id}")
+    return doi
 
 
 def replace_paper_ids_with_dois(
     parsed_json: dict[str, Any], paper_id_to_doi: dict[str, str]
-) -> list[str]:
+) -> None:
     """Replace all paper_id fields with doi fields in parsed LLM output.
 
-    Mutates parsed_json in place. Returns list of unknown paper_ids (empty = success).
-    Non-empty means the LLM hallucinated paper IDs — caller should retry.
+    Mutates parsed_json in place. Raises ValueError on the first unknown paper_id
+    (LLM hallucination — caller should retry).
     """
-    unknown_ids: list[str] = []
-
     # disease_entities[].citations[]
     for entity in parsed_json.get("disease_entities", []):
         for citation in entity.get("citations", []):
-            _replace_citation_paper_id(citation, paper_id_to_doi, unknown_ids)
+            citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
 
     # criterion_A through criterion_E citations
     for criterion in ("criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"):
         for citation in parsed_json.get(criterion, {}).get("citations", []):
-            _replace_citation_paper_id(citation, paper_id_to_doi, unknown_ids)
+            citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
 
     # quality_concerns[].paper_ids list + citations[]
     for concern in parsed_json.get("quality_concerns", []):
         paper_ids_list = concern.pop("paper_ids", None)
         if paper_ids_list is not None:
-            concern["dois"] = [paper_id_to_doi.get(pid, pid) for pid in paper_ids_list]
+            concern["dois"] = [_resolve_paper_id(pid, paper_id_to_doi) for pid in paper_ids_list]
         for citation in concern.get("citations", []):
-            _replace_citation_paper_id(citation, paper_id_to_doi, unknown_ids)
-
-    return unknown_ids
+            citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
 
 
 def resolve_mondo_names(parsed_json: dict[str, Any], name_to_id: dict[str, str]) -> list[str]:
@@ -280,19 +272,17 @@ class PaperBatchProcessor:
     def update_gene_assessment(
         self,
         hgnc_id: int,
-        assessment_data: tuple[str, dict[str, Any] | None],
+        assessment_data: tuple[str, dict[str, Any]],
+        paper_id_to_doi: dict[str, str],
     ) -> None:
         """Store aggregate assessment result in gene_assessments table.
 
         Args:
             hgnc_id: HGNC ID of the gene
             assessment_data: Tuple of (raw_response, parsed_json)
+            paper_id_to_doi: Mapping of AuthorYear paper IDs to DOIs used for this assessment
         """
         raw_response, json_data = assessment_data
-
-        if not json_data:
-            logger.warning(f"No valid JSON data for HGNC:{hgnc_id}")
-            return
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -301,10 +291,10 @@ class PaperBatchProcessor:
                 cursor.execute(
                     """
                     INSERT OR REPLACE INTO gene_assessments
-                    (hgnc_id, assessment_raw, assessment_json)
-                    VALUES (?, ?, ?)
+                    (hgnc_id, assessment_raw, assessment_json, paper_id_mapping)
+                    VALUES (?, ?, ?, ?)
                 """,
-                    (hgnc_id, raw_response, json.dumps(json_data)),
+                    (hgnc_id, raw_response, json.dumps(json_data), json.dumps(paper_id_to_doi)),
                 )
 
                 conn.commit()
@@ -712,32 +702,33 @@ def main(
                 # Validate and update database
                 if results and results[0] is not None:
                     result = results[0]
-                    # Map paper_id → doi in LLM output
-                    unknown_paper_ids = replace_paper_ids_with_dois(
-                        result.parsed_json, paper_id_to_doi
-                    )
-                    if unknown_paper_ids:
-                        logger.warning(f"Unknown paper IDs for {hgnc_symbol}: {unknown_paper_ids}")
+                    try:
+                        replace_paper_ids_with_dois(result.parsed_json, paper_id_to_doi)
+                    except ValueError:
+                        logger.warning(f"LLM hallucinated paper ID for {hgnc_symbol}, retrying")
                         failed_genes.append(hgnc_id)
+                        continue
                     # Validate (doi, box_id) pairs against database
-                    elif not validate_box_ids_with_doi(
+                    if not validate_box_ids_with_doi(
                         result.parsed_json,
                         fetch_valid_box_ids_by_doi(db_path, evidence_list),
                     ):
                         logger.warning(f"Invalid (doi, box_id) pairs for {hgnc_symbol}")
                         failed_genes.append(hgnc_id)
-                    # Resolve mondo_disease_name → mondo_id + mondo_label
-                    elif unresolved := resolve_mondo_names(result.parsed_json, mondo_name_to_id):
+                        continue
+                    if unresolved := resolve_mondo_names(result.parsed_json, mondo_name_to_id):
                         logger.warning(
                             f"Unresolved MONDO disease names for {hgnc_symbol}: {unresolved}"
                         )
                         failed_genes.append(hgnc_id)
-                    else:
-                        db_processor.update_gene_assessment(
-                            hgnc_id, (result.raw_response, result.parsed_json)
-                        )
-                        pass_processed += 1
-                        pbar.update(1)
+                        continue
+                    db_processor.update_gene_assessment(
+                        hgnc_id,
+                        (result.raw_response, result.parsed_json),
+                        paper_id_to_doi,
+                    )
+                    pass_processed += 1
+                    pbar.update(1)
                 else:
                     logger.warning(f"Failed to process aggregate assessment for {hgnc_symbol}")
                     failed_genes.append(hgnc_id)

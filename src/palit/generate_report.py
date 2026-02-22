@@ -32,7 +32,7 @@ from palit.panelapp_integration import (
     panelapp_confidence_to_color,
     prepare_prefill_data,
 )
-from palit.papers import doi_to_path, generate_paper_ids, is_preprint
+from palit.papers import doi_to_path, is_preprint
 from palit.relevance import compute_relevance_majority_vote
 
 logger = logging.getLogger(__name__)
@@ -576,6 +576,7 @@ def load_gene_assessments(
             SELECT
                 hgnc_id,
                 assessment_json,
+                paper_id_mapping,
                 matched_panels_json
             FROM gene_assessments
             ORDER BY hgnc_id
@@ -584,6 +585,8 @@ def load_gene_assessments(
         for row in cursor.fetchall():
             hgnc_id: int = row["hgnc_id"]
             assessment_json = json.loads(row["assessment_json"])
+            paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
+            doi_to_paper_id = {doi: pid for pid, doi in paper_id_to_doi.items()}
             matched_panels = json.loads(row["matched_panels_json"] or "[]")
 
             # Calculate rating from assessment
@@ -727,17 +730,7 @@ def load_gene_assessments(
                 )
                 contributing_papers.append(detailed_paper)
 
-            # Compute AuthorYear paper IDs for this gene's contributing papers
-            _, doi_to_paper_id = generate_paper_ids(
-                [
-                    {
-                        "doi": p.doi,
-                        "authors": p.authors or "",
-                        "date": p.source_date or "",
-                    }
-                    for p in contributing_papers
-                ]
-            )
+            # Assign AuthorYear paper IDs from stored mapping
             for paper in contributing_papers:
                 paper.paper_id = doi_to_paper_id[paper.doi]
 

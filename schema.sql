@@ -94,6 +94,7 @@ CREATE TABLE gene_assessments (
     hgnc_id INTEGER PRIMARY KEY,
     assessment_raw TEXT,   -- Raw LLM response including reasoning
     assessment_json JSON,  -- Contains full aggregate assessment
+    paper_id_mapping JSON NOT NULL,  -- {AuthorYear: DOI} mapping used during assessment
     matched_panels_raw TEXT,  -- Raw LLM response for panel matching including reasoning
     matched_panels_json JSON    -- Array: [{"panel_id": 137, "rationale": "..."}, ...]
 );

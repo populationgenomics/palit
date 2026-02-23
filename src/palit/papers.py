@@ -77,25 +77,22 @@ def is_preprint(journal: str | None, pmid: int | None) -> bool:
 
 
 def _extract_first_author_last_name(authors: str) -> str:
-    """Extract first author's last name from PubMed-style authors string.
+    """Extract first author's last name from authors string.
 
-    Handles formats like "Smith JA, Doe B, ..." -> "Smith"
-    and "van der Berg A, Doe B, ..." -> "vanderBerg".
+    Authors are semicolon-separated in "Last, First" format:
+    "Smith, John A; Doe, Jane B; ..." -> "Smith"
+    "van der Berg, Anna; Doe, Jane; ..." -> "VanderBerg"
     """
     if not authors:
         return "Unknown"
-    first_author = authors.split(",")[0].strip()
-    parts = first_author.split()
-    # Collect name parts before the initials (single uppercase letters)
-    name_parts = []
-    for part in parts:
-        if len(part) <= 2 and part.isupper():
-            break
-        name_parts.append(part)
-    if not name_parts:
+    first_author = authors.split(";")[0].strip()
+    # Take everything before the comma (the last name portion)
+    last_name = first_author.split(",")[0].strip()
+    if not last_name:
         return "Unknown"
+    parts = last_name.split()
     # Join multi-word last names, capitalize each part, remove non-alpha
-    return "".join(re.sub(r"[^A-Za-z]", "", p).capitalize() for p in name_parts)
+    return "".join(re.sub(r"[^A-Za-z]", "", p).capitalize() for p in parts)
 
 
 def generate_paper_ids(

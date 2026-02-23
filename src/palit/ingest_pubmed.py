@@ -64,10 +64,10 @@ def extract_authors(article_elem: etree._Element) -> str:
         first_name_elem = author.find("ForeName")
 
         if last_name_elem is not None and last_name_elem.text:
-            name_parts = [last_name_elem.text]
             if first_name_elem is not None and first_name_elem.text:
-                name_parts.append(first_name_elem.text)
-            authors.append(" ".join(name_parts))
+                authors.append(f"{last_name_elem.text}, {first_name_elem.text}")
+            else:
+                authors.append(last_name_elem.text)
 
     return "; ".join(authors)
 

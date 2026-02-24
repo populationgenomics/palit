@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 
 class SkipReason(enum.Enum):
@@ -19,10 +20,17 @@ class SkipReason(enum.Enum):
 def doi_to_path(doi: str, base_dir: Path, suffix: str = ".pdf") -> Path:
     """Convert a DOI to a filesystem path.
 
-    The single slash in a DOI (e.g. '10.1234/xyz') creates natural two-level nesting:
-      base_dir/10.1234/xyz.pdf
+    The DOI is percent-encoded so special characters (parentheses, angle
+    brackets, semicolons, slashes) don't interfere with filesystem paths.
+
+    Examples:
+        doi_to_path('10.1038/s41586-020-2308-7', base, '.pdf')
+          → base / '10.1038%2Fs41586-020-2308-7.pdf'
+
+        doi_to_path('10.1002/(SICI)1098-1004(200001)15:1<121::AID-HUMU37>3.0.CO;2-U', base, '.pdf')
+          → base / '10.1002%2F%28SICI%291098-1004%28200001%2915%3A1%3C121%3A%3AAID-HUMU37%3E3.0.CO%3B2-U.pdf'
     """
-    return base_dir / f"{doi}{suffix}"
+    return base_dir / f"{quote(doi, safe='')}{suffix}"
 
 
 @dataclass

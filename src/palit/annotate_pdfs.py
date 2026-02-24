@@ -446,7 +446,7 @@ def main(
 ) -> None:
     """Create gene-centric annotated PDFs with simple directory structure.
 
-    Creates annotated PDFs in structure: {output_dir}/{hgnc_id}/{doi}.pdf
+    Creates annotated PDFs in structure: {output_dir}/{hgnc_id}/{encoded_doi}.pdf
     Each PDF contains highlights relevant to the specific gene.
     """
 

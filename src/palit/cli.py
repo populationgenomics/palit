@@ -14,6 +14,7 @@ from palit import (
     download_papers,
     fetch_variant_frequencies,
     generate_report,
+    ingest_preprints,
     ingest_pubmed,
     normalize_variants,
 )
@@ -42,6 +43,7 @@ def main(
 
 # Register always-available commands
 app.add_typer(ingest_pubmed.app, name="ingest-pubmed")
+app.add_typer(ingest_preprints.app, name="ingest-preprints")
 app.add_typer(discover_citations.app, name="discover-citations")
 app.add_typer(normalize_variants.app, name="normalize-variants")
 app.add_typer(fetch_variant_frequencies.app, name="fetch-variant-frequencies")

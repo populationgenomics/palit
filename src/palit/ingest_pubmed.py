@@ -527,18 +527,10 @@ def main(
             raise typer.Exit(1)
 
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            subprocess.run(
-                ["sqlite3", str(db_path)],
-                stdin=open(schema_file),
-                capture_output=True,
-                check=True,
-                text=True,
-            )
-            console.print(f"[green]✓[/green] Created database at {db_path}")
-        except subprocess.CalledProcessError as e:
-            console.print(f"[red]Failed to create database: {e.stderr}[/red]")
-            raise typer.Exit(1) from e
+        conn = sqlite3.connect(db_path)
+        conn.executescript(schema_file.read_text())
+        conn.close()
+        console.print(f"[green]✓[/green] Created database at {db_path}")
 
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)

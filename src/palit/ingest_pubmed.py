@@ -3,7 +3,6 @@
 
 import gzip
 import io
-import json
 import logging
 import sqlite3
 import subprocess
@@ -18,7 +17,7 @@ from lxml import etree
 from rich.console import Console
 from rich.progress import Progress
 
-from palit.papers import Paper, SkipReason
+from palit.papers import Paper, PubmedMetadata, SkipReason, serialize_source_metadata
 
 console = Console()
 app = typer.Typer(help="Download and ingest PubMed papers")
@@ -150,14 +149,8 @@ def extract_paper(
     authors = extract_authors(article_elem)
     journal = extract_journal(article_elem)
 
-    # Extract PMID and build source_metadata for remaining IDs
     pmid_str = article_ids.get("pubmed")
     pmid = int(pmid_str) if pmid_str else None
-
-    source_metadata: dict[str, object] = {}
-    pmcid = article_ids.get("pmc")
-    if pmcid:
-        source_metadata["pmcid"] = pmcid
 
     return Paper(
         doi=doi,
@@ -168,7 +161,7 @@ def extract_paper(
         journal=journal,
         source="pubmed",
         source_date=source_date,
-        source_metadata=source_metadata,
+        source_metadata=PubmedMetadata(pmcid=article_ids.get("pmc")),
         source_type=source_type,
         source_details=source_details,
     )
@@ -305,7 +298,7 @@ def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: 
                         p.journal,
                         p.source,
                         p.source_date,
-                        json.dumps(p.source_metadata),
+                        serialize_source_metadata(p.source_metadata),
                         p.source_type,
                         p.source_details,
                     )

@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
 from palit.llm import HarmonyBatchProcessor
-from palit.papers import Paper
+from palit.papers import Paper, deserialize_source_metadata, serialize_source_metadata
 from palit.tournament import TournamentOutcome, run_tournament_selection
 
 app = typer.Typer(help="Tournament-based literature expansion using hierarchical LLM filtering")
@@ -52,7 +52,6 @@ def get_papers_for_gene(
 
         papers = []
         for row in cursor.fetchall():
-            source_metadata = json.loads(row["source_metadata"]) if row["source_metadata"] else {}
             papers.append(
                 Paper(
                     doi=row["doi"],
@@ -63,7 +62,9 @@ def get_papers_for_gene(
                     journal=row["journal"],
                     source=row["source"],
                     source_date=row["source_date"],
-                    source_metadata=source_metadata,
+                    source_metadata=deserialize_source_metadata(
+                        row["source"], row["source_metadata"]
+                    ),
                     source_type="expansion",
                     source_details=str(hgnc_id),
                 )
@@ -115,7 +116,7 @@ def store_expansion_papers(db_path: Path, papers: list[Paper], gene_symbol: str)
                     paper.journal,
                     paper.source,
                     paper.source_date,
-                    json.dumps(paper.source_metadata),
+                    serialize_source_metadata(paper.source_metadata),
                     paper.source_type,
                     paper.source_details,
                 ),

@@ -1,8 +1,9 @@
 """Shared paper data model and utilities."""
 
 import enum
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -34,6 +35,53 @@ def doi_to_path(doi: str, base_dir: Path, suffix: str = ".pdf") -> Path:
 
 
 @dataclass
+class PubmedMetadata:
+    """Source metadata for PubMed papers."""
+
+    pmcid: str | None = None
+
+
+@dataclass
+class RxivMetadata:
+    """Source metadata for bioRxiv/medRxiv papers."""
+
+    version: int
+    category: str
+    license: str | None = None
+    jatsxml_url: str | None = None
+    published_doi: str | None = None
+
+
+@dataclass
+class ResearchSquareMetadata:
+    """Source metadata for Research Square papers."""
+
+    version: int
+    versioned_doi: str
+
+
+SourceMetadata = PubmedMetadata | RxivMetadata | ResearchSquareMetadata
+
+
+def serialize_source_metadata(metadata: SourceMetadata) -> str:
+    """Serialize source metadata to JSON string for DB storage."""
+    return json.dumps({k: v for k, v in asdict(metadata).items() if v is not None})
+
+
+def deserialize_source_metadata(source: str, json_str: str | None) -> SourceMetadata:
+    """Deserialize source metadata from DB JSON string."""
+    data = json.loads(json_str) if json_str else {}
+    if source in ("biorxiv", "medrxiv"):
+        return RxivMetadata(**data)
+    elif source == "researchsquare":
+        return ResearchSquareMetadata(**data)
+    elif source == "pubmed":
+        return PubmedMetadata(**data)
+    else:
+        raise ValueError(f"Unknown source: {source}")
+
+
+@dataclass
 class Paper:
     """Paper metadata extracted from a bibliographic source."""
 
@@ -45,7 +93,7 @@ class Paper:
     journal: str
     source: str
     source_date: str
-    source_metadata: dict[str, object]
+    source_metadata: SourceMetadata
     source_type: str
     source_details: str
 

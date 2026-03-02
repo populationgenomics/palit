@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
 from palit.llm import HarmonyBatchProcessor
-from palit.papers import Paper
+from palit.papers import Paper, deserialize_source_metadata
 from palit.tournament import TournamentOutcome, run_tournament_selection
 
 app = typer.Typer(help="Reduce literature using tournament selection to minimize manual downloads")
@@ -48,7 +48,6 @@ def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
 
         papers = []
         for row in cursor.fetchall():
-            source_metadata = json.loads(row["source_metadata"]) if row["source_metadata"] else {}
             papers.append(
                 Paper(
                     doi=row["doi"],
@@ -59,7 +58,9 @@ def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
                     journal=row["journal"],
                     source=row["source"],
                     source_date=row["source_date"],
-                    source_metadata=source_metadata,
+                    source_metadata=deserialize_source_metadata(
+                        row["source"], row["source_metadata"]
+                    ),
                     source_type="initial",
                     source_details=str(hgnc_id),
                 )

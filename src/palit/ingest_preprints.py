@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Download and ingest bioRxiv/medRxiv preprints into database."""
+"""Download and ingest preprints from bioRxiv, medRxiv, and Research Square."""
 
 import enum
-import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -11,16 +11,25 @@ from typing import Any
 import httpx
 import typer
 from rich.console import Console
+from rich.progress import Progress, TaskID
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from palit.papers import Paper
+from palit.papers import (
+    Paper,
+    ResearchSquareMetadata,
+    RxivMetadata,
+    serialize_source_metadata,
+)
 
 console = Console()
-app = typer.Typer(help="Download and ingest bioRxiv/medRxiv preprints")
+app = typer.Typer(help="Download and ingest preprints from bioRxiv, medRxiv, and Research Square")
 
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
-PAGE_SIZE = 100  # API returns max 100 results per page
+RXIV_PAGE_SIZE = 100  # bioRxiv/medRxiv API returns max 100 results per page
+CROSSREF_PAGE_SIZE = 1000  # Crossref allows up to 1000 results per page
+_RS_VERSION_SUFFIX = re.compile(r"/v\d+$")
 
 
 class RxivServer(enum.Enum):
@@ -41,7 +50,7 @@ class RxivServer(enum.Enum):
     retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
     reraise=True,
 )
-def _fetch_page(client: httpx.Client, url: str) -> dict[str, Any]:
+def _fetch_rxiv_page(client: httpx.Client, url: str) -> dict[str, Any]:
     """Fetch a single page from the bioRxiv/medRxiv API with retries."""
     response = client.get(url, timeout=30)
     response.raise_for_status()
@@ -49,22 +58,9 @@ def _fetch_page(client: httpx.Client, url: str) -> dict[str, Any]:
     return result
 
 
-def _parse_paper(record: dict[str, Any], server: RxivServer, source_details: str) -> Paper:
+def _parse_rxiv_paper(record: dict[str, Any], server: RxivServer, source_details: str) -> Paper:
     """Parse a single API record into a Paper."""
-    source_metadata: dict[str, object] = {
-        "version": record["version"],
-        "category": record["category"],
-    }
-    license_val = record.get("license")
-    if license_val:
-        source_metadata["license"] = license_val
-    jatsxml = record.get("jatsxml")
-    if jatsxml:
-        source_metadata["jatsxml_url"] = jatsxml
-
     published = record.get("published", "NA")
-    if published and published != "NA":
-        source_metadata["published_doi"] = published
 
     return Paper(
         doi=record["doi"],
@@ -75,13 +71,25 @@ def _parse_paper(record: dict[str, Any], server: RxivServer, source_details: str
         journal=server.journal,
         source=server.source,
         source_date=record["date"],
-        source_metadata=source_metadata,
+        source_metadata=RxivMetadata(
+            version=int(record["version"]),
+            category=record["category"],
+            license=record.get("license"),
+            jatsxml_url=record.get("jatsxml"),
+            published_doi=published if published and published != "NA" else None,
+        ),
         source_type="initial",
         source_details=source_details,
     )
 
 
-def fetch_papers(server: RxivServer, start_date: str, end_date: str) -> list[Paper]:
+def fetch_rxiv_papers(
+    server: RxivServer,
+    start_date: str,
+    end_date: str,
+    progress: Progress,
+    task: TaskID,
+) -> list[Paper]:
     """Fetch all papers from a bioRxiv/medRxiv server for a date range.
 
     Paginates through the API (100 results per page) until all results are fetched.
@@ -93,28 +101,170 @@ def fetch_papers(server: RxivServer, start_date: str, end_date: str) -> list[Pap
     with httpx.Client() as client:
         while True:
             url = f"{server.base_url}/details/{server.source}/{start_date}/{end_date}/{cursor}/json"
-            logger.info(f"Fetching {server.journal} cursor={cursor}")
 
-            data = _fetch_page(client, url)
+            data = _fetch_rxiv_page(client, url)
             collection = data.get("collection", [])
 
             if not collection:
                 break
 
+            messages = data["messages"]
+            count: int = messages[0]["count"]
+            progress.update(task, total=int(messages[0]["total"]))
+
             for record in collection:
-                papers.append(_parse_paper(record, server, source_details))
+                papers.append(_parse_rxiv_paper(record, server, source_details))
 
-            # messages[0].count tells us how many results were in this page
-            messages = data.get("messages", [])
-            count = messages[0]["count"] if messages else 0
+            progress.update(task, completed=len(papers))
 
-            if count < PAGE_SIZE:
+            if count < RXIV_PAGE_SIZE:
                 break
 
-            cursor += PAGE_SIZE
+            cursor += RXIV_PAGE_SIZE
 
-    logger.info(f"Fetched {len(papers)} papers from {server.journal}")
     return papers
+
+
+def _strip_xml_tags(text: str) -> str:
+    """Strip XML/HTML tags from Crossref abstract text and collapse whitespace."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
+
+
+def _normalize_rs_doi(doi: str) -> str:
+    """Strip version suffix from Research Square DOI.
+
+    '10.21203/rs.3.rs-7989161/v1' -> '10.21203/rs.3.rs-7989161'
+    """
+    return _RS_VERSION_SUFFIX.sub("", doi)
+
+
+def _parse_crossref_date(date_obj: dict[str, Any]) -> str:
+    """Parse Crossref date-parts format to YYYY-MM-DD string."""
+    parts: list[int] = date_obj["date-parts"][0]
+    year = parts[0]
+    month = parts[1] if len(parts) > 1 else 1
+    day = parts[2] if len(parts) > 2 else 1
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def _format_crossref_authors(authors: list[dict[str, Any]]) -> str:
+    """Convert Crossref author objects to 'Last, First; Last, First' format."""
+    formatted: list[str] = []
+    for author in authors:
+        family = author.get("family")
+        given = author.get("given")
+        if family and given:
+            formatted.append(f"{family}, {given}")
+        elif family:
+            formatted.append(family)
+        elif name := author.get("name"):
+            formatted.append(name)
+    return "; ".join(formatted)
+
+
+def _parse_crossref_paper(record: dict[str, Any], source_details: str) -> Paper:
+    """Parse a Crossref work record into a Paper for Research Square."""
+    versioned_doi = record["DOI"]
+    doi = _normalize_rs_doi(versioned_doi)
+
+    version_match = _RS_VERSION_SUFFIX.search(versioned_doi)
+    version = int(version_match.group()[2:]) if version_match else 1
+
+    return Paper(
+        doi=doi,
+        pmid=None,
+        title=record["title"][0],
+        abstract=_strip_xml_tags(record["abstract"]),
+        authors=_format_crossref_authors(record.get("author", [])),
+        journal="Research Square",
+        source="researchsquare",
+        source_date=_parse_crossref_date(record["posted"]),
+        source_metadata=ResearchSquareMetadata(version=version, versioned_doi=versioned_doi),
+        source_type="initial",
+        source_details=source_details,
+    )
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+    reraise=True,
+)
+def _fetch_crossref_page(client: httpx.Client, url: str) -> dict[str, Any]:
+    """Fetch a single page from the Crossref API with retries."""
+    response = client.get(url, timeout=60)
+    response.raise_for_status()
+    result: dict[str, Any] = response.json()
+    return result
+
+
+def fetch_rs_papers(
+    start_date: str,
+    end_date: str,
+    mailto: str,
+    progress: Progress,
+    task: TaskID,
+) -> list[Paper]:
+    """Fetch Research Square preprints from Crossref API for a date range.
+
+    Paginates through the Crossref API (1000 results per page) until all results
+    are fetched. Deduplicates multiple versions by normalized DOI, keeping the
+    highest version.
+    """
+    source_details = f"researchsquare/{start_date}/{end_date}"
+    papers: list[Paper] = []
+    offset = 0
+
+    base_url = (
+        "https://api.crossref.org/works?"
+        "filter=type:posted-content,prefix:10.21203,"
+        f"from-posted-date:{start_date},until-posted-date:{end_date},"
+        f"has-abstract:true&rows={CROSSREF_PAGE_SIZE}&mailto={mailto}"
+    )
+
+    with httpx.Client() as client:
+        while True:
+            url = f"{base_url}&offset={offset}"
+
+            data = _fetch_crossref_page(client, url)
+            message = data["message"]
+            items: list[dict[str, Any]] = message.get("items", [])
+
+            if not items:
+                break
+
+            total_results: int = message["total-results"]
+            progress.update(task, total=total_results)
+
+            for record in items:
+                papers.append(_parse_crossref_paper(record, source_details))
+
+            progress.update(task, completed=len(papers))
+            offset += CROSSREF_PAGE_SIZE
+
+            if offset >= total_results:
+                break
+
+    # Deduplicate by normalized DOI, keeping highest version
+    seen: dict[str, Paper] = {}
+    for paper in papers:
+        existing = seen.get(paper.doi)
+        paper_meta = paper.source_metadata
+        existing_meta = existing.source_metadata if existing else None
+        assert isinstance(paper_meta, ResearchSquareMetadata)
+        if not existing_meta or (
+            isinstance(existing_meta, ResearchSquareMetadata)
+            and paper_meta.version > existing_meta.version
+        ):
+            seen[paper.doi] = paper
+
+    deduped = list(seen.values())
+    logger.info(
+        f"Fetched {len(papers)} records from Research Square, "
+        f"{len(deduped)} unique papers after version dedup"
+    )
+    return deduped
 
 
 def insert_papers(papers: list[Paper], db_path: Path) -> int:
@@ -154,7 +304,7 @@ def insert_papers(papers: list[Paper], db_path: Path) -> int:
                     p.journal,
                     p.source,
                     p.source_date,
-                    json.dumps(p.source_metadata),
+                    serialize_source_metadata(p.source_metadata),
                     p.source_type,
                     p.source_details,
                 )
@@ -167,29 +317,48 @@ def insert_papers(papers: list[Paper], db_path: Path) -> int:
         conn.close()
 
 
+VALID_SERVERS: dict[str, str] = {
+    "biorxiv": "bioRxiv",
+    "medrxiv": "medRxiv",
+    "researchsquare": "Research Square",
+}
+
+
+def _fetch_server(
+    server: str, start_date: str, end_date: str, mailto: str, progress: Progress, task: TaskID
+) -> list[Paper]:
+    """Fetch papers from a single preprint server."""
+    if server == "biorxiv":
+        return fetch_rxiv_papers(RxivServer.BIORXIV, start_date, end_date, progress, task)
+    elif server == "medrxiv":
+        return fetch_rxiv_papers(RxivServer.MEDRXIV, start_date, end_date, progress, task)
+    elif server == "researchsquare":
+        return fetch_rs_papers(start_date, end_date, mailto, progress, task)
+    else:
+        raise ValueError(f"Unknown server: {server}")
+
+
 @app.callback(invoke_without_command=True)
 def main(
     start_date: str = typer.Argument(..., help="Start date (YYYY-MM-DD)"),
     end_date: str = typer.Argument(..., help="End date (YYYY-MM-DD)"),
     db_path: Path = typer.Option(Path("data/db.sqlite"), "--db-path", help="Database path"),
-    server: str = typer.Option("all", "--server", help="Server: biorxiv, medrxiv, or all"),
+    servers: list[str] = typer.Option(
+        list(VALID_SERVERS), "--server", help="Preprint servers to ingest from"
+    ),
+    mailto: str = typer.Option(
+        "panelapp-support@mcri.edu.au", "--mailto", help="Contact email for Crossref polite pool"
+    ),
 ) -> None:
-    """Ingest preprints from bioRxiv and/or medRxiv into database."""
-    # Resolve which servers to fetch from
-    server_lower = server.lower()
-    if server_lower == "all":
-        servers = list(RxivServer)
-    elif server_lower == "biorxiv":
-        servers = [RxivServer.BIORXIV]
-    elif server_lower == "medrxiv":
-        servers = [RxivServer.MEDRXIV]
-    else:
-        console.print(f"[red]Unknown server: {server}. Use biorxiv, medrxiv, or all.[/red]")
-        raise typer.Exit(1)
+    """Ingest preprints from bioRxiv, medRxiv, and/or Research Square."""
+    for s in servers:
+        if s not in VALID_SERVERS:
+            console.print(f"[red]Unknown server: {s}. Valid: {', '.join(VALID_SERVERS)}[/red]")
+            raise typer.Exit(1)
 
     console.print(
         f"[cyan]Ingesting preprints: {start_date} to {end_date} "
-        f"from {', '.join(s.journal for s in servers)}[/cyan]"
+        f"from {', '.join(VALID_SERVERS[s] for s in servers)}[/cyan]"
     )
     console.print(f"[cyan]Database: {db_path}[/cyan]")
 
@@ -197,27 +366,19 @@ def main(
         console.print(f"[red]Database not found: {db_path}[/red]")
         raise typer.Exit(1)
 
-    # Fetch and insert from each server
     total_inserted = 0
-    for rxiv_server in servers:
-        console.print(f"\n[bold]Fetching from {rxiv_server.journal}...[/bold]")
-        papers = fetch_papers(rxiv_server, start_date, end_date)
+    with Progress(console=console) as progress:
+        for srv in servers:
+            display = VALID_SERVERS[srv]
+            task = progress.add_task(display, total=None)
+            papers = _fetch_server(srv, start_date, end_date, mailto, progress, task)
 
-        if not papers:
-            console.print(f"  No papers found from {rxiv_server.journal}")
-            continue
+            if not papers:
+                progress.update(task, total=0, completed=0)
+                continue
 
-        # Count papers with published DOIs
-        published_count = sum(
-            1 for p in papers if p.source_metadata.get("published_doi") is not None
-        )
-
-        inserted = insert_papers(papers, db_path)
-        total_inserted += inserted
-        console.print(
-            f"  [green]Fetched {len(papers)} papers "
-            f"({published_count} already published), inserted/updated {inserted}[/green]"
-        )
+            inserted = insert_papers(papers, db_path)
+            total_inserted += inserted
 
     console.print(
         f"\n[green]Done. {total_inserted} total papers inserted/updated in {db_path}[/green]"

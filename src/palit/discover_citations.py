@@ -15,7 +15,7 @@ from rich.progress import track
 
 from palit.hgnc import HgncResolver
 from palit.ingest_pubmed import extract_papers_from_xml
-from palit.papers import Paper
+from palit.papers import Paper, serialize_source_metadata
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 
@@ -253,7 +253,7 @@ def store_referenced_paper(db_path: Path, paper: Paper) -> bool:
                 paper.journal,
                 paper.source,
                 paper.source_date,
-                json.dumps(paper.source_metadata),
+                serialize_source_metadata(paper.source_metadata),
                 paper.source_type,
                 paper.source_details,
             ),

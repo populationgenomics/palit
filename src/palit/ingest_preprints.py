@@ -291,7 +291,9 @@ def insert_papers(papers: list[Paper], db_path: Path) -> int:
                 source_metadata = excluded.source_metadata,
                 source_type = excluded.source_type,
                 source_details = excluded.source_details
-            WHERE excluded.source_type = 'initial'
+            -- Only update within the same source. Never cross-source.
+            WHERE excluded.source = papers.source
+              AND excluded.source_type = 'initial'
               AND papers.source_type = 'initial'
               AND excluded.source_details > papers.source_details
             """,

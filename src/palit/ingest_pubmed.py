@@ -298,11 +298,11 @@ def process_xml_file(
                     source_metadata = excluded.source_metadata,
                     source_type = excluded.source_type,
                     source_details = excluded.source_details
-                -- Only update if both old and new records are from initial
-                -- and the new file is lexicographically later (e.g., pubmed_2025-09-16.xml > pubmed_2025-09-15.xml)
-                -- This ensures newer PubMed updates override older ones, but expansion searches
-                -- never overwrite existing records
-                WHERE excluded.source_type = 'initial'
+                -- Only update within the same source (e.g., newer PubMed file
+                -- overwrites older PubMed file). Never cross-source: a preprint
+                -- ingested first must not be overwritten by PubMed, and vice versa.
+                WHERE excluded.source = papers.source
+                  AND excluded.source_type = 'initial'
                   AND papers.source_type = 'initial'
                   AND excluded.source_details > papers.source_details
             """,
@@ -323,6 +323,15 @@ def process_xml_file(
                     for p in papers
                 ],
             )
+
+            # Backfill PMIDs into papers ingested from other sources (e.g., preprints).
+            # The ON CONFLICT above skips cross-source updates, but we still want the
+            # PMID that PubMed provides.
+            cursor.executemany(
+                "UPDATE papers SET pmid = ? WHERE doi = ? AND pmid IS NULL",
+                [(p.pmid, p.doi) for p in papers if p.pmid is not None],
+            )
+
             conn.commit()
 
         logger.info(f"Inserted {len(papers)} papers into database")

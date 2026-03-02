@@ -27,7 +27,7 @@ sh -c "$(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edi
 
 The system uses multiple databases:
 
-- **Main workflow** (`data/db.sqlite`): Created from `schema.sql` by `palit ingest-pubmed`
+- **Main workflow** (`data/db.sqlite`): Created from `schema.sql` by `palit ingest-preprints` or `palit ingest-pubmed`
 - **Screening workflow** (`data/pubmed_baseline_screening.sqlite`): Created from `schema.sql` by `palit screen-pubmed`
 - **Classifier training** (`data/screening_classifier/training.sqlite`): Created from `src/palit/screening_classifier/training.sql` (only needed for training)
 
@@ -43,10 +43,10 @@ END_DATE=2025-10-15
 # 1. Setup: Create database and ingest papers (creates DB from schema.sql if needed)
 #    --previous-db widens the date range into the previous run's window and skips
 #    papers already ingested (buffer window for API flakiness resilience).
-uv run palit ingest-pubmed --previous-db data/db_prev.sqlite $BUFFER_START $END_DATE
-
-# 1a. Ingest preprints from bioRxiv, medRxiv, and Research Square
+#    Preprints first: ensures preprint metadata (version) is preserved for automatic
+#    PDF download. PubMed backfills PMIDs into preprint rows without overwriting.
 uv run palit ingest-preprints --previous-db data/db_prev.sqlite $BUFFER_START $END_DATE
+uv run palit ingest-pubmed --previous-db data/db_prev.sqlite $BUFFER_START $END_DATE
 
 # 2. Assess relevance of papers
 uv run palit assess-relevance --panel-date $PANEL_DATE

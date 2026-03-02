@@ -14,15 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-import requests
 import typer
 from defusedxml import ElementTree as ET
 from pypdf import PdfWriter
-from requests.adapters import HTTPAdapter
 from rich.console import Console
 from rich.progress import Progress
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
-from urllib3.util.retry import Retry
 
 from palit.panelapp_client import PanelAppClient
 from palit.papers import doi_to_path
@@ -407,6 +404,19 @@ def process_tgz_archive(tgz_content: bytes, output_path: Path) -> tuple[bool, st
             return False, f"Failed to concatenate PDFs: {e}"
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+    reraise=True,
+)
+def _fetch_with_retry(client: httpx.Client, url: str, timeout: float) -> httpx.Response:
+    """HTTP GET with retries for transient errors."""
+    response = client.get(url, timeout=timeout, follow_redirects=True)
+    response.raise_for_status()
+    return response
+
+
 def download_pmc_paper(
     doi: str,
     pmcid: str | None,
@@ -414,10 +424,7 @@ def download_pmc_paper(
     target_dir: Path,
     timeout: float,
 ) -> DownloadResult:
-    """Download a single paper from PMC using its PMCID.
-
-    Creates its own requests session (not thread-safe) and updates the database.
-    """
+    """Download a single paper from PMC using its PMCID."""
     if not pmcid:
         with sqlite3.connect(db_path) as conn:
             conn.execute(
@@ -426,45 +433,32 @@ def download_pmc_paper(
             )
         return DownloadResult(doi, "manual_required", "No PMCID in source_metadata")
 
-    # Create session with retry strategy (requests.Session is not thread-safe)
-    session = requests.Session()
-    retry_strategy = Retry(
-        total=5,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-
     try:
-        # Get PDF link from OA API
-        oa_url = f"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={pmcid}"
-        response = session.get(oa_url, timeout=timeout)
-        response.raise_for_status()
-        oa_data = response.text
+        with httpx.Client() as client:
+            # Get PDF link from OA API
+            oa_url = f"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={pmcid}"
+            response = _fetch_with_retry(client, oa_url, timeout)
+            oa_data = response.text
 
-        # Look for TGZ link (includes main paper + supplements)
-        tgz_match = re.search(r'<link[^>]*format="tgz"[^>]*href="([^"]+)"[^>]*/>', oa_data)
+            # Look for TGZ link (includes main paper + supplements)
+            tgz_match = re.search(r'<link[^>]*format="tgz"[^>]*href="([^"]+)"[^>]*/>', oa_data)
 
-        if not tgz_match:
-            with sqlite3.connect(db_path) as conn:
-                conn.execute(
-                    "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
-                    (doi,),
-                )
-            return DownloadResult(doi, "manual_required", f"No TGZ link in OA ({pmcid})")
+            if not tgz_match:
+                with sqlite3.connect(db_path) as conn:
+                    conn.execute(
+                        "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
+                        (doi,),
+                    )
+                return DownloadResult(doi, "manual_required", f"No TGZ link in OA ({pmcid})")
 
-        tgz_url = tgz_match.group(1)
+            tgz_url = tgz_match.group(1)
 
-        # Replace ftp:// with https:// if needed
-        if tgz_url.startswith("ftp://"):
-            tgz_url = tgz_url.replace("ftp://", "https://")
+            # Replace ftp:// with https:// if needed
+            if tgz_url.startswith("ftp://"):
+                tgz_url = tgz_url.replace("ftp://", "https://")
 
-        # Download TGZ
-        tgz_response = session.get(tgz_url, timeout=timeout)
-        tgz_response.raise_for_status()
+            # Download TGZ
+            tgz_response = _fetch_with_retry(client, tgz_url, timeout)
 
         # Process TGZ: extract, find main PDF, concatenate with supplements
         pdf_path = doi_to_path(doi, target_dir, ".pdf")
@@ -595,22 +589,6 @@ def _build_preprint_url(source: str, doi: str, version: int) -> str:
     return f"https://www.researchsquare.com/article/{article_id}/v{version}.pdf"
 
 
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
-    reraise=True,
-)
-def _download_preprint_pdf(client: httpx.Client, url: str, timeout: float) -> bytes:
-    """Download a preprint PDF with retries."""
-    response = client.get(url, timeout=timeout, follow_redirects=True)
-    response.raise_for_status()
-    content_type = response.headers.get("content-type", "")
-    if "application/pdf" not in content_type:
-        raise ValueError(f"Not a PDF (content-type: {content_type})")
-    return response.content
-
-
 def download_preprint_paper(
     doi: str,
     source: str,
@@ -624,11 +602,17 @@ def download_preprint_paper(
 
     try:
         with httpx.Client() as client:
-            content = _download_preprint_pdf(client, url, timeout)
+            response = _fetch_with_retry(client, url, timeout)
+
+        content_type = response.headers.get("content-type", "")
+        if "application/pdf" not in content_type:
+            return DownloadResult(
+                doi, "error", f"Not a PDF (content-type: {content_type}, url: {url})"
+            )
 
         pdf_path = doi_to_path(doi, target_dir, ".pdf")
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
-        pdf_path.write_bytes(content)
+        pdf_path.write_bytes(response.content)
 
         with sqlite3.connect(db_path) as conn:
             conn.execute(
@@ -636,7 +620,7 @@ def download_preprint_paper(
                 (doi,),
             )
 
-        size_kb = len(content) / 1024
+        size_kb = len(response.content) / 1024
         return DownloadResult(doi, "downloaded", f"Downloaded from {source} ({size_kb:.0f} KB)")
 
     except Exception as e:

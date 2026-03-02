@@ -41,10 +41,12 @@ PANEL_DATE=2025-10-01
 END_DATE=2025-10-15
 
 # 1. Setup: Create database and ingest papers (creates DB from schema.sql if needed)
-uv run palit ingest-pubmed $PANEL_DATE $END_DATE
+#    --previous-db widens the date range into the previous run's window and skips
+#    papers already ingested (buffer window for API flakiness resilience).
+uv run palit ingest-pubmed --previous-db data/db_prev.sqlite $BUFFER_START $END_DATE
 
 # 1a. Ingest preprints from bioRxiv, medRxiv, and Research Square
-uv run palit ingest-preprints $PANEL_DATE $END_DATE
+uv run palit ingest-preprints --previous-db data/db_prev.sqlite $BUFFER_START $END_DATE
 
 # 2. Assess relevance of papers
 uv run palit assess-relevance --panel-date $PANEL_DATE

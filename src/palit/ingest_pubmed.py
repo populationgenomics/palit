@@ -9,7 +9,7 @@ import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, timedelta
 from pathlib import Path
 
 import typer
@@ -17,7 +17,13 @@ from lxml import etree
 from rich.console import Console
 from rich.progress import Progress
 
-from palit.papers import Paper, PubmedMetadata, SkipReason, serialize_source_metadata
+from palit.papers import (
+    Paper,
+    PubmedMetadata,
+    SkipReason,
+    load_previous_dois,
+    serialize_source_metadata,
+)
 
 console = Console()
 app = typer.Typer(help="Download and ingest PubMed papers")
@@ -238,7 +244,13 @@ def extract_papers_from_xml(
     return papers, stats
 
 
-def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: Path) -> None:
+def process_xml_file(
+    xml_path: Path,
+    start_date: str,
+    end_date: str,
+    output_db: Path,
+    previous_dois: set[str] | None = None,
+) -> None:
     """Process XML file and extract papers within date range."""
     logger.info(f"Processing XML file: {xml_path}")
     logger.debug(f"Date range: {start_date} to {end_date}")
@@ -260,6 +272,12 @@ def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: 
 
         papers = [paper for paper in all_papers if start_date <= paper.source_date <= end_date]
         logger.debug(f"Found {len(papers)} papers in date range")
+
+        # Filter out papers already in previous DB
+        if previous_dois:
+            before = len(papers)
+            papers = [p for p in papers if p.doi not in previous_dois]
+            logger.debug(f"Filtered {before - len(papers)} papers already in previous DB")
 
         # Insert papers into database
         if papers:
@@ -317,7 +335,7 @@ def process_xml_file(xml_path: Path, start_date: str, end_date: str, output_db: 
 class DownloadResult:
     """Result of downloading a single day's papers."""
 
-    day: int
+    day: date
     success: bool
     file_path: Path | None
     file_size: int
@@ -325,25 +343,23 @@ class DownloadResult:
     error: str | None = None
 
 
-def download_day(year: int, month: int, day: int, output_dir: Path) -> DownloadResult:
+def download_day(day: date, output_dir: Path) -> DownloadResult:
     """Download PubMed papers for a single day with retry logic.
 
     Args:
-        year: Year to download
-        month: Month to download
-        day: Day to download
+        day: Date to download
         output_dir: Directory to save XML files
 
     Returns:
         DownloadResult with success status and metadata
     """
-    output_file = output_dir / f"pubmed_{year}-{month:02d}-{day:02d}.xml.gz"
+    output_file = output_dir / f"pubmed_{day}.xml.gz"
 
     # Skip if file already exists and is large enough
     if output_file.exists():
         file_size = output_file.stat().st_size
         if file_size >= MIN_FILE_SIZE:
-            logger.debug(f"Day {day:02d}: File already exists ({file_size} bytes), skipping")
+            logger.debug(f"{day}: File already exists ({file_size} bytes), skipping")
             return DownloadResult(
                 day=day,
                 success=True,
@@ -360,6 +376,7 @@ def download_day(year: int, month: int, day: int, output_dir: Path) -> DownloadR
             # matches PubMedPubDate[@PubStatus="entrez"] in the XML (which we extract as entrez_date),
             # while EDAT can return papers on a different day. See:
             # https://www.nlm.nih.gov/pubs/techbull/nd08/nd08_pm_new_date_field.html
+            date_str = f"{day.year}/{day.month:02d}/{day.day:02d}"
             esearch_cmd = [
                 "esearch",
                 "-db",
@@ -369,9 +386,9 @@ def download_day(year: int, month: int, day: int, output_dir: Path) -> DownloadR
                 "-datetype",
                 "CRDT",
                 "-mindate",
-                f"{year}/{month:02d}/{day:02d}",
+                date_str,
                 "-maxdate",
-                f"{year}/{month:02d}/{day:02d}",
+                date_str,
             ]
 
             efetch_cmd = ["efetch", "-format", "xml"]
@@ -409,7 +426,7 @@ def download_day(year: int, month: int, day: int, output_dir: Path) -> DownloadR
                     )
                 else:
                     logger.warning(
-                        f"Day {day:02d}: File too small ({file_size} bytes), "
+                        f"{day}: File too small ({file_size} bytes), "
                         f"attempt {attempt}/{MAX_RETRIES}"
                     )
                     if attempt < MAX_RETRIES:
@@ -417,7 +434,7 @@ def download_day(year: int, month: int, day: int, output_dir: Path) -> DownloadR
 
         except (OSError, subprocess.SubprocessError) as e:
             # Catch expected retryable errors (network, subprocess, file I/O)
-            logger.warning(f"Day {day:02d}: Download failed (attempt {attempt}): {e}")
+            logger.warning(f"{day}: Download failed (attempt {attempt}): {e}")
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
         # Let unexpected exceptions propagate to parent
@@ -425,7 +442,7 @@ def download_day(year: int, month: int, day: int, output_dir: Path) -> DownloadR
     # All retries exhausted - skip this day
     file_size = output_file.stat().st_size if output_file.exists() else 0
     logger.warning(
-        f"Day {day:02d}: Skipping after {MAX_RETRIES} attempts. "
+        f"{day}: Skipping after {MAX_RETRIES} attempts. "
         f"Final file size: {file_size} bytes (minimum required: {MIN_FILE_SIZE})"
     )
     return DownloadResult(
@@ -439,7 +456,12 @@ def download_day(year: int, month: int, day: int, output_dir: Path) -> DownloadR
 
 
 def extract_papers(
-    xml_files: list[Path], start_date: str, end_date: str, db_path: Path, parallel_jobs: int
+    xml_files: list[Path],
+    start_date: str,
+    end_date: str,
+    db_path: Path,
+    parallel_jobs: int,
+    previous_dois: set[str] | None = None,
 ) -> None:
     """Extract papers from XML files in parallel.
 
@@ -449,13 +471,16 @@ def extract_papers(
         end_date: End date for filtering (YYYY-MM-DD)
         db_path: Path to database
         parallel_jobs: Number of parallel jobs
+        previous_dois: DOIs from a previous run to skip
     """
     with Progress(console=console) as progress:
         task = progress.add_task("Extracting papers...", total=len(xml_files))
 
         with ProcessPoolExecutor(max_workers=parallel_jobs) as executor:
             futures = {
-                executor.submit(process_xml_file, xml_file, start_date, end_date, db_path): xml_file
+                executor.submit(
+                    process_xml_file, xml_file, start_date, end_date, db_path, previous_dois
+                ): xml_file
                 for xml_file in xml_files
             }
 
@@ -473,6 +498,9 @@ def main(
     ),
     db_path: Path = typer.Option(Path("data/db.sqlite"), "--db-path", help="Database path"),
     parallel_jobs: int = typer.Option(8, "--jobs", "-j", help="Number of parallel jobs"),
+    previous_db: Path | None = typer.Option(
+        None, "--previous-db", help="Previous run DB for set-difference filtering"
+    ),
 ) -> None:
     """Download PubMed papers and ingest into database.
 
@@ -484,8 +512,8 @@ def main(
 
     # Parse dates
     try:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        start_dt = date.fromisoformat(start_date)
+        end_dt = date.fromisoformat(end_date)
     except ValueError as e:
         console.print(f"[red]Invalid date format: {e}[/red]")
         raise typer.Exit(1) from e
@@ -494,18 +522,16 @@ def main(
         console.print("[red]Start date must be before or equal to end date[/red]")
         raise typer.Exit(1)
 
-    # Extract date components (assuming same month for simplicity)
-    year = start_dt.year
-    month = start_dt.month
-    start_day = start_dt.day
-    end_day = end_dt.day
-
-    if start_dt.month != end_dt.month:
+    # Load previous DOIs for set-difference filtering
+    previous_dois: set[str] | None = None
+    if previous_db is not None:
+        if not previous_db.exists():
+            console.print(f"[red]Previous DB not found: {previous_db}[/red]")
+            raise typer.Exit(1)
+        previous_dois = load_previous_dois(previous_db)
         console.print(
-            "[red]Error: Cross-month downloads not yet supported. "
-            "Please run separately for each month.[/red]"
+            f"[cyan]Filtering against {len(previous_dois)} papers from {previous_db}[/cyan]"
         )
-        raise typer.Exit(1)
 
     console.print(f"[cyan]Downloading PubMed papers: {start_date} to {end_date}[/cyan]")
     console.print(f"[cyan]Database: {db_path}[/cyan]")
@@ -531,16 +557,19 @@ def main(
     # Step 1: Download XML files in parallel
     console.print("[bold]Step 1: Downloading PubMed XML files...[/bold]")
 
-    days = list(range(start_day, end_day + 1))
+    days = []
+    current = start_dt
+    while current <= end_dt:
+        days.append(current)
+        current += timedelta(days=1)
+
     download_results = []
 
     with Progress(console=console) as progress:
         task = progress.add_task("Downloading...", total=len(days))
 
         with ProcessPoolExecutor(max_workers=parallel_jobs) as executor:
-            futures = {
-                executor.submit(download_day, year, month, day, output_dir): day for day in days
-            }
+            futures = {executor.submit(download_day, day, output_dir): day for day in days}
 
             for future in as_completed(futures):
                 download_result = future.result()
@@ -549,11 +578,11 @@ def main(
 
     # Report download results
     successful = [r for r in download_results if r.success]
-    skipped = [r for r in download_results if not r.success]
+    failed = [r for r in download_results if not r.success]
     console.print(f"[green]✓[/green] Downloaded {len(successful)}/{len(days)} files successfully")
-    if skipped:
-        skipped_days = ", ".join(f"day {r.day}" for r in skipped)
-        console.print(f"[yellow]⚠[/yellow] Skipped (no data after retries): {skipped_days}")
+    if failed:
+        failed_days = ", ".join(str(r.day) for r in failed)
+        console.print(f"[yellow]⚠[/yellow] Skipped (no data after retries): {failed_days}")
 
     # Step 2: Extract papers from downloaded files
     console.print("\n[bold]Step 2: Extracting papers to database...[/bold]")
@@ -563,7 +592,7 @@ def main(
         console.print("[red]No XML files found to extract[/red]")
         raise typer.Exit(1)
 
-    extract_papers(xml_files, start_date, end_date, db_path, parallel_jobs)
+    extract_papers(xml_files, start_date, end_date, db_path, parallel_jobs, previous_dois)
 
     console.print(f"[green]✓[/green] Extracted papers from {len(xml_files)} files")
     console.print(f"\n[green]✓ Ingestion complete! Database ready at: {db_path}[/green]")

@@ -2,11 +2,15 @@
 
 import enum
 import json
+import logging
 import re
+import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+logger = logging.getLogger(__name__)
 
 
 class SkipReason(enum.Enum):
@@ -189,3 +193,18 @@ def generate_paper_ids(
                 doi_to_paper_id[doi] = suffixed_id
 
     return paper_id_to_doi, doi_to_paper_id
+
+
+def load_previous_dois(db_path: Path) -> set[str]:
+    """Load all DOIs from a previous run's database.
+
+    Used for set-difference filtering: papers already in the previous DB
+    are skipped during ingestion to avoid re-processing.
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        dois = {row[0] for row in conn.execute("SELECT doi FROM papers")}
+        logger.info(f"Loaded {len(dois)} DOIs from previous DB {db_path}")
+        return dois
+    finally:
+        conn.close()

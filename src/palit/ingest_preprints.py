@@ -18,6 +18,7 @@ from palit.papers import (
     Paper,
     ResearchSquareMetadata,
     RxivMetadata,
+    load_previous_dois,
     serialize_source_metadata,
 )
 
@@ -349,12 +350,26 @@ def main(
     mailto: str = typer.Option(
         "panelapp-support@mcri.edu.au", "--mailto", help="Contact email for Crossref polite pool"
     ),
+    previous_db: Path | None = typer.Option(
+        None, "--previous-db", help="Previous run DB for set-difference filtering"
+    ),
 ) -> None:
     """Ingest preprints from bioRxiv, medRxiv, and/or Research Square."""
     for s in servers:
         if s not in VALID_SERVERS:
             console.print(f"[red]Unknown server: {s}. Valid: {', '.join(VALID_SERVERS)}[/red]")
             raise typer.Exit(1)
+
+    # Load previous DOIs for set-difference filtering
+    previous_dois: set[str] | None = None
+    if previous_db is not None:
+        if not previous_db.exists():
+            console.print(f"[red]Previous DB not found: {previous_db}[/red]")
+            raise typer.Exit(1)
+        previous_dois = load_previous_dois(previous_db)
+        console.print(
+            f"[cyan]Filtering against {len(previous_dois)} papers from {previous_db}[/cyan]"
+        )
 
     console.print(
         f"[cyan]Ingesting preprints: {start_date} to {end_date} "
@@ -376,6 +391,13 @@ def main(
             if not papers:
                 progress.update(task, total=0, completed=0)
                 continue
+
+            if previous_dois:
+                before = len(papers)
+                papers = [p for p in papers if p.doi not in previous_dois]
+                filtered = before - len(papers)
+                if filtered:
+                    logger.info(f"{display}: filtered {filtered} papers already in previous DB")
 
             inserted = insert_papers(papers, db_path)
             total_inserted += inserted

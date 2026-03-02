@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Download papers workflow: Automated PMC download and PDF matching."""
+"""Download papers workflow: Automated PMC/preprint download and PDF matching."""
 
 import logging
 import re
@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 import requests
 import typer
 from defusedxml import ElementTree as ET
@@ -20,13 +21,14 @@ from pypdf import PdfWriter
 from requests.adapters import HTTPAdapter
 from rich.console import Console
 from rich.progress import Progress
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 from urllib3.util.retry import Retry
 
 from palit.panelapp_client import PanelAppClient
 from palit.papers import doi_to_path
 
 console = Console()
-app = typer.Typer(help="Download papers workflow: Automated PMC download and PDF matching")
+app = typer.Typer(help="Download papers workflow: Automated PMC/preprint download and PDF matching")
 
 logger = logging.getLogger(__name__)
 
@@ -348,8 +350,8 @@ def concatenate_pdfs(pdf_paths: list[Path], output_path: Path) -> None:
 
 
 @dataclass
-class PmcDownloadResult:
-    """Result of attempting to download a single paper from PMC."""
+class DownloadResult:
+    """Result of attempting to download a single paper."""
 
     doi: str
     status: str  # 'downloaded' | 'manual_required' | 'error'
@@ -411,7 +413,7 @@ def download_pmc_paper(
     db_path: Path,
     target_dir: Path,
     timeout: float,
-) -> PmcDownloadResult:
+) -> DownloadResult:
     """Download a single paper from PMC using its PMCID.
 
     Creates its own requests session (not thread-safe) and updates the database.
@@ -422,7 +424,7 @@ def download_pmc_paper(
                 "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
                 (doi,),
             )
-        return PmcDownloadResult(doi, "manual_required", "No PMCID in source_metadata")
+        return DownloadResult(doi, "manual_required", "No PMCID in source_metadata")
 
     # Create session with retry strategy (requests.Session is not thread-safe)
     session = requests.Session()
@@ -452,7 +454,7 @@ def download_pmc_paper(
                     "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
                     (doi,),
                 )
-            return PmcDownloadResult(doi, "manual_required", f"No TGZ link in OA ({pmcid})")
+            return DownloadResult(doi, "manual_required", f"No TGZ link in OA ({pmcid})")
 
         tgz_url = tgz_match.group(1)
 
@@ -475,7 +477,7 @@ def download_pmc_paper(
                     "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
                     (doi,),
                 )
-            return PmcDownloadResult(doi, "manual_required", f"TGZ processing failed: {message}")
+            return DownloadResult(doi, "manual_required", f"TGZ processing failed: {message}")
 
         # Update status to downloaded
         with sqlite3.connect(db_path) as conn:
@@ -484,10 +486,10 @@ def download_pmc_paper(
                 (doi,),
             )
 
-        return PmcDownloadResult(doi, "downloaded", f"Downloaded ({pmcid}) - {message}")
+        return DownloadResult(doi, "downloaded", f"Downloaded ({pmcid}) - {message}")
 
     except Exception as e:
-        return PmcDownloadResult(doi, "error", str(e))
+        return DownloadResult(doi, "error", str(e))
 
 
 @app.command("attempt-pmc")
@@ -521,6 +523,7 @@ def attempt_pmc(
             SELECT doi, json_extract(source_metadata, '$.pmcid') AS pmcid
             FROM papers
             WHERE download_status = 'scheduled'
+              AND source = 'pubmed'
             ORDER BY doi
         """)
         scheduled = cursor.fetchall()
@@ -554,9 +557,7 @@ def attempt_pmc(
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(
-                    download_pmc_paper, doi, pmcid, db_path, target_dir, timeout
-                ): doi
+                executor.submit(download_pmc_paper, doi, pmcid, db_path, target_dir, timeout): doi
                 for doi, pmcid in papers_needing_download
             }
 
@@ -583,6 +584,151 @@ def attempt_pmc(
             console.print(f"     {doi}: {error}")
         if len(errors) > 5:
             console.print(f"     ... and {len(errors) - 5} more errors")
+
+
+def _build_preprint_url(source: str, doi: str, version: int) -> str:
+    """Construct the direct PDF download URL for a preprint."""
+    if source in ("biorxiv", "medrxiv"):
+        return f"https://www.{source}.org/content/{doi}v{version}.full.pdf"
+    # researchsquare: DOI like "10.21203/rs.3.rs-7989161" → article ID "rs-7989161"
+    article_id = doi.removeprefix("10.21203/rs.3.")
+    return f"https://www.researchsquare.com/article/{article_id}/v{version}.pdf"
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+    reraise=True,
+)
+def _download_preprint_pdf(client: httpx.Client, url: str, timeout: float) -> bytes:
+    """Download a preprint PDF with retries."""
+    response = client.get(url, timeout=timeout, follow_redirects=True)
+    response.raise_for_status()
+    content_type = response.headers.get("content-type", "")
+    if "application/pdf" not in content_type:
+        raise ValueError(f"Not a PDF (content-type: {content_type})")
+    return response.content
+
+
+def download_preprint_paper(
+    doi: str,
+    source: str,
+    version: int,
+    db_path: Path,
+    target_dir: Path,
+    timeout: float,
+) -> DownloadResult:
+    """Download a single preprint PDF by constructing its URL from metadata."""
+    url = _build_preprint_url(source, doi, version)
+
+    try:
+        with httpx.Client() as client:
+            content = _download_preprint_pdf(client, url, timeout)
+
+        pdf_path = doi_to_path(doi, target_dir, ".pdf")
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(content)
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE papers SET download_status = 'downloaded' WHERE doi = ?",
+                (doi,),
+            )
+
+        size_kb = len(content) / 1024
+        return DownloadResult(doi, "downloaded", f"Downloaded from {source} ({size_kb:.0f} KB)")
+
+    except Exception as e:
+        return DownloadResult(doi, "error", f"{url}: {e}")
+
+
+@app.command("download-preprints")
+def download_preprints_cmd(
+    db_path: Path = typer.Option(
+        default=Path("data/db.sqlite"),
+        help="Database path",
+    ),
+    target_dir: Path = typer.Option(
+        Path("data/papers"), "--target-dir", "-t", help="Directory to save PDFs"
+    ),
+    timeout: float = typer.Option(30.0, "--timeout", help="HTTP request timeout in seconds"),
+    max_workers: int = typer.Option(5, "--max-workers", "-w", help="Number of parallel downloads"),
+) -> None:
+    """Download PDFs for scheduled preprint papers (bioRxiv, medRxiv, Research Square).
+
+    Constructs PDF URLs from DOI + version in source_metadata and downloads directly.
+    All preprints are open access. Any download failure aborts with non-zero exit.
+    """
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database not found: {db_path}")
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT doi, source,
+                   json_extract(source_metadata, '$.version') AS version
+            FROM papers
+            WHERE download_status = 'scheduled'
+              AND source IN ('biorxiv', 'medrxiv', 'researchsquare')
+            ORDER BY doi
+        """)
+        scheduled = cursor.fetchall()
+
+    if not scheduled:
+        console.print("[yellow]No preprint papers with download_status='scheduled'[/yellow]")
+        return
+
+    # Filter out papers that already have PDFs
+    papers_needing_download = [
+        (doi, source, int(version))
+        for doi, source, version in scheduled
+        if not doi_to_path(doi, target_dir, ".pdf").exists()
+    ]
+
+    if not papers_needing_download:
+        console.print("[green]All scheduled preprints already have PDFs![/green]")
+        return
+
+    console.print(
+        f"[cyan]Downloading {len(papers_needing_download)} preprint PDFs "
+        f"({max_workers} workers)[/cyan]"
+    )
+
+    downloaded = 0
+    errors: list[tuple[str, str]] = []
+
+    with Progress() as progress:
+        task = progress.add_task("Downloading...", total=len(papers_needing_download))
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    download_preprint_paper, doi, source, version, db_path, target_dir, timeout
+                ): doi
+                for doi, source, version in papers_needing_download
+            }
+
+            for future in as_completed(futures):
+                result = future.result()
+                if result.status == "downloaded":
+                    downloaded += 1
+                    logger.info(f"DOI {result.doi}: {result.message}")
+                else:
+                    errors.append((result.doi, result.message))
+                    logger.error(f"DOI {result.doi}: {result.message}")
+                progress.advance(task)
+
+    console.print("\n[bold]Preprint Download Summary:[/bold]")
+    console.print(f"  Downloaded: {downloaded}")
+
+    if errors:
+        console.print(f"  [red]Errors: {len(errors)}[/red]")
+        for doi, error in errors:
+            console.print(f"    {doi}: {error}")
+        raise typer.Exit(1)
 
 
 def main() -> None:

@@ -54,8 +54,9 @@ uv run palit assess-relevance --panel-date $PANEL_DATE
 # 2a. (Optional) Parallel assessment across multiple GPUs
 for i in 0 1; do sbatch -p GPU-H100 --gpus=1 -t 24:00:00 -J "assess-relevance-shard-$i" -o "assess_relevance_shard_$i.log" --wrap="uv run palit assess-relevance --panel-date $PANEL_DATE --db-path data/pubmed_baseline_screening.sqlite --prompt-path prompts/retrospective_screening_prompt.txt --shard-index $i --num-shards 2"; done
 
-# 3. Download full-text papers (automated PMC + manual fallback)
+# 3. Download full-text papers (automated PMC + preprints, manual fallback)
 uv run palit download-papers attempt-pmc
+uv run palit download-papers download-preprints
 uv run palit download-papers open-browser
 # ... manually download PDFs to data/papers/ ...
 uv run palit docling convert
@@ -75,6 +76,7 @@ uv run palit expand-literature --cutoff-date $PANEL_DATE
 
 # 7. Download expansion papers (same workflow as step 3)
 uv run palit download-papers attempt-pmc
+uv run palit download-papers download-preprints
 uv run palit download-papers open-browser --expansion-only
 # ... manually download PDFs to data/papers/ ...
 uv run palit docling convert
@@ -241,6 +243,7 @@ uv run palit reduce-literature --db-path data/$PANEL_NAME.sqlite
 
 # 4. Download full-text papers (now reduced set if step 3 was run)
 uv run palit download-papers attempt-pmc --db-path data/$PANEL_NAME.sqlite
+uv run palit download-papers download-preprints --db-path data/$PANEL_NAME.sqlite
 uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite
 # ... manually download PDFs ...
 uv run palit docling convert --db-path data/$PANEL_NAME.sqlite

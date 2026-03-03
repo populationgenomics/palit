@@ -711,7 +711,9 @@ def download_preprints_cmd(
     if errors:
         console.print(f"  [red]Errors: {len(errors)}[/red]")
         for doi, error in errors:
+            pdf_path = doi_to_path(doi, target_dir, ".pdf")
             console.print(f"    {doi}: {error}")
+            console.print(f"      Save to: {pdf_path}")
         raise typer.Exit(1)
 
 

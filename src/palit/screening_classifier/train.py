@@ -74,9 +74,7 @@ def load_data(db_path: Path, split: str) -> list[LabeledPaper]:
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT doi, title, abstract, is_relevant FROM papers WHERE split = ?", (split,)
-    )
+    cursor.execute("SELECT doi, title, abstract, is_relevant FROM papers WHERE split = ?", (split,))
     rows = cursor.fetchall()
     conn.close()
 

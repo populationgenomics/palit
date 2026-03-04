@@ -738,6 +738,31 @@ details.panel-recommendations .panel-details {
     margin-right: 4px;
 }
 
+.detailed-paper.paper-filtered {
+    opacity: 0.5;
+}
+
+.filtered-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.7em;
+    font-weight: 600;
+    text-transform: uppercase;
+    background: #f5f5f5;
+    color: #888;
+    border: 1px solid #ccc;
+    vertical-align: middle;
+    margin-right: 4px;
+}
+
+.filtered-reason {
+    font-size: 0.85em;
+    color: #888;
+    margin: 4px 0 0 0;
+    font-style: italic;
+}
+
 .contributing-preprints {
     margin-top: 20px;
     padding-top: 15px;

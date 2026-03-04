@@ -102,6 +102,9 @@ class Paper:
     source_details: str
 
 
+# Preprint quality gate: minimum unrelated families required
+MIN_PREPRINT_FAMILIES = 5
+
 # Preprint detection
 
 PREPRINT_SERVERS = {

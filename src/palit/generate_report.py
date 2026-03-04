@@ -182,6 +182,7 @@ class DetailedPaper:
     paper_id: str = ""  # AuthorYear short ID (computed per gene context)
     paper_gene_symbol: str | None = None
     variant_frequencies: list[VariantFrequency] = field(default_factory=list)
+    filtered_reason: str | None = None  # Set when paper was excluded from assessment
 
 
 @dataclass
@@ -260,6 +261,10 @@ class ComprehensiveStats:
     # MoI change stats
     moi_expansions_count: int
     moi_contradictions_count: int
+
+    # Preprint stats
+    preprints_relevant: int
+    papers_filtered: int
 
     # Relevance assessment unanimity stats
     non_unanimous_pct: float
@@ -576,7 +581,8 @@ def load_gene_assessments(
                 hgnc_id,
                 assessment_json,
                 paper_id_mapping,
-                matched_panels_json
+                matched_panels_json,
+                filtered_papers_json
             FROM gene_assessments
             ORDER BY hgnc_id
         """)
@@ -587,6 +593,9 @@ def load_gene_assessments(
             paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
             doi_to_paper_id = {doi: pid for pid, doi in paper_id_to_doi.items()}
             matched_panels = json.loads(row["matched_panels_json"] or "[]")
+            filtered_doi_reasons: dict[str, str] = {
+                fp["doi"]: fp["reason"] for fp in json.loads(row["filtered_papers_json"] or "[]")
+            }
 
             # Calculate rating from assessment
             new_rating = calculate_gene_rating(assessment_json)
@@ -710,8 +719,9 @@ def load_gene_assessments(
                     cursor, paper_row["doi"], citation_pages
                 )
 
+                doi = paper_row["doi"]
                 detailed_paper = DetailedPaper(
-                    doi=paper_row["doi"],
+                    doi=doi,
                     title=paper_row["title"] or "Unknown Title",
                     abstract=paper_row["abstract"],
                     authors=paper_row["authors"],
@@ -726,12 +736,16 @@ def load_gene_assessments(
                     pmid=paper_row["pmid"],
                     paper_gene_symbol=paper_row["paper_gene_symbol"],
                     variant_frequencies=paper_variant_frequencies,
+                    filtered_reason=filtered_doi_reasons.get(doi),
                 )
                 contributing_papers.append(detailed_paper)
 
             # Assign AuthorYear paper IDs from stored mapping
+            # Filtered papers aren't in the mapping (excluded from assessment)
             for paper in contributing_papers:
-                paper.paper_id = doi_to_paper_id[paper.doi]
+                paper_id = doi_to_paper_id.get(paper.doi)
+                if paper_id:
+                    paper.paper_id = paper_id
 
             # Load variant frequencies for this gene
             variant_frequencies = load_variant_frequencies_for_gene(
@@ -1238,6 +1252,14 @@ def calculate_comprehensive_statistics(
                 elif gene.moi_comparison["status"] == "contradiction":
                     moi_contradictions += 1
 
+        # Preprint stats (computed from already-loaded data)
+        preprint_dois = {
+            p.doi for gene in all_genes for p in gene.contributing_papers if p.preprint
+        }
+        papers_filtered = sum(
+            1 for gene in all_genes for p in gene.contributing_papers if p.filtered_reason
+        )
+
         return ComprehensiveStats(
             # Gene assessment stats
             total_genes_assessed=total_genes,
@@ -1258,6 +1280,9 @@ def calculate_comprehensive_statistics(
             # MoI change stats
             moi_expansions_count=moi_expansions,
             moi_contradictions_count=moi_contradictions,
+            # Preprint stats
+            preprints_relevant=len(preprint_dois),
+            papers_filtered=papers_filtered,
             # Relevance assessment unanimity stats
             non_unanimous_pct=non_unanimous_pct,
         )

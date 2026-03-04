@@ -127,7 +127,7 @@
             <li><strong>Publications:</strong> {% for paper in published_papers %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}</li>
             {% endif %}
             {% if preprint_papers %}
-            <li><strong>Preprints:</strong> {% for paper in preprint_papers %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}</li>
+            <li><strong>⚠️ Preprints:</strong> {% for paper in preprint_papers %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}</li>
             {% endif %}
         </ul>
 
@@ -395,9 +395,10 @@
 
     {# Unified macro for displaying papers - used across all sections #}
     {% macro paper_display(paper, include_evidence=false, gene=none, pdf_base_path="") %}
-    <article class="detailed-paper{% if paper.preprint %} paper-preprint{% endif %}">
+    <article class="detailed-paper{% if paper.preprint %} paper-preprint{% endif %}{% if paper.filtered_reason %} paper-filtered{% endif %}">
         <header class="paper-header">
             <h6>
+                {% if paper.filtered_reason %}<span class="filtered-badge">Excluded</span> {% endif %}
                 {% if paper.preprint %}<span class="preprint-badge">Preprint</span> {% endif %}
                 {% if paper.paper_id %}{{ paper.paper_id }}: {% endif %}{{ paper_link(paper) }} — {{ paper.title }}
             </h6>
@@ -413,6 +414,9 @@
                     </li>
                 </ul>
             </div>
+            {% if paper.filtered_reason %}
+            <p class="filtered-reason">{{ paper.filtered_reason }}</p>
+            {% endif %}
         </header>
 
         {% if paper.abstract %}
@@ -647,6 +651,8 @@
                 <li><strong>Panel Suggestions:</strong> {{ statistics.total_panel_suggestions }}</li>
                 <li><strong>Mode of Inheritance Expansions:</strong> {{ statistics.moi_expansions_count }}</li>
                 <li><strong>Mode of Inheritance Contradictions:</strong> {{ statistics.moi_contradictions_count }}</li>
+                <li><strong>Preprints with Evidence:</strong> {{ statistics.preprints_relevant }}</li>
+                {% if statistics.papers_filtered %}<li><strong>Papers Excluded (Preprint Family Gate):</strong> {{ statistics.papers_filtered }}</li>{% endif %}
                 <li><strong>Panel Publications Correctly Identified:</strong> {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% ({{ statistics.true_positives_count }}/{{ statistics.true_positives_count + statistics.false_negatives_count }})</li>
                 <li><strong>Non-Unanimous Relevance Assessments:</strong> {{ "%.1f"|format(statistics.non_unanimous_pct) }}%</li>
             </ul>

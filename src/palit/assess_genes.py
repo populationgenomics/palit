@@ -15,7 +15,7 @@ from palit.hgnc import HgncResolver
 from palit.mondo_lookup import MondoCandidate, MondoLookup
 from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
 from palit.panelapp_integration import MONDO_CATEGORIES
-from palit.papers import generate_paper_ids
+from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
 logger = logging.getLogger(__name__)
@@ -126,6 +126,54 @@ def find_gene_panel(
     return None
 
 
+def _max_family_count(evidence: dict[str, Any]) -> int | None:
+    """Compute max family_count across all disease entities in an evidence entry.
+
+    Returns None if all family_count values are None (not reported).
+    """
+    max_fc: int | None = None
+    for gene_eval in evidence.get("gene_evaluations", []):
+        for entity in gene_eval.get("disease_entities", []):
+            fc = entity.get("family_count")
+            if fc is not None:
+                max_fc = max(max_fc, fc) if max_fc is not None else fc
+    return max_fc
+
+
+def filter_preprint_evidence(
+    evidence_list: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split evidence into (kept, filtered) based on preprint family count gate.
+
+    Preprints with max family_count < MIN_PREPRINT_FAMILIES (or all null) are
+    filtered out. Published papers always pass.
+
+    Returns:
+        Tuple of (kept evidence, filtered evidence with doi+reason dicts)
+    """
+    kept: list[dict[str, Any]] = []
+    filtered: list[dict[str, Any]] = []
+    for evidence in evidence_list:
+        if not is_preprint(evidence.get("journal"), evidence.get("pmid")):
+            kept.append(evidence)
+            continue
+        max_fc = _max_family_count(evidence)
+        if max_fc is not None and max_fc >= MIN_PREPRINT_FAMILIES:
+            kept.append(evidence)
+        elif max_fc is None:
+            filtered.append(
+                {"doi": evidence["doi"], "reason": "Preprint: family count not reported"}
+            )
+        else:
+            filtered.append(
+                {
+                    "doi": evidence["doi"],
+                    "reason": f"Preprint: {max_fc} families (min {MIN_PREPRINT_FAMILIES} required)",
+                }
+            )
+    return kept, filtered
+
+
 def validate_box_ids_with_doi(
     parsed_json: dict[str, Any], valid_box_ids_by_doi: dict[str, set[int]]
 ) -> bool:
@@ -228,7 +276,7 @@ class PaperBatchProcessor:
 
             cursor.execute(
                 """
-                SELECT DISTINCT p.doi, p.source_date, p.title, p.authors,
+                SELECT DISTINCT p.doi, p.pmid, p.journal, p.source_date, p.title, p.authors,
                        p.evidence_extraction_json, gm.paper_gene_symbol
                 FROM papers p
                 JOIN gene_mentions gm ON p.doi = gm.paper_doi
@@ -254,6 +302,8 @@ class PaperBatchProcessor:
                         evidence_list.append(
                             {
                                 "doi": row["doi"],
+                                "pmid": row["pmid"],
+                                "journal": row["journal"],
                                 "date": row["source_date"],
                                 "title": row["title"],
                                 "authors": row["authors"],
@@ -274,6 +324,7 @@ class PaperBatchProcessor:
         hgnc_id: int,
         assessment_data: tuple[str, dict[str, Any]],
         paper_id_to_doi: dict[str, str],
+        filtered_papers: list[dict[str, str]] | None = None,
     ) -> None:
         """Store aggregate assessment result in gene_assessments table.
 
@@ -281,8 +332,10 @@ class PaperBatchProcessor:
             hgnc_id: HGNC ID of the gene
             assessment_data: Tuple of (raw_response, parsed_json)
             paper_id_to_doi: Mapping of AuthorYear paper IDs to DOIs used for this assessment
+            filtered_papers: Papers excluded from assessment [{doi, reason}]
         """
         raw_response, json_data = assessment_data
+        filtered_json = json.dumps(filtered_papers) if filtered_papers else None
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -291,10 +344,17 @@ class PaperBatchProcessor:
                 cursor.execute(
                     """
                     INSERT OR REPLACE INTO gene_assessments
-                    (hgnc_id, assessment_raw, assessment_json, paper_id_mapping)
-                    VALUES (?, ?, ?, ?)
+                    (hgnc_id, assessment_raw, assessment_json, paper_id_mapping,
+                     filtered_papers_json)
+                    VALUES (?, ?, ?, ?, ?)
                 """,
-                    (hgnc_id, raw_response, json.dumps(json_data), json.dumps(paper_id_to_doi)),
+                    (
+                        hgnc_id,
+                        raw_response,
+                        json.dumps(json_data),
+                        json.dumps(paper_id_to_doi),
+                        filtered_json,
+                    ),
                 )
 
                 conn.commit()
@@ -667,6 +727,21 @@ def main(
                     genes_without_evidence.add(hgnc_id)
                     continue
 
+                # Filter preprints below family count threshold
+                evidence_list, filtered_papers = filter_preprint_evidence(evidence_list)
+                if filtered_papers:
+                    filtered_dois = [fp["doi"] for fp in filtered_papers]
+                    logger.info(
+                        f"  Filtered {len(filtered_papers)} preprint(s) for {hgnc_symbol}: "
+                        f"{filtered_dois}"
+                    )
+                if not evidence_list:
+                    logger.info(
+                        f"Skipping {hgnc_symbol} — all papers filtered by preprint family gate"
+                    )
+                    genes_without_evidence.add(hgnc_id)
+                    continue
+
                 # Check if gene exists in any target panel
                 existing_panel_id = find_gene_panel(hgnc_id, panel_data.panel_ids, panel_data)
 
@@ -726,6 +801,7 @@ def main(
                         hgnc_id,
                         (result.raw_response, result.parsed_json),
                         paper_id_to_doi,
+                        filtered_papers=filtered_papers or None,
                     )
                     pass_processed += 1
                     pbar.update(1)

@@ -95,6 +95,7 @@ CREATE TABLE gene_assessments (
     assessment_raw TEXT,   -- Raw LLM response including reasoning
     assessment_json JSON,  -- Contains full aggregate assessment
     paper_id_mapping JSON NOT NULL,  -- {AuthorYear: DOI} mapping used during assessment
+    filtered_papers_json JSON,  -- [{doi, reason}] papers excluded from assessment (e.g. preprint family gate)
     matched_panels_raw TEXT,  -- Raw LLM response for panel matching including reasoning
     matched_panels_json JSON    -- Array: [{"panel_id": 137, "rationale": "..."}, ...]
 );

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import requests
+import httpx
 import tenacity
 import typer
 from rich.progress import (
@@ -144,12 +144,12 @@ def get_processed_dois(db_path: Path) -> set[str]:
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(5),
     wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
-    retry=tenacity.retry_if_exception_type(requests.exceptions.RequestException),
+    retry=tenacity.retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
     before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
 )
-def _gnomad_request(url: str, payload: dict[str, Any]) -> requests.Response:
+def _gnomad_request(url: str, payload: dict[str, Any]) -> httpx.Response:
     """Make a single gnomAD API request, retrying on network errors."""
-    response = requests.post(url, json=payload, timeout=30)
+    response = httpx.post(url, json=payload, timeout=30, follow_redirects=True)
     response.raise_for_status()
     return response
 
@@ -203,7 +203,7 @@ def query_gnomad_v4(variant_id: str) -> dict[str, Any]:
         data = result.get("data")
         return data if data is not None else {}
 
-    except requests.exceptions.RequestException as e:
+    except (httpx.HTTPStatusError, httpx.TransportError) as e:
         logger.warning(f"Network error querying gnomAD for {variant_id} after retries: {e}")
         return {"error": f"Network error: {e!s}"}
     except Exception as e:

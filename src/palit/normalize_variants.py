@@ -11,19 +11,16 @@ import logging
 import os
 import re
 import sqlite3
-import threading
 import urllib.parse as urlparse
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-import requests
+import httpx
+import tenacity
 import typer
 from defusedxml import ElementTree
 from pydantic import BaseModel, field_validator, model_validator
-from requests.adapters import HTTPAdapter, Retry
-from requests.exceptions import HTTPError, RetryError
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from palit.hgnc import HgncResolver
@@ -496,7 +493,7 @@ class VariantNormalizer:
             root = self._ncbi_client._efetch(
                 db="snp", id=",".join(uids), retmode="xml", rettype="xml"
             )
-        except HTTPError as e:
+        except httpx.HTTPStatusError as e:
             logger.warning(f"Unexpected error fetching HGVS data for rsids {','.join(uids)}: {e}")
             return {}
 
@@ -540,10 +537,8 @@ class _WebClientSettings(BaseModel):
     max_retries: int = 1  # Only retry once for transient failures
     retry_backoff: float = 0.5  # indicates progression of 0.5, 1, 2, 4, 8, etc. seconds
     retry_codes: list[int] = [429, 500, 502, 503, 504]  # rate-limit exceeded, server errors
-    no_raise_codes: list[int] = []  # don't raise exceptions for these codes
     content_type: str = "text"
     timeout: float = 10.0  # seconds - fail fast on timeouts
-    status_code_translator: Callable[[str, int, str], tuple[int, str]] | None = None
 
     @field_validator("content_type")
     @classmethod
@@ -557,36 +552,26 @@ class _WebClientSettings(BaseModel):
 
 
 class _WebClient:
-    """A web content client that uses the requests/urllib3 libraries."""
+    """A web content client that uses httpx + tenacity."""
 
     def __init__(self, settings: dict[str, Any] | None = None) -> None:
         self._settings = _WebClientSettings(**settings) if settings else _WebClientSettings()
-        self._session: requests.Session | None = None
-        self._session_lock = threading.Lock()
-        self._get_status_code = self._settings.status_code_translator or (lambda _, c, s: (c, s))
-
-    def _get_session(self) -> requests.Session:
-        """Get the session, initializing it if necessary (thread-safe)."""
-        if self._session is None:
-            with self._session_lock:
-                # Double-checked locking pattern
-                if self._session is None:
-                    self._session = requests.Session()
-                    retries = Retry(
-                        total=self._settings.max_retries,
-                        backoff_factor=self._settings.retry_backoff,
-                        status_forcelist=self._settings.retry_codes,
-                    )
-                    self._session.mount("https://", HTTPAdapter(max_retries=retries))
-                    self._session.mount("http://", HTTPAdapter(max_retries=retries))
-        return self._session
+        self._client = httpx.Client(follow_redirects=True)
+        self._get_content_with_retry = tenacity.retry(
+            stop=tenacity.stop_after_attempt(1 + self._settings.max_retries),
+            wait=tenacity.wait_exponential(multiplier=self._settings.retry_backoff),
+            retry=tenacity.retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+            reraise=True,
+        )(self._get_content)
 
     def _raise_for_status(self, url: str, code: int) -> None:
         """Raise an exception if the status code is not 2xx."""
-        if code >= 400 and code < 600 and code not in self._settings.no_raise_codes:
-            response = requests.Response()
-            response.status_code = code
-            raise HTTPError(f"Request failed with status code {code} for {url}", response=response)
+        if 400 <= code < 600:
+            raise httpx.HTTPStatusError(
+                f"Request failed with status code {code} for {url}",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(code),
+            )
 
     def _transform_content(self, text: str, content_type: str | None) -> Any:
         """Get the content from the response based on the provided content type."""
@@ -601,12 +586,22 @@ class _WebClient:
             raise ValueError(f"Invalid content type: {content_type}")
 
     def _get_content(self, url: str, data: dict[str, Any] | None = None) -> tuple[int, str]:
-        """GET (or POST) the text content at the provided URL."""
+        """GET (or POST) the text content at the provided URL.
+
+        Raises httpx.HTTPStatusError for retriable status codes so tenacity can retry them.
+        Non-retriable codes are returned normally for the caller to handle.
+        """
         if data is not None:
-            response = self._get_session().post(url, json=data, timeout=self._settings.timeout)
+            response = self._client.post(url, json=data, timeout=self._settings.timeout)
         else:
-            response = self._get_session().get(url, timeout=self._settings.timeout)
-        return self._get_status_code(url, response.status_code, response.text)
+            response = self._client.get(url, timeout=self._settings.timeout)
+        if response.status_code in self._settings.retry_codes:
+            raise httpx.HTTPStatusError(
+                f"Request failed with status code {response.status_code} for {url}",
+                request=response.request,
+                response=response,
+            )
+        return response.status_code, response.text
 
     def get(
         self,
@@ -617,7 +612,7 @@ class _WebClient:
     ) -> Any:
         """GET (or POST) the content at the provided URL."""
         full_url = f"{url}{url_extra or ''}"
-        code, content = self._get_content(full_url, data)
+        code, content = self._get_content_with_retry(full_url, data)
         self._raise_for_status(full_url, code)
         return self._transform_content(content, content_type)
 
@@ -735,7 +730,7 @@ class _RefSeqClient:
         return None
 
     def _download_binary_reference(self, url: str, target: str) -> None:
-        response = requests.get(url, timeout=60)
+        response = httpx.get(url, timeout=60, follow_redirects=True)
         response.raise_for_status()
 
         with open(target, "wb") as f:
@@ -877,23 +872,17 @@ class _MutalyzerClient:
         # Encode the hgvs string for use in a URL.
         encoded = urlparse.quote(hgvs)
 
-        # Response code of 422 signifies an unprocessable entity. This occurs when the description is syntactically
-        # invalid, but also occurs when the description is biologically invalid (e.g., the reference is incorrect).
-        # Mutalyzer's web client should be configured with no_raise_codes=[422] to avoid raising an exception.
-        # For at least one variant (NP_000099.2:p.R316X), Mutalyzer returns a 500 error, which it shouldn't (500
-        # is an internal server error). For now we interpret this as an unresolvable entity and return an empty dict.
+        # 422 = unprocessable entity (syntactically or biologically invalid description).
+        # 500 = Mutalyzer bug for specific variants (e.g., NP_000099.2:p.R316X); treat as unresolvable.
         url = f"https://mutalyzer.nl/api/normalize/{encoded}"
 
         try:
             response = self._web_client.get(url, content_type="json")
-        except (HTTPError, RetryError) as e:
+        except httpx.HTTPStatusError as e:
             logger.debug(f"{url} returned an error: {e}")
-            if isinstance(e, HTTPError) and e.response.status_code in (422, 500):
+            if e.response.status_code in (422, 500):
                 return {"error_message": f"Mutalyzer error ({e.response.status_code})"}
-            elif isinstance(e, RetryError) and "500 error" in str(e):
-                return {"error_message": "Mutalyzer system error"}
-            else:
-                raise e
+            raise
 
         if "errors" in response or ("custom" in response and "errors" in response["custom"]):
             error_dict = response.get("errors") or response["custom"]["errors"]

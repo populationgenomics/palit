@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import markdown
+import nh3
 import typer
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
@@ -1557,6 +1559,12 @@ def generate_html_report(
         return {"text": label, "label": label, "css": "specific"}
 
     env.filters["format_mondo_badge"] = format_mondo_badge
+    # Render markdown then sanitize to a strict allowlist of tags.
+    # This prevents LLM-generated summaries from injecting links, images, or scripts.
+    _summary_allowed_tags = {"p", "strong", "em"}
+    env.filters["markdown_to_html"] = lambda text: Markup(
+        nh3.clean(markdown.markdown(text), tags=_summary_allowed_tags)
+    )
 
     # Load custom CSS
     css_file = template_dir / "gene_report_styles.css"

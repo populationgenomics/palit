@@ -110,7 +110,7 @@
     {% macro evidence_summary(gene, pdf_base_path="") %}
     <div class="evidence-summary-expanded">
         <h5><strong>Summary</strong></h5>
-        <p>{{ gene.assessment_json.summary }}</p>
+        <div class="summary-content">{{ gene.assessment_json.summary | markdown_to_html }}</div>
 
         <h5><strong>Evidence Details</strong></h5>
         <ul>

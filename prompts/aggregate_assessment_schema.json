@@ -3,7 +3,7 @@
     "properties": {
         "summary": {
             "type": "string",
-            "description": "Prose narrative summarizing the gene-disease evidence. Should be brief by default (2-3 sentences), but allow more detail when warranted. Follow style: [paper_id(s)] report [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. Include key clinical features, functional evidence, and notable specifics."
+            "description": "Prose narrative summarizing the gene-disease evidence. For novel genes: brief prose (2-3 sentences). For genes with existing PanelApp reviews: three sections with bold markdown headers (**New evidence**: / **Prior reviews**: / **Assessment**:), or four sections if panel-scoped (adding **Panel relevance**:). Follow the format specified in the prompt."
         },
         "families": {"type": "string"},
         "variants": {"type": "string"},

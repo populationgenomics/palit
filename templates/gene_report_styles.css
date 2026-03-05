@@ -633,6 +633,18 @@ section > h2 {
     line-height: 1.4;
 }
 
+.summary-content p {
+    margin: 0.5em 0;
+}
+
+.summary-content p:first-child {
+    margin-top: 0;
+}
+
+.summary-content p:last-child {
+    margin-bottom: 0;
+}
+
 /* Panel Recommendations - Concise Display */
 details.panel-recommendations {
     margin: 15px 0;

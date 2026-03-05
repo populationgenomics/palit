@@ -1,12 +1,3 @@
-{% macro change_summary_guidance() -%}
-**Change summary** (CONDITIONAL - only include if changes detected):
-   If the new evidence expands the phenotypic spectrum (new distinct disease entities) or changes the mode of inheritance compared to previous reviews, add a brief paragraph specifying what changed. Include whichever apply; omit entirely if neither changed.
-
-   EXAMPLES:
-   - Phenotypic expansion only: "Phenotypic spectrum expanded to include adult-onset limb-girdle skeletal myopathy (16 families), distinct from the previously established dilated cardiomyopathy."
-   - Inheritance change only: "Mode of inheritance now includes biallelic (5 recessive families) alongside the established monoallelic pattern."
-   - Both: "Phenotypic spectrum expanded to include adult-onset limb-girdle skeletal myopathy (16 families), distinct from the previously established dilated cardiomyopathy. Mode of inheritance now includes biallelic (5 recessive families) alongside the established monoallelic pattern."
-{% endmacro %}
 You are a genetics expert performing AGGREGATE ASSESSMENT of evidence across multiple research papers for a specific gene, applying PanelApp Guidelines for rare disease diagnosis.
 
 AGGREGATE ASSESSMENT CONTEXT:
@@ -237,37 +228,25 @@ STRUCTURE:
 Use paragraph breaks for readability (e.g., break after protein function section).
 {% elif has_previous_reviews and not panel_formatted %}
 {# CASE 2: General + Has Reviews #}
-This gene has existing PanelApp reviews (shown below). Your summary should ADD to them, not repeat them.
+This gene has existing PanelApp reviews (shown below). Your summary must ADD to them, not repeat them.
 
 {{ previous_reviews_section }}
 
-STRUCTURE:
-1. **What's new**: Lead with what the new papers add
-2. **Context**: Reference previously reviewed evidence as context, not as new findings
-3. **Synthesis**: How new + existing evidence together supports the classification
+OUTPUT FORMAT — the summary field MUST use exactly these three bold markdown headers:
+
+**New evidence**: [what the new papers add — families, variants, phenotypes, functional data]
+
+**Prior reviews**: [what was already established in the PanelApp reviews above; if reviews are sparse, state the rating and panel concisely]
+
+**Assessment**: [how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable]
 
 EXAMPLES:
 
-✓ CORRECT - Adding to existing:
-  "Beyond the previously reviewed cardiomyopathy evidence, [Park2024] and [Lee2024] add 16 families with ACTN2 skeletal myopathy. The skeletal phenotype includes adult-onset limb-girdle weakness with dominant and recessive inheritance. Combined with the cardiomyopathy families, this brings the total to ~30 unrelated families."
+✓ "**New evidence**: [Park2024] and [Lee2024] add 16 families with ACTN2 skeletal myopathy, including adult-onset limb-girdle weakness with dominant and recessive inheritance.\n\n**Prior reviews**: The 2021 PanelApp review classified ACTN2 as GREEN based on 14 families with dilated cardiomyopathy and iPSC-CM functional validation.\n\n**Assessment**: Combined with the cardiomyopathy families, the total now exceeds 30 unrelated families. The expanded phenotypic spectrum reinforces the diagnostic-grade classification."
 
-✓ CORRECT - Referencing prior functional work:
-  "Building on the iPSC-CM functional validation ([Brown2021], previously reviewed), [Lee2024] and [Park2024] establish skeletal myopathy as a distinct ACTN2-associated phenotype with 16 families."
+✓ Sparse prior reviews: "**New evidence**: [Kim2024] reports 4 families with biallelic variants causing childhood-onset ataxia, with zebrafish rescue experiments.\n\n**Prior reviews**: Rated AMBER on the Mendeliome panel with no detailed reviewer commentary.\n\n**Assessment**: The new evidence meets Criterion A (4 unrelated families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
 
-✓ CORRECT - Acknowledging what remains unchanged:
-  "The cardiomyopathy evidence remains as previously reviewed. [Lee2024] and [Park2024] add a skeletal myopathy phenotype: 11 dominant families and 5 recessive families respectively."
-
-✗ WRONG - Treating previously reviewed as new:
-  "[Brown2021] reports 2 families with cardiomyopathy..."
-  (This paper is already reviewed - don't present its families as new findings)
-
-✗ WRONG - Ignoring existing reviews:
-  "22 families total across all papers..."
-  (This counts families from previously reviewed papers as if they're all new)
-
-If the new evidence does not add anything substantive beyond what was already reviewed, state this clearly rather than restating known findings.
-
-4. {{ change_summary_guidance() }}
+✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN (April 2022) based on 5 families with recessive loss-of-function alleles.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
 {% elif not has_previous_reviews and panel_formatted %}
 {# CASE 3: Panel-scoped + Novel #}
 Provide a prose narrative that synthesizes the gene-disease evidence AND explains why this gene belongs on the specified panel.
@@ -300,7 +279,7 @@ EXAMPLES:
   (No specific connection to the panel's scope or disorders)
 {% elif has_previous_reviews and panel_formatted %}
 {# CASE 4: Panel-scoped + Has Reviews #}
-This gene has existing PanelApp reviews (shown below). Your summary should ADD to them, not repeat them, AND explain why the gene belongs on this specific panel.
+This gene has existing PanelApp reviews (shown below). Your summary must ADD to them, not repeat them, AND explain why the gene belongs on this specific panel.
 
 {{ previous_reviews_section }}
 
@@ -308,27 +287,21 @@ This gene has existing PanelApp reviews (shown below). Your summary should ADD t
 
 {{ panel_formatted }}
 
-STRUCTURE:
-1. **What's new**: Lead with what the new papers add (do not restate previously reviewed evidence as new)
-2. **Panel relevance**: Explain WHY this gene's phenotype aligns with this panel's scope, referencing the panel's relevant disorders, disease group, or description
+OUTPUT FORMAT — the summary field MUST use exactly these four bold markdown headers:
+
+**New evidence**: [what the new papers add — families, variants, phenotypes, functional data]
+
+**Prior reviews**: [what was already established in the PanelApp reviews above; if reviews are sparse, state the rating and panel concisely]
+
+**Panel relevance**: [why this gene's phenotype aligns with this panel's scope, referencing the panel's relevant disorders or description]
+
+**Assessment**: [how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable]
 
 EXAMPLES:
 
-✓ CORRECT - Delta + panel relevance:
-  "Beyond the previously reviewed dilated cardiomyopathy evidence, [Park2024] and [Lee2024] add 16 families with ACTN2 skeletal myopathy. This strengthens the gene's relevance to the Inherited Muscle Disorders panel, as both cardiac and skeletal muscle phenotypes fall within the panel's scope."
+✓ "**New evidence**: [Park2024] and [Lee2024] add 16 families with ACTN2 skeletal myopathy.\n\n**Prior reviews**: Rated GREEN on the Inherited Cardiomyopathies panel based on dilated cardiomyopathy evidence.\n\n**Panel relevance**: Both cardiac and skeletal muscle phenotypes fall within the Inherited Muscle Disorders panel's scope.\n\n**Assessment**: The expanded phenotypic spectrum strengthens diagnostic-grade status."
 
-✓ CORRECT - No substantive new evidence, but confirming panel fit:
-  "The evidence remains as previously reviewed (3 families with dilated cardiomyopathy). This gene is relevant to the Inherited Cardiomyopathies panel because DCM is a core phenotype within the panel's scope of genetic cardiomyopathies."
-
-✗ WRONG - Delta without panel connection:
-  "[Park2024] and [Lee2024] add 16 families with skeletal myopathy."
-  (Fails to explain why this is relevant to the specific panel)
-
-✗ WRONG - Treating previously reviewed as new:
-  "[Brown2021] reports 2 families with cardiomyopathy..."
-  (This paper is already reviewed - don't present its findings as new)
-
-3. {{ change_summary_guidance() }}
+✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN based on 3 families with dilated cardiomyopathy.\n\n**Panel relevance**: DCM is a core phenotype within the Inherited Cardiomyopathies panel's scope of genetic cardiomyopathies.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
 {% endif %}
 IMPORTANT INSTRUCTIONS:
 - Focus on variants causing rare genetic diseases — including both germline variants and

@@ -492,9 +492,19 @@ class PanelAppClient:
 
         Returns:
             List of evaluation dicts with comments, ordered by most recent first.
-            Returns empty list if gene is not in the panel (404).
+            Returns empty list if gene is not in the panel.
         """
-        url = f"{self.base_url}/panels/{panel_id}/genes/HGNC:{hgnc_id}/evaluations/?include_comments=true"
+        # TEMPORARY WORKAROUND: The PanelApp API does not yet support the
+        # HGNC:{hgnc_id} lookup format for evaluations. Resolve the gene symbol
+        # from cached panel data and use that instead. Once the API supports
+        # HGNC ID lookups, revert to:
+        #   url = f"{self.base_url}/panels/{panel_id}/genes/HGNC:{hgnc_id}/evaluations/?include_comments=true"
+        gene_symbol = self._resolve_gene_symbol(panel_id, hgnc_id)
+        if gene_symbol is None:
+            logger.debug(f"HGNC:{hgnc_id} not found in cached panel {panel_id}")
+            return []
+
+        url = f"{self.base_url}/panels/{panel_id}/genes/{gene_symbol}/evaluations/?include_comments=true"
 
         with httpx.Client(timeout=self.timeout) as client:
             try:
@@ -506,9 +516,27 @@ class PanelAppClient:
                 return results
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
-                    logger.debug(f"HGNC:{hgnc_id} not found in panel {panel_id}")
+                    logger.debug(
+                        f"Gene {gene_symbol} (HGNC:{hgnc_id}) not found in panel {panel_id}"
+                    )
                     return []
                 raise
+
+    def _resolve_gene_symbol(self, panel_id: int, hgnc_id: int) -> str | None:
+        """Resolve HGNC ID to gene symbol from cached panel data.
+
+        TEMPORARY: Remove this method once the PanelApp API supports HGNC ID
+        lookups in the evaluations endpoint.
+        """
+        panel_data = self._ensure_cache_loaded().get(panel_id)
+        if panel_data is None:
+            return None
+        for entity in panel_data.get("genes", []) + panel_data.get("strs", []):
+            gene_data = entity.get("gene_data", {})
+            hgnc_id_str = gene_data.get("hgnc_id")
+            if hgnc_id_str and _parse_hgnc_id(hgnc_id_str) == hgnc_id:
+                return str(gene_data["hgnc_symbol"])
+        return None
 
 
 def get_current_panel_publications(

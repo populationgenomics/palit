@@ -4,6 +4,7 @@
 import logging
 
 import typer
+from rich.logging import RichHandler
 
 # Always-available commands (no optional dependencies)
 from palit import (
@@ -29,7 +30,8 @@ def setup_logging(log_level: str) -> None:
     """Configure logging for all commands."""
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        format="%(name)s - %(message)s",
+        handlers=[RichHandler(rich_tracebacks=True, show_path=False)],
     )
 
 

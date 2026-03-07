@@ -430,7 +430,7 @@ def _retry_errored_variants(db_path: Path) -> None:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, variant_id, hgnc_id
+            SELECT id, variant_id
             FROM variant_frequencies
             WHERE json_extract(gnomad, '$.error') IS NOT NULL
         """)
@@ -440,29 +440,41 @@ def _retry_errored_variants(db_path: Path) -> None:
         print("No errored variants found.")
         return
 
-    print(f"Found {len(error_rows)} variants with errors. Retrying...")
-
     fixed = 0
     still_errored = 0
-    for row in error_rows:
-        row_id = row["id"]
-        variant_id = row["variant_id"]
-        hgnc_id = row["hgnc_id"]
 
-        gnomad_result = query_gnomad_v4(variant_id)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("({task.completed}/{task.total})"),
+        TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task("Retrying errored variants...", total=len(error_rows))
 
-        if "error" in gnomad_result:
-            still_errored += 1
-            print(f"  Still failing: HGNC:{hgnc_id} {variant_id}: {gnomad_result['error']}")
-        else:
-            fixed += 1
-            with sqlite3.connect(db_path) as conn:
-                conn.execute(
-                    "UPDATE variant_frequencies SET gnomad = ? WHERE id = ?",
-                    (json.dumps(gnomad_result), row_id),
-                )
-                conn.commit()
-            print(f"  Fixed: HGNC:{hgnc_id} {variant_id}")
+        for row in error_rows:
+            row_id = row["id"]
+            variant_id = row["variant_id"]
+
+            gnomad_result = query_gnomad_v4(variant_id)
+
+            if "error" in gnomad_result:
+                still_errored += 1
+            else:
+                fixed += 1
+                with sqlite3.connect(db_path) as conn:
+                    conn.execute(
+                        "UPDATE variant_frequencies SET gnomad = ? WHERE id = ?",
+                        (json.dumps(gnomad_result), row_id),
+                    )
+                    conn.commit()
+
+            progress.update(
+                task,
+                advance=1,
+                description=f"[green]Fixed: {fixed}[/green] | [red]Failed: {still_errored}[/red]",
+            )
 
     print(f"\nDone. Fixed: {fixed}, still errored: {still_errored}")
 

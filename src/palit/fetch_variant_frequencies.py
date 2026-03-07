@@ -203,7 +203,7 @@ def query_gnomad_v4(variant_id: str) -> dict[str, Any]:
         data = result.get("data")
         return data if data is not None else {}
 
-    except (httpx.HTTPStatusError, httpx.TransportError) as e:
+    except (httpx.HTTPStatusError, httpx.TransportError, tenacity.RetryError) as e:
         logger.warning(f"Network error querying gnomAD for {variant_id} after retries: {e}")
         return {"error": f"Network error: {e!s}"}
     except Exception as e:

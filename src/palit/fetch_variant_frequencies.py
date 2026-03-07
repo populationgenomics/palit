@@ -142,8 +142,8 @@ def get_processed_dois(db_path: Path) -> set[str]:
 
 
 @tenacity.retry(
-    stop=tenacity.stop_after_attempt(5),
-    wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
+    stop=tenacity.stop_after_attempt(7),
+    wait=tenacity.wait_exponential_jitter(initial=2, max=120),
     retry=tenacity.retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
     before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
 )

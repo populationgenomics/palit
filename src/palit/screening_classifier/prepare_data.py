@@ -18,7 +18,8 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.progress import Progress
+
+from palit.progress import LoggingProgress as Progress
 
 console = Console()
 logger = logging.getLogger(__name__)

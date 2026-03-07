@@ -14,7 +14,6 @@ import tenacity
 import typer
 from rich.progress import (
     BarColumn,
-    Progress,
     SpinnerColumn,
     TaskProgressColumn,
     TextColumn,
@@ -23,6 +22,7 @@ from rich.progress import (
 
 from palit.hgnc import HgncResolver
 from palit.normalize_variants import VariantNormalizer
+from palit.progress import LoggingProgress as Progress
 
 logger = logging.getLogger(__name__)
 

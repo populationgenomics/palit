@@ -18,11 +18,11 @@ import typer
 from defusedxml import ElementTree as ET
 from pypdf import PdfWriter
 from rich.console import Console
-from rich.progress import Progress
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from palit.panelapp_client import PanelAppClient
 from palit.papers import doi_to_path
+from palit.progress import LoggingProgress as Progress
 
 console = Console()
 app = typer.Typer(help="Download papers workflow: Automated PMC/preprint download and PDF matching")

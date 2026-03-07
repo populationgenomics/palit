@@ -15,7 +15,6 @@ from pathlib import Path
 import typer
 from lxml import etree
 from rich.console import Console
-from rich.progress import Progress
 
 from palit.papers import (
     Paper,
@@ -24,6 +23,7 @@ from palit.papers import (
     load_previous_dois,
     serialize_source_metadata,
 )
+from palit.progress import LoggingProgress as Progress
 
 console = Console()
 app = typer.Typer(help="Download and ingest PubMed papers")

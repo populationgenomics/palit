@@ -20,7 +20,6 @@ import typer
 from rich.console import Console
 from rich.progress import (
     BarColumn,
-    Progress,
     SpinnerColumn,
     TextColumn,
     TimeElapsedColumn,
@@ -31,6 +30,7 @@ from transformers import DataCollatorWithPadding
 
 from palit.ingest_pubmed import extract_papers_from_xml
 from palit.papers import Paper, serialize_source_metadata
+from palit.progress import LoggingProgress as Progress
 from palit.screening_classifier.inference import (
     LabeledPaper,
     LoadedCheckpoint,

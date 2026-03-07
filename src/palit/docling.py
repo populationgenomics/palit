@@ -24,9 +24,9 @@ from docling_core.transforms.serializer.markdown import (
 from docling_core.types.doc import DoclingDocument, PictureItem, TableItem, TextItem
 from pydantic import Field
 from rich.console import Console
-from rich.progress import Progress
 
 from palit.papers import doi_to_path
+from palit.progress import LoggingProgress as Progress
 
 logger = logging.getLogger(__name__)
 

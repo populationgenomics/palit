@@ -21,9 +21,10 @@ import tenacity
 import typer
 from defusedxml import ElementTree
 from pydantic import BaseModel, field_validator, model_validator
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
+from rich.progress import BarColumn, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from palit.hgnc import HgncResolver
+from palit.progress import LoggingProgress as Progress
 
 logger = logging.getLogger(__name__)
 

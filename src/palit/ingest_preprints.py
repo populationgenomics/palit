@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import typer
 from rich.console import Console
-from rich.progress import Progress, TaskID
+from rich.progress import TaskID
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from palit.papers import (
@@ -21,6 +21,7 @@ from palit.papers import (
     load_previous_dois,
     serialize_source_metadata,
 )
+from palit.progress import LoggingProgress as Progress
 
 console = Console()
 app = typer.Typer(help="Download and ingest preprints from bioRxiv, medRxiv, and Research Square")

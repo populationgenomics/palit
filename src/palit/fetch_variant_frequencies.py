@@ -141,14 +141,23 @@ def get_processed_dois(db_path: Path) -> set[str]:
         return {row[0] for row in cursor.fetchall()}
 
 
+def _is_retryable(exc: BaseException) -> bool:
+    """Only retry on transient errors: 429, 5xx, and transport-level failures."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
+    return False
+
+
 @tenacity.retry(
     stop=tenacity.stop_after_attempt(7),
     wait=tenacity.wait_exponential_jitter(initial=2, max=120),
-    retry=tenacity.retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+    retry=tenacity.retry_if_exception(_is_retryable),
     before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
 )
 def _gnomad_request(url: str, payload: dict[str, Any]) -> httpx.Response:
-    """Make a single gnomAD API request, retrying on network errors."""
+    """Make a single gnomAD API request, retrying on transient errors."""
     response = httpx.post(url, json=payload, timeout=30, follow_redirects=True)
     response.raise_for_status()
     return response

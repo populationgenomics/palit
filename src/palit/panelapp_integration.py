@@ -57,6 +57,7 @@ PANELAPP_MOI_TO_ENUM.update(
         "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted": "Monoallelic",
         "MONOALLELIC, autosomal or pseudoautosomal, maternally imprinted (paternal allele expressed)": "Monoallelic",
         "MONOALLELIC, autosomal or pseudoautosomal, paternally imprinted (maternal allele expressed)": "Monoallelic",
+        "MONOALLELIC, autosomal or pseudoautosomal, imprinted status unknown": "Monoallelic",
         "BOTH monoallelic and biallelic (but BIALLELIC mutations cause a more SEVERE disease form), autosomal or pseudoautosomal": "Monoallelic_and_biallelic",
         "X-LINKED: hemizygous mutation in males, biallelic mutations in females": "X-linked",
         "Unknown": "Other",

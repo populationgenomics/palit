@@ -1542,7 +1542,10 @@ def generate_html_report(
     env.filters["prepare_citation_links"] = prepare_aggregate_citation_links
     env.filters["get_variant_flag"] = get_variant_frequency_flag
     env.filters["confidence_to_color"] = panelapp_confidence_to_color
-    env.filters["encode_doi"] = lambda doi: quote(doi, safe="")
+    # Double-encode: first quote produces the on-disk filename (e.g. 10.1038%2Fxyz),
+    # second quote escapes the % for use in file:/// URLs so browsers don't
+    # decode %2F back to / (e.g. 10.1038%252Fxyz → opens 10.1038%2Fxyz.pdf).
+    env.filters["encode_doi"] = lambda doi: quote(quote(doi, safe=""), safe="")
     env.filters["derive_moi"] = lambda pgs: derive_aggregate_moi(pgs)[0]
     env.filters["derive_moi_details"] = lambda pgs: derive_aggregate_moi(pgs)[1]
 

@@ -384,7 +384,7 @@
                 <td>
                     <a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>
                     {% if variant.citation_page %}
-                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ variant.doi | encode_doi }}.pdf#page={{ variant.citation_page }}" target="_blank">[p{{ variant.citation_page }}]</a>
+                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ variant.doi | encode_doi }}.pdf#page={{ variant.citation_page }}" target="_blank">[{{ variant.display_id }}:p{{ variant.citation_page }}]</a>
                     {% endif %}
                 </td>
             </tr>

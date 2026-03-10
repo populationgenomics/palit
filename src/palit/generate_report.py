@@ -166,6 +166,7 @@ class VariantFrequency:
     gnomad_faf95_popmax_population: str | None  # Population name for FAF95
     gnomad_link: str  # Direct link to gnomAD
     citation_page: int | None  # PDF page number for citation
+    display_id: str  # "PMID {pmid}" for published papers, AuthorYear for preprints
     gnomad_not_found: bool  # True if variant not found in gnomAD
     gnomad_error: str | None  # Error message if gnomAD lookup failed
 
@@ -365,6 +366,7 @@ def _create_variant_frequency_from_db_row(
     normalization: dict[str, Any],
     gnomad: dict[str, Any],
     citation_page: int | None,
+    display_id: str,
 ) -> VariantFrequency:
     """Create a VariantFrequency object from database row data."""
     gnomad_not_found = "variant_not_found" in gnomad
@@ -417,6 +419,7 @@ def _create_variant_frequency_from_db_row(
         gnomad_faf95_popmax_population=gnomad_faf95_popmax_population,
         gnomad_link=f"https://gnomad.broadinstitute.org/variant/{variant_id}?dataset=gnomad_r4",
         citation_page=citation_page,
+        display_id=display_id,
         gnomad_not_found=gnomad_not_found,
         gnomad_error=gnomad_error,
     )
@@ -435,9 +438,11 @@ def load_variant_frequencies_for_gene(
     Returns:
         List of VariantFrequency objects with gnomAD data and citation info
     """
-    # Create lookup for bbox mappings from contributing papers
+    # Create lookups from contributing papers
     bbox_mappings = {}
+    display_ids: dict[str, str] = {}
     for paper in contributing_papers:
+        display_ids[paper.doi] = paper.display_id
         if paper.citation_pages:
             bbox_mappings[paper.doi] = paper.citation_pages
 
@@ -484,6 +489,7 @@ def load_variant_frequencies_for_gene(
             normalization=normalization,
             gnomad=gnomad,
             citation_page=citation_page,
+            display_id=display_ids[doi],
         )
         variant_frequencies.append(variant_freq)
 
@@ -491,7 +497,7 @@ def load_variant_frequencies_for_gene(
 
 
 def load_variant_frequencies_for_paper(
-    cursor: sqlite3.Cursor, doi: str, citation_pages: dict[int, int] | None
+    cursor: sqlite3.Cursor, doi: str, display_id: str, citation_pages: dict[int, int] | None
 ) -> list[VariantFrequency]:
     """Load variant frequency information for a specific paper.
 
@@ -544,6 +550,7 @@ def load_variant_frequencies_for_paper(
             normalization=normalization,
             gnomad=gnomad,
             citation_page=citation_page,
+            display_id=display_id,
         )
         variant_frequencies.append(variant_freq)
 
@@ -721,11 +728,6 @@ def load_gene_assessments(
                             f"Failed to parse bbox mapping for DOI {paper_row['doi']}: {e}"
                         )
 
-                # Load variant frequencies for this paper
-                paper_variant_frequencies = load_variant_frequencies_for_paper(
-                    cursor, paper_row["doi"], citation_pages
-                )
-
                 doi = paper_row["doi"]
                 detailed_paper = DetailedPaper(
                     doi=doi,
@@ -742,7 +744,6 @@ def load_gene_assessments(
                     preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
                     pmid=paper_row["pmid"],
                     paper_gene_symbol=paper_row["paper_gene_symbol"],
-                    variant_frequencies=paper_variant_frequencies,
                     filtered_reason=filtered_doi_reasons.get(doi),
                 )
                 contributing_papers.append(detailed_paper)
@@ -751,11 +752,14 @@ def load_gene_assessments(
             doi_to_pmid = {p.doi: p.pmid for p in contributing_papers if p.pmid is not None}
             display_ids = build_display_ids(paper_id_to_doi, doi_to_pmid)
             assessment_json = replace_paper_ids_for_display(assessment_json, display_ids)
-            # Assign display IDs to paper objects (filtered papers aren't in the mapping)
+            # Assign display IDs and load per-paper variant frequencies
             doi_to_display_id = {paper_id_to_doi[pid]: did for pid, did in display_ids.items()}
             for paper in contributing_papers:
                 if paper.doi in doi_to_display_id:
                     paper.display_id = doi_to_display_id[paper.doi]
+                paper.variant_frequencies = load_variant_frequencies_for_paper(
+                    cursor, paper.doi, paper.display_id, paper.citation_pages
+                )
 
             # Load variant frequencies for this gene
             variant_frequencies = load_variant_frequencies_for_gene(

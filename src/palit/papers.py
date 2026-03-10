@@ -198,6 +198,47 @@ def generate_paper_ids(
     return paper_id_to_doi, doi_to_paper_id
 
 
+def build_display_ids(
+    paper_id_to_doi: dict[str, str],
+    doi_to_pmid: dict[str, int],
+) -> dict[str, str]:
+    """Map AuthorYear paper IDs to human display format.
+
+    Papers with a PMID become "PMID {pmid}".
+    Preprints (no PMID) keep their AuthorYear ID.
+    """
+    display_ids: dict[str, str] = {}
+    for paper_id, doi in paper_id_to_doi.items():
+        pmid = doi_to_pmid.get(doi)
+        if pmid is not None:
+            display_ids[paper_id] = f"PMID {pmid}"
+        else:
+            display_ids[paper_id] = paper_id
+    return display_ids
+
+
+def replace_paper_ids_for_display(
+    data: dict[str, Any],
+    display_ids: dict[str, str],
+) -> dict[str, Any]:
+    """Replace AuthorYear paper IDs with display format in a JSON-serializable dict.
+
+    Serializes to JSON, regex-replaces all AuthorYear occurrences, deserializes back.
+    Keys are sorted by length descending so "Smith2024a" matches before "Smith2024".
+    """
+    ids_to_replace = [(pid, did) for pid, did in display_ids.items() if pid != did]
+    if not ids_to_replace:
+        return data
+    # Sort by length descending so "Smith2024a" matches before "Smith2024" in the regex
+    ids_to_replace.sort(key=lambda x: len(x[0]), reverse=True)
+    replacements = dict(ids_to_replace)  # preserves sort order (Python 3.7+)
+    pattern = re.compile("|".join(rf"\b{re.escape(pid)}\b" for pid in replacements))
+    text = json.dumps(data)
+    text = pattern.sub(lambda m: replacements[m.group()], text)
+    result: dict[str, Any] = json.loads(text)
+    return result
+
+
 def load_previous_dois(db_path: Path) -> set[str]:
     """Load all DOIs from a previous run's database.
 

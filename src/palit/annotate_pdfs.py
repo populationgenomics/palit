@@ -21,7 +21,7 @@ from pypdf.generic import (
 from palit.docling import parse_bbox_mapping_from_json
 from palit.hgnc import HgncResolver
 from palit.panelapp_integration import PANELAPP_CRITERIA
-from palit.papers import doi_to_path
+from palit.papers import build_display_ids, doi_to_path, replace_paper_ids_for_display
 
 app = typer.Typer(help="Create annotated PDFs with citation highlighting")
 logger = logging.getLogger(__name__)
@@ -468,11 +468,18 @@ def main(
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
+        # Pre-load DOI→PMID mapping for display ID generation
+        doi_to_pmid: dict[str, int] = {
+            row["doi"]: row["pmid"]
+            for row in cursor.execute("SELECT doi, pmid FROM papers WHERE pmid IS NOT NULL")
+        }
+
         # Get all gene assessments with their paper citations (all sources)
         cursor.execute("""
             SELECT DISTINCT
                 ga.hgnc_id,
                 ga.assessment_json,
+                ga.paper_id_mapping,
                 p.doi,
                 p.bbox_mapping
             FROM gene_assessments ga
@@ -487,7 +494,11 @@ def main(
         for row in cursor.fetchall():
             hgnc_id = row["hgnc_id"]
             doi = row["doi"]
-            assessment_json = json.loads(row["assessment_json"])
+            paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
+            display_ids = build_display_ids(paper_id_to_doi, doi_to_pmid)
+            assessment_json = replace_paper_ids_for_display(
+                json.loads(row["assessment_json"]), display_ids
+            )
             bbox_mapping = parse_bbox_mapping_from_json(row["bbox_mapping"])
 
             key = (hgnc_id, doi)

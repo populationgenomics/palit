@@ -33,7 +33,12 @@ from palit.panelapp_integration import (
     panelapp_confidence_to_color,
     prepare_prefill_data,
 )
-from palit.papers import doi_to_path, is_preprint
+from palit.papers import (
+    build_display_ids,
+    doi_to_path,
+    is_preprint,
+    replace_paper_ids_for_display,
+)
 from palit.relevance import compute_relevance_majority_vote
 
 logger = logging.getLogger(__name__)
@@ -136,7 +141,7 @@ def compare_moi(
 class CitationLink:
     """A resolved link from an assessment citation to an annotated PDF page."""
 
-    paper_id: str  # AuthorYear short ID
+    display_id: str  # "PMID {pmid}" for published papers, AuthorYear for preprints
     doi: str
     page: int
 
@@ -181,7 +186,7 @@ class DetailedPaper:
     citation_pages: dict[int, int] | None  # box_id -> page number
     preprint: bool = False
     pmid: int | None = None  # For PubMed display links
-    paper_id: str = ""  # AuthorYear short ID (computed per gene context)
+    display_id: str = ""  # "PMID {pmid}" for published papers, AuthorYear for preprints
     paper_gene_symbol: str | None = None
     variant_frequencies: list[VariantFrequency] = field(default_factory=list)
     filtered_reason: str | None = None  # Set when paper was excluded from assessment
@@ -593,7 +598,6 @@ def load_gene_assessments(
             hgnc_id: int = row["hgnc_id"]
             assessment_json = json.loads(row["assessment_json"])
             paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
-            doi_to_paper_id = {doi: pid for pid, doi in paper_id_to_doi.items()}
             matched_panels = json.loads(row["matched_panels_json"] or "[]")
             filtered_doi_reasons: dict[str, str] = {
                 fp["doi"]: fp["reason"] for fp in json.loads(row["filtered_papers_json"] or "[]")
@@ -742,12 +746,15 @@ def load_gene_assessments(
                 )
                 contributing_papers.append(detailed_paper)
 
-            # Assign AuthorYear paper IDs from stored mapping
-            # Filtered papers aren't in the mapping (excluded from assessment)
+            # Replace AuthorYear paper IDs with PMID display format
+            doi_to_pmid = {p.doi: p.pmid for p in contributing_papers if p.pmid is not None}
+            display_ids = build_display_ids(paper_id_to_doi, doi_to_pmid)
+            assessment_json = replace_paper_ids_for_display(assessment_json, display_ids)
+            # Assign display IDs to paper objects (filtered papers aren't in the mapping)
+            doi_to_display_id = {paper_id_to_doi[pid]: did for pid, did in display_ids.items()}
             for paper in contributing_papers:
-                paper_id = doi_to_paper_id.get(paper.doi)
-                if paper_id:
-                    paper.paper_id = paper_id
+                if paper.doi in doi_to_display_id:
+                    paper.display_id = doi_to_display_id[paper.doi]
 
             # Load variant frequencies for this gene
             variant_frequencies = load_variant_frequencies_for_gene(
@@ -1418,10 +1425,10 @@ def prepare_aggregate_citation_links(
                     and box_id in paper.citation_pages
                 ):
                     page = paper.citation_pages[box_id]
-                    links.add(CitationLink(paper_id=paper.paper_id, doi=paper.doi, page=page))
+                    links.add(CitationLink(display_id=paper.display_id, doi=paper.doi, page=page))
                     break
 
-    return sorted(links, key=lambda link: (link.paper_id, link.page))
+    return sorted(links, key=lambda link: (link.display_id, link.page))
 
 
 def build_report_config(

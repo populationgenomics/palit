@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import markdown
 import nh3
@@ -1541,6 +1542,7 @@ def generate_html_report(
     env.filters["prepare_citation_links"] = prepare_aggregate_citation_links
     env.filters["get_variant_flag"] = get_variant_frequency_flag
     env.filters["confidence_to_color"] = panelapp_confidence_to_color
+    env.filters["encode_doi"] = lambda doi: quote(doi, safe="")
     env.filters["derive_moi"] = lambda pgs: derive_aggregate_moi(pgs)[0]
     env.filters["derive_moi_details"] = lambda pgs: derive_aggregate_moi(pgs)[1]
 

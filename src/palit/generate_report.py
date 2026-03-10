@@ -1550,6 +1550,7 @@ def generate_html_report(
     # second quote escapes the % for use in file:/// URLs so browsers don't
     # decode %2F back to / (e.g. 10.1038%252Fxyz → opens 10.1038%2Fxyz.pdf).
     env.filters["encode_doi"] = lambda doi: quote(quote(doi, safe=""), safe="")
+    env.filters["short_id"] = lambda display_id: display_id.removeprefix("PMID ")
     env.filters["derive_moi"] = lambda pgs: derive_aggregate_moi(pgs)[0]
     env.filters["derive_moi_details"] = lambda pgs: derive_aggregate_moi(pgs)[1]
 

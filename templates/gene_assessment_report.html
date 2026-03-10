@@ -98,7 +98,7 @@
                     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
                     <td>{{ entity.patient_count }}</td>
                     <td {% if entity.family_count is not none and entity.family_count == max_family_count and max_family_count > 0 %}class="disease-entity-max-family-count" data-title="Maximum family count - used for classification"{% endif %}>{% if entity.family_count is not none %}{{ entity.family_count }}{% else %}NR{% endif %}</td>
-                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for link in citation_links %}<a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id }}:p{{ link.page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
+                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for link in citation_links %}<a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id | short_id }}:p{{ link.page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
@@ -154,7 +154,7 @@
                     {% if concern.citations %}
                     {% set citation_links = concern.citations | prepare_citation_links(gene.contributing_papers) %}
                     {% for link in citation_links %}
-                    <a href="{{ pdf_base_path }}/{{ gene.hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id }}:p{{ link.page }}]</a>
+                    <a href="{{ pdf_base_path }}/{{ gene.hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id | short_id }}:p{{ link.page }}]</a>
                     {% endfor %}
                     {% endif %}
                 </li>
@@ -189,7 +189,7 @@
                             {{ citation.commentary }}
                             {% set citation_links = [citation] | prepare_citation_links(contributing_papers) %}
                             {% for link in citation_links %}
-                            <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id }}:p{{ link.page }}]</a>
+                            <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id | short_id }}:p{{ link.page }}]</a>
                             {% endfor %}
                         </li>
                         {% endfor %}
@@ -199,7 +199,7 @@
                         <li>
                             {{ citation.commentary }}
                             {% if citation.box_id and citation.box_id in citation_pages %}
-                            <a href="{{ pdf_base_path }}/individual/{{ doi | encode_doi }}.pdf#page={{ citation_pages[citation.box_id] }}" target="_blank">[{{ display_id }}:p{{ citation_pages[citation.box_id] }}]</a>
+                            <a href="{{ pdf_base_path }}/individual/{{ doi | encode_doi }}.pdf#page={{ citation_pages[citation.box_id] }}" target="_blank">[{{ display_id | short_id }}:p{{ citation_pages[citation.box_id] }}]</a>
                             {% endif %}
                         </li>
                         {% endfor %}
@@ -384,7 +384,7 @@
                 <td>
                     <a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>
                     {% if variant.citation_page %}
-                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ variant.doi | encode_doi }}.pdf#page={{ variant.citation_page }}" target="_blank">[{{ variant.display_id }}:p{{ variant.citation_page }}]</a>
+                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ variant.doi | encode_doi }}.pdf#page={{ variant.citation_page }}" target="_blank">[{{ variant.display_id | short_id }}:p{{ variant.citation_page }}]</a>
                     {% endif %}
                 </td>
             </tr>
@@ -474,7 +474,7 @@
                                 {% if concern.citations and paper.citation_pages %}
                                 {% for citation in concern.citations %}
                                 {% if citation.box_id and citation.box_id in paper.citation_pages %}
-                                <a href="{{ pdf_base_path }}/individual/{{ paper.doi | encode_doi }}.pdf#page={{ paper.citation_pages[citation.box_id] }}" target="_blank">[{{ paper.display_id }}:p{{ paper.citation_pages[citation.box_id] }}]</a>
+                                <a href="{{ pdf_base_path }}/individual/{{ paper.doi | encode_doi }}.pdf#page={{ paper.citation_pages[citation.box_id] }}" target="_blank">[{{ paper.display_id | short_id }}:p{{ paper.citation_pages[citation.box_id] }}]</a>
                                 {% endif %}
                                 {% endfor %}
                                 {% endif %}

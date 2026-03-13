@@ -43,8 +43,8 @@
                                 },
                                 "mondo_id": {
                                     "type": "string",
-                                    "enum": ["MONDO:0700092", "MONDO:0003778", "MONDO:0002254", "MONDO:0044970"],
-                                    "description": "Disease category classification. MONDO:0700092 = Neurodevelopmental disorder, MONDO:0003778 = Inborn error of immunity, MONDO:0002254 = Syndromic disease, MONDO:0044970 = Mitochondrial disease. If gene is mitochondrial, always select MONDO:0044970. Otherwise select most specific category."
+                                    "enum": ["MONDO:0700092", "MONDO:0003778", "MONDO:0002254", "MONDO:0005047", "MONDO:0044970"],
+                                    "description": "Disease category classification. MONDO:0700092 = Neurodevelopmental disorder, MONDO:0003778 = Inborn error of immunity, MONDO:0002254 = Syndromic disease, MONDO:0005047 = Infertility disorder, MONDO:0044970 = Mitochondrial disease. If gene is mitochondrial, always select MONDO:0044970. Otherwise select most specific category."
                                 },
                                 "patient_count": {
                                     "type": "integer",

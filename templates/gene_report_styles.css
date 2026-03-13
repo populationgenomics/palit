@@ -470,6 +470,12 @@ section > h2 {
     border: 1px solid #ef9a9a;
 }
 
+.mondo-if {
+    background: #e8f5e9;
+    color: #2e7d32;
+    border: 1px solid #81c784;
+}
+
 .mondo-specific {
     background: #f5f5f5;
     color: #424242;

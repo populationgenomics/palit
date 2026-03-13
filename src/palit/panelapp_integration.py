@@ -32,6 +32,7 @@ PANELAPP_CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D",
 MONDO_CATEGORIES = {
     "MONDO:0002254": {"abbrev": "Synd", "label": "Syndromic disease"},
     "MONDO:0003778": {"abbrev": "IEI", "label": "Inborn error of immunity"},
+    "MONDO:0005047": {"abbrev": "IF", "label": "Infertility disorder"},
     "MONDO:0044970": {"abbrev": "Mito", "label": "Mitochondrial disease"},
     "MONDO:0700092": {"abbrev": "NDD", "label": "Neurodevelopmental disorder"},
 }

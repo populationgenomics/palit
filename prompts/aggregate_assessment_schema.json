@@ -23,7 +23,7 @@
                     },
                     "mondo_disease_name": {
                         "type": "string",
-                        "description": "Exact MONDO disease name from the provided candidate list or fallback categories (Neurodevelopmental disorder, Inborn error of immunity, Syndromic disease, Mitochondrial disease)."
+                        "description": "Exact MONDO disease name from the provided candidate list or fallback categories (Neurodevelopmental disorder, Inborn error of immunity, Syndromic disease, Infertility disorder, Mitochondrial disease)."
                     },
                     "patient_count": {
                         "type": "integer",

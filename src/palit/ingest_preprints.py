@@ -12,7 +12,7 @@ import httpx
 import typer
 from rich.console import Console
 from rich.progress import TaskID
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from palit.papers import (
     Paper,
@@ -48,13 +48,13 @@ class RxivServer(enum.Enum):
 
 @retry(
     stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
+    wait=wait_exponential_jitter(initial=2, max=60),
     retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
     reraise=True,
 )
 def _fetch_rxiv_page(client: httpx.Client, url: str) -> dict[str, Any]:
     """Fetch a single page from the bioRxiv/medRxiv API with retries."""
-    response = client.get(url, timeout=30)
+    response = client.get(url, timeout=90)
     response.raise_for_status()
     result: dict[str, Any] = response.json()
     return result
@@ -189,13 +189,13 @@ def _parse_crossref_paper(record: dict[str, Any], source_details: str) -> Paper:
 
 @retry(
     stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
+    wait=wait_exponential_jitter(initial=2, max=60),
     retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
     reraise=True,
 )
 def _fetch_crossref_page(client: httpx.Client, url: str) -> dict[str, Any]:
     """Fetch a single page from the Crossref API with retries."""
-    response = client.get(url, timeout=60)
+    response = client.get(url, timeout=90)
     response.raise_for_status()
     result: dict[str, Any] = response.json()
     return result
@@ -381,8 +381,17 @@ def main(
     console.print(f"[cyan]Database: {db_path}[/cyan]")
 
     if not db_path.exists():
-        console.print(f"[red]Database not found: {db_path}[/red]")
-        raise typer.Exit(1)
+        console.print("[yellow]Database not found, creating from schema.sql...[/yellow]")
+        schema_file = Path("schema.sql")
+        if not schema_file.exists():
+            console.print(f"[red]Error: schema.sql not found at {schema_file.absolute()}[/red]")
+            raise typer.Exit(1)
+
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.executescript(schema_file.read_text())
+        conn.close()
+        console.print(f"[green]Created database at {db_path}[/green]")
 
     total_inserted = 0
     with Progress(console=console) as progress:

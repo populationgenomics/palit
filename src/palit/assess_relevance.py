@@ -21,6 +21,10 @@ from palit.relevance import compute_relevance_majority_vote
 app = typer.Typer(help="Assess paper relevance using vLLM inference with majority voting")
 logger = logging.getLogger(__name__)
 
+# SQLite busy timeout in seconds. When sharding, multiple processes write to
+# the same database; the default 5 s can be too short for large batch commits.
+DB_TIMEOUT_SECONDS = 60
+
 
 class PaperBatchProcessor:
     """Handle database operations for batch processing papers."""
@@ -42,7 +46,7 @@ class PaperBatchProcessor:
 
         Returns list of papers with doi, title, abstract.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -83,7 +87,7 @@ class PaperBatchProcessor:
 
         successful_updates = 0
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             cursor = conn.cursor()
 
             # Update each paper with its 3 results
@@ -152,7 +156,7 @@ class PaperBatchProcessor:
     def get_processing_statistics(self, shard_index: int, num_shards: int) -> dict[str, int]:
         """Get statistics about processing progress for this shard."""
         logger.debug("Querying database for processing statistics...")
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             cursor = conn.cursor()
 
             # Total papers

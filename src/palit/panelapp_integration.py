@@ -112,6 +112,13 @@ def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> tuple[str, s
     # Combine details (unique, sorted)
     combined_details = "; ".join(sorted(set(details_list))) if details_list else ""
 
+    # Drop "Other" when more specific modes are present (e.g. a somatic
+    # mosaicism entity alongside several Monoallelic entities should not
+    # force the aggregate to "Other").
+    specific_modes = modes - {"Other"}
+    if specific_modes:
+        modes = specific_modes
+
     # Derive mode
     if not modes:
         return "NR", combined_details

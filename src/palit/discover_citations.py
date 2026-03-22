@@ -363,7 +363,7 @@ def discover(
 
         console.print("\n[dim]Hint: To add papers manually, look up PMIDs and run:[/dim]")
         console.print(
-            "[dim]  uv run palit discover-citations add --hgnc-id HGNC_ID PMID1 PMID2 ...[/dim]"
+            f"[dim]  uv run palit discover-citations add --db-path {db_path} --hgnc-id HGNC_ID PMID1 PMID2 ...[/dim]"
         )
         console.print("[dim]  (Papers without a DOI in PubMed will be skipped)[/dim]")
 
@@ -428,7 +428,8 @@ def add(
     console.print("\n[bold]Summary:[/bold]")
     console.print(f"  [green]Papers added: {added}[/green]")
     console.print(f"  [blue]Already in database: {skipped}[/blue]")
-    console.print(f"  [red]Failed to fetch: {failed}[/red]")
+    if failed > 0:
+        console.print(f"  [red]Failed to fetch: {failed}[/red]")
 
     if added > 0:
         console.print(

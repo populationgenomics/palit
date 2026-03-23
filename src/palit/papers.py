@@ -240,15 +240,20 @@ def replace_paper_ids_for_display(
 
 
 def load_previous_dois(db_path: Path) -> set[str]:
-    """Load all DOIs from a previous run's database.
+    """Load downloaded DOIs from a previous run's database.
 
-    Used for set-difference filtering: papers already in the previous DB
-    are skipped during ingestion to avoid re-processing.
+    Used for set-difference filtering: papers already downloaded in the
+    previous DB are skipped during ingestion.  Papers that were ingested
+    but never downloaded are *not* returned, so they get re-ingested and
+    have another chance at being downloaded.
     """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        dois = {row[0] for row in conn.execute("SELECT doi FROM papers")}
-        logger.info(f"Loaded {len(dois)} DOIs from previous DB {db_path}")
+        dois = {
+            row[0]
+            for row in conn.execute("SELECT doi FROM papers WHERE download_status = 'downloaded'")
+        }
+        logger.info(f"Loaded {len(dois)} downloaded DOIs from previous DB {db_path}")
         return dois
     finally:
         conn.close()

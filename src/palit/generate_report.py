@@ -1273,8 +1273,8 @@ def calculate_comprehensive_statistics(
         preprint_dois = {
             p.doi for gene in all_genes for p in gene.contributing_papers if p.preprint
         }
-        papers_filtered = sum(
-            1 for gene in all_genes for p in gene.contributing_papers if p.filtered_reason
+        papers_filtered = len(
+            {p.doi for gene in all_genes for p in gene.contributing_papers if p.filtered_reason}
         )
 
         return ComprehensiveStats(

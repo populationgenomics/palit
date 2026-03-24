@@ -446,9 +446,11 @@ def load_variant_frequencies_for_gene(
         if paper.citation_pages:
             bbox_mappings[paper.doi] = paper.citation_pages
 
-    # Load variant frequencies from database
+    # Load variant frequencies from database (only for contributing papers)
+    contributing_dois = list(display_ids.keys())
+    placeholders = ",".join("?" * len(contributing_dois))
     cursor.execute(
-        """
+        f"""
         SELECT
             vf.variant_id,
             vf.paper_doi,
@@ -457,9 +459,10 @@ def load_variant_frequencies_for_gene(
             vf.gnomad
         FROM variant_frequencies vf
         WHERE vf.hgnc_id = ?
+          AND vf.paper_doi IN ({placeholders})
         ORDER BY vf.paper_doi DESC, vf.variant_id
     """,
-        (hgnc_id,),
+        (hgnc_id, *contributing_dois),
     )
 
     variant_frequencies = []

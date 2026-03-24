@@ -1704,6 +1704,8 @@ def main(
 
     # Symlink annotated PDFs directory into report (resolved at S3 upload time)
     annotated_link = output_dir / "annotated"
+    if annotated_link.is_symlink():
+        annotated_link.unlink()
     os.symlink(annotated_dir.resolve(), annotated_link)
 
     # Validate that expected annotated PDFs exist

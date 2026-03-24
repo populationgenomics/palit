@@ -91,7 +91,7 @@
                                         "Other",
                                         "NR"
                                     ],
-                                    "description": "Mode of inheritance for this specific disease entity. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome). Use Other for post-zygotic mosaic/somatic variants."
+                                    "description": "Mode of inheritance for this specific disease entity. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome). Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males — Monoallelic is for autosomal dominant only."
                                 },
                                 "inheritance_details": {
                                     "type": "string",

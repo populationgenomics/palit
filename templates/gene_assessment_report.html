@@ -400,7 +400,7 @@
             <h6>
                 {% if paper.filtered_reason %}<span class="filtered-badge">Excluded</span> {% endif %}
                 {% if paper.preprint %}<span class="preprint-badge">Preprint</span> {% endif %}
-                {% if paper.display_id %}{{ paper.display_id }}: {% endif %}{{ paper_link(paper) }} — {{ paper.title }}
+                {{ paper_link(paper) }} — {{ paper.title }}
             </h6>
             <div class="paper-metadata">
                 <ul>

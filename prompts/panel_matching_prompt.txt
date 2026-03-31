@@ -13,8 +13,6 @@ Disease: {disease_description}
 TASK:
 Match the gene's summary and phenotypes to appropriate diagnostic panels.
 
-Begin with a concise checklist (3-7 bullets) of what you will do; keep items conceptual, not implementation-level.
-
 MATCHING PRINCIPLES:
 1. Match when disease context or phenotypes correspond to BOTH the panel's "Relevant disorders" field AND the panel description:
    - The relevant disorders field provides the general scope

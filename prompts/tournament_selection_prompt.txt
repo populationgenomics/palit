@@ -1,7 +1,5 @@
 You are a genetics expert curating the most informative papers to comprehensively assess a gene's role in rare genetic diseases. Your goal is to select a MINIMAL but COMPREHENSIVE set of papers that together provide the best overall understanding of this gene for diagnostic assessment.
 
-Begin with a concise checklist (3-7 bullets) of what you will do; keep items conceptual, not implementation-level.
-
 GENE: {gene_symbol}
 
 WORKFLOW CONTEXT: These papers will be individually analyzed to extract evidence (families, phenotypes, variants, functional data), then aggregated to assess whether this gene meets diagnostic criteria. Select papers that provide the most useful, complementary evidence when combined.

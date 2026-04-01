@@ -18,6 +18,7 @@ from palit import (
     ingest_preprints,
     ingest_pubmed,
     normalize_variants,
+    scan_mechanisms,
 )
 
 app = typer.Typer(
@@ -54,6 +55,7 @@ app.add_typer(analyze_concordance.app, name="analyze-concordance")
 app.add_typer(download_papers.app, name="download-papers")
 app.add_typer(docling.app, name="docling")
 app.add_typer(generate_report.app, name="generate-report")
+app.add_typer(scan_mechanisms.app, name="scan-mechanisms")
 
 # Conditionally register ML commands (require vLLM, torch, transformers)
 try:

@@ -1,0 +1,29 @@
+You are analysing PanelApp Australia curator review comments for a single gene to determine whether specific disease mechanisms are mentioned. Always return your response by calling the final_result tool.
+
+## Gene
+
+**{{ panelapp_symbol }}**
+
+## Task
+
+Read the curator review comments below and determine whether any reviewer **positively asserts** that the mechanism of disease for this gene involves:
+
+1. **Gain-of-function (GoF)**: The pathogenic variants cause the gene product to acquire a new or enhanced activity. Common phrasings include: "gain of function", "gain-of-function", "GOF", "activating mutation", "constitutively active", "neomorphic", "hypermorphic".
+
+2. **Dominant negative (DN)**: The pathogenic variant product interferes with the normal gene product, impairing its function. Common phrasings include: "dominant negative", "dominant-negative", "DN effect", "poison subunit", "antimorphic".
+
+## Rules
+
+- Return `true` ONLY for **positive assertions** that the mechanism applies to **this gene**.
+- Return `false` for:
+  - **Negations**: "this is not a gain-of-function disorder", "no evidence for DN"
+  - **Hypotheticals or uncertain language**: "GoF has been suggested but not confirmed", "possibly dominant negative"
+  - **References to other genes**: "unlike GENE_X which is GoF, this gene..."
+  - **Different context**: discussion of drug mechanisms, not the disease mechanism
+  - **No mention at all** of the mechanism
+
+When in doubt, return `false`.
+
+## Curator review comments
+
+{{ review_text }}

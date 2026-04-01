@@ -21,6 +21,7 @@ dependencies = [
     "nh3>=0.3.3",
     "openai",
     "plotly",
+    "pydantic-ai[bedrock]",
     "pronto",
     "pydantic-settings",
     "pypdf",

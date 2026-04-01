@@ -38,7 +38,7 @@ PROMPT_TEMPLATE_PATH = Path(__file__).parents[2] / "prompts" / "mechanism_scan.j
 @dataclass(frozen=True)
 class GeneText:
     hgnc_id: int
-    panelapp_symbol: str  # gene_data["gene_symbol"] from PanelApp — used in output files.
+    gene_symbol: str  # Display symbol used in output files (PanelApp gene_symbol or geneName).
     text: str
 
 
@@ -67,7 +67,7 @@ class GeneEvaluations:
     """Cached PanelApp evaluation API responses for a single gene."""
 
     hgnc_id: int
-    panelapp_symbol: str
+    gene_symbol: str
     evaluations: list[dict[str, Any]]
 
 
@@ -82,7 +82,7 @@ class EvaluationsCache:
         data = [
             {
                 "hgnc_id": g.hgnc_id,
-                "panelapp_symbol": g.panelapp_symbol,
+                "gene_symbol": g.gene_symbol,
                 "evaluations": g.evaluations,
             }
             for g in self.genes
@@ -100,7 +100,7 @@ class EvaluationsCache:
             genes=[
                 GeneEvaluations(
                     hgnc_id=entry["hgnc_id"],
-                    panelapp_symbol=entry["panelapp_symbol"],
+                    gene_symbol=entry["gene_symbol"],
                     evaluations=entry["evaluations"],
                 )
                 for entry in data
@@ -110,7 +110,7 @@ class EvaluationsCache:
 
 @dataclass
 class GeneFailure:
-    panelapp_symbol: str
+    gene_symbol: str
     error: str
 
 
@@ -148,7 +148,7 @@ class PanelAppEvaluationSource:
         panel_data_cache = self._client._ensure_cache_loaded()
 
         # Collect unique genes with their panel memberships
-        genes: dict[int, str] = {}  # hgnc_id -> panelapp_symbol
+        genes: dict[int, str] = {}  # hgnc_id -> gene_symbol
         gene_panels: dict[int, list[int]] = {}  # hgnc_id -> [panel_ids]
         for panel_id in SCAN_PANEL_IDS:
             panel_data = panel_data_cache[panel_id]
@@ -189,9 +189,43 @@ class PanelAppEvaluationSource:
             if not text:
                 skipped += 1
                 continue
-            gene_texts.append(GeneText(gene.hgnc_id, gene.panelapp_symbol, text))
+            gene_texts.append(GeneText(gene.hgnc_id, gene.gene_symbol, text))
 
         logger.info("Built %d gene texts (%d skipped — no comments)", len(gene_texts), skipped)
+        return gene_texts
+
+
+# ---------------------------------------------------------------------------
+# Text source: Gene profiles (curation-service JSON dump)
+# ---------------------------------------------------------------------------
+
+
+class GeneProfileSource:
+    """Read gene profiles from a curation-service JSON dump."""
+
+    def __init__(self, profiles_path: Path) -> None:
+        self._path = profiles_path
+
+    def get_gene_texts(self) -> list[GeneText]:
+        with open(self._path) as f:
+            data: list[dict[str, Any]] = json.load(f)
+
+        gene_texts: list[GeneText] = []
+        skipped = 0
+        for entry in data:
+            abstract = entry.get("geneAbstract") or ""
+            if not abstract.strip():
+                skipped += 1
+                continue
+            hgnc_id = int(entry["hgncId"].removeprefix("HGNC:"))
+            gene_texts.append(GeneText(hgnc_id, entry["geneName"], abstract))
+
+        logger.info(
+            "Loaded %d gene profiles (%d skipped — no abstract) from %s",
+            len(gene_texts),
+            skipped,
+            self._path,
+        )
         return gene_texts
 
 
@@ -240,13 +274,13 @@ async def _scan_gene(
     gene: GeneText,
     raw_dir: Path,
 ) -> MechanismScanResult:
-    prompt = template.render(panelapp_symbol=gene.panelapp_symbol, review_text=gene.text)
+    prompt = template.render(gene_symbol=gene.gene_symbol, review_text=gene.text)
     t0 = time.monotonic()
     result = await agent.run(prompt)
     elapsed = time.monotonic() - t0
     logger.info(
         "%s: GoF=%s DN=%s (%.1fs)",
-        gene.panelapp_symbol,
+        gene.gene_symbol,
         result.output.gain_of_function,
         result.output.dominant_negative,
         elapsed,
@@ -280,15 +314,13 @@ async def scan_all(
                 try:
                     result = await _scan_gene(agent, template, gene, raw_dir)
                     if result.gain_of_function:
-                        gof_genes.append(gene.panelapp_symbol)
+                        gof_genes.append(gene.gene_symbol)
                     if result.dominant_negative:
-                        dn_genes.append(gene.panelapp_symbol)
+                        dn_genes.append(gene.gene_symbol)
                 except Exception:
-                    logger.exception(
-                        "Failed to scan %s (HGNC:%d)", gene.panelapp_symbol, gene.hgnc_id
-                    )
+                    logger.exception("Failed to scan %s (HGNC:%d)", gene.gene_symbol, gene.hgnc_id)
                     failures.append(
-                        GeneFailure(panelapp_symbol=gene.panelapp_symbol, error=str(gene.hgnc_id))
+                        GeneFailure(gene_symbol=gene.gene_symbol, error=str(gene.hgnc_id))
                     )
                 finally:
                     progress.update(task, advance=1)
@@ -313,8 +345,8 @@ async def scan_all(
     )
     if failures:
         logger.error("Failed genes:")
-        for f in sorted(failures, key=lambda x: x.panelapp_symbol):
-            logger.error("  %s (HGNC:%s)", f.panelapp_symbol, f.error)
+        for f in sorted(failures, key=lambda x: x.gene_symbol):
+            logger.error("  %s (HGNC:%s)", f.gene_symbol, f.error)
 
 
 # ---------------------------------------------------------------------------
@@ -324,9 +356,23 @@ async def scan_all(
 
 @app.command()
 def scan(
-    panel_date: str = typer.Option(..., "--panel-date", help="PanelApp snapshot date (YYYY-MM-DD)"),
-    output_dir: Path = typer.Option(
-        Path("data/mechanism_scan"), "--output-dir", help="Output directory"
+    source: str = typer.Option(
+        "panelapp-evaluations",
+        "--source",
+        help="Text source: panelapp-evaluations or gene-profiles",
+    ),
+    panel_date: str = typer.Option(
+        None,
+        "--panel-date",
+        help="PanelApp snapshot date (YYYY-MM-DD), required for panelapp source",
+    ),
+    profiles_path: Path = typer.Option(
+        None,
+        "--profiles-path",
+        help="Path to gene profiles JSON dump, required for gene-profiles source",
+    ),
+    output_dir: Path | None = typer.Option(
+        None, "--output-dir", help="Output directory (default: data/mechanism_scan/{source})"
     ),
     model_id: str = typer.Option(
         "au.anthropic.claude-opus-4-6-v1", "--model-id", help="Bedrock model ID"
@@ -336,14 +382,26 @@ def scan(
         False, "--no-cache", help="Force re-fetch of PanelApp evaluations"
     ),
 ) -> None:
-    """Scan PanelApp evaluation comments for gain-of-function and dominant negative mentions."""
+    """Scan gene curation text for gain-of-function and dominant negative mentions."""
+    if output_dir is None:
+        output_dir = Path("data/mechanism_scan") / source
     output_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = output_dir / "evaluations_cache.json"
 
-    # Build gene texts from PanelApp evaluations
-    panelapp_client = PanelAppClient(panel_date=panel_date)
-    source = PanelAppEvaluationSource(panelapp_client, cache_path, no_cache=no_cache)
-    gene_texts = source.get_gene_texts()
+    text_source: TextSource
+    if source == "panelapp-evaluations":
+        if not panel_date:
+            raise typer.BadParameter("--panel-date is required for panelapp-evaluations source")
+        cache_path = output_dir / "evaluations_cache.json"
+        panelapp_client = PanelAppClient(panel_date=panel_date)
+        text_source = PanelAppEvaluationSource(panelapp_client, cache_path, no_cache=no_cache)
+    elif source == "gene-profiles":
+        if not profiles_path:
+            raise typer.BadParameter("--profiles-path is required for gene-profiles source")
+        text_source = GeneProfileSource(profiles_path)
+    else:
+        raise typer.BadParameter(f"Unknown source: {source}")
+
+    gene_texts = text_source.get_gene_texts()
 
     if not gene_texts:
         logger.warning("No genes with evaluation comments found — nothing to scan")

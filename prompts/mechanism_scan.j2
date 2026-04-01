@@ -1,12 +1,12 @@
-You are analysing PanelApp Australia curator review comments for a single gene to determine whether specific disease mechanisms are mentioned. Always return your response by calling the final_result tool.
+You are analysing gene curation text for a single gene to determine whether specific disease mechanisms are mentioned. Always return your response by calling the final_result tool.
 
 ## Gene
 
-**{{ panelapp_symbol }}**
+**{{ gene_symbol }}**
 
 ## Task
 
-Read the curator review comments below and determine whether any reviewer **positively asserts** that the mechanism of disease for this gene involves:
+Read the text below and determine whether it **positively asserts** that the mechanism of disease for this gene involves:
 
 1. **Gain-of-function (GoF)**: The pathogenic variants cause the gene product to acquire a new or enhanced activity. Common phrasings include: "gain of function", "gain-of-function", "GOF", "activating mutation", "constitutively active", "neomorphic", "hypermorphic".
 
@@ -24,6 +24,6 @@ Read the curator review comments below and determine whether any reviewer **posi
 
 When in doubt, return `false`.
 
-## Curator review comments
+## Gene curation text
 
 {{ review_text }}

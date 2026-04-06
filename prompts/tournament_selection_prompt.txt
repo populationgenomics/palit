@@ -48,6 +48,8 @@ CRITICAL REQUIREMENTS - ALL selected papers must:
 - NOT be about pure cancer predisposition where cancer risk is the PRIMARY manifestation (e.g., BRCA1/BRCA2 breast cancer, Lynch syndrome, Li-Fraumeni, FAP)
   * Exception: Multi-system disorders where cancer is ONE symptom among many (e.g., Beckwith-Wiedemann, Costello syndrome)
 - NOT be about CNVs (deletions, duplications, microdeletions, microduplications, chromosomal rearrangements)
+- NOT be primarily about digenic or oligogenic inheritance (disease requiring variants in
+  multiple different genes)
 - NOT be primarily about treatment/management/therapy
 
 AVOID REDUNDANCY:

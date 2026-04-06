@@ -39,6 +39,11 @@ Assess whether the paper is relevant to this specific panel by determining if it
   - Only include specific gene→disease relationships relevant for diagnostics (e.g., "pathogenic variants in DNAH5 cause primary ciliary dyskinesia").
   - Do not include pathway/group-level associations even with strong functional data if specific causal genes are not defined.
 
+**Critical Exclusion: Digenic & Oligogenic Inheritance**
+- EXCLUDE gene-disease associations based solely on digenic or oligogenic inheritance — i.e., where disease causation requires pathogenic variants in two or more different genes.
+- IMPORTANT: If a paper covers BOTH digenic/oligogenic AND monogenic findings, the paper IS RELEVANT for its monogenic content. Only extract the monogenic associations; omit digenic/oligogenic findings.
+- Biallelic (autosomal recessive) inheritance — two pathogenic alleles in the SAME gene — is monogenic and remains in scope.
+
 **Panel-Specific Inclusion Criteria**
 
 A publication is relevant to this panel if it:
@@ -67,6 +72,7 @@ Exclude publications if they:
 - Focus on animal models without direct human genetic discovery
 - Present multiple, unrelated gene mutations in single cases
 - Only refine genotype-phenotype without significant novel insight
+- Report gene-disease associations based solely on digenic or oligogenic inheritance
 
 **Phenotype Matching Guidance**
 

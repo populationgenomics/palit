@@ -38,6 +38,11 @@ IMPORTANT: You are evaluating papers in their HISTORICAL CONTEXT. A paper from 2
   - Only include specific gene→disease relationships relevant for diagnostics (e.g., "pathogenic variants in DNAH5 cause primary ciliary dyskinesia").
   - Do not include pathway/group-level associations even with strong functional data if specific causal genes are not defined.
 
+**Critical Exclusion: Digenic & Oligogenic Inheritance**
+- EXCLUDE gene-disease associations based solely on digenic or oligogenic inheritance — i.e., where disease causation requires pathogenic variants in two or more different genes.
+- IMPORTANT: If a paper covers BOTH digenic/oligogenic AND monogenic findings, the paper IS RELEVANT for its monogenic content. Only extract the monogenic associations; omit digenic/oligogenic findings.
+- Biallelic (autosomal recessive) inheritance — two pathogenic alleles in the SAME gene — is monogenic and remains in scope.
+
 **Inclusion Criteria**
 A publication is relevant if it provides SUBSTANTIAL EVIDENCE for gene-disease relationships (germline or mosaic/somatic causing non-malignant rare disease), including:
 1. Reports of gene-disease associations with reasonable evidence (single strong family OR multiple affected families).
@@ -72,6 +77,7 @@ Exclude publications if they:
 - Present multiple, unrelated gene mutations in single cases.
 - Only refine genotype-phenotype for established associations without significant insight.
 - Report modifier genes, enhancers, or secondary findings not directly causal.
+- Report gene-disease associations based solely on digenic or oligogenic inheritance.
 
 **Specific Clarifications**
 - **Cancer Genetics:** Exclude pure cancer predisposition genes where cancer risk is the primary feature (e.g., BRCA1/BRCA2, Lynch, Li-Fraumeni, FAP). Include multi-system disorders where cancer is one of several features (e.g., Beckwith-Wiedemann syndrome, Costello syndrome, neurofibromatosis). If cancer risk is THE main issue → EXCLUDE; if it's just one feature among many → INCLUDE.

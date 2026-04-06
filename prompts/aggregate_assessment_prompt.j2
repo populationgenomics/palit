@@ -43,6 +43,9 @@ You are evaluating evidence that has been extracted from multiple papers. Your j
      whole-gene or multi-gene CNV deletions/duplications, even if they appear in
      individual paper extractions. Only families with gene-specific sequence-level variants
      (SNVs, small indels, intragenic structural variants) contribute to family counts.
+   - DIGENIC/OLIGOGENIC EXCLUSION: Do not count families whose disease causation requires
+     variants in multiple different genes, even if they appear in individual paper extractions.
+     Biallelic (same gene) remains in scope.
 
 3. **RESOLVE CONFLICTS**: When papers disagree on inheritance patterns, variants, or phenotypes, weigh the quality and consistency of evidence
 4. **MERGE FUNCTIONAL EVIDENCE**: Combine all functional studies and select the strongest supporting evidence
@@ -313,6 +316,8 @@ IMPORTANT INSTRUCTIONS:
 - CNV EXCLUSION: Only count families with gene-specific sequence-level variants (SNVs, small
   indels, intragenic structural variants) toward family counts. Exclude families linked to the
   gene solely through whole-gene or multi-gene CNV deletions/duplications.
+- DIGENIC/OLIGOGENIC EXCLUSION: Exclude families whose disease requires variants in two or
+  more different genes. Biallelic (same gene) remains in scope.
 - Be STRICT about "unrelated families" - require independent evidence of pathogenicity
 - PHENOTYPE REQUIREMENTS: Detailed individual patient descriptions required, not summaries
 - Count families as primary units, mention patient numbers as supplementary

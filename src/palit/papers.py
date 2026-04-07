@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from palit.relevance import compute_relevance_majority_vote
+
 logger = logging.getLogger(__name__)
 
 
@@ -240,20 +242,40 @@ def replace_paper_ids_for_display(
 
 
 def load_previous_dois(db_path: Path) -> set[str]:
-    """Load downloaded DOIs from a previous run's database.
+    """Load DOIs from a previous run's database that should be skipped.
 
-    Used for set-difference filtering: papers already downloaded in the
-    previous DB are skipped during ingestion.  Papers that were ingested
-    but never downloaded are *not* returned, so they get re-ingested and
-    have another chance at being downloaded.
+    Excludes papers that were either:
+    - Assessed as not relevant by majority vote
+    - Already downloaded (fully processed)
+
+    Papers that were never assessed or assessed as relevant but not yet
+    downloaded are re-ingested so they get another chance.
     """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        dois = {
+        downloaded = {
             row[0]
             for row in conn.execute("SELECT doi FROM papers WHERE download_status = 'downloaded'")
         }
-        logger.info(f"Loaded {len(dois)} downloaded DOIs from previous DB {db_path}")
+
+        not_relevant: set[str] = set()
+        for doi, assessment_json in conn.execute(
+            "SELECT doi, relevance_assessment_json FROM papers "
+            "WHERE relevance_assessment_json IS NOT NULL"
+        ):
+            assessments: list[dict[str, Any]] = json.loads(assessment_json)
+            majority = compute_relevance_majority_vote(assessments)
+            if not majority["relevant"]:
+                not_relevant.add(doi)
+
+        dois = downloaded | not_relevant
+        logger.info(
+            "Loaded %d DOIs to skip from previous DB %s (%d not relevant, %d downloaded)",
+            len(dois),
+            db_path,
+            len(not_relevant),
+            len(downloaded),
+        )
         return dois
     finally:
         conn.close()

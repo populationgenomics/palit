@@ -11,10 +11,10 @@ from typing import Any
 import jsonschema
 from openai_harmony import HarmonyEncoding
 from vllm import LLM, SamplingParams
-from vllm.entrypoints import harmony_utils
+from vllm.entrypoints.openai.parser import harmony_utils
 from vllm.inputs import TokensPrompt
 from vllm.outputs import RequestOutput
-from vllm.sampling_params import GuidedDecodingParams
+from vllm.sampling_params import StructuredOutputsParams
 
 logger = logging.getLogger(__name__)
 
@@ -132,11 +132,11 @@ class HarmonyBatchProcessor:
             token_prompts.append(token_prompt)
 
         # Create sampling params with structured output
-        guided_decoding = GuidedDecodingParams(json=schema)
+        structured_outputs = StructuredOutputsParams(json=schema)
         sampling_params = SamplingParams(
             temperature=self.temperature,
             max_tokens=self.max_tokens,
-            guided_decoding=guided_decoding,
+            structured_outputs=structured_outputs,
             stop_token_ids=harmony_utils.get_stop_tokens_for_assistant_actions(),
         )
 

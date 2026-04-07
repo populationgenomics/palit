@@ -21,7 +21,7 @@ dependencies = [
     "nh3>=0.3.3",
     "openai",
     "plotly",
-    "pydantic-ai[bedrock]",
+    "pydantic-ai-slim[bedrock]",
     "pronto",
     "pydantic-settings",
     "pypdf",
@@ -36,12 +36,13 @@ docling-macos = [
     "mlx-vlm",
 ]
 ml = [
-    "flashinfer-python",
+    "flashinfer-python; sys_platform == 'linux'",
     "openai-harmony",
     "scikit-learn",
+    "scipy>=1.17",
     "torch",
     "transformers",
-    "vllm",
+    "vllm>=0.19; sys_platform == 'linux'",
     "wandb",
 ]
 

@@ -181,33 +181,33 @@ After each fortnightly processing run completes, feed majority-relevant papers b
 ```bash
 FORTNIGHTLY_DB=data/db_2026_february_h1.sqlite
 
-sqlite3 data/pubmed_baseline_screening.sqlite <<SQL
-ATTACH '\$FORTNIGHTLY_DB' AS source;
+sqlite3 data/pubmed_baseline_screening.sqlite <<'SQL'
+ATTACH '$FORTNIGHTLY_DB' AS source;
 
-CREATE TEMP TABLE relevant_pmids AS
-SELECT pmid FROM source.papers
+CREATE TEMP TABLE relevant_dois AS
+SELECT doi FROM source.papers
 WHERE relevance_assessment_json IS NOT NULL
-  AND (json_extract(relevance_assessment_json, '\$[0].relevant')
-     + json_extract(relevance_assessment_json, '\$[1].relevant')
-     + json_extract(relevance_assessment_json, '\$[2].relevant')) >= 2;
+  AND (json_extract(relevance_assessment_json, '$[0].relevant')
+     + json_extract(relevance_assessment_json, '$[1].relevant')
+     + json_extract(relevance_assessment_json, '$[2].relevant')) >= 2;
 
 INSERT OR IGNORE INTO papers
-  (pmid, title, abstract, authors, journal, entrez_date,
-   source_type, source_details, download_status,
+  (doi, pmid, title, abstract, authors, journal, source_date,
+   source, source_metadata, source_type, source_details, download_status,
    relevance_assessment_raw, relevance_assessment_json)
-SELECT pmid, title, abstract, authors, journal, entrez_date,
-       source_type, source_details, 'scheduled',
+SELECT doi, pmid, title, abstract, authors, journal, source_date,
+       source, source_metadata, source_type, source_details, 'scheduled',
        relevance_assessment_raw, relevance_assessment_json
-FROM source.papers WHERE pmid IN relevant_pmids;
+FROM source.papers WHERE doi IN relevant_dois;
 
 INSERT OR IGNORE INTO gene_mentions
-  (panelapp_gene_symbol, paper_gene_symbol, pmid, source)
-SELECT panelapp_gene_symbol, paper_gene_symbol, pmid, source
+  (hgnc_id, paper_gene_symbol, paper_doi, source)
+SELECT hgnc_id, paper_gene_symbol, paper_doi, source
 FROM source.gene_mentions
 WHERE source = 'relevance_assessment'
-  AND pmid IN relevant_pmids;
+  AND paper_doi IN relevant_dois;
 
-DROP TABLE relevant_pmids;
+DROP TABLE relevant_dois;
 DETACH source;
 SQL
 ```

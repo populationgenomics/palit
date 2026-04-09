@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from palit.llm import LLMProcessor
 from palit.papers import Paper
 
 logger = logging.getLogger(__name__)
@@ -57,10 +58,10 @@ def format_papers_for_prompt(papers: list[Paper]) -> str:
     return "\n".join(lines)
 
 
-def run_tournament_selection(
+async def run_tournament_selection(
     gene_symbol: str,
     papers: list[Paper],
-    llm_processor: Any,
+    llm_processor: LLMProcessor,
     prompt_template: str,
     schema: dict[str, Any],
     max_papers: int,
@@ -73,7 +74,7 @@ def run_tournament_selection(
     Args:
         gene_symbol: Gene symbol being processed
         papers: List of papers to run tournament on
-        llm_processor: HarmonyBatchProcessor instance
+        llm_processor: LLMProcessor instance
         prompt_template: Prompt template string
         schema: JSON schema for LLM output
         max_papers: Maximum papers to select
@@ -102,7 +103,7 @@ def run_tournament_selection(
         ]
         logger.info(f"  Processing {len(batches)} batches...")
 
-        prompt_results = _process_batches(
+        prompt_results = await _process_batches(
             gene_symbol=gene_symbol,
             llm_processor=llm_processor,
             prompt_template=prompt_template,
@@ -133,10 +134,10 @@ def run_tournament_selection(
     )
 
 
-def _process_batches(
+async def _process_batches(
     *,
     gene_symbol: str,
-    llm_processor: Any,
+    llm_processor: LLMProcessor,
     prompt_template: str,
     schema: dict[str, Any],
     batches: list[list[Paper]],
@@ -154,7 +155,7 @@ def _process_batches(
             f"({len(chunk_batches)} prompts in parallel)..."
         )
 
-        chunk_results = _process_chunk(
+        chunk_results = await _process_chunk(
             gene_symbol=gene_symbol,
             llm_processor=llm_processor,
             prompt_template=prompt_template,
@@ -169,10 +170,10 @@ def _process_batches(
     return prompt_results
 
 
-def _process_chunk(
+async def _process_chunk(
     *,
     gene_symbol: str,
-    llm_processor: Any,
+    llm_processor: LLMProcessor,
     prompt_template: str,
     schema: dict[str, Any],
     chunk_batches: list[list[Paper]],
@@ -196,7 +197,7 @@ def _process_chunk(
             for idx in pending_indices
         ]
 
-        batch_results = llm_processor.process_batch(prompts, schema)
+        batch_results = await llm_processor.process_batch(prompts, schema)
 
         next_pending: list[int] = []
         for local_idx, result in zip(pending_indices, batch_results, strict=True):

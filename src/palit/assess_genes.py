@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Aggregate evidence assessment across papers for each gene."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -12,6 +13,7 @@ from jinja2 import Environment, FileSystemLoader
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
+from palit.llm import LLMProcessor, create_llm_processor
 from palit.mondo_lookup import MondoCandidate, MondoLookup
 from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
 from palit.panelapp_integration import MONDO_CATEGORIES
@@ -513,6 +515,189 @@ def prepare_aggregate_assessment_prompt(
     return rendered, paper_id_to_doi
 
 
+async def _process_assessments(
+    *,
+    llm_processor: LLMProcessor,
+    db_processor: PaperBatchProcessor,
+    db_path: Path,
+    hgnc_resolver: HgncResolver,
+    panelapp_client: PanelAppClient,
+    panel_data: PanelGeneData,
+    mondo_lookup: MondoLookup,
+    schema: dict[str, Any],
+    prompt_path: Path,
+    panel_formatted: str,
+    max_retries: int,
+    initial_remaining: int,
+) -> None:
+    """Run the aggregate assessment retry loop."""
+    total_processed = 0
+    genes_without_evidence: set[int] = set()
+    consecutive_failures = 0
+    retry_attempt = 0
+
+    with tqdm(total=initial_remaining, desc="Processing genes") as pbar:
+        while retry_attempt < max_retries:
+            stats = db_processor.get_aggregate_assessment_statistics()
+            if stats["remaining_to_assess"] == 0:
+                logger.info("All genes successfully assessed!")
+                break
+
+            if retry_attempt > 0:
+                logger.info(
+                    f"Retry attempt {retry_attempt} - {stats['remaining_to_assess']} genes remaining"
+                )
+
+            logger.info("Fetching genes with evidence...")
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT DISTINCT hgnc_id
+                    FROM gene_mentions
+                    WHERE source = 'recent_evidence'
+                    ORDER BY hgnc_id
+                """
+                )
+                gene_hgnc_ids = [row[0] for row in cursor.fetchall()]
+
+                cursor.execute(
+                    """
+                    SELECT hgnc_id
+                    FROM gene_assessments
+                """
+                )
+                already_assessed = {row[0] for row in cursor.fetchall()}
+
+            hgnc_ids_to_assess = [g for g in gene_hgnc_ids if g not in already_assessed]
+            logger.info(f"Found {len(hgnc_ids_to_assess)} genes to assess")
+
+            if not hgnc_ids_to_assess:
+                logger.info("No genes need assessment!")
+                break
+
+            pass_processed = 0
+            failed_genes: list[int] = []
+
+            for hgnc_id in hgnc_ids_to_assess:
+                hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
+                logger.info(f"Processing {hgnc_symbol} (HGNC:{hgnc_id})")
+
+                evidence_list = db_processor.get_evidence_for_gene(hgnc_id)
+
+                if not evidence_list:
+                    logger.warning(f"No evidence found for {hgnc_symbol}")
+                    genes_without_evidence.add(hgnc_id)
+                    continue
+
+                evidence_list, filtered_papers = filter_preprint_evidence(evidence_list)
+                if filtered_papers:
+                    filtered_dois = [fp["doi"] for fp in filtered_papers]
+                    logger.info(
+                        f"  Filtered {len(filtered_papers)} preprint(s) for {hgnc_symbol}: "
+                        f"{filtered_dois}"
+                    )
+                if not evidence_list:
+                    logger.info(
+                        f"Skipping {hgnc_symbol} — all papers filtered by preprint family gate"
+                    )
+                    genes_without_evidence.add(hgnc_id)
+                    continue
+
+                existing_panel_id = find_gene_panel(hgnc_id, panel_data.panel_ids, panel_data)
+
+                existing_reviews: list[dict[str, Any]] = []
+                if existing_panel_id is not None:
+                    existing_reviews = panelapp_client.get_gene_evaluations(
+                        existing_panel_id, hgnc_id
+                    )
+                    logger.info(
+                        f"  Found {len(existing_reviews)} existing reviews in panel {existing_panel_id}"
+                    )
+
+                mondo_candidates = mondo_lookup.get_candidates(hgnc_symbol)
+                mondo_name_to_id = build_mondo_name_to_id(mondo_candidates)
+                if mondo_candidates:
+                    logger.info(f"  {len(mondo_candidates)} MONDO candidates for {hgnc_symbol}")
+
+                prompt, paper_id_to_doi = prepare_aggregate_assessment_prompt(
+                    hgnc_symbol,
+                    evidence_list,
+                    prompt_path,
+                    existing_reviews,
+                    panel_formatted,
+                    mondo_candidates,
+                )
+
+                results = await llm_processor.process_batch([prompt], schema)
+
+                if results and results[0] is not None:
+                    result = results[0]
+                    try:
+                        replace_paper_ids_with_dois(result.parsed_json, paper_id_to_doi)
+                    except ValueError:
+                        logger.warning(f"LLM hallucinated paper ID for {hgnc_symbol}, retrying")
+                        failed_genes.append(hgnc_id)
+                        continue
+                    if not validate_box_ids_with_doi(
+                        result.parsed_json,
+                        fetch_valid_box_ids_by_doi(db_path, evidence_list),
+                    ):
+                        logger.warning(f"Invalid (doi, box_id) pairs for {hgnc_symbol}")
+                        failed_genes.append(hgnc_id)
+                        continue
+                    if unresolved := resolve_mondo_names(result.parsed_json, mondo_name_to_id):
+                        logger.warning(
+                            f"Unresolved MONDO disease names for {hgnc_symbol}: {unresolved}"
+                        )
+                        failed_genes.append(hgnc_id)
+                        continue
+                    db_processor.update_gene_assessment(
+                        hgnc_id,
+                        (result.raw_response, result.parsed_json),
+                        paper_id_to_doi,
+                        filtered_papers=filtered_papers or None,
+                    )
+                    pass_processed += 1
+                    pbar.update(1)
+                else:
+                    logger.warning(f"Failed to process aggregate assessment for {hgnc_symbol}")
+                    failed_genes.append(hgnc_id)
+
+            total_processed += pass_processed
+
+            if pass_processed == 0:
+                consecutive_failures += 1
+                logger.warning(f"No progress made in retry attempt {retry_attempt}")
+                if consecutive_failures >= 2:
+                    logger.error("Multiple consecutive attempts with no progress - stopping")
+                    break
+            else:
+                consecutive_failures = 0
+
+            retry_attempt += 1
+
+    final_stats = db_processor.get_aggregate_assessment_statistics()
+    logger.info("Aggregate assessment complete!")
+    logger.info("Final statistics:")
+    logger.info(f"  Successfully processed: {total_processed:,}")
+    logger.info(f"  Genes without evidence: {len(genes_without_evidence):,}")
+    logger.info(f"  Still remaining: {final_stats['remaining_to_assess']:,}")
+
+    if genes_without_evidence:
+        no_evidence_list = list(genes_without_evidence)
+        logger.info(
+            f"  Genes without evidence: {no_evidence_list[:10]}..."
+            if len(no_evidence_list) > 10
+            else f"  Genes without evidence: {no_evidence_list}"
+        )
+
+    if final_stats["remaining_to_assess"] > 0:
+        logger.warning(
+            f"Failed to assess {final_stats['remaining_to_assess']} genes after {max_retries} attempts"
+        )
+
+
 @app.callback(invoke_without_command=True)
 def main(
     db_path: Path = typer.Option(
@@ -639,10 +824,8 @@ def main(
     db_processor = PaperBatchProcessor(db_path)
     logger.info(f"  Connected to database at {db_path}")
 
-    logger.info("Initializing Harmony batch processor...")
-    from palit.llm import HarmonyBatchProcessor
-
-    inference_engine = HarmonyBatchProcessor(
+    logger.info("Initializing LLM processor...")
+    llm_processor = create_llm_processor(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -662,187 +845,22 @@ def main(
         logger.info("No genes remaining to assess!")
         return
 
-    initial_remaining = stats["remaining_to_assess"]
-    total_processed = 0
-    genes_without_evidence = set()
-    consecutive_failures = 0
-    retry_attempt = 0
-
-    with tqdm(total=initial_remaining, desc="Processing genes") as pbar:
-        while retry_attempt < max_retries:
-            # Re-fetch statistics to check remaining work
-            stats = db_processor.get_aggregate_assessment_statistics()
-            if stats["remaining_to_assess"] == 0:
-                logger.info("All genes successfully assessed!")
-                break
-
-            if retry_attempt > 0:
-                logger.info(
-                    f"Retry attempt {retry_attempt} - {stats['remaining_to_assess']} genes remaining"
-                )
-
-            # Get all unique genes from the working set (recent_evidence) that haven't been assessed
-            logger.info("Fetching genes with evidence...")
-            with sqlite3.connect(db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT DISTINCT hgnc_id
-                    FROM gene_mentions
-                    WHERE source = 'recent_evidence'
-                    ORDER BY hgnc_id
-                """
-                )
-                gene_hgnc_ids = [row[0] for row in cursor.fetchall()]
-
-                # Check which genes already assessed
-                cursor.execute(
-                    """
-                    SELECT hgnc_id
-                    FROM gene_assessments
-                """
-                )
-                already_assessed = {row[0] for row in cursor.fetchall()}
-
-            hgnc_ids_to_assess = [g for g in gene_hgnc_ids if g not in already_assessed]
-            logger.info(f"Found {len(hgnc_ids_to_assess)} genes to assess")
-
-            if not hgnc_ids_to_assess:
-                logger.info("No genes need assessment!")
-                break
-
-            # Process each gene
-            pass_processed = 0
-            failed_genes: list[int] = []
-
-            for hgnc_id in hgnc_ids_to_assess:
-                hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-                logger.info(f"Processing {hgnc_symbol} (HGNC:{hgnc_id})")
-
-                # Get evidence for this gene
-                evidence_list = db_processor.get_evidence_for_gene(hgnc_id)
-
-                if not evidence_list:
-                    logger.warning(f"No evidence found for {hgnc_symbol}")
-                    genes_without_evidence.add(hgnc_id)
-                    continue
-
-                # Filter preprints below family count threshold
-                evidence_list, filtered_papers = filter_preprint_evidence(evidence_list)
-                if filtered_papers:
-                    filtered_dois = [fp["doi"] for fp in filtered_papers]
-                    logger.info(
-                        f"  Filtered {len(filtered_papers)} preprint(s) for {hgnc_symbol}: "
-                        f"{filtered_dois}"
-                    )
-                if not evidence_list:
-                    logger.info(
-                        f"Skipping {hgnc_symbol} — all papers filtered by preprint family gate"
-                    )
-                    genes_without_evidence.add(hgnc_id)
-                    continue
-
-                # Check if gene exists in any target panel
-                existing_panel_id = find_gene_panel(hgnc_id, panel_data.panel_ids, panel_data)
-
-                # Fetch existing reviews for non-novel genes
-                existing_reviews: list[dict[str, Any]] = []
-                if existing_panel_id is not None:
-                    existing_reviews = panelapp_client.get_gene_evaluations(
-                        existing_panel_id, hgnc_id
-                    )
-                    logger.info(
-                        f"  Found {len(existing_reviews)} existing reviews in panel {existing_panel_id}"
-                    )
-
-                # Look up MONDO candidates
-                mondo_candidates = mondo_lookup.get_candidates(hgnc_symbol)
-                mondo_name_to_id = build_mondo_name_to_id(mondo_candidates)
-                if mondo_candidates:
-                    logger.info(f"  {len(mondo_candidates)} MONDO candidates for {hgnc_symbol}")
-
-                # Prepare aggregate assessment prompt
-                prompt, paper_id_to_doi = prepare_aggregate_assessment_prompt(
-                    hgnc_symbol,
-                    evidence_list,
-                    prompt_path,
-                    existing_reviews,
-                    panel_formatted,
-                    mondo_candidates,
-                )
-
-                # Process aggregate assessment
-                results = inference_engine.process_batch([prompt], schema)
-
-                # Validate and update database
-                if results and results[0] is not None:
-                    result = results[0]
-                    try:
-                        replace_paper_ids_with_dois(result.parsed_json, paper_id_to_doi)
-                    except ValueError:
-                        logger.warning(f"LLM hallucinated paper ID for {hgnc_symbol}, retrying")
-                        failed_genes.append(hgnc_id)
-                        continue
-                    # Validate (doi, box_id) pairs against database
-                    if not validate_box_ids_with_doi(
-                        result.parsed_json,
-                        fetch_valid_box_ids_by_doi(db_path, evidence_list),
-                    ):
-                        logger.warning(f"Invalid (doi, box_id) pairs for {hgnc_symbol}")
-                        failed_genes.append(hgnc_id)
-                        continue
-                    if unresolved := resolve_mondo_names(result.parsed_json, mondo_name_to_id):
-                        logger.warning(
-                            f"Unresolved MONDO disease names for {hgnc_symbol}: {unresolved}"
-                        )
-                        failed_genes.append(hgnc_id)
-                        continue
-                    db_processor.update_gene_assessment(
-                        hgnc_id,
-                        (result.raw_response, result.parsed_json),
-                        paper_id_to_doi,
-                        filtered_papers=filtered_papers or None,
-                    )
-                    pass_processed += 1
-                    pbar.update(1)
-                else:
-                    logger.warning(f"Failed to process aggregate assessment for {hgnc_symbol}")
-                    failed_genes.append(hgnc_id)
-
-            total_processed += pass_processed
-
-            # Check if we made progress
-            if pass_processed == 0:
-                consecutive_failures += 1
-                logger.warning(f"No progress made in retry attempt {retry_attempt}")
-                if consecutive_failures >= 2:
-                    logger.error("Multiple consecutive attempts with no progress - stopping")
-                    break
-            else:
-                consecutive_failures = 0
-
-            retry_attempt += 1
-
-    # Final statistics
-    final_stats = db_processor.get_aggregate_assessment_statistics()
-    logger.info("Aggregate assessment complete!")
-    logger.info("Final statistics:")
-    logger.info(f"  Successfully processed: {total_processed:,}")
-    logger.info(f"  Genes without evidence: {len(genes_without_evidence):,}")
-    logger.info(f"  Still remaining: {final_stats['remaining_to_assess']:,}")
-
-    if genes_without_evidence:
-        no_evidence_list = list(genes_without_evidence)
-        logger.info(
-            f"  Genes without evidence: {no_evidence_list[:10]}..."
-            if len(no_evidence_list) > 10
-            else f"  Genes without evidence: {no_evidence_list}"
+    asyncio.run(
+        _process_assessments(
+            llm_processor=llm_processor,
+            db_processor=db_processor,
+            db_path=db_path,
+            hgnc_resolver=hgnc_resolver,
+            panelapp_client=panelapp_client,
+            panel_data=panel_data,
+            mondo_lookup=mondo_lookup,
+            schema=schema,
+            prompt_path=prompt_path,
+            panel_formatted=panel_formatted,
+            max_retries=max_retries,
+            initial_remaining=stats["remaining_to_assess"],
         )
-
-    if final_stats["remaining_to_assess"] > 0:
-        logger.warning(
-            f"Failed to assess {final_stats['remaining_to_assess']} genes after {max_retries} attempts"
-        )
+    )
 
 
 if __name__ == "__main__":

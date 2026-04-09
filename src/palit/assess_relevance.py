@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Standalone vLLM inference utility for assessing paper relevance."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -11,7 +12,7 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.llm import HarmonyBatchProcessor, PromptResult
+from palit.llm import LLMProcessor, PromptResult, create_llm_processor
 from palit.panelapp_client import (
     PanelAppClient,
     format_panel_for_prompt,
@@ -262,6 +263,97 @@ def prepare_prompts_for_papers(
     return prompts
 
 
+async def _process_relevance(
+    *,
+    llm_processor: LLMProcessor,
+    db_processor: PaperBatchProcessor,
+    hgnc_resolver: HgncResolver,
+    schema: dict[str, Any],
+    template: str,
+    panel_description: str | None,
+    batch_size: int,
+    shard_index: int,
+    num_shards: int,
+    max_retries: int,
+) -> None:
+    """Run the relevance assessment retry loop."""
+    stats = db_processor.get_processing_statistics(shard_index, num_shards)
+    initial_remaining = stats["remaining_papers"]
+    estimated_batches = (initial_remaining + batch_size - 1) // batch_size
+    logger.info(f"Estimated {estimated_batches} batches of {batch_size} papers each")
+
+    total_processed = 0
+    consecutive_failures = 0
+    retry_attempt = 0
+
+    with tqdm(total=initial_remaining, desc="Processing papers") as pbar:
+        while retry_attempt < max_retries:
+            stats = db_processor.get_processing_statistics(shard_index, num_shards)
+            if stats["remaining_papers"] == 0:
+                logger.info("All papers successfully processed!")
+                break
+
+            if retry_attempt > 0:
+                logger.info(
+                    f"Retry attempt {retry_attempt} - {stats['remaining_papers']} papers remaining"
+                )
+
+            batch_num = 0
+            batch_level_processed = 0
+
+            while True:
+                batch_num += 1
+                logger.info(f"Starting batch {batch_num} (retry {retry_attempt})")
+
+                logger.info(f"Fetching batch of {batch_size} papers from database...")
+                papers = db_processor.get_batch_for_processing(batch_size, shard_index, num_shards)
+                logger.info(f"  Retrieved {len(papers)} papers for processing")
+
+                if not papers:
+                    logger.info("No more papers in this pass")
+                    break
+
+                extra_vars = {"panel_description": panel_description} if panel_description else None
+                prompts = prepare_prompts_for_papers(papers, template, extra_vars)
+
+                # Process batch 3 times for majority voting
+                logger.info("  Running inference 3 times per paper...")
+                all_runs = []
+                for run_num in range(3):
+                    logger.info(f"    Run {run_num + 1}/3...")
+                    results = await llm_processor.process_batch(prompts, schema)
+                    all_runs.append(results)
+
+                # Transpose: convert from 3 lists of N results to N lists of 3 results
+                all_results = list(zip(*all_runs, strict=True))
+
+                db_processor.update_paper_relevance_assessments(papers, all_results, hgnc_resolver)
+
+                num_successful = sum(
+                    1 for triple in all_results if all(result is not None for result in triple)
+                )
+                batch_level_processed += num_successful
+                pbar.update(num_successful)
+
+                logger.info(f"Completed batch {batch_num}")
+                if num_successful < len(papers):
+                    logger.warning(f"  {len(papers) - num_successful} papers failed in this batch")
+                logger.info(f"Total processed in this pass: {batch_level_processed:,}")
+
+            total_processed += batch_level_processed
+
+            if batch_level_processed == 0:
+                consecutive_failures += 1
+                logger.warning(f"No progress made in retry attempt {retry_attempt}")
+                if consecutive_failures >= 2:
+                    logger.error("Multiple consecutive attempts with no progress - stopping")
+                    break
+            else:
+                consecutive_failures = 0
+
+            retry_attempt += 1
+
+
 @app.callback(invoke_without_command=True)
 def main(
     db_path: Path = typer.Option(
@@ -389,8 +481,8 @@ def main(
         panel_description = format_panel_for_prompt(scope_panel_id, panel_info)
         logger.info(f"  Panel-scoped mode: {panel_info.get('name', 'Unknown')}")
 
-    logger.info("Initializing Harmony batch processor...")
-    inference_engine = HarmonyBatchProcessor(
+    logger.info("Initializing LLM processor...")
+    llm_processor = create_llm_processor(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -411,88 +503,20 @@ def main(
         logger.info("No papers remaining to process!")
         return
 
-    # Calculate initial estimate of batches needed
-    initial_remaining = stats["remaining_papers"]
-    estimated_batches = (initial_remaining + batch_size - 1) // batch_size
-    logger.info(f"Estimated {estimated_batches} batches of {batch_size} papers each")
-
-    # Retry loop
-    total_processed = 0
-    consecutive_failures = 0
-    retry_attempt = 0
-
-    with tqdm(total=initial_remaining, desc="Processing papers") as pbar:
-        while retry_attempt < max_retries:
-            # Check remaining work
-            stats = db_processor.get_processing_statistics(shard_index, num_shards)
-            if stats["remaining_papers"] == 0:
-                logger.info("All papers successfully processed!")
-                break
-
-            if retry_attempt > 0:
-                logger.info(
-                    f"Retry attempt {retry_attempt} - {stats['remaining_papers']} papers remaining"
-                )
-
-            batch_num = 0
-            batch_level_processed = 0
-
-            while True:
-                batch_num += 1
-                logger.info(f"Starting batch {batch_num} (retry {retry_attempt})")
-
-                # Get batch of papers
-                logger.info(f"Fetching batch of {batch_size} papers from database...")
-                papers = db_processor.get_batch_for_processing(batch_size, shard_index, num_shards)
-                logger.info(f"  Retrieved {len(papers)} papers for processing")
-
-                if not papers:
-                    logger.info("No more papers in this pass")
-                    break
-
-                # Prepare prompts
-                extra_vars = {"panel_description": panel_description} if panel_description else None
-                prompts = prepare_prompts_for_papers(papers, template, extra_vars)
-
-                # Process batch 3 times for majority voting
-                logger.info("  Running inference 3 times per paper...")
-                all_runs = []
-                for run_num in range(3):
-                    logger.info(f"    Run {run_num + 1}/3...")
-                    results = inference_engine.process_batch(prompts, schema)
-                    all_runs.append(results)
-
-                # Transpose: convert from 3 lists of N results to N lists of 3 results
-                all_results = list(zip(*all_runs, strict=True))
-
-                # Update database immediately (only successful results)
-                db_processor.update_paper_relevance_assessments(papers, all_results, hgnc_resolver)
-
-                # Count successful results (all 3 must succeed)
-                num_successful = sum(
-                    1 for triple in all_results if all(result is not None for result in triple)
-                )
-                batch_level_processed += num_successful
-                pbar.update(num_successful)
-
-                logger.info(f"Completed batch {batch_num}")
-                if num_successful < len(papers):
-                    logger.warning(f"  {len(papers) - num_successful} papers failed in this batch")
-                logger.info(f"Total processed in this pass: {batch_level_processed:,}")
-
-            total_processed += batch_level_processed
-
-            # Check if we made progress
-            if batch_level_processed == 0:
-                consecutive_failures += 1
-                logger.warning(f"No progress made in retry attempt {retry_attempt}")
-                if consecutive_failures >= 2:
-                    logger.error("Multiple consecutive attempts with no progress - stopping")
-                    break
-            else:
-                consecutive_failures = 0
-
-            retry_attempt += 1
+    asyncio.run(
+        _process_relevance(
+            llm_processor=llm_processor,
+            db_processor=db_processor,
+            hgnc_resolver=hgnc_resolver,
+            schema=schema,
+            template=template,
+            panel_description=panel_description,
+            batch_size=batch_size,
+            shard_index=shard_index,
+            num_shards=num_shards,
+            max_retries=max_retries,
+        )
+    )
 
     # Final statistics
     final_stats = db_processor.get_processing_statistics(shard_index, num_shards)

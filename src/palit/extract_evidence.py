@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Extract evidence from full-text papers using vLLM inference."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -10,12 +11,11 @@ from typing import Any
 
 import typer
 from jinja2 import Environment, FileSystemLoader
-from openai_harmony import HarmonyEncoding
 from tqdm import tqdm
 
 from palit.docling import serialize_with_bbox_ids
 from palit.hgnc import HgncEntry, HgncResolver
-from palit.llm import HarmonyBatchProcessor, PromptResult
+from palit.llm import LLMProcessor, PromptResult, create_llm_processor
 from palit.panelapp_client import (
     PanelAppClient,
     format_panel_for_prompt,
@@ -309,33 +309,36 @@ class PaperBatchProcessor:
             }
 
 
+CHARS_PER_TOKEN = 4  # conservative average for English text
+
+
 def prepare_deep_analysis_prompts(
     papers: list[dict[str, Any]],
     template_path: Path,
     panel_formatted: str,
     papers_dir: Path,
-    encoding: HarmonyEncoding,
     max_model_len: int,
     max_tokens: int,
 ) -> DeepAnalysisPreparation:
-    """
-    Prepare prompts for deep analysis with full text from Docling JSON files.
+    """Prepare prompts for deep analysis with full text from Docling JSON files.
 
     Args:
         papers: List of paper dicts with doi, title, abstract, source_date
         template_path: Path to Jinja2 prompt template
         panel_formatted: Formatted panel description (empty string if not scoping)
         papers_dir: Directory containing Docling JSON files
-        encoding: Tokenizer encoding for length checking
         max_model_len: Maximum model context length
         max_tokens: Maximum tokens to generate
 
     Returns:
         DeepAnalysisPreparation with prepared prompts and missing DOIs
     """
-    # Load Jinja2 template
     env = Environment(loader=FileSystemLoader(template_path.parent), autoescape=False)
     template = env.get_template(template_path.name)
+
+    # Character budget for full text (conservative token-to-char estimate)
+    overhead_tokens = max_tokens + 2000
+    available_chars = int((max_model_len - overhead_tokens) * CHARS_PER_TOKEN)
 
     paper_prompts = []
     missing_dois = []
@@ -350,29 +353,18 @@ def prepare_deep_analysis_prompts(
             continue
 
         try:
-            # Use the Docling serializer to get text with bbox IDs
             full_text, bbox_mapping = serialize_with_bbox_ids(json_file)
         except Exception as e:
             logger.error(f"Failed to serialize JSON file for DOI {doi}: {e}")
             missing_dois.append(doi)
             continue
 
-        # Truncate full_text if it exceeds token budget
-        overhead_tokens = max_tokens + 2000
-        available_tokens = max_model_len - overhead_tokens
-        full_text_tokens = encoding.encode(full_text)
-
-        if len(full_text_tokens) > available_tokens:
-            logger.warning(
-                f"Truncating DOI {doi}: {len(full_text_tokens)} -> {available_tokens} tokens"
-            )
-            truncated_tokens = full_text_tokens[:available_tokens]
+        if len(full_text) > available_chars:
+            logger.warning(f"Truncating DOI {doi}: {len(full_text)} -> {available_chars} chars")
             full_text = (
-                encoding.decode(truncated_tokens)
-                + "\n\n[NOTE: Paper truncated to fit context window]"
+                full_text[:available_chars] + "\n\n[NOTE: Paper truncated to fit context window]"
             )
 
-        # Render the Jinja2 template
         prompt = template.render(
             title=paper["title"],
             date=paper["source_date"],
@@ -384,6 +376,123 @@ def prepare_deep_analysis_prompts(
         paper_prompts.append(PaperPrompt(prompt, doi, bbox_mapping))
 
     return DeepAnalysisPreparation(paper_prompts, missing_dois)
+
+
+async def _process_evidence(
+    *,
+    llm_processor: LLMProcessor,
+    db_processor: PaperBatchProcessor,
+    hgnc_resolver: HgncResolver,
+    schema: dict[str, Any],
+    prompt_path: Path,
+    panel_formatted: str,
+    papers_dir: Path,
+    max_model_len: int,
+    max_tokens: int,
+    max_retries: int,
+) -> None:
+    """Run the evidence extraction retry loop."""
+    stats = db_processor.get_deep_analysis_statistics()
+    initial_remaining = stats["remaining_papers"]
+    total_processed = 0
+    all_missing_dois: set[str] = set()
+    consecutive_failures = 0
+    retry_attempt = 0
+
+    with tqdm(total=initial_remaining, desc="Processing papers") as pbar:
+        while retry_attempt < max_retries:
+            stats = db_processor.get_deep_analysis_statistics()
+            if stats["remaining_papers"] == 0:
+                logger.info("All papers successfully processed!")
+                break
+
+            if retry_attempt > 0:
+                logger.info(
+                    f"Retry attempt {retry_attempt} - {stats['remaining_papers']} papers remaining"
+                )
+
+            logger.info("Fetching papers for deep analysis...")
+            papers = db_processor.get_papers_for_deep_analysis()
+            logger.info(f"  Retrieved {len(papers)} papers for processing")
+
+            if not papers:
+                logger.info("No more papers to process")
+                break
+
+            logger.info("Preparing prompts with full text...")
+            preparation = prepare_deep_analysis_prompts(
+                papers,
+                prompt_path,
+                panel_formatted,
+                papers_dir,
+                max_model_len,
+                max_tokens,
+            )
+            logger.info(f"  Successfully prepared {len(preparation.paper_prompts)} prompts")
+            logger.info(f"  Missing JSON files: {len(preparation.missing_dois)}")
+
+            all_missing_dois.update(preparation.missing_dois)
+
+            if not preparation.paper_prompts:
+                logger.error("No papers could be processed - all JSON files are missing")
+                break
+
+            pass_processed = 0
+            failed_papers: list[str] = []
+
+            for paper_prompt in preparation.paper_prompts:
+                logger.info(f"Processing DOI {paper_prompt.doi}")
+
+                results = await llm_processor.process_batch([paper_prompt.prompt], schema)
+
+                if results and results[0] is not None:
+                    result = results[0]
+                    valid_box_ids = set(paper_prompt.bbox_mapping.keys())
+                    if not validate_box_ids(result.parsed_json, valid_box_ids):
+                        logger.warning(f"Invalid box IDs for DOI {paper_prompt.doi}")
+                        failed_papers.append(paper_prompt.doi)
+                    else:
+                        db_processor.update_paper_evidence_extraction(
+                            [paper_prompt], [result], hgnc_resolver
+                        )
+                        pass_processed += 1
+                        pbar.update(1)
+                else:
+                    logger.warning(f"Failed to process DOI {paper_prompt.doi}")
+                    failed_papers.append(paper_prompt.doi)
+
+            total_processed += pass_processed
+
+            if pass_processed == 0:
+                consecutive_failures += 1
+                logger.warning(f"No progress made in retry attempt {retry_attempt}")
+                if consecutive_failures >= 2:
+                    logger.error("Multiple consecutive attempts with no progress - stopping")
+                    break
+            else:
+                consecutive_failures = 0
+
+            retry_attempt += 1
+
+    final_stats = db_processor.get_deep_analysis_statistics()
+    logger.info("Deep analysis complete!")
+    logger.info("Final statistics:")
+    logger.info(f"  Successfully processed: {total_processed:,}")
+    logger.info(f"  Missing JSON files: {len(all_missing_dois):,}")
+    logger.info(f"  Still remaining: {final_stats['remaining_papers']:,}")
+
+    if all_missing_dois:
+        missing_list = sorted(all_missing_dois)
+        logger.info(
+            f"  DOIs with missing JSON files: {missing_list[:10]}..."
+            if len(missing_list) > 10
+            else f"  DOIs with missing JSON files: {missing_list}"
+        )
+
+    if final_stats["remaining_papers"] > 0:
+        logger.warning(
+            f"Failed to process {final_stats['remaining_papers']} papers after {max_retries} attempts"
+        )
 
 
 @app.callback(invoke_without_command=True)
@@ -505,8 +614,8 @@ def main(
     else:
         panel_formatted = ""
 
-    logger.info("Initializing Harmony batch processor...")
-    inference_engine = HarmonyBatchProcessor(
+    logger.info("Initializing LLM processor...")
+    llm_processor = create_llm_processor(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -526,116 +635,20 @@ def main(
         logger.info("No papers remaining to process!")
         return
 
-    initial_remaining = stats["remaining_papers"]
-    total_processed = 0
-    all_missing_dois: set[str] = set()
-    consecutive_failures = 0
-    retry_attempt = 0
-
-    with tqdm(total=initial_remaining, desc="Processing papers") as pbar:
-        while retry_attempt < max_retries:
-            # Check remaining work
-            stats = db_processor.get_deep_analysis_statistics()
-            if stats["remaining_papers"] == 0:
-                logger.info("All papers successfully processed!")
-                break
-
-            if retry_attempt > 0:
-                logger.info(
-                    f"Retry attempt {retry_attempt} - {stats['remaining_papers']} papers remaining"
-                )
-
-            # Get all papers for deep analysis
-            logger.info("Fetching papers for deep analysis...")
-            papers = db_processor.get_papers_for_deep_analysis()
-            logger.info(f"  Retrieved {len(papers)} papers for processing")
-
-            if not papers:
-                logger.info("No more papers to process")
-                break
-
-            # Prepare prompts with full text
-            logger.info("Preparing prompts with full text...")
-            preparation = prepare_deep_analysis_prompts(
-                papers,
-                prompt_path,
-                panel_formatted,
-                papers_dir,
-                inference_engine.get_encoding(),
-                max_model_len,
-                max_tokens,
-            )
-            logger.info(f"  Successfully prepared {len(preparation.paper_prompts)} prompts")
-            logger.info(f"  Missing JSON files: {len(preparation.missing_dois)}")
-
-            all_missing_dois.update(preparation.missing_dois)
-
-            if not preparation.paper_prompts:
-                logger.error("No papers could be processed - all JSON files are missing")
-                break
-
-            # Process papers individually
-            pass_processed = 0
-            failed_papers: list[str] = []
-
-            for paper_prompt in preparation.paper_prompts:
-                logger.info(f"Processing DOI {paper_prompt.doi}")
-
-                # Process single paper
-                results = inference_engine.process_batch([paper_prompt.prompt], schema)
-
-                # Validate and update database
-                if results and results[0] is not None:
-                    result = results[0]
-                    # Validate box IDs against paper's bbox_mapping
-                    valid_box_ids = set(paper_prompt.bbox_mapping.keys())
-                    if not validate_box_ids(result.parsed_json, valid_box_ids):
-                        logger.warning(f"Invalid box IDs for DOI {paper_prompt.doi}")
-                        failed_papers.append(paper_prompt.doi)
-                    else:
-                        db_processor.update_paper_evidence_extraction(
-                            [paper_prompt], [result], hgnc_resolver
-                        )
-                        pass_processed += 1
-                        pbar.update(1)
-                else:
-                    logger.warning(f"Failed to process DOI {paper_prompt.doi}")
-                    failed_papers.append(paper_prompt.doi)
-
-            total_processed += pass_processed
-
-            # Check if we made progress
-            if pass_processed == 0:
-                consecutive_failures += 1
-                logger.warning(f"No progress made in retry attempt {retry_attempt}")
-                if consecutive_failures >= 2:
-                    logger.error("Multiple consecutive attempts with no progress - stopping")
-                    break
-            else:
-                consecutive_failures = 0
-
-            retry_attempt += 1
-
-    # Final statistics
-    final_stats = db_processor.get_deep_analysis_statistics()
-    logger.info("Deep analysis complete!")
-    logger.info("Final statistics:")
-    logger.info(f"  Successfully processed: {total_processed:,}")
-    logger.info(f"  Missing JSON files: {len(all_missing_dois):,}")
-    logger.info(f"  Still remaining: {final_stats['remaining_papers']:,}")
-
-    if all_missing_dois:
-        missing_list = sorted(all_missing_dois)
-        logger.info(
-            f"  DOIs with missing JSON files: {missing_list[:10]}..."
-            if len(missing_list) > 10
-            else f"  DOIs with missing JSON files: {missing_list}"
+    asyncio.run(
+        _process_evidence(
+            llm_processor=llm_processor,
+            db_processor=db_processor,
+            hgnc_resolver=hgnc_resolver,
+            schema=schema,
+            prompt_path=prompt_path,
+            panel_formatted=panel_formatted,
+            papers_dir=papers_dir,
+            max_model_len=max_model_len,
+            max_tokens=max_tokens,
+            max_retries=max_retries,
         )
-
-    if final_stats["remaining_papers"] > 0:
-        logger.warning(
-            f"Failed to process {final_stats['remaining_papers']} papers after {max_retries} attempts"
-        )
+    )
 
 
 if __name__ == "__main__":

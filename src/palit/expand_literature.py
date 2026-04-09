@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tournament-based literature expansion using hierarchical LLM filtering."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -11,7 +12,7 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.llm import HarmonyBatchProcessor
+from palit.llm import LLMProcessor, create_llm_processor
 from palit.papers import Paper, deserialize_source_metadata, serialize_source_metadata
 from palit.tournament import TournamentOutcome, run_tournament_selection
 
@@ -152,6 +153,62 @@ def _record_expansion_completion(db_path: Path, hgnc_id: int, outcome: Tournamen
             ),
         )
         conn.commit()
+
+
+async def _process_expansion(
+    *,
+    llm_processor: LLMProcessor,
+    hgnc_resolver: HgncResolver,
+    genes: list[int],
+    db_path: Path,
+    baseline_db_path: Path,
+    schema: dict[str, Any],
+    template: str,
+    paper_limit: int,
+    cutoff_date: str,
+    max_papers: int,
+    papers_per_round: int,
+    max_concurrent_batches: int,
+    max_retries: int,
+) -> None:
+    """Run the literature expansion loop."""
+    total_papers_added = 0
+
+    for hgnc_id in tqdm(genes, desc="Expanding literature for genes"):
+        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
+        papers = get_papers_for_gene(baseline_db_path, hgnc_id, paper_limit, cutoff_date)
+
+        if not papers:
+            logger.warning(f"No papers found for {hgnc_symbol} (HGNC:{hgnc_id})")
+            _record_expansion_completion(
+                db_path,
+                hgnc_id,
+                TournamentOutcome(selected_papers=[], raw_responses_by_round=[]),
+            )
+            continue
+
+        tournament_outcome = await run_tournament_selection(
+            gene_symbol=hgnc_symbol,
+            papers=papers,
+            llm_processor=llm_processor,
+            prompt_template=template,
+            schema=schema,
+            max_papers=max_papers,
+            papers_per_round=papers_per_round,
+            max_concurrent_batches=max_concurrent_batches,
+            max_retries=max_retries,
+        )
+
+        logger.info(f"Selected {len(tournament_outcome.selected_papers)} papers for {hgnc_symbol}")
+
+        store_expansion_papers(db_path, tournament_outcome.selected_papers, hgnc_symbol)
+        total_papers_added += len(tournament_outcome.selected_papers)
+
+        _record_expansion_completion(db_path, hgnc_id, tournament_outcome)
+
+    logger.info("Literature expansion complete!")
+    logger.info(f"Total genes processed: {len(genes)}")
+    logger.info(f"Total papers added: {total_papers_added}")
 
 
 @app.callback(invoke_without_command=True)
@@ -308,7 +365,7 @@ def main(
 
     # Initialize LLM processor
     logger.info("Initializing LLM processor...")
-    inference_engine = HarmonyBatchProcessor(
+    llm_processor = create_llm_processor(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -317,43 +374,23 @@ def main(
         reasoning_effort="medium",
     )
 
-    total_papers_added = 0
-
-    for hgnc_id in tqdm(genes, desc="Expanding literature for genes"):
-        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-        papers = get_papers_for_gene(baseline_db_path, hgnc_id, paper_limit, cutoff_date)
-
-        if not papers:
-            logger.warning(f"No papers found for {hgnc_symbol} (HGNC:{hgnc_id})")
-            _record_expansion_completion(
-                db_path,
-                hgnc_id,
-                TournamentOutcome(selected_papers=[], raw_responses_by_round=[]),
-            )
-            continue
-
-        tournament_outcome = run_tournament_selection(
-            gene_symbol=hgnc_symbol,
-            papers=papers,
-            llm_processor=inference_engine,
-            prompt_template=template,
+    asyncio.run(
+        _process_expansion(
+            llm_processor=llm_processor,
+            hgnc_resolver=hgnc_resolver,
+            genes=genes,
+            db_path=db_path,
+            baseline_db_path=baseline_db_path,
             schema=schema,
+            template=template,
+            paper_limit=paper_limit,
+            cutoff_date=cutoff_date,
             max_papers=max_papers,
             papers_per_round=papers_per_round,
             max_concurrent_batches=max_concurrent_batches,
             max_retries=max_retries,
         )
-
-        logger.info(f"Selected {len(tournament_outcome.selected_papers)} papers for {hgnc_symbol}")
-
-        store_expansion_papers(db_path, tournament_outcome.selected_papers, hgnc_symbol)
-        total_papers_added += len(tournament_outcome.selected_papers)
-
-        _record_expansion_completion(db_path, hgnc_id, tournament_outcome)
-
-    logger.info("Literature expansion complete!")
-    logger.info(f"Total genes processed: {len(genes)}")
-    logger.info(f"Total papers added: {total_papers_added}")
+    )
 
 
 if __name__ == "__main__":

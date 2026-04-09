@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Match genes to diagnostic panels based on phenotype descriptions."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -10,7 +11,7 @@ from typing import Any
 import typer
 from tqdm import tqdm
 
-from palit.llm import HarmonyBatchProcessor
+from palit.llm import LLMProcessor, create_llm_processor
 from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
 
 app = typer.Typer(help="Match genes to diagnostic panels based on phenotype descriptions")
@@ -121,6 +122,112 @@ class PaperBatchProcessor:
                 logger.error(f"Error updating matched panels for {hgnc_id}: {e}")
 
 
+async def _process_panel_matching(
+    *,
+    llm_processor: LLMProcessor,
+    db_processor: PaperBatchProcessor,
+    schema: dict[str, Any],
+    template: str,
+    panel_list: str,
+    name_to_id: dict[str, int],
+    batch_size: int,
+    max_retries: int,
+    initial_count: int,
+) -> None:
+    """Run the panel matching retry loop."""
+    total_processed = 0
+    consecutive_failures = 0
+    retry_attempt = 0
+
+    with tqdm(total=initial_count, desc="Matching genes to panels") as pbar:
+        while retry_attempt < max_retries:
+            genes = db_processor.get_genes_for_panel_matching()
+
+            if not genes:
+                logger.info("All genes successfully matched to panels!")
+                break
+
+            if retry_attempt > 0:
+                logger.info(f"Retry attempt {retry_attempt} - {len(genes)} genes remaining")
+
+            pass_processed = 0
+            for i in range(0, len(genes), batch_size):
+                batch = genes[i : i + batch_size]
+
+                prompts = []
+                for gene_info in batch:
+                    prompt = template.format(
+                        panel_list=panel_list,
+                        summary=gene_info["summary"],
+                        disease_description=gene_info["disease_description"],
+                    )
+                    prompts.append(prompt)
+
+                results = await llm_processor.process_batch(prompts, schema)
+
+                for gene_info, result in zip(batch, results, strict=True):
+                    hgnc_id = gene_info["hgnc_id"]
+
+                    if result is not None and "matched_panels" in result.parsed_json:
+                        llm_matches = result.parsed_json["matched_panels"]
+
+                        all_valid = True
+                        invalid_names = []
+                        resolved_matches = []
+
+                        for match in llm_matches:
+                            panel_name = match.get("panel_name", "")
+                            panel_id = name_to_id.get(panel_name.lower())
+                            if panel_id is None:
+                                all_valid = False
+                                invalid_names.append(panel_name)
+                            else:
+                                resolved_matches.append(
+                                    {"panel_id": panel_id, "rationale": match.get("rationale", "")}
+                                )
+
+                        if not all_valid:
+                            logger.warning(
+                                f"Invalid panel names for HGNC:{hgnc_id}: {invalid_names} - treating as failure"
+                            )
+                        else:
+                            db_processor.update_matched_panels(
+                                hgnc_id, resolved_matches, result.raw_response
+                            )
+                            pass_processed += 1
+                            pbar.update(1)
+                            if not resolved_matches:
+                                logger.info(
+                                    f"No panel matches for HGNC:{hgnc_id} (empty list is valid)"
+                                )
+                    else:
+                        logger.warning(f"Failed to get valid JSON response for HGNC:{hgnc_id}")
+
+            total_processed += pass_processed
+
+            if pass_processed == 0:
+                consecutive_failures += 1
+                logger.warning(f"No progress made in retry attempt {retry_attempt}")
+                if consecutive_failures >= 2:
+                    logger.error("Multiple consecutive attempts with no progress - stopping")
+                    break
+            else:
+                consecutive_failures = 0
+
+            retry_attempt += 1
+
+    final_genes = db_processor.get_genes_for_panel_matching()
+    final_remaining = len(final_genes)
+
+    logger.info("Panel matching complete!")
+    logger.info(f"Successfully matched {total_processed} genes to panels")
+
+    if final_remaining > 0:
+        logger.warning(
+            f"Failed to match {final_remaining} genes to panels after {max_retries} attempts"
+        )
+
+
 @app.callback(invoke_without_command=True)
 def main(
     db_path: Path = typer.Option(
@@ -200,7 +307,7 @@ def main(
 
     # Initialize components
     db_processor = PaperBatchProcessor(db_path)
-    inference_engine = HarmonyBatchProcessor(
+    llm_processor = create_llm_processor(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -229,108 +336,19 @@ def main(
         logger.info("No genes need panel matching")
         return
 
-    # Retry loop
-    total_processed = 0
-    consecutive_failures = 0
-    retry_attempt = 0
-
-    with tqdm(total=initial_count, desc="Matching genes to panels") as pbar:
-        while retry_attempt < max_retries:
-            # Get genes needing panel matching (re-read from DB)
-            genes = db_processor.get_genes_for_panel_matching()
-
-            if not genes:
-                logger.info("All genes successfully matched to panels!")
-                break
-
-            if retry_attempt > 0:
-                logger.info(f"Retry attempt {retry_attempt} - {len(genes)} genes remaining")
-
-            # Process in batches
-            pass_processed = 0
-            for i in range(0, len(genes), batch_size):
-                batch = genes[i : i + batch_size]
-
-                # Prepare prompts for batch
-                prompts = []
-                for gene_info in batch:
-                    prompt = template.format(
-                        panel_list=panel_list,
-                        summary=gene_info["summary"],
-                        disease_description=gene_info["disease_description"],
-                    )
-                    prompts.append(prompt)
-
-                # Process batch
-                results = inference_engine.process_batch(prompts, schema)
-
-                # Validate and update database with matches
-                for gene_info, result in zip(batch, results, strict=True):
-                    hgnc_id = gene_info["hgnc_id"]
-
-                    if result is not None and "matched_panels" in result.parsed_json:
-                        llm_matches = result.parsed_json["matched_panels"]
-
-                        # Validate panel names and convert to IDs
-                        all_valid = True
-                        invalid_names = []
-                        resolved_matches = []
-
-                        for match in llm_matches:
-                            panel_name = match.get("panel_name", "")
-                            panel_id = name_to_id.get(panel_name.lower())
-                            if panel_id is None:
-                                all_valid = False
-                                invalid_names.append(panel_name)
-                            else:
-                                resolved_matches.append(
-                                    {"panel_id": panel_id, "rationale": match.get("rationale", "")}
-                                )
-
-                        if not all_valid:
-                            # Invalid panel names - treat as failure, do NOT update DB
-                            logger.warning(
-                                f"Invalid panel names for HGNC:{hgnc_id}: {invalid_names} - treating as failure"
-                            )
-                        else:
-                            # All panel names resolved - update DB with IDs
-                            db_processor.update_matched_panels(
-                                hgnc_id, resolved_matches, result.raw_response
-                            )
-                            pass_processed += 1
-                            pbar.update(1)
-                            if not resolved_matches:
-                                logger.info(
-                                    f"No panel matches for HGNC:{hgnc_id} (empty list is valid)"
-                                )
-                    else:
-                        logger.warning(f"Failed to get valid JSON response for HGNC:{hgnc_id}")
-
-            total_processed += pass_processed
-
-            # Check if we made progress
-            if pass_processed == 0:
-                consecutive_failures += 1
-                logger.warning(f"No progress made in retry attempt {retry_attempt}")
-                if consecutive_failures >= 2:
-                    logger.error("Multiple consecutive attempts with no progress - stopping")
-                    break
-            else:
-                consecutive_failures = 0
-
-            retry_attempt += 1
-
-    # Final count
-    final_genes = db_processor.get_genes_for_panel_matching()
-    final_remaining = len(final_genes)
-
-    logger.info("Panel matching complete!")
-    logger.info(f"Successfully matched {total_processed} genes to panels")
-
-    if final_remaining > 0:
-        logger.warning(
-            f"Failed to match {final_remaining} genes to panels after {max_retries} attempts"
+    asyncio.run(
+        _process_panel_matching(
+            llm_processor=llm_processor,
+            db_processor=db_processor,
+            schema=schema,
+            template=template,
+            panel_list=panel_list,
+            name_to_id=name_to_id,
+            batch_size=batch_size,
+            max_retries=max_retries,
+            initial_count=initial_count,
         )
+    )
 
 
 if __name__ == "__main__":

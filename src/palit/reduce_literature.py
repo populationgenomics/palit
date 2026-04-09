@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tournament-based literature reduction to minimize manual download burden."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -11,7 +12,7 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.llm import HarmonyBatchProcessor
+from palit.llm import LLMProcessor, create_llm_processor
 from palit.papers import Paper, deserialize_source_metadata
 from palit.tournament import TournamentOutcome, run_tournament_selection
 
@@ -171,6 +172,85 @@ def _record_reduction_completion(db_path: Path, hgnc_id: int, outcome: Tournamen
         conn.commit()
 
 
+async def _process_reduction(
+    *,
+    llm_processor: LLMProcessor,
+    hgnc_resolver: HgncResolver,
+    genes_with_counts: list[tuple[int, int]],
+    db_path: Path,
+    schema: dict[str, Any],
+    template: str,
+    paper_limit: int,
+    max_papers: int,
+    papers_per_round: int,
+    max_concurrent_batches: int,
+    max_retries: int,
+) -> None:
+    """Run the literature reduction loop."""
+    # Phase 1a: Collect DOIs for genes that don't need reduction (≤max_papers)
+    all_selected_dois: set[str] = set()
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT gm.paper_doi
+            FROM gene_mentions gm
+            WHERE gm.hgnc_id IN (
+                SELECT hgnc_id
+                FROM gene_mentions
+                GROUP BY hgnc_id
+                HAVING COUNT(DISTINCT paper_doi) <= ?
+            )
+            """,
+            (max_papers,),
+        )
+        small_gene_dois = {row[0] for row in cursor.fetchall()}
+        all_selected_dois.update(small_gene_dois)
+        logger.info(
+            f"Auto-selected {len(small_gene_dois)} papers from genes with ≤{max_papers} papers"
+        )
+
+    # Phase 1b: Run tournament selection for genes with many papers
+    for hgnc_id, paper_count in tqdm(genes_with_counts, desc="Reducing literature"):
+        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
+        papers = get_papers_for_gene(db_path, hgnc_id, paper_limit)
+
+        if not papers:
+            logger.warning(f"No papers found for {hgnc_symbol} (HGNC:{hgnc_id})")
+            continue
+
+        tournament_outcome = await run_tournament_selection(
+            gene_symbol=hgnc_symbol,
+            papers=papers,
+            llm_processor=llm_processor,
+            prompt_template=template,
+            schema=schema,
+            max_papers=max_papers,
+            papers_per_round=papers_per_round,
+            max_concurrent_batches=max_concurrent_batches,
+            max_retries=max_retries,
+        )
+
+        selected_dois = {p.doi for p in tournament_outcome.selected_papers}
+        all_selected_dois.update(selected_dois)
+
+        logger.info(
+            f"{hgnc_symbol} (HGNC:{hgnc_id}): {paper_count} -> {len(selected_dois)} selected"
+        )
+
+        _record_reduction_completion(db_path, hgnc_id, tournament_outcome)
+
+    # Phase 2: Clear download_status for papers not selected by ANY gene
+    logger.info("Clearing download_status for unselected papers...")
+    clear_stats = clear_unselected_papers(db_path, all_selected_dois)
+
+    logger.info("Literature reduction complete!")
+    logger.info(f"Total genes processed: {len(genes_with_counts)}")
+    logger.info(f"Total papers selected: {len(all_selected_dois)}")
+    for key, value in clear_stats.items():
+        logger.info(f"  {key}: {value}")
+
+
 @app.callback(invoke_without_command=True)
 def main(
     db_path: Path = typer.Option(
@@ -315,7 +395,7 @@ def main(
 
     # Initialize LLM processor
     logger.info("Initializing LLM processor...")
-    inference_engine = HarmonyBatchProcessor(
+    llm_processor = create_llm_processor(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -324,69 +404,21 @@ def main(
         reasoning_effort="medium",
     )
 
-    # Phase 1a: Collect DOIs for genes that don't need reduction (≤max_papers)
-    # These genes implicitly have all their papers selected
-    all_selected_dois: set[str] = set()
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT DISTINCT gm.paper_doi
-            FROM gene_mentions gm
-            WHERE gm.hgnc_id IN (
-                SELECT hgnc_id
-                FROM gene_mentions
-                GROUP BY hgnc_id
-                HAVING COUNT(DISTINCT paper_doi) <= ?
-            )
-            """,
-            (max_papers,),
-        )
-        small_gene_dois = {row[0] for row in cursor.fetchall()}
-        all_selected_dois.update(small_gene_dois)
-        logger.info(
-            f"Auto-selected {len(small_gene_dois)} papers from genes with ≤{max_papers} papers"
-        )
-
-    # Phase 1b: Run tournament selection for genes with many papers
-    for hgnc_id, paper_count in tqdm(genes_with_counts, desc="Reducing literature"):
-        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-        papers = get_papers_for_gene(db_path, hgnc_id, paper_limit)
-
-        if not papers:
-            logger.warning(f"No papers found for {hgnc_symbol} (HGNC:{hgnc_id})")
-            continue
-
-        tournament_outcome = run_tournament_selection(
-            gene_symbol=hgnc_symbol,
-            papers=papers,
-            llm_processor=inference_engine,
-            prompt_template=template,
+    asyncio.run(
+        _process_reduction(
+            llm_processor=llm_processor,
+            hgnc_resolver=hgnc_resolver,
+            genes_with_counts=genes_with_counts,
+            db_path=db_path,
             schema=schema,
+            template=template,
+            paper_limit=paper_limit,
             max_papers=max_papers,
             papers_per_round=papers_per_round,
             max_concurrent_batches=max_concurrent_batches,
             max_retries=max_retries,
         )
-
-        selected_dois = {p.doi for p in tournament_outcome.selected_papers}
-        all_selected_dois.update(selected_dois)
-
-        logger.info(
-            f"{hgnc_symbol} (HGNC:{hgnc_id}): {paper_count} -> {len(selected_dois)} selected"
-        )
-
-        _record_reduction_completion(db_path, hgnc_id, tournament_outcome)
-
-    # Phase 2: Clear download_status for papers not selected by ANY gene
-    logger.info("Clearing download_status for unselected papers...")
-    clear_stats = clear_unselected_papers(db_path, all_selected_dois)
-
-    logger.info("Literature reduction complete!")
-    logger.info(f"Total genes processed: {len(genes_with_counts)}")
-    logger.info(f"Total papers selected: {len(all_selected_dois)}")
-    for key, value in clear_stats.items():
-        logger.info(f"  {key}: {value}")
+    )
 
 
 if __name__ == "__main__":

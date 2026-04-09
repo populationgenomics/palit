@@ -18,8 +18,11 @@ from palit.papers import (
     Paper,
     ResearchSquareMetadata,
     RxivMetadata,
+    format_crossref_authors,
     load_previous_dois,
+    parse_crossref_date,
     serialize_source_metadata,
+    strip_xml_tags,
 )
 from palit.progress import LoggingProgress as Progress
 
@@ -127,41 +130,12 @@ def fetch_rxiv_papers(
     return papers
 
 
-def _strip_xml_tags(text: str) -> str:
-    """Strip XML/HTML tags from Crossref abstract text and collapse whitespace."""
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
-
-
 def _normalize_rs_doi(doi: str) -> str:
     """Strip version suffix from Research Square DOI.
 
     '10.21203/rs.3.rs-7989161/v1' -> '10.21203/rs.3.rs-7989161'
     """
     return _RS_VERSION_SUFFIX.sub("", doi)
-
-
-def _parse_crossref_date(date_obj: dict[str, Any]) -> str:
-    """Parse Crossref date-parts format to YYYY-MM-DD string."""
-    parts: list[int] = date_obj["date-parts"][0]
-    year = parts[0]
-    month = parts[1] if len(parts) > 1 else 1
-    day = parts[2] if len(parts) > 2 else 1
-    return f"{year:04d}-{month:02d}-{day:02d}"
-
-
-def _format_crossref_authors(authors: list[dict[str, Any]]) -> str:
-    """Convert Crossref author objects to 'Last, First; Last, First' format."""
-    formatted: list[str] = []
-    for author in authors:
-        family = author.get("family")
-        given = author.get("given")
-        if family and given:
-            formatted.append(f"{family}, {given}")
-        elif family:
-            formatted.append(family)
-        elif name := author.get("name"):
-            formatted.append(name)
-    return "; ".join(formatted)
 
 
 def _parse_crossref_paper(record: dict[str, Any], source_details: str) -> Paper:
@@ -176,11 +150,11 @@ def _parse_crossref_paper(record: dict[str, Any], source_details: str) -> Paper:
         doi=doi,
         pmid=None,
         title=record["title"][0],
-        abstract=_strip_xml_tags(record["abstract"]),
-        authors=_format_crossref_authors(record.get("author", [])),
+        abstract=strip_xml_tags(record["abstract"]),
+        authors=format_crossref_authors(record.get("author", [])),
         journal="Research Square",
         source="researchsquare",
-        source_date=_parse_crossref_date(record["posted"]),
+        source_date=parse_crossref_date(record["posted"]),
         source_metadata=ResearchSquareMetadata(version=version, versioned_doi=versioned_doi),
         source_type="initial",
         source_details=source_details,

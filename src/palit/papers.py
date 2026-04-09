@@ -66,7 +66,12 @@ class ResearchSquareMetadata:
     versioned_doi: str
 
 
-SourceMetadata = PubmedMetadata | RxivMetadata | ResearchSquareMetadata
+@dataclass
+class CrossrefMetadata:
+    """Source metadata for papers fetched directly from CrossRef."""
+
+
+SourceMetadata = PubmedMetadata | RxivMetadata | ResearchSquareMetadata | CrossrefMetadata
 
 
 def serialize_source_metadata(metadata: SourceMetadata) -> str:
@@ -83,8 +88,42 @@ def deserialize_source_metadata(source: str, json_str: str | None) -> SourceMeta
         return ResearchSquareMetadata(**data)
     elif source == "pubmed":
         return PubmedMetadata(**data)
+    elif source == "crossref":
+        return CrossrefMetadata(**data)
     else:
         raise ValueError(f"Unknown source: {source}")
+
+
+# CrossRef response parsing utilities
+
+
+def strip_xml_tags(text: str) -> str:
+    """Strip XML/HTML tags from CrossRef abstract text and collapse whitespace."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
+
+
+def parse_crossref_date(date_obj: dict[str, Any]) -> str:
+    """Parse CrossRef date-parts format to YYYY-MM-DD string."""
+    parts: list[int] = date_obj["date-parts"][0]
+    year = parts[0]
+    month = parts[1] if len(parts) > 1 else 1
+    day = parts[2] if len(parts) > 2 else 1
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def format_crossref_authors(authors: list[dict[str, Any]]) -> str:
+    """Convert CrossRef author objects to 'Last, First; Last, First' format."""
+    formatted: list[str] = []
+    for author in authors:
+        family = author.get("family")
+        given = author.get("given")
+        if family and given:
+            formatted.append(f"{family}, {given}")
+        elif family:
+            formatted.append(family)
+        elif name := author.get("name"):
+            formatted.append(name)
+    return "; ".join(formatted)
 
 
 @dataclass

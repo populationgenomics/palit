@@ -7,6 +7,8 @@ import sqlite3
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 import httpx
 import typer
@@ -15,7 +17,14 @@ from rich.progress import track
 
 from palit.hgnc import HgncResolver
 from palit.ingest_pubmed import extract_papers_from_xml
-from palit.papers import Paper, serialize_source_metadata
+from palit.papers import (
+    CrossrefMetadata,
+    Paper,
+    format_crossref_authors,
+    parse_crossref_date,
+    serialize_source_metadata,
+    strip_xml_tags,
+)
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 
@@ -207,6 +216,64 @@ def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_doi: str) -> Paper | No
         return None
 
 
+def fetch_paper_metadata_by_doi(doi: str, hgnc_id: int, citing_doi: str) -> Paper | None:
+    """Fetch paper metadata from CrossRef by DOI.
+
+    Args:
+        doi: Digital Object Identifier
+        hgnc_id: HGNC ID for source_details
+        citing_doi: DOI of paper citing this reference, or "manual" for manually added papers
+
+    Returns:
+        Paper object if successful, None otherwise
+    """
+    url = f"https://api.crossref.org/works/{quote(doi, safe='')}"
+    try:
+        response = httpx.get(url, timeout=30.0)
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        logger.warning(f"CrossRef fetch failed for DOI {doi}: {e}")
+        return None
+
+    record: dict[str, Any] = data["message"]
+
+    titles = record.get("title", [])
+    if not titles:
+        logger.warning(f"No title in CrossRef response for DOI {doi}")
+        return None
+
+    abstract_raw = record.get("abstract", "")
+    abstract = strip_xml_tags(abstract_raw) if abstract_raw else ""
+
+    container_titles = record.get("container-title", [])
+    if container_titles:
+        journal = container_titles[0]
+    else:
+        # Preprints lack container-title; fall back to institution name (e.g. "medRxiv")
+        institutions = record.get("institution", [])
+        journal = institutions[0]["name"] if institutions else ""
+
+    date_obj = record.get("published") or record.get("created")
+    if not date_obj:
+        logger.warning(f"No date in CrossRef response for DOI {doi}")
+        return None
+
+    return Paper(
+        doi=doi,
+        pmid=None,
+        title=titles[0],
+        abstract=abstract,
+        authors=format_crossref_authors(record.get("author", [])),
+        journal=journal,
+        source="crossref",
+        source_date=parse_crossref_date(date_obj),
+        source_metadata=CrossrefMetadata(),
+        source_type="expansion",
+        source_details=f"referenced:{hgnc_id}:{citing_doi}",
+    )
+
+
 def check_doi_exists(db_path: Path, doi: str) -> bool:
     """Check if a DOI already exists in the database.
 
@@ -361,11 +428,11 @@ def discover(
             for title in failures_by_gene[hgnc_id]:
                 console.print(f"  - {title}")
 
-        console.print("\n[dim]Hint: To add papers manually, look up PMIDs and run:[/dim]")
+        console.print("\nHint: To add papers manually, look up PMIDs or DOIs and run:")
         console.print(
-            f"[dim]  uv run palit discover-citations add --db-path {db_path} --hgnc-id HGNC_ID PMID1 PMID2 ...[/dim]"
+            f"  uv run palit discover-citations add --db-path {db_path} --hgnc-id HGNC_ID PMID1 DOI1 ..."
         )
-        console.print("[dim]  (Papers without a DOI in PubMed will be skipped)[/dim]")
+        console.print("[dim]  (PMID-added papers without a DOI in PubMed will be skipped)[/dim]")
 
     if new_papers > 0:
         console.print(
@@ -373,14 +440,34 @@ def discover(
         )
 
 
+def _classify_identifier(identifier: str) -> tuple[str, str | int]:
+    """Classify a CLI argument as a DOI or PMID.
+
+    DOIs always contain '/', PMIDs are pure integers.
+
+    Returns:
+        ("doi", doi_string) or ("pmid", pmid_int)
+    """
+    if "/" in identifier:
+        return ("doi", identifier)
+    try:
+        return ("pmid", int(identifier))
+    except ValueError:
+        raise typer.BadParameter(
+            f"'{identifier}' is neither a DOI (must contain '/') nor a PMID (must be an integer)"
+        ) from None
+
+
 @app.command()
 def add(
-    pmids: list[int] = typer.Argument(..., help="PMIDs to add to the database"),
+    identifiers: list[str] = typer.Argument(..., help="PMIDs or DOIs to add to the database"),
     hgnc_id: int = typer.Option(..., "--hgnc-id", "-g", help="HGNC ID to associate with"),
     db_path: Path = typer.Option(default=Path("data/db.sqlite"), help="Path to SQLite database"),
 ) -> None:
-    """Manually add papers to the database by PMID.
+    """Manually add papers to the database by PMID or DOI.
 
+    Accepts both PMIDs (integers) and DOIs (strings containing '/').
+    PMIDs are resolved via PubMed efetch; DOIs are resolved via CrossRef.
     Papers will be added with source_type='expansion' and
     source_details='referenced:{hgnc_id}:manual' to match the citation discovery format.
     """
@@ -389,34 +476,45 @@ def add(
         console.print(f"[red]Error: Database not found: {db_path}[/red]")
         raise typer.Exit(code=1)
 
-    if not pmids:
-        console.print("[red]Error: At least one PMID must be provided[/red]")
+    if not identifiers:
+        console.print("[red]Error: At least one PMID or DOI must be provided[/red]")
         raise typer.Exit(code=1)
+
+    classified = [_classify_identifier(ident) for ident in identifiers]
 
     hgnc_resolver = HgncResolver.from_file()
     gene_display = hgnc_resolver.get_symbol(hgnc_id)
-    console.print(f"Adding {len(pmids)} paper(s) for {gene_display} (HGNC:{hgnc_id})")
+    console.print(f"Adding {len(classified)} paper(s) for {gene_display} (HGNC:{hgnc_id})")
 
     added = 0
     skipped = 0
     failed = 0
 
-    for pmid in pmids:
-        # Fetch metadata using "manual" as the citing source
-        paper = fetch_paper_metadata(pmid, hgnc_id, citing_doi="manual")
+    for id_type, id_value in classified:
+        if id_type == "pmid":
+            assert isinstance(id_value, int)
+            paper = fetch_paper_metadata(id_value, hgnc_id, citing_doi="manual")
+            display_id = f"PMID {id_value}"
+        else:
+            assert isinstance(id_value, str)
+            # For DOIs we can check existence before making the API call
+            if check_doi_exists(db_path, id_value):
+                logger.info(f"DOI {id_value} already in database, skipping")
+                skipped += 1
+                continue
+            paper = fetch_paper_metadata_by_doi(id_value, hgnc_id, citing_doi="manual")
+            display_id = f"DOI {id_value}"
 
         if paper is None:
-            logger.error(f"Failed to fetch metadata for PMID {pmid}")
+            logger.error(f"Failed to fetch metadata for {display_id}")
             failed += 1
             continue
 
-        # Check if already exists (by DOI)
         if check_doi_exists(db_path, paper.doi):
             logger.info(f"DOI {paper.doi} already in database, skipping")
             skipped += 1
             continue
 
-        # Store in database
         inserted = store_referenced_paper(db_path, paper)
         if inserted:
             logger.info(f"Added DOI {paper.doi} for {gene_display} (HGNC:{hgnc_id})")

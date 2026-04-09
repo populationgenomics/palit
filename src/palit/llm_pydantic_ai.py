@@ -110,6 +110,14 @@ class PydanticAIProcessor:
             )
 
             result = await agent.run(prompt)
+            usage = result.usage()
+            logger.info(
+                "Token usage: input=%d output=%d total=%d",
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.total_tokens,
+            )
+
             parsed_json: dict[str, Any] = result.output
             raw_response = result.all_messages_json().decode()
 

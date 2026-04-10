@@ -125,7 +125,7 @@ class BedrockBatchProcessor:
             "temperature": self.temperature,
             "thinking": {"type": "adaptive"},
             "output_config": {
-                "effort": "high",
+                "effort": "medium",
                 "format": {
                     "type": "json_schema",
                     "schema": schema,

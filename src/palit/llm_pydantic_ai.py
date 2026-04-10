@@ -90,7 +90,7 @@ class PydanticAIProcessor:
                         temperature=self.temperature,
                         bedrock_additional_model_requests_fields={
                             "thinking": {"type": "adaptive"},
-                            "output_config": {"effort": "high"},
+                            "output_config": {"effort": "medium"},
                         },
                     )
                 )

@@ -91,8 +91,6 @@ disable_error_code = ["import-untyped"]
 # These packages are only needed for ML workflows, not for core functionality
 [[tool.mypy.overrides]]
 module = [
-    "openai_harmony",
-    "openai_harmony.*",
     "vllm",
     "vllm.*",
     "wandb",

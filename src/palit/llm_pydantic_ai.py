@@ -44,7 +44,7 @@ class PydanticAIProcessor:
             session = boto3.Session()
             bedrock_client = session.client(
                 "bedrock-runtime",
-                config=Config(read_timeout=300, connect_timeout=60),
+                config=Config(read_timeout=600, connect_timeout=60),
             )
             self._model = BedrockConverseModel(
                 model_id,
@@ -90,6 +90,7 @@ class PydanticAIProcessor:
                         temperature=self.temperature,
                         bedrock_additional_model_requests_fields={
                             "thinking": {"type": "adaptive"},
+                            "output_config": {"effort": "high"},
                         },
                     )
                 )

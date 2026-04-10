@@ -37,13 +37,18 @@ def create_llm_processor(
     tensor_parallel_size: int = 1,
     max_model_len: int = 8192,
     reasoning_effort: str = "high",
+    **kwargs: Any,
 ) -> LLMProcessor:
     """Create an LLM processor for the given model string.
 
     Dispatch logic:
     - ``openai/gpt-oss-*`` → HarmonyProcessor (vLLM offline batch)
-    - ``bedrock/*`` → PydanticAIProcessor (AWS Bedrock)
+    - ``bedrock-batch/*`` → BedrockBatchProcessor (S3 batch, 50% discount)
+    - ``bedrock/*`` → PydanticAIProcessor (AWS Bedrock real-time)
     - Everything else → PydanticAIProcessor (OpenAI-compatible, reads OPENAI_BASE_URL)
+
+    Extra *kwargs* are forwarded to the backend constructor (e.g.
+    ``s3_bucket``, ``s3_prefix``, ``role_arn``, ``region`` for ``bedrock-batch/``).
     """
     if model.startswith("openai/gpt-oss-"):
         # vLLM/Harmony are optional ML dependencies (Linux GPU only)
@@ -56,6 +61,16 @@ def create_llm_processor(
             tensor_parallel_size=tensor_parallel_size,
             max_model_len=max_model_len,
             reasoning_effort=reasoning_effort,
+        )
+
+    if model.startswith("bedrock-batch/"):
+        from palit.llm_bedrock_batch import BedrockBatchProcessor
+
+        return BedrockBatchProcessor(
+            model_id=model.removeprefix("bedrock-batch/"),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
         )
 
     from palit.llm_pydantic_ai import PydanticAIProcessor

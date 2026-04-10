@@ -305,6 +305,11 @@ def main(
         "--max-model-len",
         help="Maximum model context length",
     ),
+    llm_config: str = typer.Option(
+        "",
+        "--llm-config",
+        help="JSON dict of extra backend config (forwarded to LLM processor)",
+    ),
     log_level: str = typer.Option(
         "INFO",
         "--log-level",
@@ -402,6 +407,7 @@ def main(
         tensor_parallel_size=tensor_parallel_size,
         max_model_len=max_model_len,
         reasoning_effort="medium",
+        **(json.loads(llm_config) if llm_config else {}),
     )
 
     asyncio.run(

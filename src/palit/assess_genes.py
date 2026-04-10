@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -515,6 +516,19 @@ def prepare_aggregate_assessment_prompt(
     return rendered, paper_id_to_doi
 
 
+@dataclass
+class _GeneBatchItem:
+    """Per-gene metadata needed for post-LLM validation."""
+
+    hgnc_id: int
+    hgnc_symbol: str
+    prompt: str
+    paper_id_to_doi: dict[str, str]
+    evidence_list: list[dict[str, Any]]
+    mondo_name_to_id: dict[str, str]
+    filtered_papers: list[dict[str, Any]] | None
+
+
 async def _process_assessments(
     *,
     llm_processor: LLMProcessor,
@@ -527,6 +541,7 @@ async def _process_assessments(
     schema: dict[str, Any],
     prompt_path: Path,
     panel_formatted: str,
+    batch_size: int,
     max_retries: int,
     initial_remaining: int,
 ) -> None:
@@ -579,9 +594,11 @@ async def _process_assessments(
             pass_processed = 0
             failed_genes: list[int] = []
 
+            # Prepare all gene prompts, then process in batches
+            batch_items: list[_GeneBatchItem] = []
             for hgnc_id in hgnc_ids_to_assess:
                 hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-                logger.info(f"Processing {hgnc_symbol} (HGNC:{hgnc_id})")
+                logger.info(f"Preparing {hgnc_symbol} (HGNC:{hgnc_id})")
 
                 evidence_list = db_processor.get_evidence_for_gene(hgnc_id)
 
@@ -629,40 +646,66 @@ async def _process_assessments(
                     mondo_candidates,
                 )
 
-                results = await llm_processor.process_batch([prompt], schema)
+                batch_items.append(
+                    _GeneBatchItem(
+                        hgnc_id=hgnc_id,
+                        hgnc_symbol=hgnc_symbol,
+                        prompt=prompt,
+                        paper_id_to_doi=paper_id_to_doi,
+                        evidence_list=evidence_list,
+                        mondo_name_to_id=mondo_name_to_id,
+                        filtered_papers=filtered_papers or None,
+                    )
+                )
 
-                if results and results[0] is not None:
-                    result = results[0]
+            # Process prepared genes in batches
+            for i in range(0, len(batch_items), batch_size):
+                batch = batch_items[i : i + batch_size]
+                logger.info(
+                    f"Processing batch of {len(batch)} genes "
+                    f"({i + 1}-{i + len(batch)}/{len(batch_items)})"
+                )
+
+                prompts = [item.prompt for item in batch]
+                results = await llm_processor.process_batch(prompts, schema)
+
+                for item, result in zip(batch, results, strict=True):
+                    if result is None:
+                        logger.warning(
+                            f"Failed to process aggregate assessment for {item.hgnc_symbol}"
+                        )
+                        failed_genes.append(item.hgnc_id)
+                        continue
+
                     try:
-                        replace_paper_ids_with_dois(result.parsed_json, paper_id_to_doi)
+                        replace_paper_ids_with_dois(result.parsed_json, item.paper_id_to_doi)
                     except ValueError:
-                        logger.warning(f"LLM hallucinated paper ID for {hgnc_symbol}, retrying")
-                        failed_genes.append(hgnc_id)
+                        logger.warning(
+                            f"LLM hallucinated paper ID for {item.hgnc_symbol}, retrying"
+                        )
+                        failed_genes.append(item.hgnc_id)
                         continue
                     if not validate_box_ids_with_doi(
                         result.parsed_json,
-                        fetch_valid_box_ids_by_doi(db_path, evidence_list),
+                        fetch_valid_box_ids_by_doi(db_path, item.evidence_list),
                     ):
-                        logger.warning(f"Invalid (doi, box_id) pairs for {hgnc_symbol}")
-                        failed_genes.append(hgnc_id)
+                        logger.warning(f"Invalid (doi, box_id) pairs for {item.hgnc_symbol}")
+                        failed_genes.append(item.hgnc_id)
                         continue
-                    if unresolved := resolve_mondo_names(result.parsed_json, mondo_name_to_id):
+                    if unresolved := resolve_mondo_names(result.parsed_json, item.mondo_name_to_id):
                         logger.warning(
-                            f"Unresolved MONDO disease names for {hgnc_symbol}: {unresolved}"
+                            f"Unresolved MONDO disease names for {item.hgnc_symbol}: {unresolved}"
                         )
-                        failed_genes.append(hgnc_id)
+                        failed_genes.append(item.hgnc_id)
                         continue
                     db_processor.update_gene_assessment(
-                        hgnc_id,
+                        item.hgnc_id,
                         (result.raw_response, result.parsed_json),
-                        paper_id_to_doi,
-                        filtered_papers=filtered_papers or None,
+                        item.paper_id_to_doi,
+                        filtered_papers=item.filtered_papers,
                     )
                     pass_processed += 1
                     pbar.update(1)
-                else:
-                    logger.warning(f"Failed to process aggregate assessment for {hgnc_symbol}")
-                    failed_genes.append(hgnc_id)
 
             total_processed += pass_processed
 
@@ -748,6 +791,12 @@ def main(
         "--schema-path",
         "-s",
         help="Path to response schema file",
+    ),
+    batch_size: int = typer.Option(
+        1,
+        "--batch-size",
+        "-b",
+        help="Genes per LLM batch (increase for concurrent API backends like Bedrock)",
     ),
     max_retries: int = typer.Option(
         5,
@@ -857,6 +906,7 @@ def main(
             schema=schema,
             prompt_path=prompt_path,
             panel_formatted=panel_formatted,
+            batch_size=batch_size,
             max_retries=max_retries,
             initial_remaining=stats["remaining_to_assess"],
         )

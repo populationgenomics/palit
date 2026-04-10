@@ -389,6 +389,7 @@ async def _process_evidence(
     papers_dir: Path,
     max_model_len: int,
     max_tokens: int,
+    batch_size: int,
     max_retries: int,
 ) -> None:
     """Run the evidence extraction retry loop."""
@@ -440,13 +441,22 @@ async def _process_evidence(
             pass_processed = 0
             failed_papers: list[str] = []
 
-            for paper_prompt in preparation.paper_prompts:
-                logger.info(f"Processing DOI {paper_prompt.doi}")
+            for i in range(0, len(preparation.paper_prompts), batch_size):
+                batch = preparation.paper_prompts[i : i + batch_size]
+                logger.info(
+                    f"Processing batch of {len(batch)} papers "
+                    f"({i + 1}-{i + len(batch)}/{len(preparation.paper_prompts)})"
+                )
 
-                results = await llm_processor.process_batch([paper_prompt.prompt], schema)
+                prompts = [pp.prompt for pp in batch]
+                results = await llm_processor.process_batch(prompts, schema)
 
-                if results and results[0] is not None:
-                    result = results[0]
+                for paper_prompt, result in zip(batch, results, strict=True):
+                    if result is None:
+                        logger.warning(f"Failed to process DOI {paper_prompt.doi}")
+                        failed_papers.append(paper_prompt.doi)
+                        continue
+
                     valid_box_ids = set(paper_prompt.bbox_mapping.keys())
                     if not validate_box_ids(result.parsed_json, valid_box_ids):
                         logger.warning(f"Invalid box IDs for DOI {paper_prompt.doi}")
@@ -457,9 +467,6 @@ async def _process_evidence(
                         )
                         pass_processed += 1
                         pbar.update(1)
-                else:
-                    logger.warning(f"Failed to process DOI {paper_prompt.doi}")
-                    failed_papers.append(paper_prompt.doi)
 
             total_processed += pass_processed
 
@@ -561,6 +568,12 @@ def main(
         "--scope-panel-id",
         help="Panel ID for panel-scoped evidence extraction (only extracts genes relevant to this panel)",
     ),
+    batch_size: int = typer.Option(
+        1,
+        "--batch-size",
+        "-b",
+        help="Papers per LLM batch (increase for concurrent API backends like Bedrock)",
+    ),
     max_retries: int = typer.Option(
         5,
         "--max-retries",
@@ -646,6 +659,7 @@ def main(
             papers_dir=papers_dir,
             max_model_len=max_model_len,
             max_tokens=max_tokens,
+            batch_size=batch_size,
             max_retries=max_retries,
         )
     )

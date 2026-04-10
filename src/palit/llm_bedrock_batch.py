@@ -69,6 +69,7 @@ class BedrockBatchProcessor:
             model=f"bedrock/{model_id}",
             temperature=temperature,
             max_tokens=max_tokens,
+            region=region,
         )
 
     async def process_batch(

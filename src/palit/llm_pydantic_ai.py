@@ -34,6 +34,7 @@ class PydanticAIProcessor:
         model: str,
         temperature: float,
         max_tokens: int,
+        region: str | None = None,
     ):
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -44,6 +45,7 @@ class PydanticAIProcessor:
             session = boto3.Session()
             bedrock_client = session.client(
                 "bedrock-runtime",
+                region_name=region,
                 config=Config(read_timeout=600, connect_timeout=60),
             )
             self._model = BedrockConverseModel(

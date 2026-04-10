@@ -24,7 +24,7 @@ from palit.llm_pydantic_ai import PydanticAIProcessor
 logger = logging.getLogger(__name__)
 
 MIN_BATCH_SIZE = 100
-POLL_INTERVAL_SECONDS = 30
+POLL_INTERVAL_SECONDS = 300
 
 
 @dataclass

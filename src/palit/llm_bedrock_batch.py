@@ -11,6 +11,7 @@ Falls back to real-time ``PydanticAIProcessor`` when batch size < 100
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -160,7 +161,8 @@ class BedrockBatchProcessor:
         )
         self._s3.put_object(Bucket=self._s3_bucket, Key=input_key, Body=input_jsonl.encode())
 
-        job_name = f"palit-{self._s3_prefix.replace('/', '-')}-{int(time.time())}"
+        sanitized = re.sub(r"[^a-zA-Z0-9\-\+\.]", "-", self._s3_prefix)
+        job_name = f"palit-{sanitized}-{int(time.time())}"
         logger.info("Creating batch inference job: %s", job_name)
         response = self._bedrock.create_model_invocation_job(
             jobName=job_name,

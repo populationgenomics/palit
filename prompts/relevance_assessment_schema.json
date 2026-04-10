@@ -1,17 +1,45 @@
 {
     "type": "object",
     "properties": {
-        "relevant": {"type": "boolean"},
-        "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-        "rationale": {"type": "string"},
+        "relevant": {
+            "type": "boolean"
+        },
+        "confidence": {
+            "type": "string",
+            "enum": [
+                "LOW",
+                "MEDIUM",
+                "HIGH"
+            ]
+        },
+        "rationale": {
+            "type": "string"
+        },
         "associations": {
             "type": "array",
             "items": {
                 "type": "object",
-                "properties": {"gene_symbol": {"type": "string"}, "disease": {"type": "string"}},
-                "required": ["gene_symbol", "disease"]
+                "properties": {
+                    "gene_symbol": {
+                        "type": "string"
+                    },
+                    "disease": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "gene_symbol",
+                    "disease"
+                ],
+                "additionalProperties": false
             }
         }
     },
-    "required": ["relevant", "confidence", "rationale", "associations"]
+    "required": [
+        "relevant",
+        "confidence",
+        "rationale",
+        "associations"
+    ],
+    "additionalProperties": false
 }

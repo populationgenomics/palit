@@ -6,15 +6,25 @@
             "items": {
                 "type": "object",
                 "properties": {
-                    "panel_name": {"type": "string", "description": "Exact panel name from the provided list"},
+                    "panel_name": {
+                        "type": "string",
+                        "description": "Exact panel name from the provided list"
+                    },
                     "rationale": {
                         "type": "string",
                         "description": "Brief explanation for panel match"
                     }
                 },
-                "required": ["panel_name", "rationale"]
+                "required": [
+                    "panel_name",
+                    "rationale"
+                ],
+                "additionalProperties": false
             }
         }
     },
-    "required": ["matched_panels"]
+    "required": [
+        "matched_panels"
+    ],
+    "additionalProperties": false
 }

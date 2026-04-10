@@ -5,12 +5,24 @@
             "type": "string",
             "description": "Prose narrative summarizing the gene-disease evidence. For novel genes: brief prose (2-3 sentences). For genes with existing PanelApp reviews: three sections with bold markdown headers (**New evidence**: / **Prior reviews**: / **Assessment**:), or four sections if panel-scoped (adding **Panel relevance**:). Follow the format specified in the prompt."
         },
-        "families": {"type": "string"},
-        "variants": {"type": "string"},
-        "population_freq": {"type": "string"},
-        "segregation": {"type": "string"},
-        "functional": {"type": "string"},
-        "prior_reports": {"type": "string"},
+        "families": {
+            "type": "string"
+        },
+        "variants": {
+            "type": "string"
+        },
+        "population_freq": {
+            "type": "string"
+        },
+        "segregation": {
+            "type": "string"
+        },
+        "functional": {
+            "type": "string"
+        },
+        "prior_reports": {
+            "type": "string"
+        },
         "disease_entities": {
             "type": "array",
             "description": "Array of distinct disease entities caused by this gene, each with separate patient and family counts. Include specific disease names where applicable.",
@@ -30,7 +42,10 @@
                         "description": "Number of patients for this specific disease entity aggregated across all papers"
                     },
                     "family_count": {
-                        "type": ["integer", "null"],
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
                         "description": "Number of unrelated families for this specific disease entity aggregated across all papers. Use null when not reported (NR)."
                     },
                     "disease_mechanism": {
@@ -48,7 +63,7 @@
                             "Other",
                             "NR"
                         ],
-                        "description": "Mode of inheritance for this specific disease entity. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns. Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males — Monoallelic is for autosomal dominant only."
+                        "description": "Mode of inheritance for this specific disease entity. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns. Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males \u2014 Monoallelic is for autosomal dominant only."
                     },
                     "inheritance_details": {
                         "type": "string",
@@ -73,117 +88,27 @@
                                     "description": "Brief description of what this citation shows"
                                 }
                             },
-                            "required": ["paper_id", "box_id", "commentary"]
+                            "required": [
+                                "paper_id",
+                                "box_id",
+                                "commentary"
+                            ],
+                            "additionalProperties": false
                         }
                     }
                 },
-                "required": ["description", "mondo_disease_name", "patient_count", "family_count", "disease_mechanism", "inheritance_mode", "inheritance_details", "citations"]
+                "required": [
+                    "description",
+                    "mondo_disease_name",
+                    "patient_count",
+                    "family_count",
+                    "disease_mechanism",
+                    "inheritance_mode",
+                    "inheritance_details",
+                    "citations"
+                ],
+                "additionalProperties": false
             }
-        },
-        "criterion_A": {
-            "type": "object",
-            "properties": {
-                "result": {"type": "boolean"},
-                "rationale": {"type": "string"},
-                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-                "citations": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "paper_id": {"type": "string"},
-                            "box_id": {"type": "integer"},
-                            "commentary": {"type": "string"}
-                        },
-                        "required": ["paper_id", "box_id", "commentary"]
-                    }
-                }
-            },
-            "required": ["result", "rationale", "confidence", "citations"]
-        },
-        "criterion_B": {
-            "type": "object",
-            "properties": {
-                "result": {"type": "boolean"},
-                "rationale": {"type": "string"},
-                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-                "citations": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "paper_id": {"type": "string"},
-                            "box_id": {"type": "integer"},
-                            "commentary": {"type": "string"}
-                        },
-                        "required": ["paper_id", "box_id", "commentary"]
-                    }
-                }
-            },
-            "required": ["result", "rationale", "confidence", "citations"]
-        },
-        "criterion_C": {
-            "type": "object",
-            "properties": {
-                "result": {"type": "boolean"},
-                "rationale": {"type": "string"},
-                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-                "citations": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "paper_id": {"type": "string"},
-                            "box_id": {"type": "integer"},
-                            "commentary": {"type": "string"}
-                        },
-                        "required": ["paper_id", "box_id", "commentary"]
-                    }
-                }
-            },
-            "required": ["result", "rationale", "confidence", "citations"]
-        },
-        "criterion_D": {
-            "type": "object",
-            "properties": {
-                "result": {"type": "boolean"},
-                "rationale": {"type": "string"},
-                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-                "citations": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "paper_id": {"type": "string"},
-                            "box_id": {"type": "integer"},
-                            "commentary": {"type": "string"}
-                        },
-                        "required": ["paper_id", "box_id", "commentary"]
-                    }
-                }
-            },
-            "required": ["result", "rationale", "confidence", "citations"]
-        },
-        "criterion_E": {
-            "type": "object",
-            "properties": {
-                "result": {"type": "boolean"},
-                "rationale": {"type": "string"},
-                "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-                "citations": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "paper_id": {"type": "string"},
-                            "box_id": {"type": "integer"},
-                            "commentary": {"type": "string"}
-                        },
-                        "required": ["paper_id", "box_id", "commentary"]
-                    }
-                }
-            },
-            "required": ["result", "rationale", "confidence", "citations"]
         },
         "quality_concerns": {
             "type": "array",
@@ -197,7 +122,9 @@
                     },
                     "paper_ids": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "items": {
+                            "type": "string"
+                        },
                         "description": "Paper IDs of papers where this concern applies"
                     },
                     "citations": {
@@ -219,11 +146,86 @@
                                     "description": "Brief explanation of what this citation demonstrates"
                                 }
                             },
-                            "required": ["paper_id", "box_id", "commentary"]
+                            "required": [
+                                "paper_id",
+                                "box_id",
+                                "commentary"
+                            ],
+                            "additionalProperties": false
                         }
                     }
                 },
-                "required": ["concern", "paper_ids", "citations"]
+                "required": [
+                    "concern",
+                    "paper_ids",
+                    "citations"
+                ],
+                "additionalProperties": false
+            }
+        },
+        "criteria": {
+            "type": "array",
+            "description": "PanelApp diagnostic criteria assessments (A through E)",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "type": "boolean"
+                    },
+                    "rationale": {
+                        "type": "string"
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": [
+                            "LOW",
+                            "MEDIUM",
+                            "HIGH"
+                        ]
+                    },
+                    "citations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "paper_id": {
+                                    "type": "string"
+                                },
+                                "box_id": {
+                                    "type": "integer"
+                                },
+                                "commentary": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": [
+                                "paper_id",
+                                "box_id",
+                                "commentary"
+                            ],
+                            "additionalProperties": false
+                        }
+                    },
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "A",
+                            "B",
+                            "C",
+                            "D",
+                            "E"
+                        ],
+                        "description": "Criterion identifier (A through E)"
+                    }
+                },
+                "required": [
+                    "name",
+                    "result",
+                    "rationale",
+                    "confidence",
+                    "citations"
+                ],
+                "additionalProperties": false
             }
         }
     },
@@ -236,11 +238,8 @@
         "functional",
         "prior_reports",
         "disease_entities",
-        "criterion_A",
-        "criterion_B",
-        "criterion_C",
-        "criterion_D",
-        "criterion_E",
-        "quality_concerns"
-    ]
+        "quality_concerns",
+        "criteria"
+    ],
+    "additionalProperties": false
 }

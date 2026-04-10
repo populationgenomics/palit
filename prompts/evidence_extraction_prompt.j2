@@ -400,47 +400,13 @@ Respond in JSON format with your evaluation:
       "segregation": "LOD score / de novo status / meioses or NR",
       "functional": "specific experiments or NR",
       "prior_reports": "first report / N prior families or NR",
-      "criterion_A": {
-        "result": boolean,
-        "rationale": "detailed explanation with citations when true",
-        "confidence": "HIGH|MEDIUM|LOW",
-        "citations": [
-          {"box_id": integer, "commentary": "explanation of what this text shows"},
-          {"box_id": integer, "commentary": "explanation of what this text shows"}
-        ]
-      },
-      "criterion_B": {
-        "result": boolean,
-        "rationale": "detailed explanation with citations when true",
-        "confidence": "HIGH|MEDIUM|LOW",
-        "citations": [
-          {"box_id": integer, "commentary": "explanation of what this text shows"}
-        ]
-      },
-      "criterion_C": {
-        "result": boolean,
-        "rationale": "detailed explanation with citations when true",
-        "confidence": "HIGH|MEDIUM|LOW",
-        "citations": [
-          {"box_id": integer, "commentary": "explanation of what this text shows"}
-        ]
-      },
-      "criterion_D": {
-        "result": boolean,
-        "rationale": "detailed explanation with citations when true",
-        "confidence": "HIGH|MEDIUM|LOW",
-        "citations": [
-          {"box_id": integer, "commentary": "explanation of what this text shows"}
-        ]
-      },
-      "criterion_E": {
-        "result": boolean,
-        "rationale": "detailed explanation with citations when true",
-        "confidence": "HIGH|MEDIUM|LOW",
-        "citations": [
-          {"box_id": integer, "commentary": "explanation of what this text shows"}
-        ]
-      },
+      "criteria": [
+        {"name": "A", "result": boolean, "rationale": "detailed explanation with citations when true", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "explanation of what this text shows"}]},
+        {"name": "B", "result": boolean, "rationale": "detailed explanation with citations when true", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "explanation of what this text shows"}]},
+        {"name": "C", "result": boolean, "rationale": "detailed explanation with citations when true", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "explanation of what this text shows"}]},
+        {"name": "D", "result": boolean, "rationale": "detailed explanation with citations when true", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "explanation of what this text shows"}]},
+        {"name": "E", "result": boolean, "rationale": "detailed explanation with citations when true", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "explanation of what this text shows"}]}
+      ],
       "quality_concerns": [
         {
           "concern": "description of the issue and why it matters",

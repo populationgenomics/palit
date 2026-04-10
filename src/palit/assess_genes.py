@@ -65,9 +65,9 @@ def replace_paper_ids_with_dois(
         for citation in entity.get("citations", []):
             citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
 
-    # criterion_A through criterion_E citations
-    for criterion in ("criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"):
-        for citation in parsed_json.get(criterion, {}).get("citations", []):
+    # criteria[].citations
+    for criterion in parsed_json.get("criteria", []):
+        for citation in criterion.get("citations", []):
             citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
 
     # quality_concerns[].paper_ids list + citations[]
@@ -205,9 +205,9 @@ def validate_box_ids_with_doi(
             if not check_citation(citation):
                 return False
 
-    # criterion_A through criterion_E citations
-    for criterion in ("criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"):
-        for citation in parsed_json.get(criterion, {}).get("citations", []):
+    # criteria[].citations
+    for criterion in parsed_json.get("criteria", []):
+        for citation in criterion.get("citations", []):
             if not check_citation(citation):
                 return False
 

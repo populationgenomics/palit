@@ -2,7 +2,7 @@
 """Shared utilities for PanelApp criteria evaluation and integration."""
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 # Target panel IDs
 MENDELIOME_PANEL_ID = 137
@@ -25,7 +25,20 @@ PANEL_NAMES = {
 }
 
 # PanelApp criteria names
-PANELAPP_CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
+CriterionName = Literal["A", "B", "C", "D", "E"]
+PANELAPP_CRITERIA: list[CriterionName] = ["A", "B", "C", "D", "E"]
+
+
+def get_criterion(gene_eval: dict[str, Any], name: CriterionName) -> dict[str, Any]:
+    """Look up a criterion by name from the criteria array.
+
+    Returns the criterion dict, or an empty dict if not found.
+    """
+    for c in gene_eval.get("criteria", []):
+        if c.get("name") == name:
+            return dict(c)
+    return {}
+
 
 # MONDO ID to category information (abbreviation, description)
 # CSS class is derived from abbrev.lower()
@@ -240,16 +253,16 @@ def meets_green_criteria(gene_eval: dict[str, Any]) -> bool:
     """Check if a single gene evaluation meets GREEN criteria: (A OR B OR C) AND D AND E.
 
     Args:
-        gene_eval: Gene evaluation dictionary with criterion_A, criterion_B, etc.
+        gene_eval: Gene evaluation dictionary with criteria array.
 
     Returns:
         True if evaluation meets GREEN criteria, False otherwise
     """
-    a = bool(gene_eval.get("criterion_A", {}).get("result", False))
-    b = bool(gene_eval.get("criterion_B", {}).get("result", False))
-    c = bool(gene_eval.get("criterion_C", {}).get("result", False))
-    d = bool(gene_eval.get("criterion_D", {}).get("result", False))
-    e = bool(gene_eval.get("criterion_E", {}).get("result", False))
+    a = bool(get_criterion(gene_eval, "A").get("result", False))
+    b = bool(get_criterion(gene_eval, "B").get("result", False))
+    c = bool(get_criterion(gene_eval, "C").get("result", False))
+    d = bool(get_criterion(gene_eval, "D").get("result", False))
+    e = bool(get_criterion(gene_eval, "E").get("result", False))
 
     return (a or b or c) and d and e
 
@@ -263,7 +276,7 @@ def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
     - 1 (RED) otherwise
 
     Args:
-        gene_eval: Gene evaluation dictionary with criterion_A, criterion_B, etc.
+        gene_eval: Gene evaluation dictionary with criteria array.
 
     Returns:
         Confidence level: 3 (GREEN), 2 (AMBER), or 1 (RED)

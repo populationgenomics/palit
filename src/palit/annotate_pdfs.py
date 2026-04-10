@@ -20,7 +20,6 @@ from pypdf.generic import (
 
 from palit.docling import parse_bbox_mapping_from_json
 from palit.hgnc import HgncResolver
-from palit.panelapp_integration import PANELAPP_CRITERIA
 from palit.papers import build_display_ids, doi_to_path, replace_paper_ids_for_display
 
 app = typer.Typer(help="Create annotated PDFs with citation highlighting")
@@ -63,12 +62,7 @@ def extract_citations_from_individual_assessment(
             continue
         hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
 
-        for criterion_name in PANELAPP_CRITERIA:
-            if criterion_name not in gene_eval:
-                continue
-
-            criterion = gene_eval[criterion_name]
-
+        for criterion in gene_eval.get("criteria", []):
             for citation in criterion.get("citations", []):
                 box_id = citation["box_id"]
 
@@ -84,7 +78,7 @@ def extract_citations_from_individual_assessment(
 
                 citations.append(
                     AnnotationCitation(
-                        title=f"{hgnc_symbol} - {criterion_name} ({result_status}) - Individual",
+                        title=f"{hgnc_symbol} - Criterion {criterion['name']} ({result_status}) - Individual",
                         content=citation["commentary"],
                         box_id=box_id,
                         page=bbox_info["page"],
@@ -176,9 +170,7 @@ def extract_citations_from_aggregate_assessment(
     """
     citations = []
 
-    for criterion_name in PANELAPP_CRITERIA:
-        criterion = assessment_json[criterion_name]
-
+    for criterion in assessment_json.get("criteria", []):
         for citation in criterion["citations"]:
             # Only process citations from the current paper
             if citation["doi"] != current_doi:
@@ -190,7 +182,7 @@ def extract_citations_from_aggregate_assessment(
 
             citations.append(
                 AnnotationCitation(
-                    title=f"{hgnc_symbol} - {criterion_name} ({result_status}) - Aggregate",
+                    title=f"{hgnc_symbol} - Criterion {criterion['name']} ({result_status}) - Aggregate",
                     content=citation["commentary"],
                     box_id=box_id,
                     page=bbox_info["page"],

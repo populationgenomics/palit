@@ -376,47 +376,13 @@ Respond in JSON format with your aggregate evaluation:
     {"description": "disease name 1 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"paper_id": "Author2024", "box_id": box_id, "commentary": "description"}, {"paper_id": "Author2023", "box_id": box_id, "commentary": "description"}]},
     {"description": "disease name 2 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"paper_id": "Author2022", "box_id": box_id, "commentary": "description"}]}
   ],
-  "criterion_A": {
-    "result": boolean,
-    "rationale": "detailed explanation combining evidence from all papers",
-    "confidence": "HIGH|MEDIUM|LOW",
-    "citations": [
-      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"},
-      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
-    ]
-  },
-  "criterion_B": {
-    "result": boolean,
-    "rationale": "detailed explanation combining evidence from all papers",
-    "confidence": "HIGH|MEDIUM|LOW",
-    "citations": [
-      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
-    ]
-  },
-  "criterion_C": {
-    "result": boolean,
-    "rationale": "detailed explanation combining evidence from all papers",
-    "confidence": "HIGH|MEDIUM|LOW",
-    "citations": [
-      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
-    ]
-  },
-  "criterion_D": {
-    "result": boolean,
-    "rationale": "detailed explanation combining evidence from all papers",
-    "confidence": "HIGH|MEDIUM|LOW",
-    "citations": [
-      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
-    ]
-  },
-  "criterion_E": {
-    "result": boolean,
-    "rationale": "detailed explanation combining evidence from all papers",
-    "confidence": "HIGH|MEDIUM|LOW",
-    "citations": [
-      {"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}
-    ]
-  },
+  "criteria": [
+    {"name": "A", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]},
+    {"name": "B", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]},
+    {"name": "C", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]},
+    {"name": "D", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]},
+    {"name": "E", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]}
+  ],
   "quality_concerns": [
     {
       "concern": "description of the issue, referencing specific paper IDs",

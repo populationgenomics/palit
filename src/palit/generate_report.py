@@ -26,7 +26,6 @@ from palit.panelapp_client import (
 )
 from palit.panelapp_integration import (
     MONDO_CATEGORIES,
-    PANELAPP_CRITERIA,
     PANELAPP_MOI_TO_ENUM,
     calculate_gene_rating,
     count_families_by_moi,
@@ -1718,8 +1717,7 @@ def main(
         cursor = conn.cursor()
 
         for assessment in all_genes:
-            for criterion_name in PANELAPP_CRITERIA:
-                criterion = assessment.assessment_json[criterion_name]
+            for criterion in assessment.assessment_json.get("criteria", []):
                 for citation in criterion.get("citations", []):
                     path = doi_to_path(
                         citation["doi"],

@@ -10,9 +10,7 @@ import logging
 import os
 from typing import Any
 
-import boto3
 import jsonschema
-from botocore.config import Config
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.models.bedrock import BedrockConverseModel, BedrockModelSettings
@@ -42,15 +40,13 @@ class PydanticAIProcessor:
 
         if model.startswith("bedrock/"):
             model_id = model.removeprefix("bedrock/")
-            session = boto3.Session()
-            bedrock_client = session.client(
-                "bedrock-runtime",
-                region_name=region,
-                config=Config(read_timeout=600, connect_timeout=60),
-            )
             self._model = BedrockConverseModel(
                 model_id,
-                provider=BedrockProvider(bedrock_client=bedrock_client),
+                provider=BedrockProvider(
+                    region_name=region,
+                    aws_read_timeout=600,
+                    aws_connect_timeout=60,
+                ),
                 profile=BedrockModelProfile(
                     bedrock_supports_tool_choice=False,
                     bedrock_send_back_thinking_parts=True,

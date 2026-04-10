@@ -61,9 +61,9 @@ class BedrockBatchProcessor:
         self._s3_prefix = s3_prefix
         self._role_arn = role_arn
 
-        session = boto3.Session()
-        self._s3 = session.client("s3", region_name=region)
-        self._bedrock = session.client("bedrock", region_name=region)
+        session = boto3.Session(region_name=region)
+        self._s3 = session.client("s3")
+        self._bedrock = session.client("bedrock")
 
         # Real-time fallback for small batches
         self._realtime = PydanticAIProcessor(

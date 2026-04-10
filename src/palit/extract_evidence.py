@@ -526,7 +526,7 @@ def main(
         help="Sampling temperature",
     ),
     max_tokens: int = typer.Option(
-        30000,
+        80000,
         "--max-tokens",
         help="Maximum tokens to generate",
     ),

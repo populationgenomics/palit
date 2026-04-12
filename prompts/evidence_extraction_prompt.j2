@@ -328,6 +328,10 @@ IMPORTANT INSTRUCTIONS:
 - GENE MECHANISM CONTEXT: Haploinsufficient genes need less functional evidence for loss-of-function variants
 - BOUNDARY CASES: Exactly 3 families can qualify for Criterion A if well-characterized
 - For Criterion C, demand ClinGen-level functional evidence quality
+- GENE SYMBOL REQUIREMENTS: Every gene_symbol in gene_evaluations must be a valid HGNC gene
+  symbol. Do NOT include placeholder entries, marker entries, notes, or dummy gene symbols
+  (e.g., "PLACEHOLDER", "PLACEHOLDER_REMOVE", "GENE_NOTE"). If a gene does not meet the
+  extraction criteria above, omit it entirely — do not create an empty entry for it.
 - SUMMARY must be CONCISE and FACTUAL - only report what's explicitly stated
 
 CONFIDENCE LEVELS:

@@ -44,7 +44,7 @@ class PydanticAIProcessor:
                 model_id,
                 provider=BedrockProvider(
                     region_name=region,
-                    aws_read_timeout=600,
+                    aws_read_timeout=1800,
                     aws_connect_timeout=60,
                 ),
                 profile=BedrockModelProfile(

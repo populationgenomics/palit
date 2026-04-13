@@ -1,4 +1,4 @@
-You are a genetics expert performing AGGREGATE ASSESSMENT of evidence across multiple research papers for a specific gene, applying PanelApp Guidelines for rare disease diagnosis.
+You are a genetics expert performing AGGREGATE ASSESSMENT of evidence across multiple research papers for a specific gene, applying PanelApp Australia (panelapp-aus.org) Guidelines for rare disease diagnosis. NOTE: All PanelApp references in this prompt refer to PanelApp Australia, NOT Genomics England PanelApp.
 
 AGGREGATE ASSESSMENT CONTEXT:
 Your task is to combine evidence from multiple papers that have already been individually evaluated and make a FINAL assessment of whether the gene {{ gene_symbol }} meets the criteria for "diagnostic-grade" (Green) classification for rare disease diagnosis.
@@ -230,7 +230,7 @@ STRUCTURE:
 Use paragraph breaks for readability (e.g., break after protein function section).
 {% elif has_previous_reviews and not panel_formatted %}
 {# CASE 2: General + Has Reviews #}
-This gene has existing PanelApp reviews (shown below). Your summary must ADD to them, not repeat them.
+This gene has existing PanelApp Australia reviews (shown below). Your summary must ADD to them, not repeat them.
 
 {{ previous_reviews_section }}
 
@@ -244,11 +244,11 @@ OUTPUT FORMAT — the summary field MUST use exactly these three bold markdown h
 
 EXAMPLES:
 
-✓ "**New evidence**: Park2024 and Lee2024 add 16 families with ACTN2 skeletal myopathy, including adult-onset limb-girdle weakness with dominant and recessive inheritance.\n\n**Prior reviews**: The 2021 PanelApp review classified ACTN2 as GREEN based on 14 families with dilated cardiomyopathy and iPSC-CM functional validation.\n\n**Assessment**: Combined with the cardiomyopathy families, the total now exceeds 30 unrelated families. The expanded phenotypic spectrum reinforces the diagnostic-grade classification."
+✓ "**New evidence**: Park2024 and Lee2024 add 16 families with ACTN2 skeletal myopathy, including adult-onset limb-girdle weakness with dominant and recessive inheritance.\n\n**Prior reviews**: The 2021 PanelApp Australia review classified ACTN2 as GREEN based on 14 families with dilated cardiomyopathy and iPSC-CM functional validation.\n\n**Assessment**: Combined with the cardiomyopathy families, the total now exceeds 30 unrelated families. The expanded phenotypic spectrum reinforces the diagnostic-grade classification."
 
-✓ Sparse prior reviews: "**New evidence**: Kim2024 reports 4 families with biallelic variants causing childhood-onset ataxia, with zebrafish rescue experiments.\n\n**Prior reviews**: Rated AMBER on the Mendeliome panel with no detailed reviewer commentary.\n\n**Assessment**: The new evidence meets Criterion A (4 unrelated families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
+✓ Sparse prior reviews: "**New evidence**: Kim2024 reports 4 families with biallelic variants causing childhood-onset ataxia, with zebrafish rescue experiments.\n\n**Prior reviews**: Rated AMBER on the PanelApp Australia Mendeliome panel with no detailed reviewer commentary.\n\n**Assessment**: The new evidence meets Criterion A (4 unrelated families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
 
-✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN (April 2022) based on 5 families with recessive loss-of-function alleles.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
+✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN on PanelApp Australia (April 2022) based on 5 families with recessive loss-of-function alleles.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
 {% elif not has_previous_reviews and panel_formatted %}
 {# CASE 3: Panel-scoped + Novel #}
 Provide a prose narrative that synthesizes the gene-disease evidence AND explains why this gene belongs on the specified panel.
@@ -281,7 +281,7 @@ EXAMPLES:
   (No specific connection to the panel's scope or disorders)
 {% elif has_previous_reviews and panel_formatted %}
 {# CASE 4: Panel-scoped + Has Reviews #}
-This gene has existing PanelApp reviews (shown below). Your summary must ADD to them, not repeat them, AND explain why the gene belongs on this specific panel.
+This gene has existing PanelApp Australia reviews (shown below). Your summary must ADD to them, not repeat them, AND explain why the gene belongs on this specific panel.
 
 {{ previous_reviews_section }}
 
@@ -301,9 +301,9 @@ OUTPUT FORMAT — the summary field MUST use exactly these four bold markdown he
 
 EXAMPLES:
 
-✓ "**New evidence**: Park2024 and Lee2024 add 16 families with ACTN2 skeletal myopathy.\n\n**Prior reviews**: Rated GREEN on the Inherited Cardiomyopathies panel based on dilated cardiomyopathy evidence.\n\n**Panel relevance**: Both cardiac and skeletal muscle phenotypes fall within the Inherited Muscle Disorders panel's scope.\n\n**Assessment**: The expanded phenotypic spectrum strengthens diagnostic-grade status."
+✓ "**New evidence**: Park2024 and Lee2024 add 16 families with ACTN2 skeletal myopathy.\n\n**Prior reviews**: Rated GREEN on the PanelApp Australia Inherited Cardiomyopathies panel based on dilated cardiomyopathy evidence.\n\n**Panel relevance**: Both cardiac and skeletal muscle phenotypes fall within the Inherited Muscle Disorders panel's scope.\n\n**Assessment**: The expanded phenotypic spectrum strengthens diagnostic-grade status."
 
-✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN based on 3 families with dilated cardiomyopathy.\n\n**Panel relevance**: DCM is a core phenotype within the Inherited Cardiomyopathies panel's scope of genetic cardiomyopathies.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
+✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN on PanelApp Australia based on 3 families with dilated cardiomyopathy.\n\n**Panel relevance**: DCM is a core phenotype within the Inherited Cardiomyopathies panel's scope of genetic cardiomyopathies.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
 {% endif %}
 IMPORTANT INSTRUCTIONS:
 - Focus on variants causing rare genetic diseases — including both germline variants and

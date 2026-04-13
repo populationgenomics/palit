@@ -183,6 +183,52 @@
             border-color: #4caf50;
             transform: translateX(4px);
         }
+
+        .report-sublist {
+            margin-left: 2rem;
+            margin-top: 0.5rem;
+            margin-bottom: 0;
+        }
+
+        .report-link-gemma {
+            display: block;
+            padding: 1.25rem;
+            background: #e0f2f1;
+            border: 1px solid #80cbc4;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #2c3e50;
+            transition: all 0.2s ease;
+        }
+
+        .report-link-gemma:hover {
+            background: #b2dfdb;
+            border-color: #26a69a;
+            transform: translateX(4px);
+        }
+
+        .report-link-sonnet {
+            display: block;
+            padding: 1.25rem;
+            background: #f3e5f5;
+            border: 1px solid #ce93d8;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #2c3e50;
+            transition: all 0.2s ease;
+        }
+
+        .report-link-sonnet:hover {
+            background: #e1bee7;
+            border-color: #ab47bc;
+            transform: translateX(4px);
+        }
+
+        .badge-eval {
+            background: #e0f7fa;
+            color: #00695c;
+            border: 1px solid #80deea;
+        }
     </style>
 </head>
 <body>
@@ -200,6 +246,23 @@
         <div class="toc-section">
             <h2 class="section-heading">2026</h2>
             <ul class="reports-list">
+                <li class="report-item">
+                    <a href="report_2026-03-h2/index.html" class="report-link">
+                        <div class="link-title">March H2</div>
+                    </a>
+                    <ul class="reports-list report-sublist">
+                        <li class="report-item">
+                            <a href="report_2026-03-h2_gemma4/index.html" class="report-link-gemma">
+                                <div class="link-title">March H2 — Gemma 4 <span class="badge badge-eval">evaluation</span></div>
+                            </a>
+                        </li>
+                        <li class="report-item">
+                            <a href="report_2026-03-h2_sonnet/index.html" class="report-link-sonnet">
+                                <div class="link-title">March H2 — Sonnet 4.6 <span class="badge badge-eval">evaluation</span></div>
+                            </a>
+                        </li>
+                    </ul>
+                </li>
                 <li class="report-item">
                     <a href="report_2026-03-h1/index.html" class="report-link">
                         <div class="link-title">March H1</div>
@@ -270,31 +333,37 @@
                     <a href="report_2025-08/index.html" class="report-link">
                         <div class="link-title">August <span class="badge badge-backfill">backfill</span></div>
                     </a>
-                </li>
-                <li class="report-item">
-                    <a href="report_2025-09-01/index.html" class="report-link-obsolete">
-                        <div class="link-title">August <span class="badge badge-obsolete">obsolete</span></div>
-                    </a>
+                    <ul class="reports-list report-sublist">
+                        <li class="report-item">
+                            <a href="report_2025-09-01/index.html" class="report-link-obsolete">
+                                <div class="link-title">August <span class="badge badge-obsolete">obsolete</span></div>
+                            </a>
+                        </li>
+                    </ul>
                 </li>
                 <li class="report-item">
                     <a href="report_2025-07/index.html" class="report-link">
                         <div class="link-title">July <span class="badge badge-backfill">backfill</span></div>
                     </a>
-                </li>
-                <li class="report-item">
-                    <a href="report_2025-08-01/index.html" class="report-link-obsolete">
-                        <div class="link-title">July <span class="badge badge-obsolete">obsolete</span></div>
-                    </a>
+                    <ul class="reports-list report-sublist">
+                        <li class="report-item">
+                            <a href="report_2025-08-01/index.html" class="report-link-obsolete">
+                                <div class="link-title">July <span class="badge badge-obsolete">obsolete</span></div>
+                            </a>
+                        </li>
+                    </ul>
                 </li>
                 <li class="report-item">
                     <a href="report_2025-06/index.html" class="report-link">
                         <div class="link-title">June <span class="badge badge-backfill">backfill</span></div>
                     </a>
-                </li>
-                <li class="report-item">
-                    <a href="report_2025-07-01/index.html" class="report-link-obsolete">
-                        <div class="link-title">June <span class="badge badge-obsolete">obsolete</span></div>
-                    </a>
+                    <ul class="reports-list report-sublist">
+                        <li class="report-item">
+                            <a href="report_2025-07-01/index.html" class="report-link-obsolete">
+                                <div class="link-title">June <span class="badge badge-obsolete">obsolete</span></div>
+                            </a>
+                        </li>
+                    </ul>
                 </li>
                 <li class="report-item">
                     <a href="report_2025-05/index.html" class="report-link">

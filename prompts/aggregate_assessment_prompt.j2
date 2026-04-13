@@ -51,7 +51,7 @@ You are evaluating evidence that has been extracted from multiple papers. Your j
 4. **MERGE FUNCTIONAL EVIDENCE**: Combine all functional studies and select the strongest supporting evidence
 5. **ASSESS CONSISTENCY**: Evaluate whether findings across papers are consistent and mutually reinforcing
 
-IMPORTANT: This is a [List of Evidence Extractions] -> [Single Evidence Evaluation] transformation. You are producing ONE final assessment for this gene by combining evidence from multiple source papers.
+IMPORTANT: This is a <List of Evidence Extractions> -> <Single Evidence Evaluation> transformation. You are producing ONE final assessment for this gene by combining evidence from multiple source papers.
 
 CITATION REQUIREMENTS:
 For each criterion that evaluates to TRUE, you MUST provide specific citations from the source papers. For each citation:
@@ -206,24 +206,24 @@ STRUCTURE:
    - Notable specifics (founder variants, population findings, prior reports, etc.)
 
    GENERAL TEMPLATE (flexible - adapt as needed for natural prose):
-   [paper_id(s)] report [N] individuals from [N] unrelated families with [inheritance] [mechanism] [variant-types] variants presenting with [phenotype]. [Clinical details]. [Functional evidence]. [Notable specifics].
+   <paper_id(s)> report <N> individuals from <N> unrelated families with <inheritance> <mechanism> <variant-types> variants presenting with <phenotype>. <Clinical details>. <Functional evidence>. <Notable specifics>.
 
    EXAMPLES showing different combinations of information:
 
    ✓ Single mechanism, single variant type:
-     "[Smith2024] reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. Functional assays demonstrate constitutive activation."
+     "Smith2024 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. Functional assays demonstrate constitutive activation."
 
    ✓ Single mechanism, multiple variant types:
-     "[Jones2024] reports 27 individuals from 24 families with biallelic loss-of-function nonsense, frameshift, and splice-site variants causing Stargardt disease type 1, an autosomal recessive progressive macular dystrophy with childhood- or early adulthood-onset central vision loss."
+     "Jones2024 reports 27 individuals from 24 families with biallelic loss-of-function nonsense, frameshift, and splice-site variants causing Stargardt disease type 1, an autosomal recessive progressive macular dystrophy with childhood- or early adulthood-onset central vision loss."
 
    ✓ With detailed mechanism, omitting variant types:
-     "[Kim2024] reports 5 individuals from 4 families with heterozygous loss-of-function (haploinsufficiency) variants presenting with severe congenital microcephaly, intellectual disability and developmental delay. Zebrafish knockdown recapitulates reduced CNS size and behavioral deficits."
+     "Kim2024 reports 5 individuals from 4 families with heterozygous loss-of-function (haploinsufficiency) variants presenting with severe congenital microcephaly, intellectual disability and developmental delay. Zebrafish knockdown recapitulates reduced CNS size and behavioral deficits."
 
    ✓ Multiple mechanisms (organize by mechanism):
-     "BAIAP2 encodes a brain-specific angiogenesis inhibitor binding protein. [Chen2024] reports 6 individuals with de novo gain-of-function missense variants causing developmental and epileptic encephalopathy. [Li2023] reports 1 individual with a loss-of-function missense variant causing lissencephaly with posterior-anterior gradient."
+     "BAIAP2 encodes a brain-specific angiogenesis inhibitor binding protein. Chen2024 reports 6 individuals with de novo gain-of-function missense variants causing developmental and epileptic encephalopathy. Li2023 reports 1 individual with a loss-of-function missense variant causing lissencephaly with posterior-anterior gradient."
 
    ✓ Mechanism not reported (omit naturally):
-     "[Wang2024] reports 3 individuals from 1 family with a heterozygous missense variant (c.349G>T, p.Asp117Tyr) presenting with premature ovarian insufficiency. Mouse knock-in model recapitulates age-dependent subfertility and follicle depletion."
+     "Wang2024 reports 3 individuals from 1 family with a heterozygous missense variant (c.349G>T, p.Asp117Tyr) presenting with premature ovarian insufficiency. Mouse knock-in model recapitulates age-dependent subfertility and follicle depletion."
 
    When disease_mechanism is "NR", simply omit it and include other available information. When multiple distinct mechanisms exist, organize by mechanism to clarify the genotype-phenotype relationship.
 
@@ -236,17 +236,17 @@ This gene has existing PanelApp reviews (shown below). Your summary must ADD to 
 
 OUTPUT FORMAT — the summary field MUST use exactly these three bold markdown headers:
 
-**New evidence**: [what the new papers add — families, variants, phenotypes, functional data]
+**New evidence**: <what the new papers add — families, variants, phenotypes, functional data>
 
-**Prior reviews**: [what was already established in the PanelApp reviews above; if reviews are sparse, state the rating and panel concisely]
+**Prior reviews**: <what was already established in the PanelApp reviews above; if reviews are sparse, state the rating and panel concisely>
 
-**Assessment**: [how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable]
+**Assessment**: <how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable>
 
 EXAMPLES:
 
-✓ "**New evidence**: [Park2024] and [Lee2024] add 16 families with ACTN2 skeletal myopathy, including adult-onset limb-girdle weakness with dominant and recessive inheritance.\n\n**Prior reviews**: The 2021 PanelApp review classified ACTN2 as GREEN based on 14 families with dilated cardiomyopathy and iPSC-CM functional validation.\n\n**Assessment**: Combined with the cardiomyopathy families, the total now exceeds 30 unrelated families. The expanded phenotypic spectrum reinforces the diagnostic-grade classification."
+✓ "**New evidence**: Park2024 and Lee2024 add 16 families with ACTN2 skeletal myopathy, including adult-onset limb-girdle weakness with dominant and recessive inheritance.\n\n**Prior reviews**: The 2021 PanelApp review classified ACTN2 as GREEN based on 14 families with dilated cardiomyopathy and iPSC-CM functional validation.\n\n**Assessment**: Combined with the cardiomyopathy families, the total now exceeds 30 unrelated families. The expanded phenotypic spectrum reinforces the diagnostic-grade classification."
 
-✓ Sparse prior reviews: "**New evidence**: [Kim2024] reports 4 families with biallelic variants causing childhood-onset ataxia, with zebrafish rescue experiments.\n\n**Prior reviews**: Rated AMBER on the Mendeliome panel with no detailed reviewer commentary.\n\n**Assessment**: The new evidence meets Criterion A (4 unrelated families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
+✓ Sparse prior reviews: "**New evidence**: Kim2024 reports 4 families with biallelic variants causing childhood-onset ataxia, with zebrafish rescue experiments.\n\n**Prior reviews**: Rated AMBER on the Mendeliome panel with no detailed reviewer commentary.\n\n**Assessment**: The new evidence meets Criterion A (4 unrelated families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
 
 ✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN (April 2022) based on 5 families with recessive loss-of-function alleles.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
 {% elif not has_previous_reviews and panel_formatted %}
@@ -264,13 +264,13 @@ STRUCTURE:
 EXAMPLES:
 
 ✓ CORRECT - Evidence + explicit panel relevance:
-  "[Smith2024] reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. This gene is relevant to the Genetic Epilepsy panel because DEE is a core epileptic encephalopathy within the panel's scope of seizure disorders with genetic etiology."
+  "Smith2024 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. This gene is relevant to the Genetic Epilepsy panel because DEE is a core epileptic encephalopathy within the panel's scope of seizure disorders with genetic etiology."
 
 ✓ CORRECT - Multiple phenotypes, panel-specific focus:
   "BAIAP2 variants cause two distinct phenotypes: developmental epileptic encephalopathy (6 families, GoF) and lissencephaly (1 family, LoF). Both phenotypes are relevant to the Neurodevelopmental Disorders panel as they involve abnormal brain development and intellectual disability, which are core features of the panel's scope."
 
 ✓ CORRECT - Explaining borderline relevance:
-  "[Li2023] reports 4 families with hereditary spastic paraplegia presenting with progressive lower limb spasticity and mild cognitive impairment. While HSP is primarily a motor neuron disorder, this gene is relevant to the Intellectual Disability panel because affected individuals consistently show mild-to-moderate ID as part of the clinical presentation."
+  "Li2023 reports 4 families with hereditary spastic paraplegia presenting with progressive lower limb spasticity and mild cognitive impairment. While HSP is primarily a motor neuron disorder, this gene is relevant to the Intellectual Disability panel because affected individuals consistently show mild-to-moderate ID as part of the clinical presentation."
 
 ✗ WRONG - No panel connection:
   "Reports 5 individuals from 4 families with heterozygous variants presenting with microcephaly."
@@ -291,17 +291,17 @@ This gene has existing PanelApp reviews (shown below). Your summary must ADD to 
 
 OUTPUT FORMAT — the summary field MUST use exactly these four bold markdown headers:
 
-**New evidence**: [what the new papers add — families, variants, phenotypes, functional data]
+**New evidence**: <what the new papers add — families, variants, phenotypes, functional data>
 
-**Prior reviews**: [what was already established in the PanelApp reviews above; if reviews are sparse, state the rating and panel concisely]
+**Prior reviews**: <what was already established in the PanelApp reviews above; if reviews are sparse, state the rating and panel concisely>
 
-**Panel relevance**: [why this gene's phenotype aligns with this panel's scope, referencing the panel's relevant disorders or description]
+**Panel relevance**: <why this gene's phenotype aligns with this panel's scope, referencing the panel's relevant disorders or description>
 
-**Assessment**: [how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable]
+**Assessment**: <how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable>
 
 EXAMPLES:
 
-✓ "**New evidence**: [Park2024] and [Lee2024] add 16 families with ACTN2 skeletal myopathy.\n\n**Prior reviews**: Rated GREEN on the Inherited Cardiomyopathies panel based on dilated cardiomyopathy evidence.\n\n**Panel relevance**: Both cardiac and skeletal muscle phenotypes fall within the Inherited Muscle Disorders panel's scope.\n\n**Assessment**: The expanded phenotypic spectrum strengthens diagnostic-grade status."
+✓ "**New evidence**: Park2024 and Lee2024 add 16 families with ACTN2 skeletal myopathy.\n\n**Prior reviews**: Rated GREEN on the Inherited Cardiomyopathies panel based on dilated cardiomyopathy evidence.\n\n**Panel relevance**: Both cardiac and skeletal muscle phenotypes fall within the Inherited Muscle Disorders panel's scope.\n\n**Assessment**: The expanded phenotypic spectrum strengthens diagnostic-grade status."
 
 ✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN based on 3 families with dilated cardiomyopathy.\n\n**Panel relevance**: DCM is a core phenotype within the Inherited Cardiomyopathies panel's scope of genetic cardiomyopathies.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
 {% endif %}
@@ -365,7 +365,7 @@ Respond in JSON format with your aggregate evaluation:
 
 {% raw %}
 {
-  "summary": "[paper_id(s)] report [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. [Clinical features]. [Functional evidence]. [Notable specifics].",
+  "summary": "<paper_id(s)> report <N> individuals from <N> families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Functional evidence>. <Notable specifics>.",
   "families": "N families (N unrelated) aggregated across all papers",
   "variants": "all variants reported across papers (type)",
   "population_freq": "gnomAD: frequencies when reported",
@@ -373,8 +373,8 @@ Respond in JSON format with your aggregate evaluation:
   "functional": "all functional experiments across papers",
   "prior_reports": "assessment of literature overlap and novel families",
   "disease_entities": [
-    {"description": "disease name 1 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"paper_id": "Author2024", "box_id": box_id, "commentary": "description"}, {"paper_id": "Author2023", "box_id": box_id, "commentary": "description"}]},
-    {"description": "disease name 2 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "[one of the enum values]", "inheritance_details": "[additional details or empty string]", "citations": [{"paper_id": "Author2022", "box_id": box_id, "commentary": "description"}]}
+    {"description": "disease name 1 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "<one of the enum values>", "inheritance_details": "<additional details or empty string>", "citations": [{"paper_id": "Author2024", "box_id": box_id, "commentary": "description"}, {"paper_id": "Author2023", "box_id": box_id, "commentary": "description"}]},
+    {"description": "disease name 2 or clinical description", "mondo_disease_name": "exact disease name from provided list", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "<one of the enum values>", "inheritance_details": "<additional details or empty string>", "citations": [{"paper_id": "Author2022", "box_id": box_id, "commentary": "description"}]}
   ],
   "criteria": [
     {"name": "A", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]},

@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from palit.panelapp_integration import TARGET_PANEL_IDS
+from palit.panelapp_integration import PANELAPP_MOI_TO_ENUM, TARGET_PANEL_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,7 @@ class AllPanelsData:
 
     gene_to_panels: dict[int, set[int]]  # hgnc_id -> set of panel_ids
     panel_names: dict[int, str]  # panel_id -> panel name
+    gene_mois: dict[int, set[str]]  # hgnc_id -> set of normalized MoI enums across all panels
 
 
 @dataclass
@@ -386,6 +387,7 @@ class PanelAppClient:
         panel_data_cache = self._ensure_cache_loaded()
 
         gene_to_panels: dict[int, set[int]] = {}
+        gene_mois: dict[int, set[str]] = {}
         panel_names: dict[int, str] = {}
 
         for panel_id, panel_data in panel_data_cache.items():
@@ -401,7 +403,16 @@ class PanelAppClient:
                 hgnc_id = _parse_hgnc_id(hgnc_id_str)
                 gene_to_panels.setdefault(hgnc_id, set()).add(panel_id)
 
-        return AllPanelsData(gene_to_panels=gene_to_panels, panel_names=panel_names)
+                raw_moi = entity.get("mode_of_inheritance") or ""
+                normalized = PANELAPP_MOI_TO_ENUM.get(raw_moi)
+                if normalized:
+                    gene_mois.setdefault(hgnc_id, set()).add(normalized)
+
+        return AllPanelsData(
+            gene_to_panels=gene_to_panels,
+            panel_names=panel_names,
+            gene_mois=gene_mois,
+        )
 
     def _get_all_panel_ids(self) -> list[int]:
         """Get list of all active panel IDs from PanelApp.

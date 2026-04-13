@@ -34,7 +34,7 @@
 
     {# Macro for rendering MoI comparison badge #}
     {% macro moi_comparison_badge(moi_comp) %}
-    {% if moi_comp %}
+    {% if moi_comp and moi_comp.highlighted %}
         <span class="moi-badge {{ moi_comp.css_class }}" title="{{ moi_comp.message }}">
             {{ moi_comp.icon }} MoI {{ "Expansion" if moi_comp.status == "expansion" else "Change" }}
         </span>

@@ -20,11 +20,13 @@ from markupsafe import Markup
 from palit.docling import parse_bbox_mapping_from_json
 from palit.hgnc import HgncResolver
 from palit.panelapp_client import (
+    AllPanelsData,
     PanelAppClient,
     PanelGeneData,
     get_current_panel_publications,
 )
 from palit.panelapp_integration import (
+    INCIDENTALOME_PANEL_ID,
     MONDO_CATEGORIES,
     PANELAPP_MOI_TO_ENUM,
     calculate_gene_rating,
@@ -52,26 +54,40 @@ GNOMAD_HEMI_THRESHOLD = 30  # X-linked - hemizygote count
 MIN_FAMILIES_FOR_MOI_EXPANSION = 2
 
 
+@dataclass
+class MoiComparison:
+    """Result of comparing existing vs. new mode of inheritance."""
+
+    existing: str  # Existing MoI (enum format)
+    new: str  # New MoI (enum format)
+    new_details: str  # Inheritance details from evidence
+    status: str  # "expansion" | "contradiction"
+    highlighted: bool  # Whether to surface prominently to curators
+    reason: str  # Audit trail: why highlighted, or why suppressed
+    message: str  # Human-readable change description (tooltip)
+    icon: str  # Visual indicator emoji
+    css_class: str  # CSS styling class
+
+
 def compare_moi(
     existing_moi: str | None,
     new_moi: str,
     moi_family_counts: dict[str, int] | None = None,
-    min_families_for_expansion: int = MIN_FAMILIES_FOR_MOI_EXPANSION,
-) -> dict[str, Any]:
-    """Compare existing (PanelApp) and new (evidence-based) mode of inheritance.
+) -> dict[str, str]:
+    """Classify the type of MoI change between existing and new.
+
+    Pure classifier — does not decide highlighting (that's apply_moi_suppression).
 
     Args:
         existing_moi: Current MoI from PanelApp (mapped to enum)
         new_moi: New MoI from evidence (already in enum format)
-        moi_family_counts: Family counts per inheritance mode (from count_families_by_moi)
-        min_families_for_expansion: Minimum families required to highlight an expansion
+        moi_family_counts: Family counts per inheritance mode (for informational reason/message)
 
     Returns:
         Dict with:
         - status: "same", "expansion", "contradiction"
-        - highlighted: Whether to surface this prominently to curators
-        - reason: Audit trail explaining the highlighting decision
-        - message: Human-readable explanation
+        - reason: Informational description of the change
+        - message: Human-readable explanation (tooltip)
         - icon: Emoji for visual indicator
         - css_class: CSS class for styling
     """
@@ -83,58 +99,87 @@ def compare_moi(
     if existing == new:
         return {
             "status": "same",
-            "highlighted": False,
             "reason": "",
             "message": "",
             "icon": "",
             "css_class": "",
         }
 
-    # Existing was unknown, now we have information - this is an expansion
+    # Existing was unknown, now we have information — this is an expansion
     if existing in ["other", "nr", None] and new not in ["other", "nr"]:
         return {
             "status": "expansion",
-            "highlighted": True,
             "reason": "New MoI information where none existed before",
-            "message": "New evidence provides mode of inheritance information previously unknown",
+            "message": "Evidence provides mode of inheritance information previously unknown",
             "icon": "➕",  # noqa: RUF001
             "css_class": "moi-expansion",
         }
 
-    # Check for expansions (adding inheritance modes)
+    # Mode addition (adding inheritance modes)
     if existing in ["monoallelic", "biallelic"] and new == "monoallelic and biallelic":
-        # Determine which mode is being "added"
         added_mode = "Biallelic" if existing == "monoallelic" else "Monoallelic"
         added_count = (moi_family_counts or {}).get(added_mode, 0)
+        return {
+            "status": "expansion",
+            "reason": f"{added_count} families with {added_mode.lower()} inheritance"
+            f" (threshold: {MIN_FAMILIES_FOR_MOI_EXPANSION})",
+            "message": f"Evidence supports both modes"
+            f" ({added_count} families with {added_mode.lower()})",
+            "icon": "➕",  # noqa: RUF001
+            "css_class": "moi-expansion",
+        }
 
-        if added_count >= min_families_for_expansion:
-            return {
-                "status": "expansion",
-                "highlighted": True,
-                "reason": f"{added_count} families with {added_mode.lower()} inheritance (threshold: {min_families_for_expansion})",
-                "message": f"Evidence supports both modes ({added_count} families with {added_mode.lower()})",
-                "icon": "➕",  # noqa: RUF001
-                "css_class": "moi-expansion",
-            }
-        else:
-            return {
-                "status": "expansion",
-                "highlighted": False,
-                "reason": f"Only {added_count} family/families with {added_mode.lower()} inheritance (threshold: {min_families_for_expansion})",
-                "message": f"Weak evidence for {added_mode.lower()} inheritance ({added_count} family/families)",
-                "icon": "",
-                "css_class": "",
-            }
-
-    # Everything else is a contradiction - always highlight
+    # Everything else is a contradiction
     return {
         "status": "contradiction",
-        "highlighted": True,
         "reason": "MoI differs from existing classification",
-        "message": "New evidence suggests a different mode of inheritance than currently recorded",
+        "message": "Evidence suggests a different mode of inheritance than currently recorded",
         "icon": "⚠️",
         "css_class": "moi-warning",
     }
+
+
+def apply_moi_suppression(
+    status: str,
+    existing_moi: str | None,
+    new_moi: str,
+    hgnc_id: int,
+    moi_family_counts: dict[str, int],
+    all_panels_data: AllPanelsData,
+) -> str:
+    """Check whether an MoI change highlight should be suppressed.
+
+    Centralizes all "should we bother the curator?" rules. Each rule
+    returns a non-empty reason string to suppress; empty string means
+    highlight normally.
+
+    Rules:
+        1. Weak expansion — insufficient family evidence for the added mode
+        2. Incidentalome cross-panel — new MoI already exists in another panel
+    """
+    # Rule 1: Weak expansion (insufficient family evidence for the added mode)
+    existing_norm = (existing_moi or "").replace("_", " ").lower()
+    new_norm = new_moi.replace("_", " ").lower()
+    if (
+        status == "expansion"
+        and existing_norm in ("monoallelic", "biallelic")
+        and new_norm == "monoallelic and biallelic"
+    ):
+        added_mode = "Biallelic" if existing_norm == "monoallelic" else "Monoallelic"
+        added_count = moi_family_counts.get(added_mode, 0)
+        if added_count < MIN_FAMILIES_FOR_MOI_EXPANSION:
+            return (
+                f"Only {added_count} family/families with {added_mode.lower()}"
+                f" inheritance (threshold: {MIN_FAMILIES_FOR_MOI_EXPANSION})"
+            )
+
+    # Rule 2: Incidentalome — suppress if the new MoI already exists in any panel
+    gene_panels = all_panels_data.gene_to_panels.get(hgnc_id, set())
+    if INCIDENTALOME_PANEL_ID in gene_panels:
+        if new_moi in all_panels_data.gene_mois.get(hgnc_id, set()):
+            return "MoI already present in another panel (Incidentalome gene)"
+
+    return ""
 
 
 @dataclass(frozen=True)
@@ -213,7 +258,7 @@ class GeneAssessment:
     existing_moi: str | None  # Current mode of inheritance from panel (mapped to enum)
     new_moi: str  # Derived aggregate MoI from disease_entities
     new_moi_details: str  # Derived aggregate MoI details from disease_entities
-    moi_comparison: dict[str, Any] | None  # Precomputed MoI comparison result
+    moi_comparison: MoiComparison | None  # Precomputed MoI comparison result
     new_rating: int  # Calculated confidence level: 1 (RED), 2 (AMBER), 3 (GREEN)
     contributing_papers: list[DetailedPaper]
     variant_frequencies: list[VariantFrequency]  # Variants with frequency data
@@ -784,21 +829,29 @@ def load_gene_assessments(
             new_moi, new_moi_details = derive_aggregate_moi(disease_entities)
             moi_family_counts = count_families_by_moi(disease_entities)
 
-            moi_comparison = None
+            moi_comparison: MoiComparison | None = None
             if existing_moi and new_moi:
                 comparison = compare_moi(existing_moi, new_moi, moi_family_counts=moi_family_counts)
                 if comparison["status"] != "same":
-                    moi_comparison = {
-                        "existing": existing_moi,
-                        "new": new_moi,
-                        "new_details": new_moi_details,
-                        "status": comparison["status"],
-                        "highlighted": comparison["highlighted"],
-                        "reason": comparison["reason"],
-                        "message": comparison["message"],
-                        "icon": comparison["icon"],
-                        "css_class": comparison["css_class"],
-                    }
+                    suppression = apply_moi_suppression(
+                        comparison["status"],
+                        existing_moi,
+                        new_moi,
+                        hgnc_id,
+                        moi_family_counts,
+                        all_panels_data,
+                    )
+                    moi_comparison = MoiComparison(
+                        existing=existing_moi,
+                        new=new_moi,
+                        new_details=new_moi_details,
+                        status=comparison["status"],
+                        highlighted=not suppression,
+                        reason=suppression or comparison["reason"],
+                        message=comparison["message"],
+                        icon=comparison["icon"],
+                        css_class=comparison["css_class"],
+                    )
 
             # Compute prefill data
             if is_novel:
@@ -846,7 +899,7 @@ def load_gene_assessments(
         key=lambda g: (
             -g.new_rating,  # Negative for descending: 3 (GREEN), 2 (AMBER), 1 (RED)
             0
-            if (g.moi_comparison and g.moi_comparison.get("highlighted"))
+            if (g.moi_comparison and g.moi_comparison.highlighted)
             else 1,  # Highlighted MoI changes first
             g.hgnc_symbol,
         )
@@ -863,7 +916,7 @@ def load_gene_assessments(
             )
 
         # Sort by existing confidence (ascending), new rating (descending), highlighted MoI (first), gene symbol
-        has_highlighted_moi = 0 if (g.moi_comparison and g.moi_comparison.get("highlighted")) else 1
+        has_highlighted_moi = 0 if (g.moi_comparison and g.moi_comparison.highlighted) else 1
         return (target_confidence, -g.new_rating, has_highlighted_moi, g.hgnc_symbol)
 
     known_genes.sort(key=known_sort_key)
@@ -1263,9 +1316,9 @@ def calculate_comprehensive_statistics(
         moi_contradictions = 0
         for gene in all_genes:
             if gene.moi_comparison:
-                if gene.moi_comparison["status"] == "expansion":
+                if gene.moi_comparison.status == "expansion":
                     moi_expansions += 1
-                elif gene.moi_comparison["status"] == "contradiction":
+                elif gene.moi_comparison.status == "contradiction":
                     moi_contradictions += 1
 
         # Preprint stats (computed from already-loaded data)
@@ -1527,10 +1580,10 @@ def generate_html_report(
         amber_to_green=amber_to_green,
         red_to_amber=red_to_amber,
         no_change_with_moi=[
-            g for g in no_change if g.moi_comparison and g.moi_comparison.get("highlighted")
+            g for g in no_change if g.moi_comparison and g.moi_comparison.highlighted
         ],
         no_change_without_moi=[
-            g for g in no_change if not (g.moi_comparison and g.moi_comparison.get("highlighted"))
+            g for g in no_change if not (g.moi_comparison and g.moi_comparison.highlighted)
         ],
     )
 

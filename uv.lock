@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-03T04:56:49.424407Z"
+exclude-newer = "2026-04-09T02:00:29.495459Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -2558,6 +2558,7 @@ name = "palit"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "boto3" },
     { name = "cryptography" },
     { name = "defusedxml" },
     { name = "docling" },
@@ -2605,6 +2606,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", specifier = ">=1.42.82" },
     { name = "cryptography" },
     { name = "defusedxml" },
     { name = "docling" },

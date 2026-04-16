@@ -2,10 +2,9 @@
 
 """Download papers workflow: Automated PMC/preprint download and PDF matching."""
 
+import json
 import logging
-import re
 import sqlite3
-import tarfile
 import tempfile
 import time
 import webbrowser
@@ -13,10 +12,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
+import boto3
 import httpx
 import typer
-from defusedxml import ElementTree as ET
-from pypdf import PdfWriter
+from botocore import UNSIGNED
+from botocore.config import Config
+from botocore.exceptions import ClientError
+from pypdf import PdfReader, PdfWriter
 from rich.console import Console
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -288,55 +290,17 @@ def register_papers(
         )
 
 
-def extract_supplements_from_nxml(nxml_path: Path, archive_dir: Path) -> list[Path]:
-    """Parse NXML file and extract ordered list of PDF supplement paths.
+PMC_OA_BUCKET = "pmc-oa-opendata"
+_S3_CONFIG = Config(signature_version=UNSIGNED, region_name="us-east-1")
 
-    Args:
-        nxml_path: Path to the .nxml file
-        archive_dir: Directory containing extracted archive files
 
-    Returns:
-        List of paths to PDF supplements in order from NXML
-    """
-    supplements = []
-
-    try:
-        tree = ET.parse(nxml_path)
-        root = tree.getroot()
-
-        # Find all supplementary-material elements (in document order)
-        for supp in root.iter():
-            if supp.tag.endswith("supplementary-material"):
-                # Find media element with href
-                for media in supp.iter():
-                    if media.tag.endswith("media"):
-                        href = None
-                        # Check xlink:href attribute (with or without namespace)
-                        for attr_name, attr_value in media.attrib.items():
-                            if "href" in attr_name:
-                                href = attr_value
-                                break
-
-                        if href and href.lower().endswith(".pdf"):
-                            # Look for this file in the archive
-                            matching_files = list(archive_dir.rglob(href))
-                            if matching_files:
-                                supplements.append(matching_files[0])
-                                logger.debug(f"Found supplement PDF: {href}")
-
-    except Exception as e:
-        logger.warning(f"Failed to parse NXML for supplements: {e}")
-
-    return supplements
+def _make_s3_client():  # type: ignore[no-untyped-def]
+    """Create an anonymous S3 client for the PMC OA bucket."""
+    return boto3.client("s3", config=_S3_CONFIG)
 
 
 def concatenate_pdfs(pdf_paths: list[Path], output_path: Path) -> None:
-    """Concatenate multiple PDFs into a single file.
-
-    Args:
-        pdf_paths: List of PDF paths to concatenate (in order)
-        output_path: Path to write the concatenated PDF
-    """
+    """Concatenate multiple PDFs into a single file."""
     writer = PdfWriter()
 
     for pdf_path in pdf_paths:
@@ -344,6 +308,48 @@ def concatenate_pdfs(pdf_paths: list[Path], output_path: Path) -> None:
 
     with open(output_path, "wb") as output_file:
         writer.write(output_file)
+
+
+def _filter_supplements_by_page_count(
+    supplement_pdfs: list[Path],
+    *,
+    max_pages_per_supplement: int = 20,
+    max_total_supplement_pages: int = 50,
+) -> list[Path]:
+    """Filter supplement PDFs by page count to avoid timeouts on huge table dumps."""
+    accepted: list[Path] = []
+    total_pages = 0
+
+    for pdf_path in supplement_pdfs:
+        try:
+            pages = len(PdfReader(pdf_path).pages)
+        except Exception as e:
+            logger.warning("Cannot read page count for %s, skipping: %s", pdf_path.name, e)
+            continue
+
+        if pages > max_pages_per_supplement:
+            logger.info(
+                "Skipping supplement %s: %d pages (limit %d)",
+                pdf_path.name,
+                pages,
+                max_pages_per_supplement,
+            )
+            continue
+
+        if total_pages + pages > max_total_supplement_pages:
+            logger.info(
+                "Skipping supplement %s: %d pages would exceed total budget (%d/%d)",
+                pdf_path.name,
+                pages,
+                total_pages,
+                max_total_supplement_pages,
+            )
+            continue
+
+        accepted.append(pdf_path)
+        total_pages += pages
+
+    return accepted
 
 
 @dataclass
@@ -355,53 +361,45 @@ class DownloadResult:
     message: str
 
 
-def process_tgz_archive(tgz_content: bytes, output_path: Path) -> tuple[bool, str]:
-    """Extract TGZ archive, find main PDF, concatenate with supplements.
+def _resolve_latest_version(s3, pmcid: str) -> int | None:  # type: ignore[no-untyped-def]
+    """Find the latest version number for a PMCID in the OA bucket."""
+    response = s3.list_objects_v2(Bucket=PMC_OA_BUCKET, Prefix=f"{pmcid}.", Delimiter="/")
+    prefixes = response.get("CommonPrefixes", [])
+    if not prefixes:
+        return None
 
-    Args:
-        tgz_content: Raw bytes of the TGZ archive
-        output_path: Path to write the final concatenated PDF
+    versions: list[int] = []
+    for p in prefixes:
+        prefix_str = p["Prefix"].rstrip("/")
+        version_str = prefix_str.rsplit(".", 1)[-1]
+        try:
+            versions.append(int(version_str))
+        except ValueError:
+            continue
 
-    Returns:
-        Tuple of (success, message)
+    return max(versions) if versions else None
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type(ClientError),
+    reraise=True,
+)
+def _download_s3_object(s3, key: str) -> bytes:  # type: ignore[no-untyped-def]
+    """Download a single object from the PMC OA bucket with retries."""
+    response = s3.get_object(Bucket=PMC_OA_BUCKET, Key=key)
+    data: bytes = response["Body"].read()
+    return data
+
+
+def _s3_url_to_key(s3_url: str) -> str:
+    """Convert an S3 URL from metadata JSON to a plain key.
+
+    Strips the 's3://bucket/' prefix and any '?md5=...' query parameter.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir_path = Path(tmpdir)
-        tgz_path = tmpdir_path / "archive.tar.gz"
-        tgz_path.write_bytes(tgz_content)
-
-        # Extract archive
-        try:
-            with tarfile.open(tgz_path, "r:gz") as tar:
-                tar.extractall(tmpdir_path)
-        except Exception as e:
-            return False, f"Failed to extract TGZ: {e}"
-
-        # Find .nxml files
-        nxml_files = list(tmpdir_path.rglob("*.nxml"))
-
-        if len(nxml_files) == 0:
-            return False, "No NXML file found in archive"
-        elif len(nxml_files) > 1:
-            return False, f"Multiple NXML files found: {[f.name for f in nxml_files]}"
-
-        nxml_file = nxml_files[0]
-        main_pdf = nxml_file.with_suffix(".pdf")
-
-        if not main_pdf.exists():
-            return False, f"Main PDF not found (expected {main_pdf.name})"
-
-        # Parse NXML for supplements
-        supplement_pdfs = extract_supplements_from_nxml(nxml_file, tmpdir_path)
-
-        # Concatenate: main PDF + supplements
-        all_pdfs = [main_pdf, *supplement_pdfs]
-
-        try:
-            concatenate_pdfs(all_pdfs, output_path)
-            return True, f"Concatenated {len(all_pdfs)} PDFs ({len(supplement_pdfs)} supplements)"
-        except Exception as e:
-            return False, f"Failed to concatenate PDFs: {e}"
+    path = s3_url.split(f"s3://{PMC_OA_BUCKET}/")[-1]
+    return path.split("?")[0]
 
 
 @retry(
@@ -424,7 +422,7 @@ def download_pmc_paper(
     target_dir: Path,
     timeout: float,
 ) -> DownloadResult:
-    """Download a single paper from PMC using its PMCID."""
+    """Download a single paper from PMC using its PMCID via the pmc-oa-opendata S3 bucket."""
     if not pmcid:
         with sqlite3.connect(db_path) as conn:
             conn.execute(
@@ -434,44 +432,60 @@ def download_pmc_paper(
         return DownloadResult(doi, "manual_required", "No PMCID in source_metadata")
 
     try:
-        with httpx.Client() as client:
-            # Get PDF link from OA API
-            oa_url = f"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={pmcid}"
-            response = _fetch_with_retry(client, oa_url, timeout)
-            oa_data = response.text
+        s3 = _make_s3_client()
 
-            # Look for TGZ link (includes main paper + supplements)
-            tgz_match = re.search(r'<link[^>]*format="tgz"[^>]*href="([^"]+)"[^>]*/>', oa_data)
-
-            if not tgz_match:
-                with sqlite3.connect(db_path) as conn:
-                    conn.execute(
-                        "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
-                        (doi,),
-                    )
-                return DownloadResult(doi, "manual_required", f"No TGZ link in OA ({pmcid})")
-
-            tgz_url = tgz_match.group(1)
-
-            # Replace ftp:// with https:// if needed
-            if tgz_url.startswith("ftp://"):
-                tgz_url = tgz_url.replace("ftp://", "https://")
-
-            # Download TGZ
-            tgz_response = _fetch_with_retry(client, tgz_url, timeout)
-
-        # Process TGZ: extract, find main PDF, concatenate with supplements
-        pdf_path = doi_to_path(doi, target_dir, ".pdf")
-        pdf_path.parent.mkdir(parents=True, exist_ok=True)
-        success, message = process_tgz_archive(tgz_response.content, pdf_path)
-
-        if not success:
+        # Find latest version in S3 bucket
+        version = _resolve_latest_version(s3, pmcid)
+        if version is None:
             with sqlite3.connect(db_path) as conn:
                 conn.execute(
                     "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
                     (doi,),
                 )
-            return DownloadResult(doi, "manual_required", f"TGZ processing failed: {message}")
+            return DownloadResult(doi, "manual_required", f"{pmcid} not in PMC OA bucket")
+
+        # Fetch per-article metadata JSON
+        metadata_key = f"metadata/{pmcid}.{version}.json"
+        metadata = json.loads(_download_s3_object(s3, metadata_key))
+
+        pdf_url = metadata.get("pdf_url")
+        if not pdf_url:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "UPDATE papers SET download_status = 'manual_required' WHERE doi = ?",
+                    (doi,),
+                )
+            return DownloadResult(
+                doi, "manual_required", f"No pdf_url in metadata for {pmcid}.{version}"
+            )
+
+        # Identify main PDF and supplement PDFs from metadata
+        main_pdf_key = _s3_url_to_key(pdf_url)
+        supplement_keys = [
+            _s3_url_to_key(url)
+            for url in metadata.get("media_urls", [])
+            if url.lower().split("?")[0].endswith(".pdf")
+        ]
+
+        # Download all PDFs
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+
+            main_path = tmpdir_path / "main.pdf"
+            main_path.write_bytes(_download_s3_object(s3, main_pdf_key))
+
+            supplement_paths: list[Path] = []
+            for i, key in enumerate(supplement_keys):
+                path = tmpdir_path / f"supplement_{i:03d}.pdf"
+                path.write_bytes(_download_s3_object(s3, key))
+                supplement_paths.append(path)
+
+            supplement_paths = _filter_supplements_by_page_count(supplement_paths)
+            all_pdfs = [main_path, *supplement_paths]
+
+            pdf_path = doi_to_path(doi, target_dir, ".pdf")
+            pdf_path.parent.mkdir(parents=True, exist_ok=True)
+            concatenate_pdfs(all_pdfs, pdf_path)
 
         # Update status to downloaded
         with sqlite3.connect(db_path) as conn:
@@ -480,7 +494,12 @@ def download_pmc_paper(
                 (doi,),
             )
 
-        return DownloadResult(doi, "downloaded", f"Downloaded ({pmcid}) - {message}")
+        n_supps = len(supplement_paths)
+        return DownloadResult(
+            doi,
+            "downloaded",
+            f"Downloaded ({pmcid}.{version}) - {len(all_pdfs)} PDFs ({n_supps} supplements)",
+        )
 
     except Exception as e:
         return DownloadResult(doi, "error", str(e))

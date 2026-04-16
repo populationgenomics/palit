@@ -239,7 +239,17 @@ class BedrockBatchProcessor:
                 total_output_tokens += usage.get("output_tokens", 0)
 
                 content = model_output.get("content", [])
-                text_block = next((b for b in content if b.get("type") == "text"), None)
+                # Adaptive thinking can produce multiple thinking+text block pairs
+                # (undocumented behavior when thinking is skipped). Later blocks tend
+                # to be more complete, so take the last text block.
+                text_blocks = [b for b in content if b.get("type") == "text"]
+                if len(text_blocks) > 1:
+                    logger.info(
+                        "Record %s: %d text blocks in response, using last",
+                        record_id,
+                        len(text_blocks),
+                    )
+                text_block = text_blocks[-1] if text_blocks else None
                 if text_block is None:
                     logger.warning("Record %s: no text block in response", record_id)
                     results_by_id[record_id] = None

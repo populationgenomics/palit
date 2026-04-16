@@ -62,7 +62,7 @@ def extract_citations_from_individual_assessment(
             continue
         hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
 
-        for criterion in gene_eval.get("criteria", []):
+        for criterion in gene_eval.get("evidence_assessments", []):
             for citation in criterion.get("citations", []):
                 box_id = citation["box_id"]
 
@@ -170,7 +170,7 @@ def extract_citations_from_aggregate_assessment(
     """
     citations = []
 
-    for criterion in assessment_json.get("criteria", []):
+    for criterion in assessment_json.get("evidence_assessments", []):
         for citation in criterion["citations"]:
             # Only process citations from the current paper
             if citation["doi"] != current_doi:

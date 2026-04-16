@@ -169,13 +169,13 @@
     {% macro criteria_grid(assessment, hgnc_id, pdf_base_path, contributing_papers=none, citation_pages=none, doi=none, display_id=none) %}
     <div class="criteria-grid">
         {% set criteria_meta = {
-            'A': ('Criterion A - Multiple Unrelated Cases', 'OR'),
-            'B': ('Criterion B - Cis-regulatory Mutations', 'OR'),
-            'C': ('Criterion C - Fewer Cases with Functional Evidence', 'AND'),
-            'D': ('Criterion D - Mendelian Inheritance', 'AND'),
-            'E': ('Criterion E - No Contradictory Evidence', none)
+            'criterion_A': ('Criterion A - Multiple Unrelated Cases', 'OR'),
+            'criterion_B': ('Criterion B - Cis-regulatory Mutations', 'OR'),
+            'criterion_C': ('Criterion C - Fewer Cases with Functional Evidence', 'AND'),
+            'criterion_D': ('Criterion D - Mendelian Inheritance', 'AND'),
+            'criterion_E': ('Criterion E - No Contradictory Evidence', none)
         } %}
-        {% for crit in assessment.criteria %}
+        {% for crit in assessment.evidence_assessments %}
             {% set crit_label = criteria_meta[crit.name][0] %}
             {% set separator = criteria_meta[crit.name][1] %}
             <span class="criterion-header criterion-{{ 'true' if crit.result else 'false' }}">

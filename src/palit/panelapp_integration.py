@@ -25,8 +25,23 @@ PANEL_NAMES = {
 }
 
 # PanelApp criteria names
-CriterionName = Literal["A", "B", "C", "D", "E"]
-PANELAPP_CRITERIA: list[CriterionName] = ["A", "B", "C", "D", "E"]
+CriterionName = Literal["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
+PANELAPP_CRITERIA: list[CriterionName] = [
+    "criterion_A",
+    "criterion_B",
+    "criterion_C",
+    "criterion_D",
+    "criterion_E",
+]
+
+
+def validate_criteria_complete(criteria: list[dict[str, Any]]) -> bool:
+    """Check that criteria contains exactly the 5 required entries A-E.
+
+    Returns True if valid, False otherwise.
+    """
+    names = {c.get("name") for c in criteria}
+    return names == set(PANELAPP_CRITERIA)
 
 
 def get_criterion(gene_eval: dict[str, Any], name: CriterionName) -> dict[str, Any]:
@@ -34,7 +49,7 @@ def get_criterion(gene_eval: dict[str, Any], name: CriterionName) -> dict[str, A
 
     Returns the criterion dict, or an empty dict if not found.
     """
-    for c in gene_eval.get("criteria", []):
+    for c in gene_eval.get("evidence_assessments", []):
         if c.get("name") == name:
             return dict(c)
     return {}
@@ -258,11 +273,11 @@ def meets_green_criteria(gene_eval: dict[str, Any]) -> bool:
     Returns:
         True if evaluation meets GREEN criteria, False otherwise
     """
-    a = bool(get_criterion(gene_eval, "A").get("result", False))
-    b = bool(get_criterion(gene_eval, "B").get("result", False))
-    c = bool(get_criterion(gene_eval, "C").get("result", False))
-    d = bool(get_criterion(gene_eval, "D").get("result", False))
-    e = bool(get_criterion(gene_eval, "E").get("result", False))
+    a = bool(get_criterion(gene_eval, "criterion_A").get("result", False))
+    b = bool(get_criterion(gene_eval, "criterion_B").get("result", False))
+    c = bool(get_criterion(gene_eval, "criterion_C").get("result", False))
+    d = bool(get_criterion(gene_eval, "criterion_D").get("result", False))
+    e = bool(get_criterion(gene_eval, "criterion_E").get("result", False))
 
     return (a or b or c) and d and e
 

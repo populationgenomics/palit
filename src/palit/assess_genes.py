@@ -17,7 +17,7 @@ from palit.hgnc import HgncResolver
 from palit.llm import LLMProcessor, create_llm_processor
 from palit.mondo_lookup import MondoCandidate, MondoLookup
 from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
-from palit.panelapp_integration import MONDO_CATEGORIES
+from palit.panelapp_integration import MONDO_CATEGORIES, validate_criteria_complete
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
@@ -65,8 +65,8 @@ def replace_paper_ids_with_dois(
         for citation in entity.get("citations", []):
             citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
 
-    # criteria[].citations
-    for criterion in parsed_json.get("criteria", []):
+    # evidence_assessments[].citations
+    for criterion in parsed_json.get("evidence_assessments", []):
         for citation in criterion.get("citations", []):
             citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
 
@@ -205,8 +205,8 @@ def validate_box_ids_with_doi(
             if not check_citation(citation):
                 return False
 
-    # criteria[].citations
-    for criterion in parsed_json.get("criteria", []):
+    # evidence_assessments[].citations
+    for criterion in parsed_json.get("evidence_assessments", []):
         for citation in criterion.get("citations", []):
             if not check_citation(citation):
                 return False
@@ -695,6 +695,15 @@ async def _process_assessments(
                     if unresolved := resolve_mondo_names(result.parsed_json, item.mondo_name_to_id):
                         logger.warning(
                             f"Unresolved MONDO disease names for {item.hgnc_symbol}: {unresolved}"
+                        )
+                        failed_genes.append(item.hgnc_id)
+                        continue
+                    if not validate_criteria_complete(
+                        result.parsed_json.get("evidence_assessments", [])
+                    ):
+                        logger.warning(
+                            f"Incomplete criteria for {item.hgnc_symbol} "
+                            f"(expected criterion_A-E, got {[c.get('name') for c in result.parsed_json.get('evidence_assessments', [])]})"
                         )
                         failed_genes.append(item.hgnc_id)
                         continue

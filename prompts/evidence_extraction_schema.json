@@ -224,9 +224,10 @@
                             "additionalProperties": false
                         }
                     },
-                    "criteria": {
+                    "evidence_assessments": {
                         "type": "array",
-                        "description": "PanelApp diagnostic criteria assessments (A through E)",
+                        "minItems": 1,
+                        "description": "PanelApp diagnostic evidence assessments (criterion_A through criterion_E). MUST contain exactly 5 entries.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -266,13 +267,13 @@
                                 "name": {
                                     "type": "string",
                                     "enum": [
-                                        "A",
-                                        "B",
-                                        "C",
-                                        "D",
-                                        "E"
+                                        "criterion_A",
+                                        "criterion_B",
+                                        "criterion_C",
+                                        "criterion_D",
+                                        "criterion_E"
                                     ],
-                                    "description": "Criterion identifier (A through E)"
+                                    "description": "Criterion identifier"
                                 }
                             },
                             "required": [
@@ -298,7 +299,7 @@
                     "functional",
                     "prior_reports",
                     "quality_concerns",
-                    "criteria"
+                    "evidence_assessments"
                 ],
                 "additionalProperties": false
             }

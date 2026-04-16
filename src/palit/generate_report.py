@@ -1770,7 +1770,7 @@ def main(
         cursor = conn.cursor()
 
         for assessment in all_genes:
-            for criterion in assessment.assessment_json.get("criteria", []):
+            for criterion in assessment.assessment_json.get("evidence_assessments", []):
                 for citation in criterion.get("citations", []):
                     path = doi_to_path(
                         citation["doi"],

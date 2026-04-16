@@ -20,6 +20,7 @@ from palit.panelapp_client import (
     PanelAppClient,
     format_panel_for_prompt,
 )
+from palit.panelapp_integration import validate_criteria_complete
 from palit.papers import doi_to_path
 
 app = typer.Typer(help="Extract structured evidence from full-text papers using vLLM")
@@ -461,12 +462,26 @@ async def _process_evidence(
                     if not validate_box_ids(result.parsed_json, valid_box_ids):
                         logger.warning(f"Invalid box IDs for DOI {paper_prompt.doi}")
                         failed_papers.append(paper_prompt.doi)
-                    else:
-                        db_processor.update_paper_evidence_extraction(
-                            [paper_prompt], [result], hgnc_resolver
+                        continue
+
+                    # Validate criteria completeness for every gene evaluation
+                    incomplete = [
+                        ge.get("gene_symbol", "?")
+                        for ge in result.parsed_json.get("gene_evaluations", [])
+                        if not validate_criteria_complete(ge.get("evidence_assessments", []))
+                    ]
+                    if incomplete:
+                        logger.warning(
+                            f"Incomplete criteria for DOI {paper_prompt.doi}, genes: {incomplete}"
                         )
-                        pass_processed += 1
-                        pbar.update(1)
+                        failed_papers.append(paper_prompt.doi)
+                        continue
+
+                    db_processor.update_paper_evidence_extraction(
+                        [paper_prompt], [result], hgnc_resolver
+                    )
+                    pass_processed += 1
+                    pbar.update(1)
 
             total_processed += pass_processed
 

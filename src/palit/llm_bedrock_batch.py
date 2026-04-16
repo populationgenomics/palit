@@ -109,8 +109,9 @@ class BedrockBatchProcessor:
             self._delete_sidecar()
             return [None] * len(prompts)
 
-        # Collect results
-        results = self._collect(record_ids, schema)
+        # Collect results (scoped to this job's output subdirectory)
+        job_id = sidecar.job_arn.rsplit("/", 1)[-1]
+        results = self._collect(record_ids, schema, job_id)
         self._delete_sidecar()
         return results
 
@@ -202,8 +203,10 @@ class BedrockBatchProcessor:
 
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-    def _collect(self, record_ids: list[str], schema: dict[str, Any]) -> list[PromptResult | None]:
-        output_prefix = f"{self._s3_prefix}/output/"
+    def _collect(
+        self, record_ids: list[str], schema: dict[str, Any], job_id: str
+    ) -> list[PromptResult | None]:
+        output_prefix = f"{self._s3_prefix}/output/{job_id}/"
         list_response = self._s3.list_objects_v2(Bucket=self._s3_bucket, Prefix=output_prefix)
 
         results_by_id: dict[str, PromptResult | None] = {}

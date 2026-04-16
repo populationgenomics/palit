@@ -464,7 +464,24 @@ async def _process_evidence(
                         failed_papers.append(paper_prompt.doi)
                         continue
 
-                    # Validate criteria completeness for every gene evaluation
+                    # Reject placeholder gene symbols (model gave up on real extraction)
+                    placeholder_genes = [
+                        ge.get("gene_symbol", "?")
+                        for ge in result.parsed_json.get("gene_evaluations", [])
+                        if any(
+                            kw in ge.get("gene_symbol", "").upper()
+                            for kw in ("PLACEHOLDER", "DELETE")
+                        )
+                    ]
+                    if placeholder_genes:
+                        logger.warning(
+                            f"Placeholder gene symbols for DOI {paper_prompt.doi}: "
+                            f"{placeholder_genes}"
+                        )
+                        failed_papers.append(paper_prompt.doi)
+                        continue
+
+                    # Validate evidence_assessments completeness for every gene evaluation
                     incomplete = [
                         ge.get("gene_symbol", "?")
                         for ge in result.parsed_json.get("gene_evaluations", [])
@@ -472,7 +489,8 @@ async def _process_evidence(
                     ]
                     if incomplete:
                         logger.warning(
-                            f"Incomplete criteria for DOI {paper_prompt.doi}, genes: {incomplete}"
+                            f"Incomplete evidence_assessments for DOI {paper_prompt.doi}, "
+                            f"genes: {incomplete}"
                         )
                         failed_papers.append(paper_prompt.doi)
                         continue

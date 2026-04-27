@@ -57,13 +57,12 @@
                         "enum": [
                             "Monoallelic",
                             "Biallelic",
-                            "Monoallelic_and_biallelic",
                             "X-linked",
                             "Mitochondrial",
                             "Other",
                             "NR"
                         ],
-                        "description": "Mode of inheritance for this specific disease entity. Use Monoallelic_and_biallelic only when the SAME disease entity has evidence for BOTH inheritance patterns. Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males \u2014 Monoallelic is for autosomal dominant only."
+                        "description": "Mode of inheritance for this specific disease entity. Each entity carries a single MoI \u2014 combination modes are not permitted. If the same phenotype has both monoallelic and biallelic evidence, create TWO disease entities (one per MoI). Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males \u2014 Monoallelic is for autosomal dominant only."
                     },
                     "inheritance_details": {
                         "type": "string",

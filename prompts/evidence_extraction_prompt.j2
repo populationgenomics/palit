@@ -103,22 +103,23 @@ CRITERION E: No Contradictory Evidence
 
 LUMPING AND SPLITTING DISEASE ENTITIES - CRITICAL:
 
-Following ClinGen Lumping and Splitting principles, decide whether the gene causes ONE disease entity or MULTIPLE distinct entities. Each distinct entity becomes a separate entry in the `disease_entities` array. Assess from the paper content only.
+Each entry in the `disease_entities` array represents one (phenotype × inheritance mode) combination. Decide entry boundaries in two steps. Assess from the paper content only.
 
-**Criteria (weigh together):**
+**STEP 1 — SPLIT BY INHERITANCE MODE (mandatory, no exceptions):**
+Each disease entity must have EXACTLY ONE inheritance_mode. When the same phenotype has evidence for BOTH monoallelic and biallelic inheritance, create TWO separate entries — one per MoI — even if the description, mondo_id, and disease_mechanism are otherwise identical. The same applies to any MoI distinction (e.g., monoallelic vs X-linked). PanelApp curates each gene–disease relationship per MoI, so per-MoI family and patient counts are required for downstream classification. Do NOT fold mixed-MoI evidence into a single entry; combination modes are not permitted.
+
+**STEP 2 — WITHIN A SINGLE MoI, decide LUMP vs SPLIT using ClinGen criteria (weigh together):**
 
 1. **Molecular Mechanism** (strongest criterion): Different mechanisms (LOF vs GOF, domain-specific) for different phenotypes → SPLIT. Same mechanism → LUMP.
 
 2. **Phenotypic Variability**: If intrafamilial variability ≈ interfamilial variability → LUMP (variable expressivity, not distinct diseases). If families differ more from each other than members within families → consider splitting.
 
-3. **Inheritance Pattern**: Different inheritance + distinct phenotypes → SPLIT. Different inheritance as severity continuum (e.g., dosage effects, mild heterozygous features in recessive disease) → LUMP.
-
-4. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
+3. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
 
 **Isolated Features of Syndromes:**
-If a feature (e.g., cardiomyopathy) is part of a named syndrome in the paper, report the SYNDROME, not the isolated feature—unless the paper presents it as distinct with a different mechanism or inheritance.
+If a feature (e.g., cardiomyopathy) is part of a named syndrome in the paper, report the SYNDROME, not the isolated feature—unless the paper presents it as distinct with a different mechanism.
 
-When reporting family/patient counts, only count those with the same disease entity. If a gene causes multiple distinct diseases, report counts separately per disease.
+When reporting family/patient counts, only count those that share the SAME disease entity (same phenotype AND same MoI). If a gene causes multiple distinct entities, report counts separately per entity.
 
 After each evaluation, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
 
@@ -141,7 +142,7 @@ NEVER infer, estimate, or make assumptions about missing data.
   * patient_count: number of patients for this specific disease entity (always required)
   * family_count: number of unrelated families for this specific disease entity. Use null when family count is not reported (null means NR - not reported)
   * disease_mechanism: molecular mechanism by which variants cause disease, extracted from paper. Use free text to describe mechanism as stated in paper. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in paper. Extract ONLY from paper content.
-  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome). Use "Other" for post-zygotic mosaic/somatic variants.
+  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Each entity carries a single MoI — combination modes are not permitted. If the same phenotype has both monoallelic and biallelic evidence, create TWO disease entities (see STEP 1 above). Use "Other" for post-zygotic mosaic/somatic variants.
     CRITICAL: Determine inheritance from zygosity evidence in the paper (e.g., "heterozygous", "de novo", "homozygous", "compound heterozygous", "mosaic/somatic"), NOT from variant type. Loss-of-function variants (nonsense, frameshift, splice-site) can cause EITHER monoallelic (haploinsufficiency) OR biallelic (recessive) disease. For post-zygotic mosaic/somatic variants, use "Other".
     X-LINKED GENES: Use "X-linked" (not "Monoallelic") for hemizygous inheritance in males. "Monoallelic" is for autosomal dominant only.
   * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity", "post-zygotic mosaic") or empty string ""
@@ -187,6 +188,7 @@ NEVER infer, estimate, or make assumptions about missing data.
   - All novel families: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "[appropriate category]", "patient_count": 7, "family_count": 4, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 42, "commentary": "clinical features and patient counts"}, {"box_id": 58, "commentary": "family counts"}]}]
   - Mixed novel + previously reported: [{"description": "Beckwith-Wiedemann syndrome with multi-locus imprinting disturbance", "mondo_id": "[appropriate category]", "patient_count": 10, "family_count": 10, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "imprinting", "previously_reported_sources": [{"title": "Novel genetic variants of KHDC3L and other members of the subcortical maternal complex", "family_count": 1, "context": "including the 1 family previously described [ref 27]"}], "citations": [{"box_id": 65, "commentary": "mentions 10 total families including 1 previously reported"}]}]
   - No families reported: [{"description": "epilepsy (functional study only)", "mondo_id": "[appropriate category]", "patient_count": 0, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 23, "commentary": "functional validation without patient data"}]}]
+  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "Gardos channelopathy (hereditary hemolytic anemia)", "mondo_id": "[appropriate category]", "patient_count": 1, "family_count": 1, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "de novo", "previously_reported_sources": [], "citations": [{"box_id": 27, "commentary": "Case III: heterozygous de novo p.Ser181Cys"}]}, {"description": "Gardos channelopathy (hereditary hemolytic anemia)", "mondo_id": "[appropriate category]", "patient_count": 1, "family_count": 1, "disease_mechanism": "gain-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "consanguineous", "previously_reported_sources": [], "citations": [{"box_id": 19, "commentary": "Case I: homozygous p.Gly2Asp"}]}]
 {% endraw %}
 - variants_summary: list variants WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
 - population_freq: ONLY if paper reports gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")

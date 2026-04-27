@@ -5,32 +5,33 @@ Your task is to combine evidence from multiple papers that have already been ind
 
 LUMPING AND SPLITTING DISEASE ENTITIES - CRITICAL:
 
-Following ClinGen Lumping and Splitting principles, decide whether the gene causes ONE disease entity or MULTIPLE distinct entities. Each distinct entity becomes a separate entry in the `disease_entities` array. Assess from the paper content only.
+Each entry in the `disease_entities` array represents one (phenotype × inheritance mode) combination. Decide entry boundaries in two steps. Assess from the contributing papers only.
 
-**Criteria (weigh together):**
+**STEP 1 — SPLIT BY INHERITANCE MODE (mandatory, no exceptions):**
+Each disease entity must have EXACTLY ONE inheritance_mode. When the same phenotype has evidence for BOTH monoallelic and biallelic inheritance across the contributing papers, create TWO separate entries — one per MoI — even if the description, mondo_disease_name, and disease_mechanism are otherwise identical. The same applies to any MoI distinction (e.g., monoallelic vs X-linked). PanelApp curates each gene–disease relationship per MoI, so per-MoI family and patient counts are required for downstream classification. Do NOT fold mixed-MoI evidence into a single entry; combination modes are not permitted.
+
+**STEP 2 — WITHIN A SINGLE MoI, decide LUMP vs SPLIT using ClinGen criteria (weigh together):**
 
 1. **Molecular Mechanism** (strongest criterion): Different mechanisms (LOF vs GOF, domain-specific) for different phenotypes → SPLIT. Same mechanism → LUMP.
 
 2. **Phenotypic Variability**: If intrafamilial variability ≈ interfamilial variability → LUMP (variable expressivity, not distinct diseases). If families differ more from each other than members within families → consider splitting.
 
-3. **Inheritance Pattern**: Different inheritance + distinct phenotypes → SPLIT. Different inheritance as severity continuum (e.g., dosage effects, mild heterozygous features in recessive disease) → LUMP.
-
-4. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
+3. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
 
 **Isolated Features of Syndromes:**
-If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, report the SYNDROME, not the isolated feature—unless papers present it as distinct with a different mechanism or inheritance.
+If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, report the SYNDROME, not the isolated feature—unless papers present it as distinct with a different mechanism.
 
-You must output a `disease_entities` array, with each distinct disease entity receiving its own entry with a separate family count.
+You must output a `disease_entities` array, with each distinct (phenotype × MoI) entity receiving its own entry with a separate family count.
 
 **EVALUATING CRITERIA WITH MULTIPLE DISEASE ENTITIES:**
-When the gene causes multiple distinct disease entities, evaluate Criteria A, B, and C using the MAXIMUM family count across all disease entities, NOT the sum. Each entity represents independent evidence for a different disease - the strongest single disease association determines the rating.
+Each disease entity is an independent gene-disease assertion. Evaluate Criteria A, B, and C using the MAXIMUM family count across all disease entities, NOT the sum. The strongest single (phenotype × MoI) entity determines the rating.
 
-Example: If a gene causes 4 families with epilepsy and 1 family with cardiomyopathy, use 4 (the max) for evaluating Criteria A/B/C, not 5.
+Example: If a gene causes 4 families with monoallelic epilepsy, 2 families with biallelic epilepsy, and 1 family with cardiomyopathy, use 4 (the max) for evaluating Criteria A/B/C, not 7.
 
 AGGREGATION METHODOLOGY:
 You are evaluating evidence that has been extracted from multiple papers. Your job is to:
 
-1. **IDENTIFY DISTINCT DISEASE ENTITIES**: First, determine if the gene causes one disease or multiple distinct diseases based on the guidance above
+1. **IDENTIFY DISTINCT DISEASE ENTITIES**: First, determine the set of (phenotype × MoI) entities the gene causes based on the guidance above. Each combination becomes its own entry.
 
 2. **AGGREGATE FAMILY COUNTS** - Preventing double-counting:
    - For each paper, check previously_reported_sources (families from other papers)
@@ -47,7 +48,7 @@ You are evaluating evidence that has been extracted from multiple papers. Your j
      variants in multiple different genes, even if they appear in individual paper extractions.
      Biallelic (same gene) remains in scope.
 
-3. **RESOLVE CONFLICTS**: When papers disagree on inheritance patterns, variants, or phenotypes, weigh the quality and consistency of evidence
+3. **RESOLVE CONFLICTS**: When papers disagree on variants, phenotypes, or other claims about the same family/cohort, weigh the quality and consistency of evidence. Note: papers describing different MoIs in DIFFERENT patient cohorts are NOT in conflict — split them into separate disease entities per STEP 1.
 4. **MERGE FUNCTIONAL EVIDENCE**: Combine all functional studies and select the strongest supporting evidence
 5. **ASSESS CONSISTENCY**: Evaluate whether findings across papers are consistent and mutually reinforcing
 
@@ -130,7 +131,7 @@ NOTE: Single family with excellent functional evidence → amber rating, not gre
 
 CRITERION D: Inheritance Pattern Appropriate for Diagnostic Reporting
 "Evidence indicates that disease-causing mutations follow a pattern of causation appropriate for reporting in a diagnostic setting."
-- Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, Monoallelic_and_biallelic, X-linked, Mitochondrial, Other)
+- Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, X-linked, Mitochondrial, Other) per disease entity
 - Suitable for clinical diagnostics
 - Complete penetrance or well-characterized reduced penetrance
 - For post-zygotic mosaic/somatic disorders: use "Other" as inheritance_mode; Criterion D is met if the variant is reportable and actionable in a diagnostic setting
@@ -158,7 +159,7 @@ The following specific MONDO disease names are known for {{ gene_symbol }}. For 
 
 {% endfor %}
 {% endif %}
-- disease_entities: array of distinct disease entities with their patient and family counts aggregated across all papers. When the gene causes disease through MULTIPLE distinct mechanisms (e.g., gain-of-function AND loss-of-function), create SEPARATE disease entities for each mechanism even if phenotypes overlap. Each entry must include:
+- disease_entities: array of distinct (phenotype × MoI) entities with their patient and family counts aggregated across all papers. ALWAYS create SEPARATE entities when (a) inheritance modes differ (e.g., monoallelic vs biallelic for the same phenotype — see STEP 1 above) or (b) molecular mechanisms differ (e.g., gain-of-function vs loss-of-function), even if phenotypes overlap. Each entry must include:
   * description: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the papers.
   * mondo_disease_name: Select the disease name that best matches this disease entity. You MUST use the EXACT spelling from the lists provided — do not paraphrase or abbreviate.
     {% if mondo_candidates %}PREFERRED: Choose from the gene-specific disease candidates listed above.
@@ -172,15 +173,16 @@ The following specific MONDO disease names are known for {{ gene_symbol }}. For 
   * patient_count: number of patients for this specific disease entity aggregated across all papers (always required)
   * family_count: number of unrelated families for this specific disease entity aggregated across all papers. Use null when family count is not reported (null means NR - not reported)
   * disease_mechanism: molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in papers. Synthesize ONLY from paper content.
-  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Use "Monoallelic_and_biallelic" only when the SAME disease entity has evidence for BOTH inheritance patterns (e.g., AD and AR forms of the same syndrome). Use "Other" for post-zygotic mosaic/somatic variants. Use "X-linked" (not "Monoallelic") for hemizygous inheritance in males — "Monoallelic" is for autosomal dominant only.
+  * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Each entity carries a single MoI — combination modes are not permitted. If the same phenotype has both monoallelic and biallelic evidence, create TWO disease entities (see STEP 1 above). Use "Other" for post-zygotic mosaic/somatic variants. Use "X-linked" (not "Monoallelic") for hemizygous inheritance in males — "Monoallelic" is for autosomal dominant only.
   * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity", "post-zygotic mosaic") or empty string ""
-  * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions AND mechanisms. Each citation must include paper_id, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
+  * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions, mechanisms, AND inheritance modes — citations from a monoallelic-only paper must not land in a biallelic entity for the same phenotype, and vice versa. Each citation must include paper_id, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
   Examples:
 {% raw %}
   - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Smith2024", "box_id": 42, "commentary": "clinical features and patient counts"}, {"paper_id": "Jones2023", "box_id": 18, "commentary": "family counts"}]}]
   - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"paper_id": "Lee2022", "box_id": 23, "commentary": "phenotype description"}]}]
   - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 8, "family_count": 5, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Kim2024", "box_id": 34, "commentary": "ALS phenotype and counts"}, {"paper_id": "Park2023", "box_id": 56, "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_disease_name": "Syndromic disease", "patient_count": 10, "family_count": 3, "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Wang2022", "box_id": 78, "commentary": "dental phenotype and family data"}]}]
   - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 6, "family_count": 6, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Chen2024", "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_disease_name": "Neurodevelopmental disorder", "patient_count": 1, "family_count": 1, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Li2023", "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
+  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "patient_count": 18, "family_count": 12, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Park2024", "box_id": 31, "commentary": "dominant families with adult-onset weakness"}]}, {"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "patient_count": 5, "family_count": 4, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Lee2024", "box_id": 49, "commentary": "recessive families, compound heterozygous null alleles"}]}]
 {% endraw %}
 - variants: list all variants reported across papers WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
 - population_freq: ONLY if papers report gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
@@ -343,7 +345,7 @@ that emerge from cross-paper comparison.
    the aggregate evidence interpretation.
 
 2. **Cross-paper contradictions** (new issues to identify)
-   - Papers disagreeing on inheritance pattern for the same phenotype
+   - Papers disagreeing on the inheritance pattern of the SAME family/cohort (e.g., one paper says de novo, another says inherited for the same patient). Papers reporting different MoIs in DIFFERENT cohorts are not in conflict — they are split into separate disease entities.
    - Papers disagreeing on mechanism (e.g., gain-of-function vs. loss-of-function)
    - Same variant classified differently across papers
    - Phenotype descriptions that appear incompatible

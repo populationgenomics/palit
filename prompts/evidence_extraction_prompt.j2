@@ -24,82 +24,125 @@ Example citation format:
 ]
 {% endraw %}
 
+QUALIFYING VARIANT GATE (applies to Criteria A, B, and C):
+
+A reported variant counts toward Criterion A/B/C only if it QUALIFIES under all three of the following conditions, adapted from Strande et al. 2017 (the ClinGen Clinical Validity Framework that PanelApp's criteria are built on):
+
+(1) Positive evidence of a role in disease — at least ONE of:
+    (a) **De novo confirmed** — both biological parents tested wild-type, with paternity confirmed or strongly assumed.
+    (b) **Predicted/proven null** (nonsense, frameshift, canonical ±1/±2 splice) in a gene where loss-of-function is the established disease mechanism.
+    (c) **Other variant type with at least one of**:
+        (i) Segregation with affected status across ≥2 informative meioses (multiple affected carriers, unaffected non-carriers documented in the family).
+        (ii) Variant-specific functional validation — an assay tests the actual reported variant (not just gene knockdown) and demonstrates a mechanistic deficit.
+        (iii) Recurrence as the same variant in unrelated affected individuals across demonstrably distinct populations or independent ancestries.
+
+(2) No contradictory population evidence — population allele frequency must be plausible for the reported MoI:
+    - Autosomal dominant (Monoallelic): gnomAD allele frequency ≤ 0.0001 (1 in 10,000)
+    - Autosomal recessive (Biallelic): gnomAD homozygous count consistent with reported disease prevalence
+    - X-linked: hemizygous count in males consistent with rare disease
+    A variant that exceeds these thresholds DOES NOT QUALIFY, even if otherwise plausible.
+
+(3) Variant type is consistent with the assumed disease mechanism (e.g., truncating variant in a loss-of-function disease; activating missense in a gain-of-function disease).
+
+Variants that do not pass this gate must NOT be counted toward family_count for Criteria A/B/C, even if they appear in the paper. State this exclusion in the criterion rationale where it materially affects the count.
+
+SAME VARIANT ACROSS FAMILIES — when counting qualifying families, the same variant across multiple families counts as ONE family unless the paper provides POSITIVE evidence of independence:
+- de novo origin confirmed in EACH family, OR
+- the affected individuals come from demonstrably distinct populations (different continents, ethnicities, or known unrelated cohorts) AND the variant is at a position consistent with recurrent mutation (e.g., CpG site, structural hotspot, or established mutational mechanism), OR
+- explicit haplotype analysis showing different ancestral chromosomes.
+
+Geographic clustering, shared ethnicity, or unaddressed ancestry → collapse to one family. The burden of proof sits on showing independence; silence is not evidence of independence.
+
+Note: gate condition (1)(c)(iii) above ("recurrence across distinct populations") and the SAME-VARIANT-ACROSS-FAMILIES rule address different questions. (1)(c)(iii) lets a variant *qualify* (we believe it is plausibly pathogenic because it has been seen in different populations). The collapse rule decides *how many independent observations* the variant contributes; cross-population recurrence alone does not establish independence (a founder allele can spread across populations) — independence additionally requires either a recurrent-mutation mechanism or haplotype evidence.
+
+EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST:
+
+Before evaluating the criteria, you must explicitly assess each of the six weakening factors below and emit them in the `evidence_weakening_factors` array (always all six entries). Any criterion rationale must explicitly reference any factor with `present: true` that affects the verdict.
+
+1. **founder_or_recurrent_variant**: Same variant appears across multiple counted families without positive evidence of independent origins (apply the SAME-VARIANT-ACROSS-FAMILIES rule from the gate).
+2. **inherited_no_segregation_with_affected**: Variants are inherited from carrier parents who are unaffected, of unknown affected status, or where segregation with affected status is not documented across informative meioses.
+3. **missense_no_variant_specific_functional**: A missense-dominated cohort without variant-specific functional validation (assays must test the actual reported variants, not just gene knockdown).
+4. **population_frequency_incompatible_with_moi**: One or more reported variants exceed plausible population-frequency thresholds for the assumed MoI based on what the paper reports (do not infer thresholds for variants whose frequencies are not reported in the paper).
+5. **phenotype_non_mendelian**: Phenotype is a susceptibility/risk-factor allele, modifier locus, mostly-asymptomatic biomarker, predominantly epigenetic disorder, or otherwise not a clearly Mendelian disease.
+6. **functional_below_criterion_c_threshold**: Functional evidence cited (or that could be cited) for Criterion C does not satisfy Pillar 2(a) or 2(b) below — it relies on biochemical assays, heterologous overexpression, or patient-cell deficit without rescue.
+
+For each factor: emit `{"factor": "<enum>", "present": true|false, "details": "<1-2 sentences citing specific evidence; for present=false use 'Not present' or a brief sanity-check statement>"}`.
+
 CRITERION A: Multiple Unrelated Cases with Plausible Mutations
 "There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
 
+The "3 or more" threshold applies AFTER applying the QUALIFYING VARIANT GATE and the SAME-VARIANT-ACROSS-FAMILIES collapse rule. Count only families that pass both. Criterion A is TRUE only if ≥3 qualifying, independent families are present; otherwise it is FALSE. Strong functional evidence does NOT compensate for fewer qualifying families — that path is Criterion C, with its own bar below.
+
 KEY REQUIREMENTS:
-- Count FAMILIES, not individual patients (multiple affected siblings = 1 family)
-- Families must be truly UNRELATED (same founder variant in a population doesn't provide independent evidence; but the same variant can be independent if arising in different populations or through recurrent mutation)
-- For homozygous missense variants (especially in consanguineous families): require functional evidence
-- Must have DETAILED PHENOTYPE DESCRIPTIONS including:
+- Count FAMILIES, not individual patients (multiple affected siblings = 1 family).
+- Each counted family must contribute at least one variant that passes the qualifying gate.
+- Phenotype documentation must be DETAILED:
   * Individual patient clinical details (not just summaries)
   * Systematic phenotyping with consistent core features
   * Age of onset and natural history information
   * Exclusion of phenocopies and alternative diagnoses
-- Variants should be:
-  * Rare in population databases (AD: <0.0001; AR: rare homozygous frequency)
-  * In interpretable functional regions (coding, splice sites, regulatory elements)
-  * VARIANT TYPE CONSIDERATIONS:
-    - Loss-of-function in haploinsufficient genes: strong evidence, less functional validation needed
-    - Missense variants: almost always require functional validation
-    - Multiple different pathogenic variants in same gene: very strong evidence
-    - Same variant across families: weaker unless clearly independent origins
-
-EVIDENCE TO LOOK FOR:
-- Detailed individual patient phenotypes (not vague summaries)
-- Clear statement that families are genealogically unrelated
-- Different pathogenic variants strengthening evidence
-- STRONG SEGREGATION ANALYSIS:
-  * LOD scores >3.0 or multiple informative meioses
-  * Large multiplex families with clear inheritance pattern
-  * Multiple confirmed de novo cases (for dominant conditions)
-  * Compound heterozygous variants with confirmed parental origins
-- Functional validation matching variant type requirements
 
 CRITERION B: Cis-regulatory Mutations
 "There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
-- Look for: >3 unrelated families with regulatory variants
-- Must demonstrate effect on gene expression
-- Evidence: Expression studies, regulatory element analysis, functional validation
+
+The ">3" threshold applies after applying the qualifying gate and the same-variant collapse rule. The qualifying gate adapts to regulatory variants — "predicted/proven null" becomes "demonstrated to abolish or substantially reduce expression of the target gene"; functional validation must show the regulatory effect on the specific reported variant.
 
 CRITERION C: Fewer Cases with Strong Functional Evidence
 "As definitions A or B but in 2 or 3 unrelated cases/families with the phenotype, with the addition of convincing bioinformatic or functional evidence of causation."
 
-REQUIRED FUNCTIONAL EVIDENCE (following ClinGen guidelines):
-STRONG evidence (ranked by strength):
-1. MODELS & RESCUE (strongest):
-   - Mammalian models recapitulating human phenotype > other vertebrates > invertebrates
-   - Phenotypic rescue with wild-type > genetic complementation > overexpression studies
-2. FUNCTIONAL ALTERATION IN PATIENT CONTEXTS:
-   - Patient-derived cells showing disease mechanism > engineered cells with patient variants
-   - Direct demonstration of pathophysiological pathway disruption
-3. BIOCHEMICAL FUNCTION (when directly disease-relevant):
-   - Enzymatic assays testing disease-relevant function
-   - Protein interaction studies directly related to pathogenesis
+Criterion C is rare and demands a high functional bar. It is met ONLY when BOTH pillars hold:
 
-SUPPORTIVE but NOT sufficient alone:
-- In silico predictions (can support but not prove pathogenicity)
-- Western blots without mechanistic disease connection
-- General protein function assays not linked to disease pathology
-- Structural predictions without experimental validation
+**Pillar 1**: 2 or 3 unrelated families with QUALIFYING variants for the same phenotype × MoI (apply the gate and the same-variant collapse rule). Once family count reaches ≥4 qualifying families, evaluate under Criterion A instead.
 
-NOTE: Single family with excellent functional evidence → amber rating, not green
-      2-3 families with strong functional evidence → can achieve green
+**Pillar 2**: Functional evidence in the paper matches AT LEAST ONE of the following acceptance patterns:
+
+(a) **Animal model with phenotype recapitulation and rescue**:
+    A non-human animal model (mammalian > other vertebrate > invertebrate) carrying the orthologous gene perturbation (knockout, knockdown, or patient-variant knock-in) AND recapitulating a recognisable feature of the human disease phenotype, AND rescue with wild-type or genetic complementation reverses the phenotype.
+
+(b) **Patient-cell pathophysiology with rescue and orthogonal living-system support**:
+    Patient-derived cells (fibroblasts, iPSCs, organoids) demonstrate the disease-relevant pathophysiological deficit, AND wild-type rescue clearly reverses the deficit, AND orthogonal corroboration is present in a separate living system (animal model, organoid in disease-relevant tissue, or independent patient-cell readout).
+
+The following DO NOT clear Pillar 2, even when combined together:
+- Biochemical kinetics on recombinant protein
+- Heterologous overexpression in HEK293/COS-7/etc. with downstream pathway readouts
+- Patient-cell deficit WITHOUT wild-type rescue
+- Western blots showing reduced protein steady-state without a functional consequence
+- Protein interaction loss without disease-relevant functional consequence
+- In silico predictions of pathogenicity or structural disruption
+- Variant-only segregation arguments (those belong under Criterion A's gate)
+
+If Pillar 2 is not met, Criterion C is FALSE regardless of family count. State the failing pillar in the rationale.
 
 CRITERION D: Inheritance Pattern Appropriate for Diagnostic Reporting
 "Evidence indicates that disease-causing mutations follow a pattern of causation appropriate for reporting in a diagnostic setting."
-- Clear inheritance pattern (AD, AR, X-linked, or mosaic/somatic for non-Mendelian disorders)
-- Suitable for clinical diagnostics
-- Complete penetrance or well-characterized reduced penetrance
-- For post-zygotic mosaic/somatic disorders: use "Other" as inheritance_mode; Criterion D is met if the variant is reportable and actionable in a diagnostic setting
-- Evidence: Pedigree analysis, segregation studies, or tissue-level mosaicism characterization
+
+For Criterion D to be TRUE, the gene-disease relationship must be MENDELIAN (monogenic) and CLINICALLY ACTIONABLE:
+- Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, X-linked, Mitochondrial, Other) per disease entity
+- Penetrance is high enough to be diagnostically useful — either complete or well-characterised reduced penetrance with a clear genotype-phenotype relationship
+- The phenotype itself is a recognisable disease, not a biochemical/biomarker abnormality, susceptibility allele, modifier locus, or asymptomatic finding
+
+D is FALSE when the phenotype is one of:
+- A **susceptibility / risk-factor allele** (variants increase disease risk but are neither necessary nor sufficient — e.g., association-study findings, oligogenic risk modifiers)
+- A **modifier locus** (variants modulate severity/expression of another genetic disorder rather than cause disease independently)
+- A condition where the **majority of variant carriers are asymptomatic** or have only laboratory abnormalities without clinical disease (penetrance too low for diagnostic action)
+- A **predominantly epigenetic disorder** where sequence variation in this gene only rarely contributes to disease (most pathogenic events are methylation/imprinting changes)
+- A **somatic cancer driver** as the primary phenotype (already excluded under IMPORTANT INSTRUCTIONS, restated for clarity)
+
+For post-zygotic mosaic/somatic disorders causing rare disease (in scope per IMPORTANT INSTRUCTIONS): use "Other" as inheritance_mode; D is met if the variant is reportable and actionable in a diagnostic setting.
+
+Evidence: Pedigree analysis, segregation studies, tissue-level mosaicism characterisation, or population-level penetrance estimates.
 
 CRITERION E: No Contradictory Evidence
 "No convincing evidence exists or has emerged that contradicts the role of the gene in the specified phenotype."
-- Absence of conflicting reports
-- No benign variants at supposedly pathogenic positions
-- Consistent functional studies
-- No common variants in healthy populations
+
+E is FALSE if ANY of the following contradictory signals are present in the paper:
+- **Population frequency incompatible with the inheritance mode** (using thresholds from the qualifying gate above): a reported variant claimed disease-causing has gnomAD allele frequency >0.0001 for AD/Monoallelic, or homozygous count high enough to predict disease prevalence inconsistent with reports for AR/Biallelic, or hemizygous count in males inconsistent with rare disease for X-linked.
+- **ClinVar contradiction**: cited variants are classified Likely Benign or Benign by reputable submitters with no convincing rebuttal in the paper.
+- **Conflicting reports**: independent studies dispute the gene-disease association on substantive grounds (different from minor variant-level disagreements that `quality_concerns` covers).
+- **Functional study inconsistencies**: orthogonal functional studies disagree about the direction of effect (e.g., LoF vs GoF for the same variant) without resolution.
+- **Common benign variants at claimed pathogenic positions**: positions claimed to be pathogenic harbour benign variation in healthy populations.
+
+Note: E is about gene-disease *validity* (is there contradiction about causation?). Paper-internal contradictions belong in `quality_concerns`, not E.
 
 LUMPING AND SPLITTING DISEASE ENTITIES - CRITICAL:
 
@@ -326,12 +369,11 @@ IMPORTANT INSTRUCTIONS:
   * If a gene has ONLY digenic/oligogenic evidence in this paper, do not create a gene
     evaluation for it.
   * Biallelic (two alleles in the same gene) remains in scope.
-- Be STRICT about "unrelated families" - require independent evidence of pathogenicity
+- UNRELATED FAMILIES: Apply the SAME-VARIANT-ACROSS-FAMILIES collapse rule from the qualifying gate. Same variant across families collapses to one unless positive evidence of independence is shown.
 - PHENOTYPE REQUIREMENTS: Detailed individual patient descriptions required, not summaries
 - Count families as primary units, mention patient numbers as supplementary
-- GENE MECHANISM CONTEXT: Haploinsufficient genes need less functional evidence for loss-of-function variants
-- BOUNDARY CASES: Exactly 3 families can qualify for Criterion A if well-characterized
-- For Criterion C, demand ClinGen-level functional evidence quality
+- VARIANT QUALIFICATION: All Criterion A/B/C family counts use only families whose variants pass the QUALIFYING VARIANT GATE. Predicted/proven null variants in haploinsufficient genes qualify directly under gate clause (1)(b); other variant types must meet (1)(c)(i)–(iii).
+- CRITERION C BAR: Use the two-pillar rule; biochemical or heterologous-overexpression evidence alone does not satisfy Pillar 2.
 - GENE SYMBOL REQUIREMENTS: Every gene_symbol in gene_evaluations must be a valid HGNC gene
   symbol. Do NOT include placeholder entries, marker entries, notes, or dummy gene symbols
   (e.g., "PLACEHOLDER", "PLACEHOLDER_REMOVE", "GENE_NOTE"). If a gene does not meet the
@@ -344,7 +386,7 @@ CONFIDENCE LEVELS:
 - LOW: Uncertain due to insufficient or conflicting information
 
 QUALITY CONCERNS:
-Flag significant issues that should make curators cautious about this evidence.
+Flag significant issues that should make curators cautious about this evidence. These complement (do not duplicate) the structured `evidence_weakening_factors`.
 
 THRESHOLD - Only flag issues that:
 - Could change how the evidence should be interpreted
@@ -357,6 +399,7 @@ DO NOT flag:
 - Missing information that the paper doesn't claim to have (fields marked NR are not concerns)
 - Subjective disagreements with the authors' interpretation
 - Issues that don't materially affect evidence quality
+- Issues already captured by the structured `evidence_weakening_factors` (founder/recurrent variant, inherited-without-segregation, missense-without-functional, population-frequency, non-Mendelian phenotype, sub-Pillar-2 functional evidence) — those go in the checklist, not here.
 
 CATEGORIES OF MAJOR ISSUES (examples, not exhaustive):
 
@@ -385,7 +428,10 @@ For citations: Point to where the problematic claim or contradiction appears.
 
 If no major issues are found, use an empty array: []
 
-Before generating your JSON response, thoroughly think through each gene evaluation. The response schema is complex: each gene_evaluation MUST include an `evidence_assessments` array with exactly 5 entries (criterion_A through criterion_E), each requiring a result, rationale, confidence level, and citations. Plan all 5 evidence assessments for each gene before you begin writing the JSON output.
+Before generating your JSON response, thoroughly think through each gene evaluation. The response schema is complex:
+- `evidence_weakening_factors` MUST contain exactly 6 entries, one per factor enum value, each with `factor`, `present`, `details`. Fill these out FIRST.
+- `evidence_assessments` MUST contain exactly 5 entries (criterion_A through criterion_E), each with result, rationale, confidence, and citations. Each rationale must reference any `present:true` weakening factor that affects the verdict.
+Plan both arrays for each gene before you begin writing the JSON output.
 
 Respond in JSON format with your evaluation:
 
@@ -410,6 +456,14 @@ Respond in JSON format with your evaluation:
       "segregation": "LOD score / de novo status / meioses or NR",
       "functional": "specific experiments or NR",
       "prior_reports": "first report / N prior families or NR",
+      "evidence_weakening_factors": [
+        {"factor": "founder_or_recurrent_variant", "present": boolean, "details": "1-2 sentences citing specific evidence, or 'Not present' with brief sanity-check"},
+        {"factor": "inherited_no_segregation_with_affected", "present": boolean, "details": "..."},
+        {"factor": "missense_no_variant_specific_functional", "present": boolean, "details": "..."},
+        {"factor": "population_frequency_incompatible_with_moi", "present": boolean, "details": "..."},
+        {"factor": "phenotype_non_mendelian", "present": boolean, "details": "..."},
+        {"factor": "functional_below_criterion_c_threshold", "present": boolean, "details": "..."}
+      ],
       "evidence_assessments": [
         {"name": "criterion_A", "result": boolean, "rationale": "detailed explanation with citations when true", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "explanation of what this text shows"}]},
         {"name": "criterion_B", "result": boolean, "rationale": "detailed explanation with citations when true", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "explanation of what this text shows"}]},

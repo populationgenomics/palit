@@ -109,6 +109,42 @@
                 "additionalProperties": false
             }
         },
+        "evidence_weakening_factors": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Exhaustive checklist of structured weakening factors. MUST contain exactly six entries, one per factor enum value, in any order. Criteria A/C/D/E rationales must explicitly reference any factor with present=true that affects the verdict.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "factor": {
+                        "type": "string",
+                        "enum": [
+                            "founder_or_recurrent_variant",
+                            "inherited_no_segregation_with_affected",
+                            "missense_no_variant_specific_functional",
+                            "population_frequency_incompatible_with_moi",
+                            "phenotype_non_mendelian",
+                            "functional_below_criterion_c_threshold"
+                        ],
+                        "description": "Identifier of the weakening factor."
+                    },
+                    "present": {
+                        "type": "boolean",
+                        "description": "True if the factor is present in the contributing evidence; false otherwise."
+                    },
+                    "details": {
+                        "type": "string",
+                        "description": "1-2 sentences citing the specific evidence that triggers this factor. For present=false, use 'Not present' or a brief sanity-check statement."
+                    }
+                },
+                "required": [
+                    "factor",
+                    "present",
+                    "details"
+                ],
+                "additionalProperties": false
+            }
+        },
         "quality_concerns": {
             "type": "array",
             "description": "Synthesized concerns from individual papers plus cross-paper issues. Empty array if no significant concerns.",
@@ -238,6 +274,7 @@
         "functional",
         "prior_reports",
         "disease_entities",
+        "evidence_weakening_factors",
         "quality_concerns",
         "evidence_assessments"
     ],

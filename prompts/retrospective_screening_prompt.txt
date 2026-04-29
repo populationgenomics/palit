@@ -105,6 +105,8 @@ DO penalize papers that:
 **Diagnostic Utility Test**
 Ask: "Does this paper contribute evidence that could inform whether a given gene should be on a diagnostic panel?" If it only implicates a pathway or group without pinpointing specific causal genes, it should be EXCLUDED—even if functional evidence is strong.
 
+**Style:** Use UK English spelling, except in verbatim quotes.
+
 **Assessment Task**
 Based on title and abstract, provide:
 1. A relevance assessment based on the inclusion and exclusion criteria (true/false).

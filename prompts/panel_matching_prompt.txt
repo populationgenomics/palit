@@ -59,6 +59,8 @@ After completing your matching, validate that the output fits the response forma
 Return only panels with clear phenotype correspondence.
 Keep rationales concise and specific about what matched.
 
+Style: Use UK English spelling, except in verbatim quotes.
+
 Respond in JSON format:
 {{
   "matched_panels": [

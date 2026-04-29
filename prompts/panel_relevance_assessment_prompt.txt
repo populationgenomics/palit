@@ -101,6 +101,8 @@ Prioritize papers that contribute meaningful evidence for gene-disease relations
 
 Ask: "Does this paper provide evidence that could inform whether a gene should be added to, retained in, or modified within THIS specific panel?" If it only implicates pathways, gene groups, or diseases outside panel scope, it should be EXCLUDED.
 
+**Style:** Use UK English spelling, except in verbatim quotes.
+
 **Assessment Task**
 
 Based on title and abstract, provide:

@@ -169,20 +169,26 @@ def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> tuple[str, s
 
 
 def count_families_by_moi(disease_entities: list[dict[str, Any]]) -> dict[str, int]:
-    """Count families per inheritance mode from disease_entities.
+    """Largest single-entity family count per inheritance mode from disease_entities.
 
-    Falls back to patient_count if family_count is null.
+    Each disease entity is an independent gene-disease association, so the
+    relevant per-MoI count is the strongest single entity, not the sum. Falls
+    back to patient_count when family_count is null.
 
-    Note: Monoallelic_and_biallelic counts toward BOTH Monoallelic and Biallelic,
-    since by definition it contains evidence for both modes.
+    Monoallelic_and_biallelic is a legacy enum value; entries carrying it
+    contribute their count to both Monoallelic and Biallelic.
 
     Args:
         disease_entities: List of disease entity dicts
 
     Returns:
-        Dict mapping inheritance mode to total family count
+        Dict mapping inheritance mode to the max single-entity family count
     """
     counts: dict[str, int] = {}
+
+    def update_max(moi: str, count: int) -> None:
+        if count > counts.get(moi, 0):
+            counts[moi] = count
 
     for entity in disease_entities:
         moi = entity.get("inheritance_mode")
@@ -195,11 +201,10 @@ def count_families_by_moi(disease_entities: list[dict[str, Any]]) -> dict[str, i
             continue
 
         if moi == "Monoallelic_and_biallelic":
-            # Counts toward both modes
-            counts["Monoallelic"] = counts.get("Monoallelic", 0) + count
-            counts["Biallelic"] = counts.get("Biallelic", 0) + count
+            update_max("Monoallelic", count)
+            update_max("Biallelic", count)
         else:
-            counts[moi] = counts.get(moi, 0) + count
+            update_max(moi, count)
 
     return counts
 

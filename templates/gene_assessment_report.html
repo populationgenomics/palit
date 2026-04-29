@@ -97,7 +97,7 @@
                     </td>
                     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
                     <td>{{ entity.patient_count }}</td>
-                    <td {% if entity.family_count is not none and entity.family_count == max_family_count and max_family_count > 0 %}class="disease-entity-max-family-count" data-title="Maximum family count - used for classification"{% endif %}>{% if entity.family_count is not none %}{{ entity.family_count }}{% else %}NR{% endif %}</td>
+                    <td {% if entity.family_count is not none and entity.family_count == max_family_count and max_family_count > 0 %}class="disease-entity-max-family-count" data-title="Strongest single gene-disease association — A/B/C thresholds are evaluated against this entry's count, never the sum across entries"{% endif %}>{% if entity.family_count is not none %}{{ entity.family_count }}{% else %}NR{% endif %}</td>
                     {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for link in citation_links %}<a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id | short_id }}:p{{ link.page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
                 </tr>
                 {% endfor %}

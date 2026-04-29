@@ -24,9 +24,7 @@ If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, r
 You must output a `disease_entities` array, with each distinct (phenotype × MoI) entity receiving its own entry with a separate family count.
 
 **EVALUATING CRITERIA WITH MULTIPLE DISEASE ENTITIES:**
-Each disease entity is an independent gene-disease assertion. Evaluate Criteria A, B, and C using the MAXIMUM family count across all disease entities, NOT the sum. The strongest single (phenotype × MoI) entity determines the rating.
-
-Example: If a gene causes 4 families with monoallelic epilepsy, 2 families with biallelic epilepsy, and 1 family with cardiomyopathy, use 4 (the max) for evaluating Criteria A/B/C, not 7.
+Each entry in `disease_entities` is an independent gene–disease association. Criteria A, B, and C are evaluated per entry: the count threshold must be met by a single entry's `family_count`. Do not pool counts across entries, regardless of shared `inheritance_mode`, `disease_mechanism`, or phenotype overlap. If no single entry meets the threshold, the criterion is false. In each A/B/C rationale, name the entry that meets the threshold or state that none does.
 
 AGGREGATION METHODOLOGY:
 You are evaluating evidence that has been extracted from multiple papers. Your job is to:
@@ -70,6 +68,8 @@ Example citation format:
 CRITERION A: Multiple Unrelated Cases with Plausible Mutations
 "There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
 
+The "3 or more" threshold applies to a single `disease_entities` entry's `family_count`.
+
 KEY REQUIREMENTS:
 - Count FAMILIES, not individual patients (multiple affected siblings = 1 family)
 - Families must be truly UNRELATED (same founder variant in a population doesn't provide independent evidence; but the same variant can be independent if arising in different populations or through recurrent mutation)
@@ -101,12 +101,15 @@ EVIDENCE TO LOOK FOR:
 
 CRITERION B: Cis-regulatory Mutations
 "There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
-- Look for: >3 unrelated families with regulatory variants
+
+The ">3" threshold applies to a single `disease_entities` entry's `family_count`.
 - Must demonstrate effect on gene expression
 - Evidence: Expression studies, regulatory element analysis, functional validation
 
 CRITERION C: Fewer Cases with Strong Functional Evidence
 "As definitions A or B but in 2 or 3 unrelated cases/families with the phenotype, with the addition of convincing bioinformatic or functional evidence of causation."
+
+The "2 or 3" threshold applies to a single `disease_entities` entry's `family_count`, and the functional evidence must be specific to that entry's phenotype.
 
 REQUIRED FUNCTIONAL EVIDENCE (following ClinGen guidelines):
 STRONG evidence (ranked by strength):

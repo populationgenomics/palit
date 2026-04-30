@@ -7,6 +7,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import pronto
@@ -18,8 +19,14 @@ logger = logging.getLogger(__name__)
 GENCC_URL = "https://search.thegencc.org/download/action/submissions-export-tsv"
 MONDO_OBO_URL = "https://github.com/monarch-initiative/mondo/releases/latest/download/mondo.obo"
 
-# GenCC classifications to include (exclude Disputed, Refuted, Animal Model Only, etc.)
-INCLUDED_CLASSIFICATIONS = {"Definitive", "Strong", "Moderate", "Limited"}
+DisputeStatus = Literal["None", "Disputed", "Refuted"]
+
+# GenCC classification_title values that flag the gene-disease pair as
+# disputed/refuted by an expert curation panel. Refuted is the stronger
+# negative call (active rejection) vs Disputed (contested) — both gate
+# Criteria A/B/C identically downstream.
+_REFUTED_TITLES = {"Refuted Evidence"}
+_DISPUTED_TITLES = {"Disputed Evidence"}
 
 
 _MAX_AGE_SECONDS = 7 * 24 * 3600  # 1 week
@@ -45,11 +52,17 @@ def _download_if_stale(url: str, path: Path) -> None:
 
 @dataclass(frozen=True)
 class MondoCandidate:
-    """A MONDO disease term candidate for a gene."""
+    """A MONDO disease term candidate for a gene.
+
+    `dispute_status` aggregates GenCC submissions for this (gene, disease)
+    pair: "Refuted" if any submission is Refuted Evidence, "Disputed" if any
+    is Disputed Evidence (and none Refuted), otherwise "None".
+    """
 
     mondo_id: str
     title: str
     definition: str
+    dispute_status: DisputeStatus
 
 
 class MondoLookup:
@@ -94,7 +107,7 @@ class MondoLookup:
         # Build per-gene candidate lists
         for gene_symbol, disease_map in gencc_entries.items():
             candidates = []
-            for mondo_id, title in disease_map.items():
+            for mondo_id, (title, dispute_status) in disease_map.items():
                 term = mondo.get(mondo_id)
                 definition = term.definition.strip() if term and term.definition else ""
                 candidates.append(
@@ -102,6 +115,7 @@ class MondoLookup:
                         mondo_id=mondo_id,
                         title=title,
                         definition=definition,
+                        dispute_status=dispute_status,
                     )
                 )
             self._gene_to_candidates[gene_symbol] = candidates
@@ -116,34 +130,61 @@ class MondoLookup:
         )
 
     @staticmethod
-    def _load_gencc(path: Path) -> dict[str, dict[str, str]]:
+    def _load_gencc(path: Path) -> dict[str, dict[str, tuple[str, DisputeStatus]]]:
         """Load GenCC submissions, grouped by gene symbol.
 
+        Aggregates across submitters: for each (gene, disease) pair, computes
+        a single dispute_status from all submissions ("Refuted" wins over
+        "Disputed", which wins over "None").
+
         Returns:
-            Dict mapping gene_symbol → {mondo_id: disease_title}.
-            Deduplicates by (gene, mondo_id), keeping the first occurrence.
+            Dict mapping gene_symbol → {mondo_id: (disease_title, dispute_status)}.
         """
-        gene_to_diseases: dict[str, dict[str, str]] = defaultdict(dict)
+        # gene_symbol → mondo_id → list of classification titles seen
+        gene_to_classifications: dict[str, dict[str, list[str]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        # gene_symbol → mondo_id → first-seen disease title
+        gene_to_titles: dict[str, dict[str, str]] = defaultdict(dict)
 
         with path.open() as f:
             reader = csv.DictReader(f, delimiter="\t")
             for row in reader:
-                if row["classification_title"] not in INCLUDED_CLASSIFICATIONS:
-                    continue
-
                 gene_symbol = row["gene_symbol"]
                 disease_curie = row["disease_curie"]
+                gene_to_classifications[gene_symbol][disease_curie].append(
+                    row["classification_title"]
+                )
+                if disease_curie not in gene_to_titles[gene_symbol]:
+                    gene_to_titles[gene_symbol][disease_curie] = row["disease_title"]
 
-                # Keep first occurrence per (gene, disease) — GenCC file is ordered
-                # by classification strength within submitter groups
-                if disease_curie not in gene_to_diseases[gene_symbol]:
-                    gene_to_diseases[gene_symbol][disease_curie] = row["disease_title"]
+        result: dict[str, dict[str, tuple[str, DisputeStatus]]] = {}
+        disputed_pairs = 0
+        refuted_pairs = 0
+        for gene_symbol, diseases in gene_to_classifications.items():
+            per_disease: dict[str, tuple[str, DisputeStatus]] = {}
+            for disease_curie, classifications in diseases.items():
+                if any(c in _REFUTED_TITLES for c in classifications):
+                    status: DisputeStatus = "Refuted"
+                    refuted_pairs += 1
+                elif any(c in _DISPUTED_TITLES for c in classifications):
+                    status = "Disputed"
+                    disputed_pairs += 1
+                else:
+                    status = "None"
+                per_disease[disease_curie] = (
+                    gene_to_titles[gene_symbol][disease_curie],
+                    status,
+                )
+            result[gene_symbol] = per_disease
 
+        total_pairs = sum(len(v) for v in result.values())
         logger.info(
-            f"Loaded GenCC: {len(gene_to_diseases):,} genes, "
-            f"{sum(len(v) for v in gene_to_diseases.values()):,} gene-disease pairs"
+            f"Loaded GenCC: {len(result):,} genes, "
+            f"{total_pairs:,} gene-disease pairs "
+            f"({disputed_pairs} disputed, {refuted_pairs} refuted)"
         )
-        return dict(gene_to_diseases)
+        return result
 
     def get_candidates(self, hgnc_symbol: str) -> list[MondoCandidate]:
         """Get MONDO disease candidates for a gene by HGNC symbol.

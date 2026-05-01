@@ -3,26 +3,14 @@
     "properties": {
         "summary": {
             "type": "string",
-            "description": "Prose narrative summarizing the gene-disease evidence. For novel genes: brief prose (2-3 sentences). For genes with existing PanelApp reviews: three sections with bold markdown headers (**New evidence**: / **Prior reviews**: / **Assessment**:), or four sections if panel-scoped (adding **Panel relevance**:). Follow the format specified in the prompt."
+            "description": "Prose narrative summarizing the gene-disease evidence. For novel genes: brief prose (2-3 sentences). For genes with existing PanelApp reviews: three sections with bold markdown headers (**New evidence**: / **Prior reviews**: / **Assessment**:), or four sections if panel-scoped (adding **Panel relevance**:). Follow the format specified in the prompt.",
         },
-        "families": {
-            "type": "string"
-        },
-        "variants": {
-            "type": "string"
-        },
-        "population_freq": {
-            "type": "string"
-        },
-        "segregation": {
-            "type": "string"
-        },
-        "functional": {
-            "type": "string"
-        },
-        "prior_reports": {
-            "type": "string"
-        },
+        "families": {"type": "string"},
+        "variants": {"type": "string"},
+        "population_freq": {"type": "string"},
+        "segregation": {"type": "string"},
+        "functional": {"type": "string"},
+        "prior_reports": {"type": "string"},
         "disease_entities": {
             "type": "array",
             "description": "Array of distinct disease entities caused by this gene, each with separate patient and family counts. Include specific disease names where applicable.",
@@ -31,26 +19,28 @@
                 "properties": {
                     "description": {
                         "type": "string",
-                        "description": "Specific disease name (where applicable) or clinical description of this disease entity"
+                        "description": "Specific disease name (where applicable) or clinical description of this disease entity",
                     },
                     "mondo_disease_name": {
                         "type": "string",
-                        "description": "Exact MONDO disease name from the provided candidate list or fallback categories (Neurodevelopmental disorder, Inborn error of immunity, Syndromic disease, Infertility disorder, Mitochondrial disease)."
+                        "description": "Exact MONDO disease name from the provided candidate list or fallback categories (Neurodevelopmental disorder, Inborn error of immunity, Syndromic disease, Infertility disorder, Mitochondrial disease).",
+                    },
+                    "dispute_status": {
+                        "type": "string",
+                        "enum": ["None", "Disputed", "Refuted"],
+                        "description": "Decision on the candidate's GenCC dispute marker. 'Disputed'/'Refuted' upholds the candidate's [DISPUTED]/[REFUTED] flag (Criteria A/B/C must then be FALSE). 'None' overrules a flagged candidate (any A/B/C returning TRUE must state the overrule explicitly in its rationale) AND is the only valid value for unflagged candidates and fallback categories.",
                     },
                     "patient_count": {
                         "type": "integer",
-                        "description": "Number of patients for this specific disease entity aggregated across all papers"
+                        "description": "Number of patients for this specific disease entity aggregated across all papers",
                     },
                     "family_count": {
-                        "type": [
-                            "integer",
-                            "null"
-                        ],
-                        "description": "Number of unrelated families for this specific disease entity aggregated across all papers. Use null when not reported (NR)."
+                        "type": ["integer", "null"],
+                        "description": "Number of unrelated families for this specific disease entity aggregated across all papers. Use null when not reported (NR).",
                     },
                     "disease_mechanism": {
                         "type": "string",
-                        "description": "Molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: 'loss-of-function', 'gain-of-function', 'dominant-negative', 'loss-of-function (haploinsufficiency)', 'unknown mechanism'. Use 'NR' when not discussed in papers. Synthesize ONLY from paper content."
+                        "description": "Molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: 'loss-of-function', 'gain-of-function', 'dominant-negative', 'loss-of-function (haploinsufficiency)', 'unknown mechanism'. Use 'NR' when not discussed in papers. Synthesize ONLY from paper content.",
                     },
                     "inheritance_mode": {
                         "type": "string",
@@ -60,13 +50,13 @@
                             "X-linked",
                             "Mitochondrial",
                             "Other",
-                            "NR"
+                            "NR",
                         ],
-                        "description": "Mode of inheritance for this specific disease entity. Each entity carries a single MoI \u2014 combination modes are not permitted. If the same phenotype has both monoallelic and biallelic evidence, create TWO disease entities (one per MoI). Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males \u2014 Monoallelic is for autosomal dominant only."
+                        "description": "Mode of inheritance for this specific disease entity. Each entity carries a single MoI \u2014 combination modes are not permitted. If the same phenotype has both monoallelic and biallelic evidence, create TWO disease entities (one per MoI). Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males \u2014 Monoallelic is for autosomal dominant only.",
                     },
                     "inheritance_details": {
                         "type": "string",
-                        "description": "Additional inheritance clarifications for this disease entity (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity', 'post-zygotic mosaic'). Use empty string if none."
+                        "description": "Additional inheritance clarifications for this disease entity (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity', 'post-zygotic mosaic'). Use empty string if none.",
                     },
                     "citations": {
                         "type": "array",
@@ -76,38 +66,35 @@
                             "properties": {
                                 "paper_id": {
                                     "type": "string",
-                                    "description": "Paper ID (e.g. 'Smith2024') of the paper containing this citation"
+                                    "description": "Paper ID (e.g. 'Smith2024') of the paper containing this citation",
                                 },
                                 "box_id": {
                                     "type": "integer",
-                                    "description": "Box ID where the disease entity information appears in the paper"
+                                    "description": "Box ID where the disease entity information appears in the paper",
                                 },
                                 "commentary": {
                                     "type": "string",
-                                    "description": "Brief description of what this citation shows"
-                                }
+                                    "description": "Brief description of what this citation shows",
+                                },
                             },
-                            "required": [
-                                "paper_id",
-                                "box_id",
-                                "commentary"
-                            ],
-                            "additionalProperties": false
-                        }
-                    }
+                            "required": ["paper_id", "box_id", "commentary"],
+                            "additionalProperties": false,
+                        },
+                    },
                 },
                 "required": [
                     "description",
                     "mondo_disease_name",
+                    "dispute_status",
                     "patient_count",
                     "family_count",
                     "disease_mechanism",
                     "inheritance_mode",
                     "inheritance_details",
-                    "citations"
+                    "citations",
                 ],
-                "additionalProperties": false
-            }
+                "additionalProperties": false,
+            },
         },
         "evidence_weakening_factors": {
             "type": "array",
@@ -124,26 +111,22 @@
                             "missense_no_variant_specific_functional",
                             "population_frequency_incompatible_with_moi",
                             "phenotype_non_mendelian",
-                            "functional_below_criterion_c_threshold"
+                            "functional_below_criterion_c_threshold",
                         ],
-                        "description": "Identifier of the weakening factor."
+                        "description": "Identifier of the weakening factor.",
                     },
                     "present": {
                         "type": "boolean",
-                        "description": "True if the factor is present in the contributing evidence; false otherwise."
+                        "description": "True if the factor is present in the contributing evidence; false otherwise.",
                     },
                     "details": {
                         "type": "string",
-                        "description": "1-2 sentences citing the specific evidence that triggers this factor. For present=false, use 'Not present' or a brief sanity-check statement."
-                    }
+                        "description": "1-2 sentences citing the specific evidence that triggers this factor. For present=false, use 'Not present' or a brief sanity-check statement.",
+                    },
                 },
-                "required": [
-                    "factor",
-                    "present",
-                    "details"
-                ],
-                "additionalProperties": false
-            }
+                "required": ["factor", "present", "details"],
+                "additionalProperties": false,
+            },
         },
         "quality_concerns": {
             "type": "array",
@@ -153,14 +136,12 @@
                 "properties": {
                     "concern": {
                         "type": "string",
-                        "description": "Description of the issue, referencing specific paper IDs where relevant"
+                        "description": "Description of the issue, referencing specific paper IDs where relevant",
                     },
                     "paper_ids": {
                         "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "description": "Paper IDs of papers where this concern applies"
+                        "items": {"type": "string"},
+                        "description": "Paper IDs of papers where this concern applies",
                     },
                     "citations": {
                         "type": "array",
@@ -170,33 +151,25 @@
                             "properties": {
                                 "paper_id": {
                                     "type": "string",
-                                    "description": "Paper ID of the paper"
+                                    "description": "Paper ID of the paper",
                                 },
                                 "box_id": {
                                     "type": "integer",
-                                    "description": "Box ID where the problematic claim appears"
+                                    "description": "Box ID where the problematic claim appears",
                                 },
                                 "commentary": {
                                     "type": "string",
-                                    "description": "Brief explanation of what this citation demonstrates"
-                                }
+                                    "description": "Brief explanation of what this citation demonstrates",
+                                },
                             },
-                            "required": [
-                                "paper_id",
-                                "box_id",
-                                "commentary"
-                            ],
-                            "additionalProperties": false
-                        }
-                    }
+                            "required": ["paper_id", "box_id", "commentary"],
+                            "additionalProperties": false,
+                        },
+                    },
                 },
-                "required": [
-                    "concern",
-                    "paper_ids",
-                    "citations"
-                ],
-                "additionalProperties": false
-            }
+                "required": ["concern", "paper_ids", "citations"],
+                "additionalProperties": false,
+            },
         },
         "evidence_assessments": {
             "type": "array",
@@ -205,42 +178,21 @@
             "items": {
                 "type": "object",
                 "properties": {
-                    "result": {
-                        "type": "boolean"
-                    },
-                    "rationale": {
-                        "type": "string"
-                    },
-                    "confidence": {
-                        "type": "string",
-                        "enum": [
-                            "LOW",
-                            "MEDIUM",
-                            "HIGH"
-                        ]
-                    },
+                    "result": {"type": "boolean"},
+                    "rationale": {"type": "string"},
+                    "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
                     "citations": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "paper_id": {
-                                    "type": "string"
-                                },
-                                "box_id": {
-                                    "type": "integer"
-                                },
-                                "commentary": {
-                                    "type": "string"
-                                }
+                                "paper_id": {"type": "string"},
+                                "box_id": {"type": "integer"},
+                                "commentary": {"type": "string"},
                             },
-                            "required": [
-                                "paper_id",
-                                "box_id",
-                                "commentary"
-                            ],
-                            "additionalProperties": false
-                        }
+                            "required": ["paper_id", "box_id", "commentary"],
+                            "additionalProperties": false,
+                        },
                     },
                     "name": {
                         "type": "string",
@@ -249,21 +201,15 @@
                             "criterion_B",
                             "criterion_C",
                             "criterion_D",
-                            "criterion_E"
+                            "criterion_E",
                         ],
-                        "description": "Criterion identifier"
-                    }
+                        "description": "Criterion identifier",
+                    },
                 },
-                "required": [
-                    "name",
-                    "result",
-                    "rationale",
-                    "confidence",
-                    "citations"
-                ],
-                "additionalProperties": false
-            }
-        }
+                "required": ["name", "result", "rationale", "confidence", "citations"],
+                "additionalProperties": false,
+            },
+        },
     },
     "required": [
         "summary",
@@ -276,7 +222,7 @@
         "disease_entities",
         "evidence_weakening_factors",
         "quality_concerns",
-        "evidence_assessments"
+        "evidence_assessments",
     ],
-    "additionalProperties": false
+    "additionalProperties": false,
 }

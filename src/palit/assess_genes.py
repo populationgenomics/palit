@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
 from palit.llm import LLMProcessor, create_llm_processor
-from palit.mondo_lookup import MondoCandidate, MondoLookup
+from palit.mondo_lookup import DisputeStatus, MondoCandidate, MondoLookup
 from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
 from palit.panelapp_integration import MONDO_CATEGORIES, validate_criteria_complete
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
@@ -23,25 +23,50 @@ from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
 logger = logging.getLogger(__name__)
 
-# Case-insensitive fallback name→ID lookup (static, built once)
-_FALLBACK_NAME_TO_ID = {
-    info["label"].lower(): mondo_id for mondo_id, info in MONDO_CATEGORIES.items()
+
+@dataclass(frozen=True)
+class MondoResolution:
+    """Canonical resolution for an LLM-emitted mondo_disease_name."""
+
+    mondo_id: str
+    mondo_label: str
+    dispute_status: DisputeStatus
+
+
+# Case-insensitive fallback name→resolution lookup (static, built once).
+# Fallback categories carry no GenCC submissions, so dispute_status is "None".
+_FALLBACK_NAME_LOOKUP: dict[str, MondoResolution] = {
+    info["label"].lower(): MondoResolution(
+        mondo_id=mondo_id,
+        mondo_label=info["label"],
+        dispute_status="None",
+    )
+    for mondo_id, info in MONDO_CATEGORIES.items()
 }
 
 
-def build_mondo_name_to_id(candidates: list[MondoCandidate]) -> dict[str, str]:
-    """Build case-insensitive name→MONDO ID lookup from candidates + fallback categories.
+def build_mondo_name_lookup(
+    candidates: list[MondoCandidate],
+) -> dict[str, MondoResolution]:
+    """Build case-insensitive name→resolution lookup from candidates + fallbacks.
+
+    The candidate's GenCC dispute_status overrides the fallback "None" if a
+    fallback category name happens to match a candidate title.
 
     Args:
         candidates: Gene-specific MONDO candidates from GenCC
 
     Returns:
-        Dict mapping lowercased disease name to MONDO ID
+        Dict mapping lowercased disease name to MondoResolution
     """
-    name_to_id = dict(_FALLBACK_NAME_TO_ID)  # copy fallbacks
+    lookup = dict(_FALLBACK_NAME_LOOKUP)  # copy fallbacks
     for c in candidates:
-        name_to_id[c.title.lower()] = c.mondo_id
-    return name_to_id
+        lookup[c.title.lower()] = MondoResolution(
+            mondo_id=c.mondo_id,
+            mondo_label=c.title,
+            dispute_status=c.dispute_status,
+        )
+    return lookup
 
 
 def _resolve_paper_id(paper_id: str, paper_id_to_doi: dict[str, str]) -> str:
@@ -79,28 +104,63 @@ def replace_paper_ids_with_dois(
             citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
 
 
-def resolve_mondo_names(parsed_json: dict[str, Any], name_to_id: dict[str, str]) -> list[str]:
+def _allowed_dispute_statuses(canonical: DisputeStatus) -> set[str]:
+    """Allowed LLM-emitted dispute_status values given the GenCC canonical.
+
+    The LLM may uphold the GenCC marker (emit canonical) or overrule a
+    flagged candidate by emitting "None" — its rationale must then do the
+    overturning work. Escalation (Disputed → Refuted), demotion (Refuted →
+    Disputed), or fabrication on an unflagged candidate are warned about
+    but not enforced.
+    """
+    if canonical == "None":
+        return {"None"}
+    return {canonical, "None"}
+
+
+def resolve_mondo_names(
+    parsed_json: dict[str, Any],
+    name_lookup: dict[str, MondoResolution],
+    gene_symbol: str,
+) -> list[str]:
     """Resolve mondo_disease_name → mondo_id + mondo_label in each disease entity.
 
-    Mutates parsed_json in place. Returns list of unresolved names (empty = success).
+    Preserves the LLM's emitted dispute_status (it reflects the LLM's
+    decision: uphold = canonical, overrule = "None"). Logs a warning for
+    invalid transitions (escalation, demotion, or fabricated dispute) so
+    we can monitor compliance without forcing a retry.
+
+    Mutates parsed_json in place. Returns list of unresolved names
+    (empty = success).
 
     Args:
         parsed_json: Parsed LLM output
-        name_to_id: Case-insensitive name→MONDO ID lookup
+        name_lookup: Case-insensitive name→MondoResolution lookup
+        gene_symbol: Current HGNC symbol for diagnostic logging
 
     Returns:
-        List of disease names that could not be resolved (empty if all resolved)
+        List of disease names that could not be resolved
     """
     unresolved: list[str] = []
     for entity in parsed_json.get("disease_entities", []):
         disease_name = entity.get("mondo_disease_name", "")
-        mondo_id = name_to_id.get(disease_name.lower())
-        if mondo_id is None:
+        resolution = name_lookup.get(disease_name.lower())
+        if resolution is None:
             unresolved.append(disease_name)
-        else:
-            entity["mondo_id"] = mondo_id
-            entity["mondo_label"] = disease_name
-            del entity["mondo_disease_name"]
+            continue
+
+        entity["mondo_id"] = resolution.mondo_id
+        entity["mondo_label"] = resolution.mondo_label
+        del entity["mondo_disease_name"]
+
+        canonical = resolution.dispute_status
+        emitted = entity.get("dispute_status", "None")
+        if emitted not in _allowed_dispute_statuses(canonical):
+            logger.warning(
+                f"{gene_symbol}: invalid dispute_status transition for "
+                f"{resolution.mondo_id} ({resolution.mondo_label!r}): "
+                f"canonical={canonical!r}, emitted={emitted!r}; preserving emitted"
+            )
     return unresolved
 
 
@@ -525,7 +585,7 @@ class _GeneBatchItem:
     prompt: str
     paper_id_to_doi: dict[str, str]
     evidence_list: list[dict[str, Any]]
-    mondo_name_to_id: dict[str, str]
+    mondo_name_lookup: dict[str, MondoResolution]
     filtered_papers: list[dict[str, Any]] | None
 
 
@@ -633,7 +693,7 @@ async def _process_assessments(
                     )
 
                 mondo_candidates = mondo_lookup.get_candidates(hgnc_symbol)
-                mondo_name_to_id = build_mondo_name_to_id(mondo_candidates)
+                mondo_name_lookup = build_mondo_name_lookup(mondo_candidates)
                 if mondo_candidates:
                     logger.info(f"  {len(mondo_candidates)} MONDO candidates for {hgnc_symbol}")
 
@@ -653,7 +713,7 @@ async def _process_assessments(
                         prompt=prompt,
                         paper_id_to_doi=paper_id_to_doi,
                         evidence_list=evidence_list,
-                        mondo_name_to_id=mondo_name_to_id,
+                        mondo_name_lookup=mondo_name_lookup,
                         filtered_papers=filtered_papers or None,
                     )
                 )
@@ -692,7 +752,9 @@ async def _process_assessments(
                         logger.warning(f"Invalid (doi, box_id) pairs for {item.hgnc_symbol}")
                         failed_genes.append(item.hgnc_id)
                         continue
-                    if unresolved := resolve_mondo_names(result.parsed_json, item.mondo_name_to_id):
+                    if unresolved := resolve_mondo_names(
+                        result.parsed_json, item.mondo_name_lookup, item.hgnc_symbol
+                    ):
                         logger.warning(
                             f"Unresolved MONDO disease names for {item.hgnc_symbol}: {unresolved}"
                         )

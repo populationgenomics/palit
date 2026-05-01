@@ -428,7 +428,17 @@ Respond in JSON format with your aggregate evaluation:
 
 {% raw %}
 {
-  "summary": "<paper_id(s)> report <N> individuals from <N> families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Functional evidence>. <Notable specifics>.",
+{% endraw %}
+  "summary": "{% if has_previous_reviews and panel_formatted -%}
+**New evidence**: <new families/variants/phenotypes/functional data>\n\n**Prior reviews**: <prior PanelApp Australia ratings, panels, and key claims>\n\n**Panel relevance**: <why this gene fits the target panel's scope>\n\n**Assessment**: <how new + existing evidence support the classification>
+{%- elif has_previous_reviews -%}
+**New evidence**: <new families/variants/phenotypes/functional data>\n\n**Prior reviews**: <prior PanelApp Australia ratings, panels, and key claims>\n\n**Assessment**: <how new + existing evidence support the classification>
+{%- elif panel_formatted -%}
+<paper_id(s)> report <N> individuals from <N> families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Panel relevance>. <Notable specifics>.
+{%- else -%}
+<paper_id(s)> report <N> individuals from <N> families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Functional evidence>. <Notable specifics>.
+{%- endif %}",
+{% raw %}
   "families": "N families (N unrelated) aggregated across all papers",
   "variants": "all variants reported across papers (type)",
   "population_freq": "gnomAD: frequencies when reported",

@@ -88,7 +88,7 @@ class MondoLookup:
 
         # Load MONDO ontology for definitions and labels
         logger.info("Loading MONDO ontology...")
-        mondo = pronto.Ontology(str(mondo_path))
+        mondo = pronto.Ontology(str(mondo_path), encoding="utf-8")
         logger.info(f"Loaded MONDO: {len(mondo):,} terms")
 
         # Build candidates with definitions from MONDO

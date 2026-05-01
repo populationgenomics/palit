@@ -23,6 +23,12 @@ Install the [NCBI EDirect tools](https://www.ncbi.nlm.nih.gov/books/NBK565821/):
 sh -c "$(curl -fsSL https://ftp.ncbi.nlm.nih.gov/entrez/entrezdirect/install-edirect.sh)"
 ```
 
+Enable the local pre-commit hook (runs the same lint set as CI):
+
+```bash
+uv run pre-commit install
+```
+
 ### Database Setup
 
 The system uses multiple databases:

@@ -15,6 +15,10 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --frozen
-      - run: uv run ruff check src/
-      - run: uv run ruff format --check src/
-      - run: uv run mypy src/
+      # All lint checks (ruff, mypy, JSON validity, …) live in
+      # .pre-commit-config.yaml so local pre-commit and CI stay in lockstep.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: uv run pre-commit run --all-files --show-diff-on-failure

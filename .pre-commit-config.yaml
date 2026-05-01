@@ -1,0 +1,34 @@
+# Single source of truth for pre-commit + CI lint. .github/workflows/ci.yml
+# invokes `uv run pre-commit run --all-files`, so adding a check here
+# automatically runs it locally and in CI.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Catches Python-style trailing commas that ruff format would silently
+      # introduce when accidentally pointed at a .json file.
+      - id: check-json
+      - id: check-yaml
+
+  # Use the project's pinned ruff/mypy via uv so the pre-commit and CI checks
+  # match what `uv run ruff …` produces locally — no separate version pinning.
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check src/
+        entry: uv run ruff check src/
+        language: system
+        files: ^src/.*\.py$
+        pass_filenames: false
+      - id: ruff-format
+        name: ruff format --check src/
+        entry: uv run ruff format --check src/
+        language: system
+        files: ^src/.*\.py$
+        pass_filenames: false
+      - id: mypy
+        name: mypy src/
+        entry: uv run mypy src/
+        language: system
+        files: ^src/.*\.py$
+        pass_filenames: false

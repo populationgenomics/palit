@@ -433,9 +433,12 @@ section > h2 {
     text-decoration: underline;
 }
 
-/* MONDO Category Badges */
+/* Disease entity badges — shared layout for the inline badges rendered by
+   the `badge` Jinja macro (MONDO category, GenCC dispute status, etc.).
+   Per-variant colors live in the modifier classes below. */
 
-.mondo-badge {
+.mondo-badge,
+.dispute-badge {
     display: inline-block;
     padding: 2px 6px;
     border-radius: 3px;
@@ -445,6 +448,15 @@ section > h2 {
     cursor: help;
     position: relative;
 }
+
+.mondo-badge[data-title]::before,
+.mondo-badge[data-title]::after,
+.dispute-badge[data-title]::before,
+.dispute-badge[data-title]::after {
+    transition: opacity 0s !important;
+}
+
+/* MONDO category modifiers */
 
 .mondo-ndd {
     background: #e3f2fd;
@@ -482,13 +494,19 @@ section > h2 {
     border: 1px solid #bdbdbd;
 }
 
-/* Instant tooltip for MONDO badges */
-.mondo-badge[data-title]::before {
-    transition: opacity 0s !important;
+/* GenCC dispute modifiers — Disputed (contested) is amber, Refuted
+   (formally rejected) is red. */
+
+.dispute-disputed {
+    background: #fff8e1;
+    color: #b26a00;
+    border: 1px solid #ffd166;
 }
 
-.mondo-badge[data-title]::after {
-    transition: opacity 0s !important;
+.dispute-refuted {
+    background: #fde7e7;
+    color: #b71c1c;
+    border: 1px solid #ef9a9a;
 }
 
 /* Criteria Assessment */

@@ -41,6 +41,13 @@
     {% endif %}
     {% endmacro %}
 
+    {# Generic badge renderer. `info` is {text, label, css} or falsy (no output).
+       The CSS uses two classes: `{prefix}-badge` for shared layout, and
+       `{prefix}-{css}` for per-variant colors (see gene_report_styles.css). #}
+    {% macro badge(info, prefix) -%}
+    {% if info %}<span class="{{ prefix }}-badge {{ prefix }}-{{ info.css }}" data-title="{{ info.label }}">{{ info.text }}</span>{% endif %}
+    {%- endmacro %}
+
     {# Macro for rendering prefill button (inline in header) #}
     {# Form is created dynamically by JS to avoid thousands of hidden inputs slowing down page load #}
     {% macro prefill_button(gene, form_type) %}
@@ -90,10 +97,8 @@
                 <tr>
                     <td>
                         {{ entity.description }}
-                        {% if entity.mondo_id %}
-                            {% set mondo_info = entity | format_mondo_badge %}
-                            <span class="mondo-badge mondo-{{ mondo_info.css }}" data-title="{{ mondo_info.label }} ({{ entity.mondo_id }})">{{ mondo_info.text }}</span>
-                        {% endif %}
+                        {% if entity.mondo_id %}{{ badge(entity | format_mondo_badge, "mondo") }}{% endif %}
+                        {{ badge(entity | format_dispute_badge, "dispute") }}
                     </td>
                     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
                     <td>{{ entity.patient_count }}</td>

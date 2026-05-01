@@ -1616,21 +1616,48 @@ def generate_html_report(
 
     env.filters["sort_by_family_count"] = sort_by_family_count
 
-    # Add MONDO badge formatter
+    # Badge data formatters: each returns {text, label, css} or None.
+    # The `badge` macro in the template renders any non-None result via a
+    # shared <span class="{prefix}-badge {prefix}-{css}" data-title="{label}">
+    # pattern, so adding a new badge type here only requires CSS for the
+    # new `{prefix}-{css}` modifier.
     def format_mondo_badge(entity: dict[str, str]) -> dict[str, str]:
-        """Format disease entity into MONDO badge information."""
+        """Format disease entity into MONDO badge data."""
         mondo_id = entity["mondo_id"]
         category = MONDO_CATEGORIES.get(mondo_id)
         if category:
-            return {
-                "text": category["abbrev"],
-                "label": category["label"],
-                "css": category["abbrev"].lower(),
-            }
-        label = entity.get("mondo_label", mondo_id)
-        return {"text": label, "label": label, "css": "specific"}
+            text = category["abbrev"]
+            label = category["label"]
+            css = category["abbrev"].lower()
+        else:
+            text = entity.get("mondo_label", mondo_id)
+            label = text
+            css = "specific"
+        return {"text": text, "label": f"{label} ({mondo_id})", "css": css}
+
+    _DISPUTE_BADGE_LABELS = {
+        "Disputed": (
+            "GenCC: this gene-disease relationship has been contested by an expert "
+            "curation panel (typically a ClinGen GCEP). Criteria A/B/C must default "
+            "to FALSE unless the rationale explicitly overturns the prior dispute."
+        ),
+        "Refuted": (
+            "GenCC: this gene-disease relationship has been formally rejected by an "
+            "expert curation panel (typically a ClinGen GCEP). Criteria A/B/C must "
+            "default to FALSE unless the rationale explicitly overturns the prior "
+            "refutation."
+        ),
+    }
+
+    def format_dispute_badge(entity: dict[str, Any]) -> dict[str, str] | None:
+        """Format dispute_status into badge data, or None when no badge applies."""
+        status = entity.get("dispute_status")
+        if status not in _DISPUTE_BADGE_LABELS:
+            return None
+        return {"text": status, "label": _DISPUTE_BADGE_LABELS[status], "css": status.lower()}
 
     env.filters["format_mondo_badge"] = format_mondo_badge
+    env.filters["format_dispute_badge"] = format_dispute_badge
     # Render markdown then sanitize to a strict allowlist of tags.
     # This prevents LLM-generated summaries from injecting links, images, or scripts.
     _summary_allowed_tags = {"p", "strong", "em"}

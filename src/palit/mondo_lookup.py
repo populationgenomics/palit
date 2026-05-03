@@ -51,18 +51,50 @@ def _download_if_stale(url: str, path: Path) -> None:
 
 
 @dataclass(frozen=True)
+class _RawSubmission:
+    """One GenCC submission row, retained while aggregating per (gene, disease)."""
+
+    classification_title: str
+    submitter: str
+    date: str
+    pmids: tuple[int, ...]
+    rationale: str
+
+
+@dataclass(frozen=True)
+class DisputeRecord:
+    """One curation panel's documented basis for disputing or refuting a
+    gene-disease association.
+
+    The aggregate-assessment prompt uses this to constrain overrule logic:
+    contributing papers whose PMIDs appear in `pmids` cannot ground an
+    overrule, and each concern in `rationale` must be resolved by the new
+    evidence at the bar the panel applied.
+    """
+
+    submitter: str
+    date: str
+    pmids: tuple[int, ...]
+    rationale: str
+
+
+@dataclass(frozen=True)
 class MondoCandidate:
     """A MONDO disease term candidate for a gene.
 
     `dispute_status` aggregates GenCC submissions for this (gene, disease)
     pair: "Refuted" if any submission is Refuted Evidence, "Disputed" if any
-    is Disputed Evidence (and none Refuted), otherwise "None".
+    is Disputed Evidence (and none Refuted), otherwise "None". When
+    `dispute_status` is not "None", `dispute_records` contains every
+    submission whose classification matched the winning status (so if
+    multiple panels disputed the same pair, each appears).
     """
 
     mondo_id: str
     title: str
     definition: str
     dispute_status: DisputeStatus
+    dispute_records: tuple[DisputeRecord, ...]
 
 
 class MondoLookup:
@@ -107,7 +139,7 @@ class MondoLookup:
         # Build per-gene candidate lists
         for gene_symbol, disease_map in gencc_entries.items():
             candidates = []
-            for mondo_id, (title, dispute_status) in disease_map.items():
+            for mondo_id, (title, dispute_status, dispute_records) in disease_map.items():
                 term = mondo.get(mondo_id)
                 definition = term.definition.strip() if term and term.definition else ""
                 candidates.append(
@@ -116,6 +148,7 @@ class MondoLookup:
                         title=title,
                         definition=definition,
                         dispute_status=dispute_status,
+                        dispute_records=dispute_records,
                     )
                 )
             self._gene_to_candidates[gene_symbol] = candidates
@@ -130,18 +163,21 @@ class MondoLookup:
         )
 
     @staticmethod
-    def _load_gencc(path: Path) -> dict[str, dict[str, tuple[str, DisputeStatus]]]:
+    def _load_gencc(
+        path: Path,
+    ) -> dict[str, dict[str, tuple[str, DisputeStatus, tuple[DisputeRecord, ...]]]]:
         """Load GenCC submissions, grouped by gene symbol.
 
         Aggregates across submitters: for each (gene, disease) pair, computes
         a single dispute_status from all submissions ("Refuted" wins over
-        "Disputed", which wins over "None").
+        "Disputed", which wins over "None") and collects every submission
+        whose classification matched the winning status into dispute_records.
 
         Returns:
-            Dict mapping gene_symbol → {mondo_id: (disease_title, dispute_status)}.
+            Dict mapping gene_symbol → {mondo_id: (disease_title,
+            dispute_status, dispute_records)}.
         """
-        # gene_symbol → mondo_id → list of classification titles seen
-        gene_to_classifications: dict[str, dict[str, list[str]]] = defaultdict(
+        gene_to_submissions: dict[str, dict[str, list[_RawSubmission]]] = defaultdict(
             lambda: defaultdict(list)
         )
         # gene_symbol → mondo_id → first-seen disease title
@@ -152,29 +188,63 @@ class MondoLookup:
             for row in reader:
                 gene_symbol = row["gene_symbol"]
                 disease_curie = row["disease_curie"]
-                gene_to_classifications[gene_symbol][disease_curie].append(
-                    row["classification_title"]
+
+                pmids_raw = (row.get("submitted_as_pmids") or "").strip()
+                pmids = tuple(int(p.strip()) for p in pmids_raw.split(",") if p.strip().isdigit())
+                date_raw = (row.get("submitted_as_date") or "").strip()
+                date = date_raw.split("T", 1)[0] if date_raw else ""
+
+                gene_to_submissions[gene_symbol][disease_curie].append(
+                    _RawSubmission(
+                        classification_title=row["classification_title"],
+                        submitter=row["submitter_title"],
+                        date=date,
+                        pmids=pmids,
+                        rationale=(row.get("submitted_as_notes") or "").strip(),
+                    )
                 )
                 if disease_curie not in gene_to_titles[gene_symbol]:
                     gene_to_titles[gene_symbol][disease_curie] = row["disease_title"]
 
-        result: dict[str, dict[str, tuple[str, DisputeStatus]]] = {}
+        result: dict[str, dict[str, tuple[str, DisputeStatus, tuple[DisputeRecord, ...]]]] = {}
         disputed_pairs = 0
         refuted_pairs = 0
-        for gene_symbol, diseases in gene_to_classifications.items():
-            per_disease: dict[str, tuple[str, DisputeStatus]] = {}
-            for disease_curie, classifications in diseases.items():
-                if any(c in _REFUTED_TITLES for c in classifications):
+        for gene_symbol, diseases in gene_to_submissions.items():
+            per_disease: dict[str, tuple[str, DisputeStatus, tuple[DisputeRecord, ...]]] = {}
+            for disease_curie, submissions in diseases.items():
+                titles = [s.classification_title for s in submissions]
+                winning: set[str]
+                if any(t in _REFUTED_TITLES for t in titles):
                     status: DisputeStatus = "Refuted"
                     refuted_pairs += 1
-                elif any(c in _DISPUTED_TITLES for c in classifications):
+                    winning = _REFUTED_TITLES
+                elif any(t in _DISPUTED_TITLES for t in titles):
                     status = "Disputed"
                     disputed_pairs += 1
+                    winning = _DISPUTED_TITLES
                 else:
                     status = "None"
+                    winning = set()
+
+                records: tuple[DisputeRecord, ...] = (
+                    tuple(
+                        DisputeRecord(
+                            submitter=s.submitter,
+                            date=s.date,
+                            pmids=s.pmids,
+                            rationale=s.rationale,
+                        )
+                        for s in submissions
+                        if s.classification_title in winning
+                    )
+                    if status != "None"
+                    else ()
+                )
+
                 per_disease[disease_curie] = (
                     gene_to_titles[gene_symbol][disease_curie],
                     status,
+                    records,
                 )
             result[gene_symbol] = per_disease
 

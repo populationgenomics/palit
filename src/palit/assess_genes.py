@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
 from palit.llm import LLMProcessor, create_llm_processor
-from palit.mondo_lookup import DisputeStatus, MondoCandidate, MondoLookup
+from palit.mondo_lookup import DisputeRecord, DisputeStatus, MondoCandidate, MondoLookup
 from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
 from palit.panelapp_integration import MONDO_CATEGORIES, validate_criteria_complete
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
@@ -31,6 +31,7 @@ class MondoResolution:
     mondo_id: str
     mondo_label: str
     dispute_status: DisputeStatus
+    dispute_records: tuple[DisputeRecord, ...]
 
 
 # Case-insensitive fallback name→resolution lookup (static, built once).
@@ -40,6 +41,7 @@ _FALLBACK_NAME_LOOKUP: dict[str, MondoResolution] = {
         mondo_id=mondo_id,
         mondo_label=info["label"],
         dispute_status="None",
+        dispute_records=(),
     )
     for mondo_id, info in MONDO_CATEGORIES.items()
 }
@@ -65,6 +67,7 @@ def build_mondo_name_lookup(
             mondo_id=c.mondo_id,
             mondo_label=c.title,
             dispute_status=c.dispute_status,
+            dispute_records=c.dispute_records,
         )
     return lookup
 
@@ -161,6 +164,11 @@ def resolve_mondo_names(
                 f"{resolution.mondo_id} ({resolution.mondo_label!r}): "
                 f"canonical={canonical!r}, emitted={emitted!r}; preserving emitted"
             )
+
+        if resolution.dispute_records:
+            entity["dispute_panels"] = [
+                {"submitter": r.submitter, "date": r.date} for r in resolution.dispute_records
+            ]
     return unresolved
 
 
@@ -560,6 +568,46 @@ def prepare_aggregate_assessment_prompt(
     # Format previous reviews data (empty string for novel genes)
     previous_reviews_section = format_previous_reviews_data(existing_reviews)
 
+    # Build dispute blocks: one block per (flagged candidate, disputing panel)
+    # pair, with the contributing-paper PMID intersection pre-computed so the
+    # LLM does not have to perform the matching itself.
+    all_contributing: list[dict[str, Any]] = [
+        {
+            "paper_id": doi_to_paper_id[e["doi"]],
+            "pmid": e.get("pmid"),
+            "date": e["date"] or "",
+        }
+        for e in evidence_list
+    ]
+    pmid_to_info: dict[int, dict[str, Any]] = {
+        info["pmid"]: info for info in all_contributing if info["pmid"] is not None
+    }
+    dispute_blocks: list[dict[str, Any]] = []
+    for c in mondo_candidates:
+        if c.dispute_status == "None":
+            continue
+        for r in c.dispute_records:
+            panel_pmid_set = set(r.pmids)
+            overlapping = [pmid_to_info[pmid] for pmid in r.pmids if pmid in pmid_to_info]
+            independent = [
+                info
+                for info in all_contributing
+                if info["pmid"] is None or info["pmid"] not in panel_pmid_set
+            ]
+            dispute_blocks.append(
+                {
+                    "title": c.title,
+                    "mondo_id": c.mondo_id,
+                    "status": c.dispute_status,
+                    "submitter": r.submitter,
+                    "date": r.date,
+                    "evaluated_pmids": list(r.pmids),
+                    "overlapping_contributing_papers": overlapping,
+                    "independent_contributing_papers": independent,
+                    "rationale": r.rationale,
+                }
+            )
+
     # Load and render Jinja2 template
     env = Environment(loader=FileSystemLoader(template_path.parent), autoescape=False)
     template = env.get_template(template_path.name)
@@ -571,6 +619,7 @@ def prepare_aggregate_assessment_prompt(
         previous_reviews_section=previous_reviews_section,
         panel_formatted=panel_formatted,
         mondo_candidates=mondo_candidates,
+        dispute_blocks=dispute_blocks,
     )
 
     return rendered, paper_id_to_doi

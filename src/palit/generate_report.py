@@ -1637,24 +1637,37 @@ def generate_html_report(
 
     _DISPUTE_BADGE_LABELS = {
         "Disputed": (
-            "GenCC: this gene-disease relationship has been contested by an expert "
-            "curation panel (typically a ClinGen GCEP). Criteria A/B/C must default "
-            "to FALSE unless the rationale explicitly overturns the prior dispute."
+            "this gene-disease relationship has been contested by an expert "
+            "curation panel. Criteria A/B/C must default to FALSE unless the "
+            "rationale explicitly overturns the prior dispute."
         ),
         "Refuted": (
-            "GenCC: this gene-disease relationship has been formally rejected by an "
-            "expert curation panel (typically a ClinGen GCEP). Criteria A/B/C must "
-            "default to FALSE unless the rationale explicitly overturns the prior "
-            "refutation."
+            "this gene-disease relationship has been formally rejected by an "
+            "expert curation panel. Criteria A/B/C must default to FALSE unless "
+            "the rationale explicitly overturns the prior refutation."
         ),
     }
 
     def format_dispute_badge(entity: dict[str, Any]) -> dict[str, str] | None:
-        """Format dispute_status into badge data, or None when no badge applies."""
+        """Format dispute_status into badge data, or None when no badge applies.
+
+        When `dispute_panels` is present (stamped by `resolve_mondo_names` for
+        flagged candidates), prefix each panel's submitter and review date so
+        the tooltip names *who* disputed the pair and *when*.
+        """
         status = entity.get("dispute_status")
         if status not in _DISPUTE_BADGE_LABELS:
             return None
-        return {"text": status, "label": _DISPUTE_BADGE_LABELS[status], "css": status.lower()}
+        panels = entity.get("dispute_panels") or []
+        if panels:
+            attribution = "; ".join(
+                f"{p['submitter']} ({p['date']})" if p.get("date") else p["submitter"]
+                for p in panels
+            )
+            label = f"{attribution}: {_DISPUTE_BADGE_LABELS[status]}"
+        else:
+            label = f"GenCC: {_DISPUTE_BADGE_LABELS[status]}"
+        return {"text": status, "label": label, "css": status.lower()}
 
     env.filters["format_mondo_badge"] = format_mondo_badge
     env.filters["format_dispute_badge"] = format_dispute_badge

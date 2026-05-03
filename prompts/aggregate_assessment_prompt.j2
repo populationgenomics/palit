@@ -111,13 +111,24 @@ For each factor: emit `{"factor": "<enum>", "present": true|false, "details": "<
 
 DISPUTED OR REFUTED ASSOCIATIONS — CRITERION-GATING CONSTRAINT:
 
-When a disease entity is matched to a MONDO candidate flagged with `[DISPUTED]` or `[REFUTED]`, an expert curation panel (typically a ClinGen GCEP) has formally questioned (Disputed) or rejected (Refuted) this gene-disease relationship. Refuted is the stronger negative call but is gated identically.
+When a disease entity is matched to a MONDO candidate flagged with `[DISPUTED]` or `[REFUTED]`, an expert curation panel has formally questioned (Disputed) or rejected (Refuted) this gene-disease relationship. Refuted is the stronger negative call but is gated identically. The panel's evaluated PMIDs and stated rationale are reproduced verbatim under DISPUTE DETAILS below — you MUST work from that text, not from prior knowledge of the panel or the literature.
 
-For that entity, you must take an explicit decision — uphold the dispute or overrule it — and reflect that decision in BOTH `dispute_status` and the criterion rationale:
+For each disease entity matched to a flagged candidate, take an explicit decision and reflect it in BOTH `dispute_status` and the criterion rationale.
 
-- **Uphold (default).** Set `dispute_status` to `"Disputed"` or `"Refuted"` matching the candidate marker. Criteria A, B, and C MUST then be FALSE regardless of family count. Each criterion rationale must reference the upheld dispute/refutation.
+**Uphold the dispute (default).** Set `dispute_status` to `"Disputed"` or `"Refuted"`, matching the candidate marker. Criteria A, B, and C MUST then be FALSE for that entity, regardless of family count or functional data. Each A/B/C rationale (for the entity that would otherwise have driven the criterion) must reference the upheld dispute/refutation. Criteria D and E are not gated.
 
-- **Overrule.** Set `dispute_status` to `"None"`. The rationale of any A/B/C criterion you return TRUE MUST explicitly state that you are overruling the prior dispute/refutation AND describe precisely which of the original concerns the new evidence resolves (e.g., variant pathogenicity now supported by variant-specific functional rescue; segregation now documented across informative meioses; population-frequency objections addressed by updated gnomAD data). A bare "the family count meets the threshold" rationale is NOT a valid overrule — the expert panel already saw families.
+**Overrule the dispute.** Set `dispute_status` to `"None"`. Permitted ONLY when BOTH conditions below hold; if either fails, uphold.
+
+  (1) *Independent new evidence exists.* Contributing papers whose PMIDs appear in any panel's evaluated list (under DISPUTE DETAILS) cannot ground an overrule — the panel saw them and weighed them. Only contributing papers absent from every panel's evaluated set qualify as independent. Of those, only papers whose evidence actually applies to THIS disease entity (per their own `disease_entities` sections) are candidates for overrule — being independent of the panel does not make a paper relevant to the disputed phenotype. Publication dates are shown alongside each PMID so you can compare against the panel's review date.
+
+  (2) *Each concern stated under DISPUTE DETAILS is specifically resolved by the independent new evidence, at the bar the panel applied.* Enumerate the concerns from each panel's rationale (e.g., variants exceeded a population-frequency threshold; missense lacked variant-specific functional rescue; no segregation across informative meioses; phenotype non-Mendelian). The rationale of any A/B/C you return TRUE MUST name each concern and describe how the independent new evidence resolves it. Where the panel cited a specific threshold (gnomAD allele frequency, REVEL, etc.), the new evidence must clear that same threshold — comparing the new variants only against the QUALIFYING VARIANT GATE above when the panel applied a stricter cutoff is not a resolution. If even one concern remains unaddressed, uphold.
+
+The following are NOT, on their own, valid grounds to overrule:
+  - **Recency.** A post-dispute paper that repeats the defects the panel cited (variants above the panel's frequency threshold; missense without variant-specific functional rescue; no segregation across informative meioses; etc.) does not overrule. The panel's concerns were about evidence quality, not evidence age.
+  - **Family count.** "≥3 unrelated families" or "≥4 unrelated families" is not an overrule rationale — the panel saw families and rejected the gene-disease relationship on grounds other than count.
+  - **Reanalysis or recitation of papers in any panel's PMID list,** regardless of how the new paper frames or extends the data.
+
+When DISPUTE DETAILS for a flagged candidate has empty PMIDs and an empty rationale, default to uphold — overrule cannot be reasoned about against an unstated standard.
 
 For unflagged candidates and fallback categories, `dispute_status` MUST be `"None"`.
 
@@ -212,6 +223,25 @@ A `[DISPUTED]` or `[REFUTED]` marker after a candidate flags the gene-disease pa
 {% for c in mondo_candidates %}
 - "{{ c.title }}"{% if c.dispute_status != "None" %} **[{{ c.dispute_status|upper }}]**{% endif %}{% if c.definition %} — {{ c.definition }}{% endif %}
 
+{% endfor %}
+{% endif %}
+{% if dispute_blocks %}
+DISPUTE DETAILS:
+The following candidates carry an expert curation panel's `[DISPUTED]` or `[REFUTED]` flag. For each panel submission below, the evaluated PMIDs and stated rationale are reproduced verbatim; for each of your contributing papers, its PMID and publication date are shown so you can compare against the panel's review date — work from this text when deciding uphold vs. overrule.
+{% for b in dispute_blocks %}
+
+"{{ b.title }}" ({{ b.mondo_id }}) — {{ b.status|upper }} by {{ b.submitter }}{% if b.date %}, dated {{ b.date }}{% endif %}:
+  PMIDs the panel evaluated: {% if b.evaluated_pmids %}{{ b.evaluated_pmids|join(", ") }}{% else %}none listed{% endif %}
+  Contributing papers in your evidence that the panel already evaluated:{% if b.overlapping_contributing_papers %}
+{% for o in b.overlapping_contributing_papers %}    - {{ o.paper_id }} (PMID {{ o.pmid }}{% if o.date %}, dated {{ o.date }}{% endif %})
+{% endfor %}{% else %} none
+{% endif %}  Contributing papers absent from the panel's evaluated list (independent for overrule purposes; entity-relevance is your call):{% if b.independent_contributing_papers %}
+{% for o in b.independent_contributing_papers %}    - {{ o.paper_id }} ({% if o.pmid %}PMID {{ o.pmid }}{% else %}no PMID{% endif %}{% if o.date %}, dated {{ o.date }}{% endif %})
+{% endfor %}{% else %} none
+{% endif %}  Panel's stated rationale:{% if b.rationale %}
+    {{ b.rationale | indent(4) }}
+{% else %} (no rationale provided in submission)
+{% endif %}
 {% endfor %}
 {% endif %}
 - disease_entities: array of distinct (phenotype × MoI) entities with their patient and family counts aggregated across all papers. ALWAYS create SEPARATE entities when (a) inheritance modes differ (e.g., monoallelic vs biallelic for the same phenotype — see STEP 1 above) or (b) molecular mechanisms differ (e.g., gain-of-function vs loss-of-function), even if phenotypes overlap. Each entry must include:

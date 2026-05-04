@@ -184,6 +184,23 @@
             transform: translateX(4px);
         }
 
+        .upgrade-link-red {
+            display: block;
+            padding: 1.25rem;
+            background: linear-gradient(to right, #f8d7da 0%, #d4edda 100%);
+            border: 1px solid #a5d6a7;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #2c3e50;
+            transition: all 0.2s ease;
+        }
+
+        .upgrade-link-red:hover {
+            background: linear-gradient(to right, #f1b0b7 0%, #c8e6c9 100%);
+            border-color: #4caf50;
+            transform: translateX(4px);
+        }
+
         .report-sublist {
             margin-left: 2rem;
             margin-top: 0.5rem;
@@ -476,6 +493,11 @@
         <div class="toc-section">
             <h2 class="section-heading">Upgrades</h2>
             <ul class="reports-list">
+                <li class="report-item">
+                    <a href="report_2026_red_upgrade/index.html" class="upgrade-link-red">
+                        <div class="link-title">Red upgrades</div>
+                    </a>
+                </li>
                 <li class="report-item">
                     <a href="report_2026_amber_upgrade/index.html" class="upgrade-link">
                         <div class="link-title">Amber upgrades</div>

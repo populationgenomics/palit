@@ -971,6 +971,60 @@ details > *:not(summary) {
     line-height: 1.4;
 }
 
+/* Featured Journals section */
+
+.featured-journal-bucket {
+    margin: 8px 0;
+}
+
+.featured-bucket-blurb {
+    margin: 0 0 12px 0;
+    color: #6c757d;
+    font-size: 0.9em;
+}
+
+.featured-paper {
+    margin: 10px 0;
+    padding: 10px 12px;
+    border: 1px solid #e1e8ed;
+    border-radius: 4px;
+    background: #fafafa;
+}
+
+.featured-paper-title {
+    color: #2c3e50;
+    font-size: 1em;
+    line-height: 1.4;
+}
+
+.featured-paper-title a {
+    color: #3498db;
+    text-decoration: none;
+    margin-right: 4px;
+}
+
+.featured-paper-title a:hover {
+    text-decoration: underline;
+}
+
+.featured-paper-meta {
+    color: #7f8c8d;
+    font-size: 0.9em;
+    margin-top: 3px;
+}
+
+.featured-paper-genes {
+    font-size: 0.9em;
+    margin-top: 6px;
+}
+
+.featured-paper-filter-reason {
+    color: #856404;
+    font-size: 0.85em;
+    font-style: italic;
+    margin-top: 4px;
+}
+
 /* Footer */
 
 footer {

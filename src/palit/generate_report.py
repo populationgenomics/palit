@@ -53,6 +53,29 @@ GNOMAD_HEMI_THRESHOLD = 30  # X-linked - hemizygote count
 # Minimum families required to highlight an MoI expansion
 MIN_FAMILIES_FOR_MOI_EXPANSION = 2
 
+# Hand-picked journals surfaced in the "Papers in Featured Journals" section.
+# Strings are PubMed-style and must match papers.journal verbatim.
+FAVORITE_JOURNALS: tuple[str, ...] = (
+    "American journal of human genetics",
+    "HGG advances",
+    "European journal of human genetics : EJHG",
+    "Genetics in medicine : official journal of the American College of Medical Genetics",
+    "Genetics in medicine open",
+    "Brain : a journal of neurology",
+    "Annals of clinical and translational neurology",
+    "Nature",
+    "Nature genetics",
+    "Science (New York, N.Y.)",
+    "The New England journal of medicine",
+    "Nature medicine",
+    "Blood",
+    "The Journal of clinical investigation",
+    "Clinical genetics",
+    "Neurology",
+    "Journal of medical genetics",
+    "Human mutation",
+)
+
 
 @dataclass
 class MoiComparison:
@@ -236,6 +259,62 @@ class DetailedPaper:
     paper_gene_symbol: str | None = None
     variant_frequencies: list[VariantFrequency] = field(default_factory=list)
     filtered_reason: str | None = None  # Set when paper was excluded from assessment
+
+
+@dataclass(frozen=True)
+class FavoriteJournalGeneLink:
+    """Hyperlink from a featured-journal paper to a gene's anchor in this report."""
+
+    hgnc_id: int
+    hgnc_symbol: str
+    anchor: str  # "#novel-gene-{id}" or "#known-gene-{id}"
+
+
+@dataclass
+class FavoriteJournalPaper:
+    """One paper from a hand-picked journal, surfaced at the corpus level."""
+
+    doi: str
+    pmid: int | None
+    title: str
+    journal: str
+    source_date: str | None
+    preprint: bool
+    display_id: str  # "PMID {pmid}" for published papers, falls back to DOI
+    gene_links: list[FavoriteJournalGeneLink]
+    filtered_reason: str | None  # set when paper was filtered out of every gene assessment
+
+
+@dataclass
+class FavoriteJournalSections:
+    """Featured-journal papers bucketed by the kind of contribution they made.
+
+    Only initial-search papers are surfaced here; expansion papers (added via
+    citation chasing) are excluded entirely. Transient pipeline states
+    (downloaded but not yet extracted, etc.) are also dropped — they're not
+    actionable and just clutter the section."""
+
+    novel: list[FavoriteJournalPaper]
+    rating_upgrade: list[FavoriteJournalPaper]
+    moi_expansion: list[FavoriteJournalPaper]
+    additional_evidence: list[FavoriteJournalPaper]
+    filtered: list[FavoriteJournalPaper]
+    manual_download: list[FavoriteJournalPaper]
+    not_relevant: list[FavoriteJournalPaper]
+    off_panel: list[FavoriteJournalPaper]
+
+    @property
+    def total(self) -> int:
+        return (
+            len(self.novel)
+            + len(self.rating_upgrade)
+            + len(self.moi_expansion)
+            + len(self.additional_evidence)
+            + len(self.filtered)
+            + len(self.manual_download)
+            + len(self.not_relevant)
+            + len(self.off_panel)
+        )
 
 
 @dataclass
@@ -1229,6 +1308,171 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
         return manual_download_papers
 
 
+def _gene_contribution_bucket(gene: GeneAssessment, is_novel: bool) -> str:
+    """Classify a gene by the kind of contribution it represents.
+
+    Returns one of: 'novel', 'rating_upgrade', 'moi_expansion', 'additional_evidence'.
+    """
+    if is_novel:
+        return "novel"
+    if gene.existing_rating != gene.new_rating:
+        return "rating_upgrade"
+    if gene.moi_comparison and gene.moi_comparison.highlighted:
+        return "moi_expansion"
+    return "additional_evidence"
+
+
+_BUCKET_PRIORITY = (
+    "novel",
+    "rating_upgrade",
+    "moi_expansion",
+    "additional_evidence",
+)
+
+
+def load_favorite_journal_papers(
+    db_path: Path,
+    novel_genes: list[GeneAssessment],
+    known_genes: list[GeneAssessment],
+) -> FavoriteJournalSections:
+    """Load every initial-search paper from FAVORITE_JOURNALS, bucketed by the
+    kind of contribution it made — mirroring the report's gene structure
+    (novel / rating upgrade / MoI expansion / additional evidence) and the
+    reasons a paper did not contribute (filtered out of aggregate / requiring
+    manual download / screened out by relevance / off-panel evidence).
+    Expansion papers are excluded entirely."""
+    gene_anchors: dict[int, FavoriteJournalGeneLink] = {}
+    gene_buckets: dict[int, str] = {}
+    for gene in novel_genes:
+        gene_anchors[gene.hgnc_id] = FavoriteJournalGeneLink(
+            hgnc_id=gene.hgnc_id,
+            hgnc_symbol=gene.hgnc_symbol,
+            anchor=f"#novel-gene-{gene.hgnc_id}",
+        )
+        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(gene, is_novel=True)
+    for gene in known_genes:
+        gene_anchors[gene.hgnc_id] = FavoriteJournalGeneLink(
+            hgnc_id=gene.hgnc_id,
+            hgnc_symbol=gene.hgnc_symbol,
+            anchor=f"#known-gene-{gene.hgnc_id}",
+        )
+        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(gene, is_novel=False)
+
+    # Build doi -> [(hgnc_id, filtered_reason)] from each gene's contributing papers.
+    # A paper can appear under multiple genes; filtered_reason is per (gene, paper).
+    paper_to_genes: dict[str, list[tuple[int, str | None]]] = {}
+    for gene in (*novel_genes, *known_genes):
+        for contrib in gene.contributing_papers:
+            paper_to_genes.setdefault(contrib.doi, []).append(
+                (gene.hgnc_id, contrib.filtered_reason)
+            )
+
+    placeholders = ",".join("?" * len(FAVORITE_JOURNALS))
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT doi, pmid, title, journal, source_date, download_status,
+                   relevance_assessment_json, evidence_extraction_json
+            FROM papers
+            WHERE journal IN ({placeholders})
+              AND source_type = 'initial'
+            ORDER BY source_date DESC, doi DESC
+            """,
+            FAVORITE_JOURNALS,
+        )
+        rows = cursor.fetchall()
+
+    sections = FavoriteJournalSections(
+        novel=[],
+        rating_upgrade=[],
+        moi_expansion=[],
+        additional_evidence=[],
+        filtered=[],
+        manual_download=[],
+        not_relevant=[],
+        off_panel=[],
+    )
+
+    for row in rows:
+        doi = row["doi"]
+        pmid = row["pmid"]
+        contribs = paper_to_genes.get(doi, [])
+
+        contributed_links = sorted(
+            (
+                gene_anchors[hgnc_id]
+                for hgnc_id, reason in contribs
+                if reason is None and hgnc_id in gene_anchors
+            ),
+            key=lambda link: link.hgnc_symbol,
+        )
+        filtered_reasons = sorted({reason for _, reason in contribs if reason is not None})
+        filtered_reason = "; ".join(filtered_reasons) if filtered_reasons else None
+
+        paper = FavoriteJournalPaper(
+            doi=doi,
+            pmid=pmid,
+            title=row["title"],
+            journal=row["journal"],
+            source_date=row["source_date"],
+            preprint=is_preprint(row["journal"], pmid),
+            display_id=f"PMID {pmid}" if pmid else doi,
+            gene_links=contributed_links,
+            filtered_reason=filtered_reason if not contributed_links else None,
+        )
+
+        if contributed_links:
+            buckets_hit = {gene_buckets[link.hgnc_id] for link in contributed_links}
+            for bucket_name in _BUCKET_PRIORITY:
+                if bucket_name in buckets_hit:
+                    getattr(sections, bucket_name).append(paper)
+                    break
+            continue
+
+        if paper.filtered_reason:
+            sections.filtered.append(paper)
+            continue
+
+        # Initial papers must have a relevance assessment to classify further;
+        # if missing the paper is in a transient pre-relevance state — drop it.
+        if row["relevance_assessment_json"] is None:
+            continue
+
+        try:
+            majority = compute_relevance_majority_vote(json.loads(row["relevance_assessment_json"]))
+        except (json.JSONDecodeError, ValueError, KeyError):
+            logger.warning(f"Failed to parse relevance assessment for DOI {doi}")
+            continue
+
+        if not majority.get("relevant"):
+            sections.not_relevant.append(paper)
+            continue
+
+        if row["download_status"] == "manual_required":
+            sections.manual_download.append(paper)
+        elif row["evidence_extraction_json"] is not None:
+            sections.off_panel.append(paper)
+        # else: relevant + downloaded + extraction in flight — drop.
+
+    logger.info(
+        "Featured journals: %d total — novel=%d, rating_upgrade=%d, moi_expansion=%d, "
+        "additional_evidence=%d, filtered=%d, manual_download=%d, not_relevant=%d, "
+        "off_panel=%d",
+        sections.total,
+        len(sections.novel),
+        len(sections.rating_upgrade),
+        len(sections.moi_expansion),
+        len(sections.additional_evidence),
+        len(sections.filtered),
+        len(sections.manual_download),
+        len(sections.not_relevant),
+        len(sections.off_panel),
+    )
+    return sections
+
+
 def calculate_unanimity_statistics(db_path: Path) -> tuple[int, int]:
     """Calculate unanimity statistics for relevance assessments.
 
@@ -1530,6 +1774,7 @@ def generate_html_report(
     panel_validation: PanelValidationResult,
     low_confidence_papers: list[DetailedPaper],
     manual_download_papers: list[DetailedPaper],
+    favorite_journal_papers: FavoriteJournalSections,
     template_dir: Path,
     panel_date: str,
     pdf_base_dir: Path,
@@ -1696,6 +1941,7 @@ def generate_html_report(
         panel_validation=panel_validation,
         low_confidence_papers=low_confidence_papers,
         manual_download_papers=manual_download_papers,
+        favorite_journal_papers=favorite_journal_papers,
         panel_date=panel_date,
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         custom_css=custom_css,
@@ -1770,6 +2016,9 @@ def main(
     panel_validation = load_panel_publications_validation(db_path, target_panel_ids)
     low_confidence_papers = load_low_confidence_irrelevant_papers(db_path)
     manual_download_papers = load_manual_download_papers(db_path)
+    favorite_journal_papers = load_favorite_journal_papers(
+        db_path, results.novel_genes, results.known_genes
+    )
     statistics = calculate_comprehensive_statistics(db_path, results, panel_validation)
     # Use actual target_panel_ids from results (handles None -> defaults)
     actual_panel_ids = list(results.target_panel_data.panel_ids)
@@ -1781,6 +2030,7 @@ def main(
         panel_validation=panel_validation,
         low_confidence_papers=low_confidence_papers,
         manual_download_papers=manual_download_papers,
+        favorite_journal_papers=favorite_journal_papers,
         template_dir=template_dir,
         panel_date=panel_date,
         pdf_base_dir=Path("annotated"),  # Relative path within the package

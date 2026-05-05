@@ -519,6 +519,9 @@
         <h2>Table of Contents</h2>
         <ul>
             <li><a href="#statistics">Statistics Overview</a></li>
+            {% if favorite_journal_papers.total %}
+            <li><a href="#featured-journals">Papers in Featured Journals ({{ favorite_journal_papers.total }})</a></li>
+            {% endif %}
             {% if novel_categories and novel_categories.total > 0 %}
             <li>
                 <a href="#novel-genes">Novel Gene-Disease Associations ({{ novel_categories.total }})</a>
@@ -688,6 +691,88 @@
 
             </details>
         </section>
+
+        {% macro featured_paper_entry(paper) %}
+        <article class="featured-paper">
+            <div class="featured-paper-title">
+                {{ paper_link(paper) }} — <strong>{{ paper.title }}</strong>
+            </div>
+            <div class="featured-paper-meta">
+                {{ paper.journal }} · {{ paper.source_date or 'Unknown' }}
+            </div>
+            {% if paper.gene_links %}
+            <div class="featured-paper-genes">
+                Contributed to:
+                {% for link in paper.gene_links %}<a href="{{ link.anchor }}">{{ link.hgnc_symbol }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+            </div>
+            {% endif %}
+            {% if paper.filtered_reason %}
+            <div class="featured-paper-filter-reason">Excluded reason: {{ paper.filtered_reason }}</div>
+            {% endif %}
+        </article>
+        {% endmacro %}
+
+        {% macro featured_bucket(papers, label, blurb) %}
+        {% if papers %}
+        <details class="featured-journal-bucket">
+            <summary><strong>{{ label }}</strong> ({{ papers|length }})</summary>
+            <div class="featured-bucket-body">
+                <p class="featured-bucket-blurb"><em>{{ blurb }}</em></p>
+                <div class="featured-paper-list">
+                    {% for paper in papers %}{{ featured_paper_entry(paper) }}{% endfor %}
+                </div>
+            </div>
+        </details>
+        {% endif %}
+        {% endmacro %}
+
+        {% if favorite_journal_papers.total %}
+        <section id="featured-journals">
+            <h2>Papers in Featured Journals ({{ favorite_journal_papers.total }})</h2>
+            <p><em>Every paper in the corpus from a hand-picked set of high-impact journals, bucketed by what role they played in this report. Each subsection is collapsed by default.</em></p>
+
+            {{ featured_bucket(
+                favorite_journal_papers.novel,
+                "Contributed to novel genes",
+                "Papers whose extracted evidence supports a gene that is not yet in any panel.",
+            ) }}
+            {{ featured_bucket(
+                favorite_journal_papers.rating_upgrade,
+                "Contributed to rating upgrades",
+                "Papers whose evidence supports raising a known gene's rating (e.g. RED → GREEN).",
+            ) }}
+            {{ featured_bucket(
+                favorite_journal_papers.moi_expansion,
+                "Contributed to MoI expansions",
+                "Papers whose evidence supports adding a new mode of inheritance to a known gene (no rating change).",
+            ) }}
+            {{ featured_bucket(
+                favorite_journal_papers.additional_evidence,
+                "Additional evidence (no rating or MoI change)",
+                "Papers that contributed to a known gene's assessment but did not change its rating or MoI.",
+            ) }}
+            {{ featured_bucket(
+                favorite_journal_papers.filtered,
+                "Filtered out of aggregate",
+                "Paper had extracted evidence for a gene in this report, but was excluded from that gene's aggregate assessment by an explicit gate (e.g. preprint family-gate).",
+            ) }}
+            {{ featured_bucket(
+                favorite_journal_papers.manual_download,
+                "Requiring manual download",
+                "Relevance majority marked the paper relevant, but the PDF could not be downloaded automatically and needs to be fetched by hand before evidence extraction can run.",
+            ) }}
+            {{ featured_bucket(
+                favorite_journal_papers.not_relevant,
+                "Screened out (not relevant)",
+                "Relevance assessment LLM (majority of 3 votes) classified the paper as not relevant for gene curation.",
+            ) }}
+            {{ featured_bucket(
+                favorite_journal_papers.off_panel,
+                "Off-panel evidence",
+                "Paper has extracted gene evaluations, but none of those genes appear in this report's panel.",
+            ) }}
+        </section>
+        {% endif %}
 
         {% if novel_categories and novel_categories.total > 0 %}
         <section id="novel-genes" class="novel-section">

@@ -16,7 +16,13 @@ from tqdm import tqdm
 from palit.hgnc import HgncResolver
 from palit.llm import LLMProcessor, create_llm_processor
 from palit.mondo_lookup import DisputeRecord, DisputeStatus, MondoCandidate, MondoLookup
-from palit.panelapp_client import PanelAppClient, PanelGeneData, format_panel_for_prompt
+from palit.panelapp_client import (
+    PanelAppClient,
+    PanelGeneData,
+    PanelPublications,
+    collect_panelapp_gene_publications,
+    format_panel_for_prompt,
+)
 from palit.panelapp_integration import MONDO_CATEGORIES, validate_criteria_complete
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 
@@ -243,6 +249,27 @@ def filter_preprint_evidence(
                 }
             )
     return kept, filtered
+
+
+def evidence_already_in_panelapp(
+    evidence_list: list[dict[str, Any]],
+    panelapp_publications: PanelPublications,
+) -> bool:
+    """True iff every evidence paper matches a PanelApp pub by DOI or PMID.
+
+    DOI matching is case-insensitive (PanelApp publication strings are free-text
+    and not case-normalized). PMID matching is exact. Caller is responsible for
+    guarding against empty evidence_list (which would vacuously return True).
+    """
+    panelapp_dois_lower = {d.lower() for d in panelapp_publications.dois}
+    for evidence in evidence_list:
+        doi = evidence["doi"]
+        pmid = evidence["pmid"]
+        in_dois = doi.lower() in panelapp_dois_lower
+        in_pmids = pmid is not None and pmid in panelapp_publications.pmids
+        if not (in_dois or in_pmids):
+            return False
+    return True
 
 
 def validate_box_ids_with_doi(
@@ -740,6 +767,20 @@ async def _process_assessments(
                     logger.info(
                         f"  Found {len(existing_reviews)} existing reviews in panel {existing_panel_id}"
                     )
+                    panelapp_pubs = collect_panelapp_gene_publications(
+                        panelapp_client.get_panel_data(existing_panel_id),
+                        hgnc_id,
+                        existing_reviews,
+                    )
+                    if evidence_already_in_panelapp(evidence_list, panelapp_pubs):
+                        evidence_dois = [e["doi"] for e in evidence_list]
+                        logger.info(
+                            f"Skipping {hgnc_symbol} — all {len(evidence_list)} paper(s) "
+                            f"already reviewed in PanelApp panel {existing_panel_id}: "
+                            f"{evidence_dois}"
+                        )
+                        genes_without_evidence.add(hgnc_id)
+                        continue
 
                 mondo_candidates = mondo_lookup.get_candidates(hgnc_symbol)
                 mondo_name_lookup = build_mondo_name_lookup(mondo_candidates)

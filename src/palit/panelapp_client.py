@@ -167,6 +167,39 @@ def extract_panel_publications(panel_data: dict[str, Any]) -> PanelPublications:
     return PanelPublications(pmids=all_pmids, dois=all_dois)
 
 
+def extract_gene_publications(panel_data: dict[str, Any], hgnc_id: int) -> PanelPublications:
+    """Extract PMIDs and DOIs from the entity matching hgnc_id within a panel.
+
+    Searches the panel's genes, strs, and regions for an entity whose
+    gene_data.hgnc_id matches HGNC:<hgnc_id>. Raises ValueError if not found —
+    callers should only invoke this after confirming panel membership (e.g. via
+    find_gene_panel), so missing-entity is an invariant violation.
+    """
+    target_id = f"HGNC:{hgnc_id}"
+    for entity_key in ("genes", "strs", "regions"):
+        for entity in panel_data.get(entity_key, []):
+            gene_data = entity.get("gene_data") or {}
+            if gene_data.get("hgnc_id") == target_id:
+                return clean_panel_publications(entity.get("publications") or [])
+    raise ValueError(f"Gene HGNC:{hgnc_id} not found in panel")
+
+
+def collect_panelapp_gene_publications(
+    panel_data: dict[str, Any],
+    hgnc_id: int,
+    existing_reviews: list[dict[str, Any]],
+) -> PanelPublications:
+    """Union of gene-entity publications and per-review publications for a gene."""
+    entity_pubs = extract_gene_publications(panel_data, hgnc_id)
+    pmids: set[int] = set(entity_pubs.pmids)
+    dois: set[str] = set(entity_pubs.dois)
+    for review in existing_reviews:
+        review_pubs = clean_panel_publications(review.get("publications") or [])
+        pmids.update(review_pubs.pmids)
+        dois.update(review_pubs.dois)
+    return PanelPublications(pmids=pmids, dois=dois)
+
+
 def _parse_hgnc_id(hgnc_id_str: str) -> int:
     """Parse PanelApp HGNC ID string (e.g. 'HGNC:8607') to integer."""
     return int(hgnc_id_str.removeprefix("HGNC:"))

@@ -24,7 +24,13 @@ If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, r
 You must output a `disease_entities` array, with each distinct (phenotype × MoI) entity receiving its own entry with a separate family count.
 
 **EVALUATING CRITERIA WITH MULTIPLE DISEASE ENTITIES:**
-Each entry in `disease_entities` is an independent gene–disease association. Criteria A, B, and C are evaluated per entry: the count threshold must be met by a single entry's `family_count`. Do not pool counts across entries, regardless of shared `inheritance_mode`, `disease_mechanism`, or phenotype overlap. If no single entry meets the threshold, the criterion is false. In each A/B/C rationale, name the entry that meets the threshold or state that none does.
+Each entry in `disease_entities` is an independent gene–disease association. All five criteria are evaluated per entry; each criterion still emits ONE gene-level boolean, and that boolean is TRUE when at least one entry passes the per-entity bar. Specifically:
+
+- Criteria A, B, and C: the count threshold must be met by a single entry's `family_count` (after applying the qualifying gate and the same-variant-across-families collapse rule). Do not pool counts across entries, regardless of shared `inheritance_mode`, `disease_mechanism`, or phenotype overlap. If no single entry meets the threshold, the criterion is false.
+- Criterion D: the gene-level boolean is TRUE if at least one entry is Mendelian and clinically actionable (full per-entry rules in the D section). An entry whose phenotype is a susceptibility allele, modifier locus, predominantly-epigenetic disorder, or predominantly-asymptomatic-carrier finding fails D for itself, but does not drag down other entries.
+- Criterion E: the gene-level boolean is TRUE if at least one entry has no convincing contradictory evidence to its own gene–disease relationship (full per-entry rules in the E section). Contradictions tied to one entry do not propagate to other entries.
+
+In each criterion's rationale, name the entry that carries the TRUE verdict (or, for A/B/C, the entry that meets the threshold); for D and E, also name any entry that fails the per-entry bar.
 
 AGGREGATION METHODOLOGY:
 You are evaluating evidence that has been extracted from multiple papers. Your job is to:
@@ -115,7 +121,7 @@ When a disease entity is matched to a MONDO candidate flagged with `[DISPUTED]` 
 
 For each disease entity matched to a flagged candidate, take an explicit decision and reflect it in BOTH `dispute_status` and the criterion rationale.
 
-**Uphold the dispute (default).** Set `dispute_status` to `"Disputed"` or `"Refuted"`, matching the candidate marker. Criteria A, B, and C MUST then be FALSE for that entity, regardless of family count or functional data. Each A/B/C rationale (for the entity that would otherwise have driven the criterion) must reference the upheld dispute/refutation. Criteria D and E are not gated.
+**Uphold the dispute (default).** Set `dispute_status` to `"Disputed"` or `"Refuted"`, matching the candidate marker. Criteria A, B, and C MUST then be FALSE for that entity, regardless of family count or functional data. Each A/B/C rationale (for the entity that would otherwise have driven the criterion) must reference the upheld dispute/refutation. Criteria D and E are evaluated per entry (see EVALUATING CRITERIA WITH MULTIPLE DISEASE ENTITIES above) and are not auto-gated by the dispute: a panel's dispute concerns evidence strength, not Mendelian status (D) or convincing contradiction to causation (E). The upheld entity is still held to the per-entry bars for D and E like any other — it cannot carry gene-level D=TRUE or E=TRUE by virtue of being disputed. If another non-upheld entity is Mendelian and uncontradicted, that entity carries D/E for the gene.
 
 **Overrule the dispute.** Set `dispute_status` to `"None"`. Permitted ONLY when BOTH conditions below hold; if either fails, uphold.
 
@@ -180,33 +186,40 @@ If Pillar 2 is not met, Criterion C is FALSE regardless of family count. State t
 CRITERION D: Inheritance Pattern Appropriate for Diagnostic Reporting
 "Evidence indicates that disease-causing mutations follow a pattern of causation appropriate for reporting in a diagnostic setting."
 
-For Criterion D to be TRUE, the gene-disease relationship must be MENDELIAN (monogenic) and CLINICALLY ACTIONABLE:
-- Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, X-linked, Mitochondrial, Other) per disease entity
+D is evaluated per disease entity. An entry meets D when its gene–disease relationship is MENDELIAN (monogenic) and CLINICALLY ACTIONABLE:
+- Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, X-linked, Mitochondrial, Other) for the entry
 - Penetrance is high enough to be diagnostically useful — either complete or well-characterised reduced penetrance with a clear genotype-phenotype relationship
 - The phenotype itself is a recognisable disease, not a biochemical/biomarker abnormality, susceptibility allele, modifier locus, or asymptomatic finding
 
-D is FALSE when the phenotype is one of:
+An entry FAILS D when its phenotype is one of:
 - A **susceptibility / risk-factor allele** (variants increase disease risk but are neither necessary nor sufficient — e.g., association-study findings, oligogenic risk modifiers)
 - A **modifier locus** (variants modulate severity/expression of another genetic disorder rather than cause disease independently)
 - A condition where the **majority of variant carriers are asymptomatic** or have only laboratory abnormalities without clinical disease (penetrance too low for diagnostic action)
 - A **predominantly epigenetic disorder** where sequence variation in this gene only rarely contributes to disease (most pathogenic events are methylation/imprinting changes)
 - A **somatic cancer driver** as the primary phenotype (already excluded under IMPORTANT INSTRUCTIONS, restated for clarity)
 
-For post-zygotic mosaic/somatic disorders causing rare disease (in scope per IMPORTANT INSTRUCTIONS): use "Other" as inheritance_mode; D is met if the variant is reportable and actionable in a diagnostic setting.
+The gene-level boolean for D is TRUE if at least one entry meets the Mendelian + clinically-actionable bar. Failing entries do not drag down other entries. Name the entry that carries D=TRUE in the rationale; if no entry meets the bar, state so explicitly.
+
+For post-zygotic mosaic/somatic disorders causing rare disease (in scope per IMPORTANT INSTRUCTIONS): use "Other" as inheritance_mode; the entry meets D if the variant is reportable and actionable in a diagnostic setting.
 
 Evidence: Pedigree analysis, segregation studies, tissue-level mosaicism characterisation, or population-level penetrance estimates.
 
 CRITERION E: No Contradictory Evidence
 "No convincing evidence exists or has emerged that contradicts the role of the gene in the specified phenotype."
 
-E is FALSE if ANY of the following contradictory signals are present in the contributing papers:
-- **Population frequency incompatible with the inheritance mode** (using thresholds from the qualifying gate above): a reported variant claimed disease-causing has gnomAD allele frequency >0.0001 for AD/Monoallelic, or homozygous count high enough to predict disease prevalence inconsistent with reports for AR/Biallelic, or hemizygous count in males inconsistent with rare disease for X-linked.
-- **ClinVar contradiction**: cited variants are classified Likely Benign or Benign by reputable submitters with no convincing rebuttal in the papers.
-- **Conflicting reports**: independent studies dispute the gene-disease association on substantive grounds (different from minor variant-level disagreements that `quality_concerns` covers).
-- **Functional study inconsistencies**: orthogonal functional studies disagree about the direction of effect (e.g., LoF vs GoF for the same variant) without resolution.
-- **Common benign variants at claimed pathogenic positions**: positions claimed to be pathogenic harbour benign variation in healthy populations.
+E asks whether the **gene–disease relationship** is contradicted by *convincing* evidence — not whether individual data points are flawed. A single problematic variant or off-consensus paper in an otherwise strong body of evidence is an `evidence_weakening_factors` / `quality_concerns` matter, not an E-failure. The bar for "convincing" is that the contradiction is reproduced across the body of evidence or materially undermines the gene-disease claim as a whole — not that one citation is suspect.
 
-Note: E is about gene-disease *validity* (is there contradiction about causation?). Paper-internal contradictions belong in `quality_concerns`, not E.
+E is evaluated per disease entity. The gene-level boolean is TRUE if at least one entry has no convincing contradictory evidence to its own gene–disease relationship. Contradictions tied to one entry do not propagate to other entries. In the rationale, name any entry that is contradicted and the entry (if any) that carries E=TRUE for the gene; if every entry is contradicted, state so explicitly.
+
+E is FALSE for an entry when one or more of the following hold *at the gene–disease level* — not at the level of an individual variant or paper:
+
+- **Population frequency incompatible with the inheritance mode** (using the thresholds from the qualifying gate: gnomAD AF >0.0001 for AD/Monoallelic; homozygous count predicting disease prevalence inconsistent with reports for AR/Biallelic; hemizygous count in males inconsistent with rare disease for X-linked): the offending variants are common enough across the entry's cited cohort that excluding them leaves the entry's qualifying family count below A/B/C's threshold AND no plausible benign-subpopulation or miscall explanation is offered in the papers. A single outlier variant whose exclusion still leaves qualifying families above threshold belongs in `evidence_weakening_factors.population_frequency_incompatible_with_moi`, not in E.
+- **ClinVar contradiction**: *multiple* cited variants are classified Likely Benign or Benign by reputable submitters with no convincing rebuttal in the papers. A single variant disagreement is a `quality_concerns` matter.
+- **Conflicting reports**: independent studies dispute the entry's gene–disease association on substantive grounds (mechanism, causation), reproduced across multiple sources — not a one-off minor disagreement.
+- **Functional study inconsistencies**: orthogonal functional studies across the body of evidence disagree about the direction of effect (e.g., LoF vs GoF for the entry's mechanism) without resolution. A single artificial-system readout contradicting the consensus mechanism is a `quality_concerns` matter, not an E-failure.
+- **Common benign variants at claimed pathogenic positions**: positions claimed pathogenic harbour benign variation in healthy populations across the body of cited variants for the entry, such that the pathogenicity model is undermined as a whole.
+
+Note: E is about gene-disease *validity* for the entry (is there convincing contradiction about causation?). Paper-internal contradictions and minor outliers belong in `quality_concerns` or `evidence_weakening_factors`, not E.
 
 STRUCTURED FIELD REQUIREMENTS:
 Provide ultra-concise FACTUAL information aggregated across all papers. Use telegraphic style.

@@ -107,12 +107,12 @@ CREATE INDEX idx_gene_assessments_unmatched ON gene_assessments(matched_panels_j
 -- Variant frequency information from gnomAD
 CREATE TABLE variant_frequencies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- Auto-incrementing primary key
-    variant_id TEXT NOT NULL,  -- gnomAD pseudo-VCF style (chr-pos-ref-alt)
+    variant_id TEXT NOT NULL,  -- gnomAD pseudo-VCF style (chr-pos-ref-alt), or the original variant text when normalization failed
     hgnc_id INTEGER NOT NULL,  -- For report generation and indexing
     paper_doi TEXT NOT NULL,  -- Paper where variant was mentioned
     box_id INTEGER NOT NULL,  -- For PDF citation linking
-    normalization JSON NOT NULL,  -- HGVS c/p from variant normalizer
-    gnomad JSON NOT NULL,  -- Raw gnomAD API response or error message
+    normalization JSON NOT NULL,  -- HGVS c/p from variant normalizer; for normalization failures carries {original_text, error, error_class}
+    gnomad JSON NOT NULL,  -- One of: variant payload, {variant_not_found: true}, {error: ...} for gnomAD failures, {normalization_error: ...} for pre-gnomAD failures
 
     FOREIGN KEY (paper_doi) REFERENCES papers(doi),
     UNIQUE(variant_id, paper_doi, box_id)  -- Allow same variant in paper if different box_id

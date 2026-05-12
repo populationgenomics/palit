@@ -562,6 +562,7 @@ class _WebClient:
             stop=tenacity.stop_after_attempt(1 + self._settings.max_retries),
             wait=tenacity.wait_exponential(multiplier=self._settings.retry_backoff),
             retry=tenacity.retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+            before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
             reraise=True,
         )(self._get_content)
 

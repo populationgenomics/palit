@@ -23,7 +23,7 @@ from palit.panelapp_client import (
     collect_panelapp_gene_publications,
     format_panel_for_prompt,
 )
-from palit.panelapp_integration import MONDO_CATEGORIES, validate_criteria_complete
+from palit.panelapp_integration import MONDO_CATEGORIES, validate_entities_criteria_complete
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
@@ -94,15 +94,13 @@ def replace_paper_ids_with_dois(
     Mutates parsed_json in place. Raises ValueError on the first unknown paper_id
     (LLM hallucination — caller should retry).
     """
-    # disease_entities[].citations[]
+    # disease_entities[].citations[] AND disease_entities[].evidence_assessments[].citations[]
     for entity in parsed_json.get("disease_entities", []):
         for citation in entity.get("citations", []):
             citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
-
-    # evidence_assessments[].citations
-    for criterion in parsed_json.get("evidence_assessments", []):
-        for citation in criterion.get("citations", []):
-            citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
+        for criterion in entity.get("evidence_assessments", []):
+            for citation in criterion.get("citations", []):
+                citation["doi"] = _resolve_paper_id(citation.pop("paper_id"), paper_id_to_doi)
 
     # quality_concerns[].paper_ids list + citations[]
     for concern in parsed_json.get("quality_concerns", []):
@@ -294,17 +292,15 @@ def validate_box_ids_with_doi(
                 return False
         return True
 
-    # disease_entities[].citations[]
+    # disease_entities[].citations[] AND disease_entities[].evidence_assessments[].citations[]
     for entity in parsed_json.get("disease_entities", []):
         for citation in entity.get("citations", []):
             if not check_citation(citation):
                 return False
-
-    # evidence_assessments[].citations
-    for criterion in parsed_json.get("evidence_assessments", []):
-        for citation in criterion.get("citations", []):
-            if not check_citation(citation):
-                return False
+        for criterion in entity.get("evidence_assessments", []):
+            for citation in criterion.get("citations", []):
+                if not check_citation(citation):
+                    return False
 
     # quality_concerns[].citations[]
     for concern in parsed_json.get("quality_concerns", []):
@@ -850,12 +846,12 @@ async def _process_assessments(
                         )
                         failed_genes.append(item.hgnc_id)
                         continue
-                    if not validate_criteria_complete(
-                        result.parsed_json.get("evidence_assessments", [])
+                    if not validate_entities_criteria_complete(
+                        result.parsed_json.get("disease_entities", [])
                     ):
                         logger.warning(
-                            f"Incomplete criteria for {item.hgnc_symbol} "
-                            f"(expected criterion_A-E, got {[c.get('name') for c in result.parsed_json.get('evidence_assessments', [])]})"
+                            f"Incomplete per-entity criteria for {item.hgnc_symbol} "
+                            f"(each disease_entity must carry criterion_A through criterion_E)"
                         )
                         failed_genes.append(item.hgnc_id)
                         continue

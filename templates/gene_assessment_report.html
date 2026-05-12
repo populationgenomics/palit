@@ -170,8 +170,8 @@
     </div>
     {% endmacro %}
 
-    {# Macro for rendering criteria assessment grid - handles both aggregate and individual paper assessments #}
-    {% macro criteria_grid(assessment, hgnc_id, pdf_base_path, contributing_papers=none, citation_pages=none, doi=none, display_id=none) %}
+    {# Macro for rendering criteria assessment grid for a SINGLE disease entity (per-entity criteria). #}
+    {% macro criteria_grid(entity, hgnc_id, pdf_base_path, contributing_papers=none, citation_pages=none, doi=none, display_id=none) %}
     <div class="criteria-grid">
         {% set criteria_meta = {
             'criterion_A': ('Criterion A - Multiple Unrelated Cases', 'OR'),
@@ -180,7 +180,7 @@
             'criterion_D': ('Criterion D - Mendelian Inheritance', 'AND'),
             'criterion_E': ('Criterion E - No Contradictory Evidence', none)
         } %}
-        {% for crit in assessment.evidence_assessments %}
+        {% for crit in entity.evidence_assessments %}
             {% set crit_label = criteria_meta[crit.name][0] %}
             {% set separator = criteria_meta[crit.name][1] %}
             <span class="criterion-header criterion-{{ 'true' if crit.result else 'false' }}">
@@ -278,7 +278,13 @@
 
         <details>
             <summary><strong>PanelApp criteria assessment</strong></summary>
-            {{ criteria_grid(gene.assessment_json, gene.hgnc_id, pdf_base_path, contributing_papers=gene.contributing_papers) }}
+            {% for entity in gene.assessment_json.disease_entities %}
+            <h5 class="per-entity-criteria-heading">{{ entity.description }}
+                {% if entity.mondo_id %}{{ badge(entity | format_mondo_badge, "mondo") }}{% endif %}
+                {{ badge(entity | format_dispute_badge, "dispute") }}
+            </h5>
+            {{ criteria_grid(entity, gene.hgnc_id, pdf_base_path, contributing_papers=gene.contributing_papers) }}
+            {% endfor %}
         </details>
 
         <details>
@@ -492,7 +498,10 @@
                     {% endif %}
                 </div>
 
-                {{ criteria_grid(gene_eval, gene.hgnc_id, pdf_base_path, citation_pages=paper.citation_pages, doi=paper.doi, display_id=paper.display_id) }}
+                {% for entity in gene_eval.disease_entities %}
+                <h6 class="per-entity-criteria-heading">{{ entity.description }}</h6>
+                {{ criteria_grid(entity, gene.hgnc_id, pdf_base_path, citation_pages=paper.citation_pages, doi=paper.doi, display_id=paper.display_id) }}
+                {% endfor %}
 
                 <div class="variant-frequency-section">
                     <h6><strong>gnomAD v4 frequencies</strong></h6>

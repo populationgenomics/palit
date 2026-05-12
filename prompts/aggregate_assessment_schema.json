@@ -25,7 +25,7 @@
         },
         "disease_entities": {
             "type": "array",
-            "description": "Array of distinct disease entities caused by this gene, each with separate patient and family counts. Include specific disease names where applicable.",
+            "description": "Array of distinct disease entities caused by this gene, each with its own patient/family counts AND its own per-entity criteria evaluation (evidence_assessments + evidence_weakening_factors). The gene-level rating aggregates across entities: GREEN if at least one entity satisfies (A or B or C) AND D AND E by itself; never by stitching criteria across entities.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -44,7 +44,7 @@
                             "Disputed",
                             "Refuted"
                         ],
-                        "description": "Decision on the candidate's GenCC dispute marker. 'Disputed'/'Refuted' upholds the candidate's [DISPUTED]/[REFUTED] flag (Criteria A/B/C must then be FALSE). 'None' overrules a flagged candidate (any A/B/C returning TRUE must state the overrule explicitly in its rationale) AND is the only valid value for unflagged candidates and fallback categories."
+                        "description": "Decision on the candidate's GenCC dispute marker. 'Disputed'/'Refuted' upholds the candidate's [DISPUTED]/[REFUTED] flag (this entity's evidence_assessments must then have criterion_A/B/C result=false). 'None' overrules a flagged candidate (any A/B/C returning true must state the overrule explicitly in its rationale) AND is the only valid value for unflagged candidates and fallback categories."
                     },
                     "patient_count": {
                         "type": "integer",
@@ -71,7 +71,7 @@
                             "Other",
                             "NR"
                         ],
-                        "description": "Mode of inheritance for this specific disease entity. Each entity carries a single MoI \u2014 combination modes are not permitted. If the same phenotype has both monoallelic and biallelic evidence, create TWO disease entities (one per MoI). Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males \u2014 Monoallelic is for autosomal dominant only."
+                        "description": "Mode of inheritance for this specific disease entity. Each entity carries a single MoI — combination modes are not permitted. If the same phenotype has both monoallelic and biallelic evidence, create TWO disease entities (one per MoI). Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males — Monoallelic is for autosomal dominant only."
                     },
                     "inheritance_details": {
                         "type": "string",
@@ -103,6 +103,108 @@
                             ],
                             "additionalProperties": false
                         }
+                    },
+                    "evidence_weakening_factors": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "Per-entity structured weakening checklist. MUST contain exactly six entries, one per factor enum value, in any order. This entity's evidence_assessments rationales must explicitly reference any factor with present=true that affects the verdict for that criterion.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "factor": {
+                                    "type": "string",
+                                    "enum": [
+                                        "founder_or_recurrent_variant",
+                                        "inherited_no_segregation_with_affected",
+                                        "missense_no_variant_specific_functional",
+                                        "population_frequency_incompatible_with_moi",
+                                        "phenotype_non_mendelian",
+                                        "functional_below_criterion_c_threshold"
+                                    ],
+                                    "description": "Identifier of the weakening factor."
+                                },
+                                "present": {
+                                    "type": "boolean",
+                                    "description": "True if the factor is present in this entity's contributing evidence; false otherwise."
+                                },
+                                "details": {
+                                    "type": "string",
+                                    "description": "1-2 sentences citing the specific evidence that triggers this factor for this entity. For present=false, use 'Not present' or a brief sanity-check statement."
+                                }
+                            },
+                            "required": [
+                                "factor",
+                                "present",
+                                "details"
+                            ],
+                            "additionalProperties": false
+                        }
+                    },
+                    "evidence_assessments": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "Per-entity PanelApp diagnostic evidence assessments (criterion_A through criterion_E). MUST contain exactly 5 entries. The gene-level GREEN check is `(A or B or C) AND D AND E` evaluated on a SINGLE entity — do NOT mix-and-match criteria across entities at the rating level. The rating system aggregates across entities by taking ANY entity that satisfies GREEN.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "result": {
+                                    "type": "boolean"
+                                },
+                                "rationale": {
+                                    "type": "string"
+                                },
+                                "confidence": {
+                                    "type": "string",
+                                    "enum": [
+                                        "LOW",
+                                        "MEDIUM",
+                                        "HIGH"
+                                    ]
+                                },
+                                "citations": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "paper_id": {
+                                                "type": "string"
+                                            },
+                                            "box_id": {
+                                                "type": "integer"
+                                            },
+                                            "commentary": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "required": [
+                                            "paper_id",
+                                            "box_id",
+                                            "commentary"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "enum": [
+                                        "criterion_A",
+                                        "criterion_B",
+                                        "criterion_C",
+                                        "criterion_D",
+                                        "criterion_E"
+                                    ],
+                                    "description": "Criterion identifier"
+                                }
+                            },
+                            "required": [
+                                "name",
+                                "result",
+                                "rationale",
+                                "confidence",
+                                "citations"
+                            ],
+                            "additionalProperties": false
+                        }
                     }
                 },
                 "required": [
@@ -114,43 +216,9 @@
                     "disease_mechanism",
                     "inheritance_mode",
                     "inheritance_details",
-                    "citations"
-                ],
-                "additionalProperties": false
-            }
-        },
-        "evidence_weakening_factors": {
-            "type": "array",
-            "minItems": 1,
-            "description": "Exhaustive checklist of structured weakening factors. MUST contain exactly six entries, one per factor enum value, in any order. Criteria A/C/D/E rationales must explicitly reference any factor with present=true that affects the verdict.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "factor": {
-                        "type": "string",
-                        "enum": [
-                            "founder_or_recurrent_variant",
-                            "inherited_no_segregation_with_affected",
-                            "missense_no_variant_specific_functional",
-                            "population_frequency_incompatible_with_moi",
-                            "phenotype_non_mendelian",
-                            "functional_below_criterion_c_threshold"
-                        ],
-                        "description": "Identifier of the weakening factor."
-                    },
-                    "present": {
-                        "type": "boolean",
-                        "description": "True if the factor is present in the contributing evidence; false otherwise."
-                    },
-                    "details": {
-                        "type": "string",
-                        "description": "1-2 sentences citing the specific evidence that triggers this factor. For present=false, use 'Not present' or a brief sanity-check statement."
-                    }
-                },
-                "required": [
-                    "factor",
-                    "present",
-                    "details"
+                    "citations",
+                    "evidence_weakening_factors",
+                    "evidence_assessments"
                 ],
                 "additionalProperties": false
             }
@@ -207,72 +275,6 @@
                 ],
                 "additionalProperties": false
             }
-        },
-        "evidence_assessments": {
-            "type": "array",
-            "minItems": 1,
-            "description": "PanelApp diagnostic evidence assessments (criterion_A through criterion_E). MUST contain exactly 5 entries.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "result": {
-                        "type": "boolean"
-                    },
-                    "rationale": {
-                        "type": "string"
-                    },
-                    "confidence": {
-                        "type": "string",
-                        "enum": [
-                            "LOW",
-                            "MEDIUM",
-                            "HIGH"
-                        ]
-                    },
-                    "citations": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "paper_id": {
-                                    "type": "string"
-                                },
-                                "box_id": {
-                                    "type": "integer"
-                                },
-                                "commentary": {
-                                    "type": "string"
-                                }
-                            },
-                            "required": [
-                                "paper_id",
-                                "box_id",
-                                "commentary"
-                            ],
-                            "additionalProperties": false
-                        }
-                    },
-                    "name": {
-                        "type": "string",
-                        "enum": [
-                            "criterion_A",
-                            "criterion_B",
-                            "criterion_C",
-                            "criterion_D",
-                            "criterion_E"
-                        ],
-                        "description": "Criterion identifier"
-                    }
-                },
-                "required": [
-                    "name",
-                    "result",
-                    "rationale",
-                    "confidence",
-                    "citations"
-                ],
-                "additionalProperties": false
-            }
         }
     },
     "required": [
@@ -284,9 +286,7 @@
         "functional",
         "prior_reports",
         "disease_entities",
-        "evidence_weakening_factors",
-        "quality_concerns",
-        "evidence_assessments"
+        "quality_concerns"
     ],
     "additionalProperties": false
 }

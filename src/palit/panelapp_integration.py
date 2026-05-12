@@ -44,12 +44,22 @@ def validate_criteria_complete(criteria: list[dict[str, Any]]) -> bool:
     return names == set(PANELAPP_CRITERIA)
 
 
-def get_criterion(gene_eval: dict[str, Any], name: CriterionName) -> dict[str, Any]:
-    """Look up a criterion by name from the criteria array.
+def validate_entities_criteria_complete(entities: list[dict[str, Any]]) -> bool:
+    """Check that every disease entity has a complete 5-criterion evidence_assessments array.
+
+    Returns True if all entities are valid, False otherwise.
+    """
+    return all(
+        validate_criteria_complete(entity.get("evidence_assessments", [])) for entity in entities
+    )
+
+
+def get_entity_criterion(entity: dict[str, Any], name: CriterionName) -> dict[str, Any]:
+    """Look up a criterion by name from a disease entity's evidence_assessments.
 
     Returns the criterion dict, or an empty dict if not found.
     """
-    for c in gene_eval.get("evidence_assessments", []):
+    for c in entity.get("evidence_assessments", []):
         if c.get("name") == name:
             return dict(c)
     return {}
@@ -269,51 +279,52 @@ def prepare_prefill_data(
     )
 
 
-def meets_green_criteria(gene_eval: dict[str, Any]) -> bool:
-    """Check if a single gene evaluation meets GREEN criteria: (A OR B OR C) AND D AND E.
+def entity_meets_green(entity: dict[str, Any]) -> bool:
+    """Check if a single disease entity satisfies (A OR B OR C) AND D AND E on its own.
 
-    Args:
-        gene_eval: Gene evaluation dictionary with criteria array.
-
-    Returns:
-        True if evaluation meets GREEN criteria, False otherwise
+    PanelApp GREEN status requires one entity to meet the conjunction by itself —
+    not pieces stitched across entities.
     """
-    a = bool(get_criterion(gene_eval, "criterion_A").get("result", False))
-    b = bool(get_criterion(gene_eval, "criterion_B").get("result", False))
-    c = bool(get_criterion(gene_eval, "criterion_C").get("result", False))
-    d = bool(get_criterion(gene_eval, "criterion_D").get("result", False))
-    e = bool(get_criterion(gene_eval, "criterion_E").get("result", False))
+    a = bool(get_entity_criterion(entity, "criterion_A").get("result", False))
+    b = bool(get_entity_criterion(entity, "criterion_B").get("result", False))
+    c = bool(get_entity_criterion(entity, "criterion_C").get("result", False))
+    d = bool(get_entity_criterion(entity, "criterion_D").get("result", False))
+    e = bool(get_entity_criterion(entity, "criterion_E").get("result", False))
 
     return (a or b or c) and d and e
+
+
+def meets_green_criteria(gene_eval: dict[str, Any]) -> bool:
+    """Check if the gene reaches GREEN: at least one disease entity satisfies
+    `(A OR B OR C) AND D AND E` on its own.
+    """
+    return any(entity_meets_green(entity) for entity in gene_eval.get("disease_entities", []))
 
 
 def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
     """Calculate gene rating confidence level based on PanelApp criteria.
 
     Rating logic:
-    - 3 (GREEN) if meets criteria (A OR B OR C) AND D AND E
+    - 3 (GREEN) if at least one disease entity satisfies (A OR B OR C) AND D AND E by itself
     - 2 (AMBER) if not GREEN but more than one family reported for any phenotype
     - 1 (RED) otherwise
 
     Args:
-        gene_eval: Gene evaluation dictionary with criteria array.
+        gene_eval: Gene evaluation dictionary with disease_entities each carrying their
+            own evidence_assessments (5 criteria) and evidence_weakening_factors.
 
     Returns:
         Confidence level: 3 (GREEN), 2 (AMBER), or 1 (RED)
     """
-    # Check GREEN criteria first
     if meets_green_criteria(gene_eval):
         return 3
 
-    # Check AMBER criteria: more than one family reported for any phenotype
-    # Use max family count across all disease entities (treating null/NR as 0)
     disease_entities = gene_eval.get("disease_entities", [])
     if disease_entities:
         max_family_count = max(entity.get("family_count") or 0 for entity in disease_entities)
         if max_family_count > 1:
             return 2
 
-    # Default to RED
     return 1
 
 

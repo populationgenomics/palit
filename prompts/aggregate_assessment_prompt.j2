@@ -23,14 +23,18 @@ If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, r
 
 You must output a `disease_entities` array, with each distinct (phenotype × MoI) entity receiving its own entry with a separate family count.
 
-**EVALUATING CRITERIA WITH MULTIPLE DISEASE ENTITIES:**
-Each entry in `disease_entities` is an independent gene–disease association. All five criteria are evaluated per entry; each criterion still emits ONE gene-level boolean, and that boolean is TRUE when at least one entry passes the per-entity bar. Specifically:
+**EVALUATING CRITERIA PER DISEASE ENTITY:**
+Each entry in `disease_entities` is an independent gene–disease association and carries its OWN `evidence_assessments` array (5 entries: criterion_A through criterion_E) AND its OWN `evidence_weakening_factors` array (6 entries). You evaluate all five criteria per entity using only that entity's own evidence and gene–disease relationship; the gene-level rating is then aggregated by the downstream system as: GREEN if and only if at least one entry satisfies `(A or B or C) AND D AND E` on its own.
 
-- Criteria A, B, and C: the count threshold must be met by a single entry's `family_count` (after applying the qualifying gate and the same-variant-across-families collapse rule). Do not pool counts across entries, regardless of shared `inheritance_mode`, `disease_mechanism`, or phenotype overlap. If no single entry meets the threshold, the criterion is false.
-- Criterion D: the gene-level boolean is TRUE if at least one entry is Mendelian and clinically actionable (full per-entry rules in the D section). An entry whose phenotype is a susceptibility allele, modifier locus, predominantly-epigenetic disorder, or predominantly-asymptomatic-carrier finding fails D for itself, but does not drag down other entries.
-- Criterion E: the gene-level boolean is TRUE if at least one entry has no convincing contradictory evidence to its own gene–disease relationship (full per-entry rules in the E section). Contradictions tied to one entry do not propagate to other entries.
+Critically, you must NOT stitch criteria across entries. Setting entry X's criterion_A to TRUE on the basis of X's families and separately setting entry Y's criterion_E to TRUE on the basis of Y's lack of contradictions does NOT together produce GREEN — each entity's GREEN-capability is evaluated independently. If no single entity is GREEN-capable, the gene is not GREEN, regardless of how the booleans look in aggregate.
 
-In each criterion's rationale, name the entry that carries the TRUE verdict (or, for A/B/C, the entry that meets the threshold); for D and E, also name any entry that fails the per-entry bar.
+Per-entity rules in brief (full rules in the criterion sections):
+
+- A/B/C: the entity's `family_count` must reach the threshold (≥3 for A; >3 for B; 2-3 for C with the Pillar 2 functional bar) AFTER applying the qualifying gate and the same-variant-across-families collapse rule. Do not pool counts across entries, regardless of shared `inheritance_mode`, `disease_mechanism`, or phenotype overlap.
+- D: the entity's gene–disease relationship must be Mendelian (monogenic) and clinically actionable.
+- E: there is no convincing contradictory evidence to the entity's own gene–disease relationship.
+
+A criterion's rationale belongs in that entity's `evidence_assessments`. Reference any of that entity's `evidence_weakening_factors` with `present:true` when they affect the verdict.
 
 AGGREGATION METHODOLOGY:
 You are evaluating evidence that has been extracted from multiple papers. Your job is to:
@@ -102,16 +106,16 @@ Geographic clustering, shared ethnicity, or unaddressed ancestry → collapse to
 
 Note: gate condition (1)(c)(iii) above ("recurrence across distinct populations") and the SAME-VARIANT-ACROSS-FAMILIES rule address different questions. (1)(c)(iii) lets a variant *qualify* (we believe it is plausibly pathogenic because it has been seen in different populations). The collapse rule decides *how many independent observations* the variant contributes; cross-population recurrence alone does not establish independence (a founder allele can spread across populations) — independence additionally requires either a recurrent-mutation mechanism or haplotype evidence.
 
-EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST:
+EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST (PER ENTITY):
 
-Before evaluating the criteria, you must explicitly assess each of the six weakening factors below and emit them in the `evidence_weakening_factors` array (always all six entries). Any criterion rationale must explicitly reference any factor with `present: true` that affects the verdict.
+For each disease entity, you must explicitly assess the six weakening factors below and emit them in that entity's `evidence_weakening_factors` array (always all six entries per entity). Any criterion rationale for that entity must explicitly reference any factor with `present: true` that affects the verdict.
 
-1. **founder_or_recurrent_variant**: Same variant appears across multiple counted families without positive evidence of independent origins (apply the SAME-VARIANT-ACROSS-FAMILIES rule from the gate).
+1. **founder_or_recurrent_variant**: Same variant appears across multiple counted families within this entity without positive evidence of independent origins (apply the SAME-VARIANT-ACROSS-FAMILIES rule from the gate).
 2. **inherited_no_segregation_with_affected**: Variants are inherited from carrier parents who are unaffected, of unknown affected status, or where segregation with affected status is not documented across informative meioses.
-3. **missense_no_variant_specific_functional**: A missense-dominated cohort without variant-specific functional validation (assays must test the actual reported variants, not just gene knockdown).
-4. **population_frequency_incompatible_with_moi**: One or more reported variants exceed plausible population-frequency thresholds for the assumed MoI based on what the contributing papers report (do not infer thresholds for variants whose frequencies are not reported in the papers).
-5. **phenotype_non_mendelian**: Phenotype is a susceptibility/risk-factor allele, modifier locus, mostly-asymptomatic biomarker, predominantly epigenetic disorder, or otherwise not a clearly Mendelian disease.
-6. **functional_below_criterion_c_threshold**: Functional evidence cited (or that could be cited) for Criterion C does not satisfy Pillar 2(a) or 2(b) below — it relies on biochemical assays, heterologous overexpression, or patient-cell deficit without rescue.
+3. **missense_no_variant_specific_functional**: A missense-dominated cohort for this entity without variant-specific functional validation (assays must test the actual reported variants, not just gene knockdown).
+4. **population_frequency_incompatible_with_moi**: One or more reported variants for this entity exceed plausible population-frequency thresholds for the assumed MoI based on what the contributing papers report (do not infer thresholds for variants whose frequencies are not reported in the papers).
+5. **phenotype_non_mendelian**: This entity's phenotype is a susceptibility/risk-factor allele, modifier locus, mostly-asymptomatic biomarker, predominantly epigenetic disorder, or otherwise not a clearly Mendelian disease.
+6. **functional_below_criterion_c_threshold**: Functional evidence cited (or that could be cited) for this entity under Criterion C does not satisfy Pillar 2(a) or 2(b) below — it relies on biochemical assays, heterologous overexpression, or patient-cell deficit without rescue.
 
 For each factor: emit `{"factor": "<enum>", "present": true|false, "details": "<1-2 sentences citing specific evidence; for present=false use 'Not present' or a brief sanity-check statement>"}`.
 
@@ -121,7 +125,7 @@ When a disease entity is matched to a MONDO candidate flagged with `[DISPUTED]` 
 
 For each disease entity matched to a flagged candidate, take an explicit decision and reflect it in BOTH `dispute_status` and the criterion rationale.
 
-**Uphold the dispute (default).** Set `dispute_status` to `"Disputed"` or `"Refuted"`, matching the candidate marker. Criteria A, B, and C MUST then be FALSE for that entity, regardless of family count or functional data. Each A/B/C rationale (for the entity that would otherwise have driven the criterion) must reference the upheld dispute/refutation. Criteria D and E are evaluated per entry (see EVALUATING CRITERIA WITH MULTIPLE DISEASE ENTITIES above) and are not auto-gated by the dispute: a panel's dispute concerns evidence strength, not Mendelian status (D) or convincing contradiction to causation (E). The upheld entity is still held to the per-entry bars for D and E like any other — it cannot carry gene-level D=TRUE or E=TRUE by virtue of being disputed. If another non-upheld entity is Mendelian and uncontradicted, that entity carries D/E for the gene.
+**Uphold the dispute (default).** Set `dispute_status` to `"Disputed"` or `"Refuted"`, matching the candidate marker. In this entity's `evidence_assessments`, criterion_A, criterion_B, and criterion_C MUST then have `result: false`, regardless of family count or functional data; each of their rationales must reference the upheld dispute/refutation. Criteria D and E for this entity are evaluated on the merits — a dispute concerns evidence strength, not Mendelian status (D) or convincing contradiction to causation (E). Because A/B/C are forced FALSE for this entity, the entity cannot satisfy `(A or B or C) AND D AND E` on its own and therefore cannot carry the gene to GREEN; if the gene reaches GREEN, it must do so via a different non-upheld entity. The panel's stated rationale under DISPUTE DETAILS may itself raise D or E concerns (e.g., "phenotype non-Mendelian"); factor those into this entity's D and E judgement when they apply.
 
 **Overrule the dispute.** Set `dispute_status` to `"None"`. Permitted ONLY when BOTH conditions below hold; if either fails, uphold.
 
@@ -141,7 +145,7 @@ For unflagged candidates and fallback categories, `dispute_status` MUST be `"Non
 CRITERION A: Multiple Unrelated Cases with Plausible Mutations
 "There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
 
-The "3 or more" threshold applies to a single `disease_entities` entry's `family_count` AFTER applying the QUALIFYING VARIANT GATE and the SAME-VARIANT-ACROSS-FAMILIES collapse rule. Count only families that pass both. Criterion A is TRUE only if at least one entry has ≥3 qualifying, independent families; otherwise it is FALSE. Strong functional evidence does NOT compensate for fewer qualifying families — that path is Criterion C, with its own bar below.
+For each entity, set `criterion_A.result` to true if and only if that entity's `family_count` is ≥3 AFTER applying the QUALIFYING VARIANT GATE and the SAME-VARIANT-ACROSS-FAMILIES collapse rule. Count only families that pass both. Strong functional evidence does NOT compensate for fewer qualifying families — that path is Criterion C, with its own bar below. Do not pool counts across entries.
 
 KEY REQUIREMENTS:
 - Count FAMILIES, not individual patients (multiple affected siblings = 1 family).
@@ -155,16 +159,16 @@ KEY REQUIREMENTS:
 CRITERION B: Cis-regulatory Mutations
 "There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
 
-The ">3" threshold applies to a single `disease_entities` entry's `family_count`, after applying the qualifying gate and the same-variant collapse rule. The qualifying gate adapts to regulatory variants — "predicted/proven null" becomes "demonstrated to abolish or substantially reduce expression of the target gene"; functional validation must show the regulatory effect on the specific reported variant.
+For each entity, set `criterion_B.result` to true if and only if that entity's `family_count` is >3 with qualifying cis-regulatory variants, after applying the qualifying gate and the same-variant collapse rule. The qualifying gate adapts to regulatory variants — "predicted/proven null" becomes "demonstrated to abolish or substantially reduce expression of the target gene"; functional validation must show the regulatory effect on the specific reported variant.
 
 CRITERION C: Fewer Cases with Strong Functional Evidence
 "As definitions A or B but in 2 or 3 unrelated cases/families with the phenotype, with the addition of convincing bioinformatic or functional evidence of causation."
 
-Criterion C is rare and demands a high functional bar. It is met ONLY when BOTH pillars hold:
+Criterion C is rare and demands a high functional bar. For an entity, set `criterion_C.result` to true ONLY when BOTH pillars hold for that entity:
 
-**Pillar 1**: A single `disease_entities` entry has 2 or 3 unrelated families with QUALIFYING variants for the same phenotype × MoI (apply the gate and the same-variant collapse rule). Once a single entry reaches ≥4 qualifying families, evaluate under Criterion A instead.
+**Pillar 1**: The entity has 2 or 3 unrelated families with QUALIFYING variants (apply the gate and the same-variant collapse rule). Once the entity reaches ≥4 qualifying families, evaluate under Criterion A instead.
 
-**Pillar 2**: The contributing papers' functional evidence for the same disease entity matches AT LEAST ONE of the following acceptance patterns:
+**Pillar 2**: The contributing papers' functional evidence for THIS entity's phenotype matches AT LEAST ONE of the following acceptance patterns:
 
 (a) **Animal model with phenotype recapitulation and rescue**:
     A non-human animal model (mammalian > other vertebrate > invertebrate) carrying the orthologous gene perturbation (knockout, knockdown, or patient-variant knock-in) AND recapitulating a recognisable feature of the human disease phenotype, AND rescue with wild-type or genetic complementation reverses the phenotype.
@@ -186,40 +190,38 @@ If Pillar 2 is not met, Criterion C is FALSE regardless of family count. State t
 CRITERION D: Inheritance Pattern Appropriate for Diagnostic Reporting
 "Evidence indicates that disease-causing mutations follow a pattern of causation appropriate for reporting in a diagnostic setting."
 
-D is evaluated per disease entity. An entry meets D when its gene–disease relationship is MENDELIAN (monogenic) and CLINICALLY ACTIONABLE:
-- Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, X-linked, Mitochondrial, Other) for the entry
+For each entity, set `criterion_D.result` to true when the entity's gene–disease relationship is MENDELIAN (monogenic) and CLINICALLY ACTIONABLE:
+- Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, X-linked, Mitochondrial, Other) for this entity
 - Penetrance is high enough to be diagnostically useful — either complete or well-characterised reduced penetrance with a clear genotype-phenotype relationship
 - The phenotype itself is a recognisable disease, not a biochemical/biomarker abnormality, susceptibility allele, modifier locus, or asymptomatic finding
 
-An entry FAILS D when its phenotype is one of:
+Set `criterion_D.result` to false for an entity when its phenotype is one of:
 - A **susceptibility / risk-factor allele** (variants increase disease risk but are neither necessary nor sufficient — e.g., association-study findings, oligogenic risk modifiers)
 - A **modifier locus** (variants modulate severity/expression of another genetic disorder rather than cause disease independently)
 - A condition where the **majority of variant carriers are asymptomatic** or have only laboratory abnormalities without clinical disease (penetrance too low for diagnostic action)
 - A **predominantly epigenetic disorder** where sequence variation in this gene only rarely contributes to disease (most pathogenic events are methylation/imprinting changes)
 - A **somatic cancer driver** as the primary phenotype (already excluded under IMPORTANT INSTRUCTIONS, restated for clarity)
 
-The gene-level boolean for D is TRUE if at least one entry meets the Mendelian + clinically-actionable bar. Failing entries do not drag down other entries. Name the entry that carries D=TRUE in the rationale; if no entry meets the bar, state so explicitly.
-
-For post-zygotic mosaic/somatic disorders causing rare disease (in scope per IMPORTANT INSTRUCTIONS): use "Other" as inheritance_mode; the entry meets D if the variant is reportable and actionable in a diagnostic setting.
+For post-zygotic mosaic/somatic disorders causing rare disease (in scope per IMPORTANT INSTRUCTIONS): use "Other" as inheritance_mode; the entity meets D if the variant is reportable and actionable in a diagnostic setting.
 
 Evidence: Pedigree analysis, segregation studies, tissue-level mosaicism characterisation, or population-level penetrance estimates.
 
 CRITERION E: No Contradictory Evidence
 "No convincing evidence exists or has emerged that contradicts the role of the gene in the specified phenotype."
 
-E asks whether the **gene–disease relationship** is contradicted by *convincing* evidence — not whether individual data points are flawed. A single problematic variant or off-consensus paper in an otherwise strong body of evidence is an `evidence_weakening_factors` / `quality_concerns` matter, not an E-failure. The bar for "convincing" is that the contradiction is reproduced across the body of evidence or materially undermines the gene-disease claim as a whole — not that one citation is suspect.
+E asks whether the entity's **gene–disease relationship** is contradicted by *convincing* evidence — not whether individual data points are flawed. A single problematic variant or off-consensus paper in an otherwise strong body of evidence for this entity is an `evidence_weakening_factors` / `quality_concerns` matter, not an E-failure. The bar for "convincing" is that the contradiction is reproduced across the entity's body of evidence or materially undermines the gene-disease claim as a whole — not that one citation is suspect.
 
-E is evaluated per disease entity. The gene-level boolean is TRUE if at least one entry has no convincing contradictory evidence to its own gene–disease relationship. Contradictions tied to one entry do not propagate to other entries. In the rationale, name any entry that is contradicted and the entry (if any) that carries E=TRUE for the gene; if every entry is contradicted, state so explicitly.
+For each entity, set `criterion_E.result` to false when one or more of the following hold *at the gene–disease level for that entity* — not at the level of an individual variant or paper:
 
-E is FALSE for an entry when one or more of the following hold *at the gene–disease level* — not at the level of an individual variant or paper:
+- **Population frequency incompatible with the inheritance mode** (using the thresholds from the qualifying gate: gnomAD AF >0.0001 for AD/Monoallelic; homozygous count predicting disease prevalence inconsistent with reports for AR/Biallelic; hemizygous count in males inconsistent with rare disease for X-linked): a substantial fraction of the entity's claimed pathogenic variants exceed thresholds with no benign-subpopulation or miscall explanation — the pattern, not a single outlier, undermines pathogenicity. A single outlier variant belongs in this entity's `evidence_weakening_factors.population_frequency_incompatible_with_moi`, not in E.
+- **ClinVar contradiction**: *multiple* of this entity's cited variants are classified Likely Benign or Benign by reputable submitters with no convincing rebuttal in the papers. A single variant disagreement is a `quality_concerns` matter.
+- **Conflicting reports**: independent studies dispute this entity's gene–disease association on substantive grounds (mechanism, causation), reproduced across multiple sources — not a one-off minor disagreement.
+- **Functional study inconsistencies**: orthogonal functional studies across this entity's body of evidence disagree about the direction of effect (e.g., LoF vs GoF for the entity's mechanism) without resolution. A single artificial-system readout contradicting the consensus mechanism is a `quality_concerns` matter, not an E-failure.
+- **Common benign variants at claimed pathogenic positions**: positions claimed pathogenic harbour benign variation in healthy populations across this entity's cited variants, such that the pathogenicity model is undermined as a whole.
 
-- **Population frequency incompatible with the inheritance mode** (using the thresholds from the qualifying gate: gnomAD AF >0.0001 for AD/Monoallelic; homozygous count predicting disease prevalence inconsistent with reports for AR/Biallelic; hemizygous count in males inconsistent with rare disease for X-linked): the offending variants are common enough across the entry's cited cohort that excluding them leaves the entry's qualifying family count below A/B/C's threshold AND no plausible benign-subpopulation or miscall explanation is offered in the papers. A single outlier variant whose exclusion still leaves qualifying families above threshold belongs in `evidence_weakening_factors.population_frequency_incompatible_with_moi`, not in E.
-- **ClinVar contradiction**: *multiple* cited variants are classified Likely Benign or Benign by reputable submitters with no convincing rebuttal in the papers. A single variant disagreement is a `quality_concerns` matter.
-- **Conflicting reports**: independent studies dispute the entry's gene–disease association on substantive grounds (mechanism, causation), reproduced across multiple sources — not a one-off minor disagreement.
-- **Functional study inconsistencies**: orthogonal functional studies across the body of evidence disagree about the direction of effect (e.g., LoF vs GoF for the entry's mechanism) without resolution. A single artificial-system readout contradicting the consensus mechanism is a `quality_concerns` matter, not an E-failure.
-- **Common benign variants at claimed pathogenic positions**: positions claimed pathogenic harbour benign variation in healthy populations across the body of cited variants for the entry, such that the pathogenicity model is undermined as a whole.
+Otherwise set `criterion_E.result` to true for the entity.
 
-Note: E is about gene-disease *validity* for the entry (is there convincing contradiction about causation?). Paper-internal contradictions and minor outliers belong in `quality_concerns` or `evidence_weakening_factors`, not E.
+Note: E is about gene-disease *validity* for this entity (is there convincing contradiction about causation?). Paper-internal contradictions and minor outliers belong in `quality_concerns` or this entity's `evidence_weakening_factors`, not E.
 
 STRUCTURED FIELD REQUIREMENTS:
 Provide ultra-concise FACTUAL information aggregated across all papers. Use telegraphic style.
@@ -268,14 +270,16 @@ The following candidates carry an expert curation panel's `[DISPUTED]` or `[REFU
     - "Infertility disorder"
     - "Mitochondrial disease"
     RULE: If the gene is mitochondrial, ALWAYS select "Mitochondrial disease" (or a specific mitochondrial disease candidate if available). Otherwise select the most specific applicable match.
-  * dispute_status: One of "None"|"Disputed"|"Refuted". Encodes your decision on a flagged candidate: "Disputed"/"Refuted" upholds the candidate's `[DISPUTED]`/`[REFUTED]` marker (Criteria A/B/C must then be FALSE); "None" overrules the prior dispute/refutation (any A/B/C you return TRUE must state the overrule explicitly in its rationale). Unflagged candidates and fallback categories MUST be "None". Do not escalate (Disputed → Refuted), demote (Refuted → Disputed), or fabricate disputes on unflagged candidates.
+  * dispute_status: One of "None"|"Disputed"|"Refuted". Encodes your decision on a flagged candidate: "Disputed"/"Refuted" upholds the candidate's `[DISPUTED]`/`[REFUTED]` marker (criterion_A/B/C results for THIS entity in its `evidence_assessments` must then be false); "None" overrules the prior dispute/refutation (any A/B/C you return true for this entity must state the overrule explicitly in its rationale). Unflagged candidates and fallback categories MUST be "None". Do not escalate (Disputed → Refuted), demote (Refuted → Disputed), or fabricate disputes on unflagged candidates.
   * patient_count: number of patients for this specific disease entity aggregated across all papers (always required)
   * family_count: number of unrelated families for this specific disease entity aggregated across all papers. Use null when family count is not reported (null means NR - not reported)
   * disease_mechanism: molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in papers. Synthesize ONLY from paper content.
   * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Each entity carries a single MoI — combination modes are not permitted. If the same phenotype has both monoallelic and biallelic evidence, create TWO disease entities (see STEP 1 above). Use "Other" for post-zygotic mosaic/somatic variants. Use "X-linked" (not "Monoallelic") for hemizygous inheritance in males — "Monoallelic" is for autosomal dominant only.
   * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity", "post-zygotic mosaic") or empty string ""
   * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions, mechanisms, AND inheritance modes — citations from a monoallelic-only paper must not land in a biallelic entity for the same phenotype, and vice versa. Each citation must include paper_id, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
-  Examples:
+  * evidence_weakening_factors: REQUIRED per entity — exactly 6 entries (one per factor enum value) capturing weakening factors for THIS entity's evidence. See EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST above for factor semantics; the examples below omit this field for brevity but it must always be present.
+  * evidence_assessments: REQUIRED per entity — exactly 5 entries (criterion_A through criterion_E) capturing the PanelApp diagnostic evidence assessment for THIS entity's gene–disease relationship. See the CRITERION A–E sections above for per-entity rules. The examples below omit this field for brevity but it must always be present. The downstream system aggregates: GREEN iff at least one entity satisfies `(A or B or C) AND D AND E` on its own.
+  Examples (showing entity descriptors only; `evidence_weakening_factors` and `evidence_assessments` arrays are required but elided for readability — see the JSON OUTPUT FORMAT below for full shape):
 {% raw %}
   - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Smith2024", "box_id": 42, "commentary": "clinical features and patient counts"}, {"paper_id": "Jones2023", "box_id": 18, "commentary": "family counts"}]}]
   - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"paper_id": "Lee2022", "box_id": 23, "commentary": "phenotype description"}]}]
@@ -456,16 +460,16 @@ that emerge from cross-paper comparison.
 
 RELATIONSHIP TO CRITERION E AND `evidence_weakening_factors`:
 Three different mechanisms address three different concerns:
-- `evidence_weakening_factors` are the structured checklist of *known* failure modes (founder variants, missense-without-functional, non-Mendelian phenotype, etc.). Apply these when scoring criteria; do NOT also list them in `quality_concerns`.
-- `quality_concerns` address paper reliability and cross-paper contradictions that don't fit the structured checklist (can you trust what the papers report?).
-- `Criterion E` addresses gene-disease validity (is there *contradictory* evidence about causation?).
+- `evidence_weakening_factors` (per entity) are the structured checklist of *known* failure modes (founder variants, missense-without-functional, non-Mendelian phenotype, etc.). Apply these when scoring criteria for the entity; do NOT also list them in `quality_concerns`.
+- `quality_concerns` (gene-level) address paper reliability and cross-paper contradictions that don't fit the structured checklist (can you trust what the papers report?).
+- `Criterion E` (per entity) addresses the entity's gene-disease validity (is there *convincing contradictory* evidence about causation for this entity?).
 
 If no significant concerns, use an empty array: []
 
 Before generating your JSON response, thoroughly think through the evidence assessments. The response schema is complex:
-- `evidence_weakening_factors` MUST contain exactly 6 entries, one per factor enum value, each with `factor`, `present`, `details`. Fill these out FIRST.
-- `evidence_assessments` MUST contain exactly 5 entries (criterion_A through criterion_E), each with result, rationale, confidence, and citations. Each rationale must reference any `present:true` weakening factor that affects the verdict.
-Plan both arrays before you begin writing the JSON output.
+- For each disease entity, its `evidence_weakening_factors` MUST contain exactly 6 entries, one per factor enum value, each with `factor`, `present`, `details`. Fill these out FIRST for each entity.
+- For each disease entity, its `evidence_assessments` MUST contain exactly 5 entries (criterion_A through criterion_E), each with result, rationale, confidence, and citations. Each rationale must reference any `present:true` weakening factor for THAT entity that affects the verdict.
+Plan both arrays per entity before you begin writing the JSON output.
 
 Respond in JSON format with your aggregate evaluation:
 
@@ -489,23 +493,32 @@ Respond in JSON format with your aggregate evaluation:
   "functional": "all functional experiments across papers",
   "prior_reports": "assessment of literature overlap and novel families",
   "disease_entities": [
-    {"description": "disease name 1 or clinical description", "mondo_disease_name": "exact disease name from provided list", "dispute_status": "None|Disputed|Refuted", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "<one of the enum values>", "inheritance_details": "<additional details or empty string>", "citations": [{"paper_id": "Author2024", "box_id": box_id, "commentary": "description"}, {"paper_id": "Author2023", "box_id": box_id, "commentary": "description"}]},
-    {"description": "disease name 2 or clinical description", "mondo_disease_name": "exact disease name from provided list", "dispute_status": "None|Disputed|Refuted", "patient_count": N, "family_count": N_or_null, "disease_mechanism": "mechanism or NR", "inheritance_mode": "<one of the enum values>", "inheritance_details": "<additional details or empty string>", "citations": [{"paper_id": "Author2022", "box_id": box_id, "commentary": "description"}]}
-  ],
-  "evidence_weakening_factors": [
-    {"factor": "founder_or_recurrent_variant", "present": boolean, "details": "1-2 sentences citing specific evidence, or 'Not present' with brief sanity-check"},
-    {"factor": "inherited_no_segregation_with_affected", "present": boolean, "details": "..."},
-    {"factor": "missense_no_variant_specific_functional", "present": boolean, "details": "..."},
-    {"factor": "population_frequency_incompatible_with_moi", "present": boolean, "details": "..."},
-    {"factor": "phenotype_non_mendelian", "present": boolean, "details": "..."},
-    {"factor": "functional_below_criterion_c_threshold", "present": boolean, "details": "..."}
-  ],
-  "evidence_assessments": [
-    {"name": "criterion_A", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]},
-    {"name": "criterion_B", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]},
-    {"name": "criterion_C", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]},
-    {"name": "criterion_D", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]},
-    {"name": "criterion_E", "result": boolean, "rationale": "detailed explanation combining evidence from all papers", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation of what this evidence shows"}]}
+    {
+      "description": "disease name or clinical description",
+      "mondo_disease_name": "exact disease name from provided list",
+      "dispute_status": "None|Disputed|Refuted",
+      "patient_count": N,
+      "family_count": N_or_null,
+      "disease_mechanism": "mechanism or NR",
+      "inheritance_mode": "<one of the enum values>",
+      "inheritance_details": "<additional details or empty string>",
+      "citations": [{"paper_id": "Author2024", "box_id": box_id, "commentary": "description"}],
+      "evidence_weakening_factors": [
+        {"factor": "founder_or_recurrent_variant", "present": boolean, "details": "1-2 sentences citing specific evidence for this entity, or 'Not present' with brief sanity-check"},
+        {"factor": "inherited_no_segregation_with_affected", "present": boolean, "details": "..."},
+        {"factor": "missense_no_variant_specific_functional", "present": boolean, "details": "..."},
+        {"factor": "population_frequency_incompatible_with_moi", "present": boolean, "details": "..."},
+        {"factor": "phenotype_non_mendelian", "present": boolean, "details": "..."},
+        {"factor": "functional_below_criterion_c_threshold", "present": boolean, "details": "..."}
+      ],
+      "evidence_assessments": [
+        {"name": "criterion_A", "result": boolean, "rationale": "per-entity rationale; reference any present:true weakening factor for this entity", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation"}]},
+        {"name": "criterion_B", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
+        {"name": "criterion_C", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
+        {"name": "criterion_D", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
+        {"name": "criterion_E", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []}
+      ]
+    }
   ],
   "quality_concerns": [
     {

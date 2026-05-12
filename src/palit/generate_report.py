@@ -2060,17 +2060,18 @@ def main(
         cursor = conn.cursor()
 
         for assessment in all_genes:
-            for criterion in assessment.assessment_json.get("evidence_assessments", []):
-                for citation in criterion.get("citations", []):
-                    path = doi_to_path(
-                        citation["doi"],
-                        annotated_dir / str(assessment.hgnc_id),
-                        ".pdf",
-                    )
-                    if path.exists():
-                        found += 1
-                    else:
-                        missing.append(str(path))
+            for entity in assessment.assessment_json.get("disease_entities", []):
+                for criterion in entity.get("evidence_assessments", []):
+                    for citation in criterion.get("citations", []):
+                        path = doi_to_path(
+                            citation["doi"],
+                            annotated_dir / str(assessment.hgnc_id),
+                            ".pdf",
+                        )
+                        if path.exists():
+                            found += 1
+                        else:
+                            missing.append(str(path))
 
             for disease_entity in assessment.assessment_json.get("disease_entities", []):
                 for citation in disease_entity.get("citations", []):

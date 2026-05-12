@@ -20,7 +20,7 @@ from palit.panelapp_client import (
     PanelAppClient,
     format_panel_for_prompt,
 )
-from palit.panelapp_integration import validate_criteria_complete
+from palit.panelapp_integration import validate_entities_criteria_complete
 from palit.papers import doi_to_path
 
 app = typer.Typer(help="Extract structured evidence from full-text papers using vLLM")
@@ -481,15 +481,15 @@ async def _process_evidence(
                         failed_papers.append(paper_prompt.doi)
                         continue
 
-                    # Validate evidence_assessments completeness for every gene evaluation
+                    # Validate per-entity evidence_assessments completeness for every gene evaluation
                     incomplete = [
                         ge.get("gene_symbol", "?")
                         for ge in result.parsed_json.get("gene_evaluations", [])
-                        if not validate_criteria_complete(ge.get("evidence_assessments", []))
+                        if not validate_entities_criteria_complete(ge.get("disease_entities", []))
                     ]
                     if incomplete:
                         logger.warning(
-                            f"Incomplete evidence_assessments for DOI {paper_prompt.doi}, "
+                            f"Incomplete per-entity evidence_assessments for DOI {paper_prompt.doi}, "
                             f"genes: {incomplete}"
                         )
                         failed_papers.append(paper_prompt.doi)

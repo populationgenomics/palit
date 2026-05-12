@@ -62,28 +62,29 @@ def extract_citations_from_individual_assessment(
             continue
         hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
 
-        for criterion in gene_eval.get("evidence_assessments", []):
-            for citation in criterion.get("citations", []):
-                box_id = citation["box_id"]
+        for entity in gene_eval.get("disease_entities", []):
+            for criterion in entity.get("evidence_assessments", []):
+                for citation in criterion.get("citations", []):
+                    box_id = citation["box_id"]
 
-                # Check if box_id exists in current paper's bbox_mapping
-                if box_id not in bbox_mapping:
-                    logger.warning(
-                        f"Box ID {box_id} not found in bbox mapping for DOI {current_doi}"
+                    # Check if box_id exists in current paper's bbox_mapping
+                    if box_id not in bbox_mapping:
+                        logger.warning(
+                            f"Box ID {box_id} not found in bbox mapping for DOI {current_doi}"
+                        )
+                        continue
+
+                    bbox_info = bbox_mapping[box_id]
+                    result_status = "PASS" if criterion.get("result", False) else "FAIL"
+
+                    citations.append(
+                        AnnotationCitation(
+                            title=f"{hgnc_symbol} - Criterion {criterion['name']} ({result_status}) - Individual",
+                            content=citation["commentary"],
+                            box_id=box_id,
+                            page=bbox_info["page"],
+                        )
                     )
-                    continue
-
-                bbox_info = bbox_mapping[box_id]
-                result_status = "PASS" if criterion.get("result", False) else "FAIL"
-
-                citations.append(
-                    AnnotationCitation(
-                        title=f"{hgnc_symbol} - Criterion {criterion['name']} ({result_status}) - Individual",
-                        content=citation["commentary"],
-                        box_id=box_id,
-                        page=bbox_info["page"],
-                    )
-                )
 
     # Extract disease entity citations
     for gene_eval in evidence_json.get("gene_evaluations", []):
@@ -170,24 +171,25 @@ def extract_citations_from_aggregate_assessment(
     """
     citations = []
 
-    for criterion in assessment_json.get("evidence_assessments", []):
-        for citation in criterion["citations"]:
-            # Only process citations from the current paper
-            if citation["doi"] != current_doi:
-                continue
+    for entity in assessment_json.get("disease_entities", []):
+        for criterion in entity.get("evidence_assessments", []):
+            for citation in criterion["citations"]:
+                # Only process citations from the current paper
+                if citation["doi"] != current_doi:
+                    continue
 
-            box_id = citation["box_id"]
-            bbox_info = bbox_mapping[box_id]
-            result_status = "PASS" if criterion["result"] else "FAIL"
+                box_id = citation["box_id"]
+                bbox_info = bbox_mapping[box_id]
+                result_status = "PASS" if criterion["result"] else "FAIL"
 
-            citations.append(
-                AnnotationCitation(
-                    title=f"{hgnc_symbol} - Criterion {criterion['name']} ({result_status}) - Aggregate",
-                    content=citation["commentary"],
-                    box_id=box_id,
-                    page=bbox_info["page"],
+                citations.append(
+                    AnnotationCitation(
+                        title=f"{hgnc_symbol} - Criterion {criterion['name']} ({result_status}) - Aggregate",
+                        content=citation["commentary"],
+                        box_id=box_id,
+                        page=bbox_info["page"],
+                    )
                 )
-            )
 
     # Extract disease entity citations
     for disease_entity in assessment_json.get("disease_entities", []):

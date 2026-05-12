@@ -55,6 +55,26 @@ Geographic clustering, shared ethnicity, or unaddressed ancestry → collapse to
 
 Note: gate condition (1)(c)(iii) above ("recurrence across distinct populations") and the SAME-VARIANT-ACROSS-FAMILIES rule address different questions. (1)(c)(iii) lets a variant *qualify* (we believe it is plausibly pathogenic because it has been seen in different populations). The collapse rule decides *how many independent observations* the variant contributes; cross-population recurrence alone does not establish independence (a founder allele can spread across populations) — independence additionally requires either a recurrent-mutation mechanism or haplotype evidence.
 
+LUMPING AND SPLITTING DISEASE ENTITIES - CRITICAL:
+
+Each entry in the `disease_entities` array represents one (phenotype × inheritance mode) combination. Decide entry boundaries in two steps. Assess from the paper content only.
+
+**STEP 1 — SPLIT BY INHERITANCE MODE (mandatory, no exceptions):**
+Each disease entity must have EXACTLY ONE inheritance_mode. When the same phenotype has evidence for BOTH monoallelic and biallelic inheritance, create TWO separate entries — one per MoI — even if the description, mondo_id, and disease_mechanism are otherwise identical. The same applies to any MoI distinction (e.g., monoallelic vs X-linked). PanelApp curates each gene–disease relationship per MoI, so per-MoI family and patient counts are required for downstream classification. Do NOT fold mixed-MoI evidence into a single entry; combination modes are not permitted.
+
+**STEP 2 — WITHIN A SINGLE MoI, decide LUMP vs SPLIT using ClinGen criteria (weigh together):**
+
+1. **Molecular Mechanism** (strongest criterion): Different mechanisms (LOF vs GOF, domain-specific) for different phenotypes → SPLIT. Same mechanism → LUMP.
+
+2. **Phenotypic Variability**: If intrafamilial variability ≈ interfamilial variability → LUMP (variable expressivity, not distinct diseases). If families differ more from each other than members within families → consider splitting.
+
+3. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
+
+**Isolated Features of Syndromes:**
+If a feature (e.g., cardiomyopathy) is part of a named syndrome in the paper, report the SYNDROME, not the isolated feature—unless the paper presents it as distinct with a different mechanism.
+
+When reporting family/patient counts, only count those that share the SAME disease entity (same phenotype AND same MoI). If a gene causes multiple distinct entities, report counts separately per entity.
+
 PER-ENTITY EVALUATION:
 
 Each entry in the gene's `disease_entities` array is an independent gene–disease association and carries its OWN `evidence_assessments` (5 entries: criterion_A through criterion_E) AND its OWN `evidence_weakening_factors` (6 entries). Evaluate all five criteria per entity using only that entity's own evidence in this paper. Downstream aggregation across papers will compute the gene-level GREEN as: at least one entity satisfies `(A or B or C) AND D AND E` on its own. Therefore, never stitch criteria across entities — entry X passing A and entry Y passing E does not together justify GREEN.
@@ -152,26 +172,6 @@ For each entity, set `criterion_E.result` to false when one or more of the follo
 Otherwise set `criterion_E.result` to true for the entity.
 
 Note: E is about gene-disease *validity* for this entity (is there convincing contradiction about causation?). Paper-internal contradictions and minor outliers belong in `quality_concerns` or this entity's `evidence_weakening_factors`, not E.
-
-LUMPING AND SPLITTING DISEASE ENTITIES - CRITICAL:
-
-Each entry in the `disease_entities` array represents one (phenotype × inheritance mode) combination. Decide entry boundaries in two steps. Assess from the paper content only.
-
-**STEP 1 — SPLIT BY INHERITANCE MODE (mandatory, no exceptions):**
-Each disease entity must have EXACTLY ONE inheritance_mode. When the same phenotype has evidence for BOTH monoallelic and biallelic inheritance, create TWO separate entries — one per MoI — even if the description, mondo_id, and disease_mechanism are otherwise identical. The same applies to any MoI distinction (e.g., monoallelic vs X-linked). PanelApp curates each gene–disease relationship per MoI, so per-MoI family and patient counts are required for downstream classification. Do NOT fold mixed-MoI evidence into a single entry; combination modes are not permitted.
-
-**STEP 2 — WITHIN A SINGLE MoI, decide LUMP vs SPLIT using ClinGen criteria (weigh together):**
-
-1. **Molecular Mechanism** (strongest criterion): Different mechanisms (LOF vs GOF, domain-specific) for different phenotypes → SPLIT. Same mechanism → LUMP.
-
-2. **Phenotypic Variability**: If intrafamilial variability ≈ interfamilial variability → LUMP (variable expressivity, not distinct diseases). If families differ more from each other than members within families → consider splitting.
-
-3. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
-
-**Isolated Features of Syndromes:**
-If a feature (e.g., cardiomyopathy) is part of a named syndrome in the paper, report the SYNDROME, not the isolated feature—unless the paper presents it as distinct with a different mechanism.
-
-When reporting family/patient counts, only count those that share the SAME disease entity (same phenotype AND same MoI). If a gene causes multiple distinct entities, report counts separately per entity.
 
 After each evaluation, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
 

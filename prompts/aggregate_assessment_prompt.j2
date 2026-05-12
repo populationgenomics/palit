@@ -37,7 +37,7 @@ Per-entity rules in brief (full rules in the criterion sections):
 A criterion's rationale belongs in that entity's `evidence_assessments`. Reference any of that entity's `evidence_weakening_factors` with `present:true` when they affect the verdict.
 
 AGGREGATION METHODOLOGY:
-You are evaluating evidence that has been extracted from multiple papers. Your job is to:
+You are evaluating evidence that has been extracted from multiple papers. Each contributing paper's extracted evidence already carries per-entity `evidence_assessments` (criterion_A through criterion_E) and `evidence_weakening_factors` (6 factors) inside its own `disease_entities[*]`; you are aggregating these *per disease entity* across the contributing papers — not summing gene-level booleans. Your job is to:
 
 1. **IDENTIFY DISTINCT DISEASE ENTITIES**: First, determine the set of (phenotype × MoI) entities the gene causes based on the guidance above. Each combination becomes its own entry.
 

@@ -29,6 +29,10 @@ from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
 logger = logging.getLogger(__name__)
 
+# SQLite busy timeout in seconds. When sharding, multiple processes write to
+# the same database; the default 5 s can be too short for large batch commits.
+DB_TIMEOUT_SECONDS = 60
+
 
 @dataclass(frozen=True)
 class MondoResolution:
@@ -330,7 +334,7 @@ def fetch_valid_box_ids_by_doi(
 
     valid_box_ids_by_doi: dict[str, set[int]] = {}
 
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
         cursor = conn.cursor()
 
         for doi in dois:
@@ -364,7 +368,7 @@ class PaperBatchProcessor:
         Returns:
             List of dicts with doi, date, title, authors, paper_gene_symbol, gene_evaluations
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -431,7 +435,7 @@ class PaperBatchProcessor:
         raw_response, json_data = assessment_data
         filtered_json = json.dumps(filtered_papers) if filtered_papers else None
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             cursor = conn.cursor()
 
             try:
@@ -457,9 +461,11 @@ class PaperBatchProcessor:
             except sqlite3.Error as e:
                 logger.error(f"Error storing aggregate assessment for HGNC:{hgnc_id}: {e}")
 
-    def get_aggregate_assessment_statistics(self) -> dict[str, int]:
-        """Get statistics about aggregate assessment progress."""
-        with sqlite3.connect(self.db_path) as conn:
+    def get_aggregate_assessment_statistics(
+        self, shard_index: int, num_shards: int
+    ) -> dict[str, int]:
+        """Get statistics about aggregate assessment progress for this shard."""
+        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             cursor = conn.cursor()
 
             # Total unique genes in the working set (recent_evidence)
@@ -468,12 +474,17 @@ class PaperBatchProcessor:
                 SELECT COUNT(DISTINCT hgnc_id)
                 FROM gene_mentions
                 WHERE source = 'recent_evidence'
-            """
+                AND hgnc_id % ? = ?
+                """,
+                (num_shards, shard_index),
             )
             genes_with_evidence = cursor.fetchone()[0]
 
             # Already assessed genes
-            cursor.execute("SELECT COUNT(*) FROM gene_assessments")
+            cursor.execute(
+                "SELECT COUNT(*) FROM gene_assessments WHERE hgnc_id % ? = ?",
+                (num_shards, shard_index),
+            )
             assessed_genes = cursor.fetchone()[0]
 
             return {
@@ -676,6 +687,8 @@ async def _process_assessments(
     batch_size: int,
     max_retries: int,
     initial_remaining: int,
+    shard_index: int,
+    num_shards: int,
 ) -> None:
     """Run the aggregate assessment retry loop."""
     total_processed = 0
@@ -685,7 +698,7 @@ async def _process_assessments(
 
     with tqdm(total=initial_remaining, desc="Processing genes") as pbar:
         while retry_attempt < max_retries:
-            stats = db_processor.get_aggregate_assessment_statistics()
+            stats = db_processor.get_aggregate_assessment_statistics(shard_index, num_shards)
             if stats["remaining_to_assess"] == 0:
                 logger.info("All genes successfully assessed!")
                 break
@@ -696,15 +709,17 @@ async def _process_assessments(
                 )
 
             logger.info("Fetching genes with evidence...")
-            with sqlite3.connect(db_path) as conn:
+            with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
                     SELECT DISTINCT hgnc_id
                     FROM gene_mentions
                     WHERE source = 'recent_evidence'
+                    AND hgnc_id % ? = ?
                     ORDER BY hgnc_id
-                """
+                    """,
+                    (num_shards, shard_index),
                 )
                 gene_hgnc_ids = [row[0] for row in cursor.fetchall()]
 
@@ -877,7 +892,7 @@ async def _process_assessments(
 
             retry_attempt += 1
 
-    final_stats = db_processor.get_aggregate_assessment_statistics()
+    final_stats = db_processor.get_aggregate_assessment_statistics(shard_index, num_shards)
     logger.info("Aggregate assessment complete!")
     logger.info("Final statistics:")
     logger.info(f"  Successfully processed: {total_processed:,}")
@@ -980,6 +995,16 @@ def main(
         "--scope-panel-id",
         help="Panel ID for panel-scoped assessment. When set, the summary must explain why the gene is relevant to this panel's scope.",
     ),
+    shard_index: int = typer.Option(
+        0,
+        "--shard-index",
+        help="Shard index (0-based) for parallel processing across multiple GPUs",
+    ),
+    num_shards: int = typer.Option(
+        1,
+        "--num-shards",
+        help="Total number of shards for parallel processing (values > 1 require database WAL mode)",
+    ),
 ) -> None:
     """Perform aggregate assessment of genes using evidence from multiple papers."""
     # Validate inputs
@@ -1047,8 +1072,8 @@ def main(
 
     # Get initial statistics
     logger.info("Fetching aggregate assessment statistics...")
-    stats = db_processor.get_aggregate_assessment_statistics()
-    logger.info("Aggregate assessment statistics:")
+    stats = db_processor.get_aggregate_assessment_statistics(shard_index, num_shards)
+    logger.info(f"Aggregate assessment statistics (shard {shard_index}/{num_shards}):")
     logger.info(f"  Genes with evidence: {stats['genes_with_evidence']:,}")
     logger.info(f"  Already assessed: {stats['assessed_genes']:,}")
     logger.info(f"  Remaining to assess: {stats['remaining_to_assess']:,}")
@@ -1072,6 +1097,8 @@ def main(
             batch_size=batch_size,
             max_retries=max_retries,
             initial_remaining=stats["remaining_to_assess"],
+            shard_index=shard_index,
+            num_shards=num_shards,
         )
     )
 

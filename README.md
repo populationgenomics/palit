@@ -71,6 +71,9 @@ uv run palit download-papers register
 # 4. Extract evidence from full-text papers
 uv run palit extract-evidence --panel-date $PANEL_DATE
 
+# 4a. (Optional) Parallel extraction across multiple GPUs
+for i in 0 1; do sbatch -p GPU-H100 --gpus=1 -t 24:00:00 -J "extract-evidence-shard-$i" -o "extract_evidence_shard_$i.log" --wrap="uv run palit extract-evidence --panel-date $PANEL_DATE --shard-index $i --num-shards 2"; done
+
 # 5. Discover papers referenced in evidence (citation-based expansion)
 uv run palit discover-citations discover
 
@@ -93,6 +96,9 @@ uv run palit extract-evidence --panel-date $PANEL_DATE
 
 # 9. Aggregate evidence across papers per gene (panel-agnostic)
 uv run palit assess-genes --panel-date $PANEL_DATE
+
+# 9a. (Optional) Parallel gene assessment across multiple GPUs
+for i in 0 1; do sbatch -p GPU-H100 --gpus=1 -t 24:00:00 -J "assess-genes-shard-$i" -o "assess_genes_shard_$i.log" --wrap="uv run palit assess-genes --panel-date $PANEL_DATE --shard-index $i --num-shards 2"; done
 
 # 10. Match genes to appropriate panels based on phenotype descriptions
 uv run palit match-panels --panel-date $PANEL_DATE

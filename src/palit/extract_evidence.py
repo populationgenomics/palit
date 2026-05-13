@@ -26,6 +26,10 @@ from palit.papers import doi_to_path
 app = typer.Typer(help="Extract structured evidence from full-text papers using vLLM")
 logger = logging.getLogger(__name__)
 
+# SQLite busy timeout in seconds. When sharding, multiple processes write to
+# the same database; the default 5 s can be too short for large batch commits.
+DB_TIMEOUT_SECONDS = 60
+
 
 @dataclass
 class PaperPrompt:
@@ -136,13 +140,19 @@ class PaperBatchProcessor:
         """Initialize with database path."""
         self.db_path = db_path
 
-    def get_papers_for_deep_analysis(self) -> list[dict[str, Any]]:
+    def get_papers_for_deep_analysis(
+        self, shard_index: int, num_shards: int
+    ) -> list[dict[str, Any]]:
         """
         Get papers that have been downloaded and haven't been processed for evidence extraction.
 
+        Args:
+            shard_index: Shard index (0-based) for parallel processing
+            num_shards: Total number of shards
+
         Returns list of papers with doi, source_date, title, abstract.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -152,8 +162,10 @@ class PaperBatchProcessor:
                 FROM papers
                 WHERE download_status = 'downloaded'
                 AND evidence_extraction_json IS NULL
+                AND rowid % ? = ?
                 ORDER BY doi
-                """
+                """,
+                (num_shards, shard_index),
             )
 
             rows = cursor.fetchall()
@@ -177,7 +189,7 @@ class PaperBatchProcessor:
             return
 
         successful_updates = 0
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -266,10 +278,10 @@ class PaperBatchProcessor:
                 f"Updated {successful_updates} papers with evidence extraction and synchronized gene_mentions"
             )
 
-    def get_deep_analysis_statistics(self) -> dict[str, int]:
-        """Get statistics about deep analysis processing progress."""
+    def get_deep_analysis_statistics(self, shard_index: int, num_shards: int) -> dict[str, int]:
+        """Get statistics about deep analysis processing progress for this shard."""
         logger.debug("Querying database for deep analysis statistics...")
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             cursor = conn.cursor()
 
             # Papers eligible for deep analysis (downloaded full text)
@@ -278,7 +290,9 @@ class PaperBatchProcessor:
                 """
                 SELECT COUNT(*) FROM papers
                 WHERE download_status = 'downloaded'
-                """
+                AND rowid % ? = ?
+                """,
+                (num_shards, shard_index),
             )
             eligible_papers = cursor.fetchone()[0]
 
@@ -288,7 +302,9 @@ class PaperBatchProcessor:
                 """
                 SELECT COUNT(*) FROM papers
                 WHERE evidence_extraction_json IS NOT NULL
-            """
+                AND rowid % ? = ?
+                """,
+                (num_shards, shard_index),
             )
             processed_papers = cursor.fetchone()[0]
 
@@ -299,7 +315,9 @@ class PaperBatchProcessor:
                 SELECT COUNT(*) FROM papers
                 WHERE download_status = 'downloaded'
                 AND evidence_extraction_json IS NULL
-            """
+                AND rowid % ? = ?
+                """,
+                (num_shards, shard_index),
             )
             remaining_papers = cursor.fetchone()[0]
 
@@ -392,9 +410,11 @@ async def _process_evidence(
     max_tokens: int,
     batch_size: int,
     max_retries: int,
+    shard_index: int,
+    num_shards: int,
 ) -> None:
     """Run the evidence extraction retry loop."""
-    stats = db_processor.get_deep_analysis_statistics()
+    stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards)
     initial_remaining = stats["remaining_papers"]
     total_processed = 0
     all_missing_dois: set[str] = set()
@@ -403,7 +423,7 @@ async def _process_evidence(
 
     with tqdm(total=initial_remaining, desc="Processing papers") as pbar:
         while retry_attempt < max_retries:
-            stats = db_processor.get_deep_analysis_statistics()
+            stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards)
             if stats["remaining_papers"] == 0:
                 logger.info("All papers successfully processed!")
                 break
@@ -414,7 +434,7 @@ async def _process_evidence(
                 )
 
             logger.info("Fetching papers for deep analysis...")
-            papers = db_processor.get_papers_for_deep_analysis()
+            papers = db_processor.get_papers_for_deep_analysis(shard_index, num_shards)
             logger.info(f"  Retrieved {len(papers)} papers for processing")
 
             if not papers:
@@ -514,7 +534,7 @@ async def _process_evidence(
 
             retry_attempt += 1
 
-    final_stats = db_processor.get_deep_analysis_statistics()
+    final_stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards)
     logger.info("Deep analysis complete!")
     logger.info("Final statistics:")
     logger.info(f"  Successfully processed: {total_processed:,}")
@@ -606,6 +626,16 @@ def main(
         "--scope-panel-id",
         help="Panel ID for panel-scoped evidence extraction (only extracts genes relevant to this panel)",
     ),
+    shard_index: int = typer.Option(
+        0,
+        "--shard-index",
+        help="Shard index (0-based) for parallel processing across multiple GPUs",
+    ),
+    num_shards: int = typer.Option(
+        1,
+        "--num-shards",
+        help="Total number of shards for parallel processing (values > 1 require database WAL mode)",
+    ),
     batch_size: int = typer.Option(
         1,
         "--batch-size",
@@ -677,8 +707,8 @@ def main(
 
     # Get initial statistics
     logger.info("Fetching database statistics...")
-    stats = db_processor.get_deep_analysis_statistics()
-    logger.info("Deep analysis statistics:")
+    stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards)
+    logger.info(f"Deep analysis statistics (shard {shard_index}/{num_shards}):")
     logger.info(f"  Papers with downloaded full text: {stats['eligible_papers']:,}")
     logger.info(f"  Already processed: {stats['processed_papers']:,}")
     logger.info(f"  Remaining to process: {stats['remaining_papers']:,}")
@@ -700,6 +730,8 @@ def main(
             max_tokens=max_tokens,
             batch_size=batch_size,
             max_retries=max_retries,
+            shard_index=shard_index,
+            num_shards=num_shards,
         )
     )
 

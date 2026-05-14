@@ -236,8 +236,19 @@ def get_processed_variant_keys(db_path: Path) -> set[tuple[str, int, str]]:
         return {(doi, box_id, original_text) for doi, box_id, original_text in cursor.fetchall()}
 
 
-def store_results_for_doi(doi: str, results: list[VariantFrequencyResult], db_path: Path) -> None:
+def store_results_for_doi(
+    doi: str,
+    results: list[VariantFrequencyResult],
+    db_path: Path,
+    old_ids_to_delete: list[int],
+) -> None:
     """Persist a paper's results atomically.
+
+    ``old_ids_to_delete`` carries the IDs of previously-errored rows that
+    this batch is replacing (retry-errors mode); they are deleted in the
+    same transaction as the inserts. Per-paper atomicity means a crash
+    while another paper is still resolving leaves that paper's old rows
+    in place, so the next retry-errors run can pick them up.
 
     Two layers of dedup on ``(variant_id, paper_doi, box_id)``:
 
@@ -250,7 +261,7 @@ def store_results_for_doi(doi: str, results: list[VariantFrequencyResult], db_pa
        can add a new alias for an already-stored variant. Both cases mean
        the row is already captured — silently no-op.
     """
-    if not results:
+    if not results and not old_ids_to_delete:
         logger.debug(f"No results to store for DOI {doi}")
         return
 
@@ -268,6 +279,12 @@ def store_results_for_doi(doi: str, results: list[VariantFrequencyResult], db_pa
     inserted = 0
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
+        if old_ids_to_delete:
+            placeholders = ",".join("?" * len(old_ids_to_delete))
+            cursor.execute(
+                f"DELETE FROM variant_frequencies WHERE id IN ({placeholders})",
+                old_ids_to_delete,
+            )
         for r in unique:
             cursor.execute(
                 """
@@ -442,19 +459,38 @@ async def _resolve_all(
     db_path: Path,
     progress: Progress,
     task_id: TaskID,
+    old_ids_by_key: dict[tuple[str, int, str], int],
 ) -> list[VariantFrequencyResult]:
     """Issue one ``/v1/variant`` request per variant, flush each paper
-    atomically as its last variant lands, return all results for stats."""
+    atomically as its last variant lands, return all results for stats.
+
+    ``old_ids_by_key`` maps each variant's ``(doi, box_id, original_text)``
+    to the existing errored row's ID (retry-errors mode; empty otherwise).
+    Each per-paper flush deletes the IDs whose lookup actually produced a
+    result and inserts the new rows in one transaction. Lookups that ended
+    in a transport error contribute neither a result nor a delete, so the
+    old errored row stays for the next retry-errors run.
+    """
     pending: dict[str, _PaperBucket] = {}
     for doi, _ in flat_sorted:
         bucket = pending.setdefault(doi, _PaperBucket(remaining=0))
         bucket.remaining += 1
 
     all_results: list[VariantFrequencyResult] = []
-    completed_papers = 0
+
+    def _flush(doi: str) -> None:
+        bucket = pending[doi]
+        old_ids = [
+            old_ids_by_key[(doi, r.box_id, r.normalization["original_text"])]
+            for r in bucket.results
+            if (doi, r.box_id, r.normalization["original_text"]) in old_ids_by_key
+        ]
+        store_results_for_doi(doi, bucket.results, db_path, old_ids)
+        all_results.extend(bucket.results)
+        del pending[doi]
+        progress.update(task_id, advance=1, description=f"[green]Completed DOI {doi}")
 
     async def _one(doi: str, ev: ExtractedVariant) -> None:
-        nonlocal completed_papers
         try:
             body = _build_request_body(ev)
             response = await client.lookup_one(body)
@@ -472,22 +508,14 @@ async def _resolve_all(
             bucket = pending[doi]
             bucket.remaining -= 1
             if bucket.remaining == 0:
-                store_results_for_doi(doi, bucket.results, db_path)
-                all_results.extend(bucket.results)
-                del pending[doi]
-                completed_papers += 1
-                progress.update(task_id, advance=1, description=f"[green]Completed DOI {doi}")
+                _flush(doi)
             return
 
         bucket = pending[doi]
         bucket.results.append(result)
         bucket.remaining -= 1
         if bucket.remaining == 0:
-            store_results_for_doi(doi, bucket.results, db_path)
-            all_results.extend(bucket.results)
-            del pending[doi]
-            completed_papers += 1
-            progress.update(task_id, advance=1, description=f"[green]Completed DOI {doi}")
+            _flush(doi)
 
     tasks = [asyncio.create_task(_one(doi, ev)) for doi, ev in flat_sorted]
     await asyncio.gather(*tasks)
@@ -548,9 +576,11 @@ async def _retry_errored_variants(
     """Re-resolve rows whose ``gnomad`` payload is ``{"normalization_error": true}``.
 
     Reads ``normalization.original_text`` and the paper's ``genome_build``,
-    re-submits through the same async fan-out, then deletes the old row
-    before the new INSERT so the unique key doesn't collide on the
-    ``original_text`` sentinel ``variant_id``.
+    re-submits through the same async fan-out. The replacement is per-paper
+    inside ``store_results_for_doi``: each paper's flush deletes the old
+    errored rows and inserts the new ones in the same transaction. A crash
+    while another paper is still resolving leaves that paper's old rows in
+    the DB for the next ``--retry-errors`` run.
     """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -583,7 +613,7 @@ async def _retry_errored_variants(
             paper_genome_build[paper_row["doi"]] = build
 
     flat: list[tuple[str, ExtractedVariant]] = []
-    old_ids: list[int] = []
+    old_ids_by_key: dict[tuple[str, int, str], int] = {}
     for row in rows:
         doi = row["paper_doi"]
         normalization = json.loads(row["normalization"])
@@ -600,15 +630,9 @@ async def _retry_errored_variants(
                 ),
             )
         )
-        old_ids.append(row["id"])
+        old_ids_by_key[(doi, row["box_id"], original_text)] = row["id"]
 
     flat.sort(key=lambda pair: _chromosome_sort_key(pair[1], hgnc_resolver))
-
-    with sqlite3.connect(db_path) as conn:
-        conn.executemany(
-            "DELETE FROM variant_frequencies WHERE id = ?", [(rid,) for rid in old_ids]
-        )
-        conn.commit()
 
     with Progress(
         SpinnerColumn(),
@@ -621,7 +645,7 @@ async def _retry_errored_variants(
         # Per-paper completion drives the progress bar — counts papers, not variants.
         paper_count = len({doi for doi, _ in flat})
         task_id = progress.add_task("Retrying errored variants...", total=paper_count)
-        results = await _resolve_all(flat, client, db_path, progress, task_id)
+        results = await _resolve_all(flat, client, db_path, progress, task_id, old_ids_by_key)
 
     fixed = sum(1 for r in results if not r.gnomad.get("normalization_error"))
     still_errored = len(results) - fixed
@@ -690,7 +714,7 @@ async def _main(
             TimeRemainingColumn(),
         ) as progress:
             task_id = progress.add_task("Processing papers...", total=len(variants_by_doi))
-            results = await _resolve_all(flat, client, db_path, progress, task_id)
+            results = await _resolve_all(flat, client, db_path, progress, task_id, {})
 
         print_summary_statistics(results)
         logger.info("✅ Variant frequency lookup complete")

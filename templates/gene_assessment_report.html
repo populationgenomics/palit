@@ -279,11 +279,15 @@
         <details>
             <summary><strong>PanelApp criteria assessment</strong></summary>
             {% for entity in gene.assessment_json.disease_entities | sort_by_family_count %}
-            <h5 class="per-entity-criteria-heading">{{ entity.description }}
-                {% if entity.mondo_id %}{{ badge(entity | format_mondo_badge, "mondo") }}{% endif %}
-                {{ badge(entity | format_dispute_badge, "dispute") }}
-            </h5>
-            {{ criteria_grid(entity, gene.hgnc_id, pdf_base_path, contributing_papers=gene.contributing_papers) }}
+            <section class="per-entity-criteria-section">
+                <h5 class="per-entity-criteria-heading">{{ entity.description }}
+                    {% if entity.mondo_id %}{{ badge(entity | format_mondo_badge, "mondo") }}{% endif %}
+                    {{ badge(entity | format_dispute_badge, "dispute") }}
+                </h5>
+                <div class="per-entity-criteria-body">
+                    {{ criteria_grid(entity, gene.hgnc_id, pdf_base_path, contributing_papers=gene.contributing_papers) }}
+                </div>
+            </section>
             {% endfor %}
         </details>
 
@@ -499,8 +503,12 @@
                 </div>
 
                 {% for entity in gene_eval.disease_entities | sort_by_family_count %}
-                <h6 class="per-entity-criteria-heading">{{ entity.description }}</h6>
-                {{ criteria_grid(entity, gene.hgnc_id, pdf_base_path, citation_pages=paper.citation_pages, doi=paper.doi, display_id=paper.display_id) }}
+                <section class="per-entity-criteria-section">
+                    <h6 class="per-entity-criteria-heading">{{ entity.description }}</h6>
+                    <div class="per-entity-criteria-body">
+                        {{ criteria_grid(entity, gene.hgnc_id, pdf_base_path, citation_pages=paper.citation_pages, doi=paper.doi, display_id=paper.display_id) }}
+                    </div>
+                </section>
                 {% endfor %}
 
                 <div class="variant-frequency-section">

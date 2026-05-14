@@ -511,6 +511,37 @@ section > h2 {
 
 /* Criteria Assessment */
 
+.per-entity-criteria-section {
+    border: 1px solid #cbd5e1;
+    border-left: 4px solid #64748b;
+    border-radius: 4px;
+    background: white;
+    margin: 24px 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+.per-entity-criteria-heading {
+    margin: 0;
+    padding: 10px 16px;
+    background: #eef2f7;
+    border-bottom: 1px solid #cbd5e1;
+    font-size: 1em;
+    color: #2c3e50;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.per-entity-criteria-body {
+    padding: 4px 16px 16px;
+}
+
+.per-entity-criteria-body .criteria-grid {
+    margin: 0;
+}
+
 .criteria-grid {
     margin: 20px 0;
 }

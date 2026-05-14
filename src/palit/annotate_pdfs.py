@@ -286,37 +286,35 @@ def extract_variant_citations(
 
         bbox_info = bbox_mapping[box_id]
 
-        # Parse normalization and gnomAD data for commentary
+        # Parse normalization and gnomAD data for commentary. The gnomad
+        # JSON is the flat shape written by fetch_variant_frequencies: a
+        # success row carries `ac` directly, sentinel rows carry
+        # {"variant_not_found": true} or {"normalization_error": true}.
         try:
             normalization = json.loads(row["normalization"])
             gnomad = json.loads(row["gnomad"])
-
-            # Create informative commentary
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"Failed to parse variant data for DOI {current_doi}, variant {variant_id}: {e}"
+            )
+            commentary = f"Variant: {variant_id} | Data parsing error"
+        else:
             variant_display = normalization.get("hgvs_c") or normalization.get(
                 "original_text", variant_id
             )
-
-            if "error" in gnomad:
-                frequency_info = f"gnomAD: {gnomad['error']}"
-            elif "variant_not_found" in gnomad:
+            if gnomad.get("normalization_error"):
+                frequency_info = "gnomAD: normalization failed"
+            elif gnomad.get("variant_not_found"):
                 frequency_info = "gnomAD: not found"
             else:
-                variant_data = gnomad.get("variant")
-                if variant_data and variant_data.get("joint", {}).get("ac") is not None:
-                    ac = variant_data["joint"]["ac"]
+                ac = gnomad.get("ac")
+                if ac is not None:
                     frequency_info = f"gnomAD AC: {ac}"
                     if ac > 30:
                         frequency_info += " ⚠️ HIGH FREQUENCY"
                 else:
                     frequency_info = "gnomAD: No data"
-
             commentary = f"Variant: {variant_display} | {frequency_info}"
-
-        except Exception as e:
-            logger.warning(
-                f"Failed to parse variant data for DOI {current_doi}, variant {variant_id}: {e}"
-            )
-            commentary = f"Variant: {variant_id} | Data parsing error"
 
         citations.append(
             AnnotationCitation(

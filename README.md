@@ -39,6 +39,19 @@ The system uses multiple databases:
 
 Both main and screening workflows use the same schema for consistency, allowing the same tools (e.g., `assess-relevance`) to work on both databases.
 
+### External Services
+
+#### Variant Frequency Lookup
+
+Step 11 (`palit fetch-variant-frequencies`) requires a running [variant-lookup](https://github.com/populationgenomics/variant-lookup) service. Copy `.env.example` to `.env` and set both:
+
+```
+VARIANT_LOOKUP_BASE_URL=https://<host>:<port>
+VARIANT_LOOKUP_API_KEY=<bearer-token>
+```
+
+`.env` is gitignored. The command exits immediately on startup if either variable is missing.
+
 ## Complete Workflow
 
 ```bash
@@ -103,7 +116,8 @@ for i in 0 1; do sbatch -p GPU-H100 --gpus=1 -t 24:00:00 -J "assess-genes-shard-
 # 10. Match genes to appropriate panels based on phenotype descriptions
 uv run palit match-panels --panel-date $PANEL_DATE
 
-# 11. Look up variant frequencies from gnomAD
+# 11. Look up variant frequencies from gnomAD via the variant-lookup
+#     service (requires VARIANT_LOOKUP_* env vars — see Setup).
 uv run palit fetch-variant-frequencies
 
 # 12. Create annotated PDFs with highlighted citations

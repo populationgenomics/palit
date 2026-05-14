@@ -2,6 +2,9 @@
 .venv/
 *.egg-info/
 
+# Local env (holds variant-lookup credentials and base URL — never commit)
+.env
+
 # Runtime data directory
 /data/
 /downloads/

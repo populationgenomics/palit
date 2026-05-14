@@ -3,6 +3,7 @@
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,6 +45,7 @@ class HgncEntry:
     prev_symbols: tuple[str, ...]
     alias_symbols: tuple[str, ...]
     locus_group: str
+    chromosome: str | None  # Parsed from HGNC `location` (e.g. "17q21.31" → "17")
 
 
 @dataclass
@@ -85,6 +87,7 @@ class HgncResolver:
             prev_symbols = tuple(doc.get("prev_symbol", []))
             alias_symbols = tuple(doc.get("alias_symbol", []))
             locus_group: str = doc.get("locus_group", "")
+            chromosome = _parse_chromosome(doc.get("location"))
 
             entry = HgncEntry(
                 hgnc_id=hgnc_id,
@@ -92,6 +95,7 @@ class HgncResolver:
                 prev_symbols=prev_symbols,
                 alias_symbols=alias_symbols,
                 locus_group=locus_group,
+                chromosome=chromosome,
             )
 
             by_symbol[symbol.upper()] = entry
@@ -118,6 +122,12 @@ class HgncResolver:
     def get_symbol(self, hgnc_id: int) -> str:
         """Look up current symbol by HGNC ID. Raises KeyError if not found."""
         return self._by_hgnc_id[hgnc_id].symbol
+
+    def get_chromosome(self, hgnc_id: int) -> str | None:
+        """Look up gene's chromosome by HGNC ID. None when HGNC has no
+        parseable location (e.g. pseudogenes, withdrawn entries).
+        Raises KeyError if hgnc_id is unknown."""
+        return self._by_hgnc_id[hgnc_id].chromosome
 
     def resolve(self, symbol: str) -> HgncEntry | None:
         """Resolve arbitrary gene symbol to HGNC entry. Returns None if unresolved."""
@@ -197,6 +207,25 @@ _GREEK_TO_LATIN: dict[str, str] = {
     "\u03b4": "D",
     "\u03b5": "E",
 }
+
+
+_CHROMOSOME_PATTERN = re.compile(r"^(\d+|X|Y)")
+
+
+def _parse_chromosome(location: str | None) -> str | None:
+    """Extract the chromosome token from an HGNC `location` string.
+
+    HGNC encodes cytogenetic location as e.g. "17q21.31", "Xq28", "Yp11.2",
+    or "mitochondria"/"mitochondrially encoded" for chrM. Anything that
+    doesn't start with a chromosome number/letter (e.g. "reserved",
+    "not on reference assembly") returns None.
+    """
+    if not location:
+        return None
+    if location.lower().startswith("mitochond"):
+        return "MT"
+    match = _CHROMOSOME_PATTERN.match(location)
+    return match.group(1) if match else None
 
 
 def _normalize_unicode(symbol: str) -> str:

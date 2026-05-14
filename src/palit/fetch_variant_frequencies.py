@@ -1,32 +1,54 @@
 #!/usr/bin/env python3
-"""Look up variant frequencies from gnomAD v4 for extracted variants."""
+"""Look up variant frequencies via the variant-lookup service.
 
+One HTTPS request per extracted variant against the gateway's
+``POST /v1/variant`` endpoint. Concurrency is bounded by a semaphore
+(default 8, matching the service's nginx ``limit_conn`` cap).
+Variants are sorted by gene chromosome before issuing requests so
+consecutive calls hit the same per-chromosome echtvar archive and
+the same Mutalyzer reference-sequence cache.
+"""
+
+import asyncio
 import json
 import logging
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import httpx
 import tenacity
 import typer
+from pydantic import Field, ValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from rich.progress import (
     BarColumn,
     SpinnerColumn,
+    TaskID,
     TaskProgressColumn,
     TextColumn,
     TimeRemainingColumn,
 )
 
 from palit.hgnc import HgncResolver
-from palit.normalize_variants import VariantNormalizer
 from palit.progress import LoggingProgress as Progress
 
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(help="Look up variant frequencies from gnomAD v4")
+app = typer.Typer(help="Look up variant frequencies via the variant-lookup service")
+
+
+# Per-request timeout. Mutalyzer's first-touch on a cold reference-sequence
+# cache can take well over a minute (NCBI E-fetch + back-translate fan-out).
+# Steady-state requests finish in ~2-3s; we trade a few wasted seconds on
+# truly stuck calls for not dropping legitimate cold-cache traffic.
+_REQUEST_TIMEOUT_S = 180.0
+
+# Default in-flight cap on the client side. The service enforces 8
+# cluster-wide via nginx limit_conn; staying at parity avoids burning
+# tenacity retries on 429s in the common case.
+_DEFAULT_MAX_IN_FLIGHT = 8
 
 
 @dataclass
@@ -34,50 +56,125 @@ class ExtractedVariant:
     """A variant extracted from evidence extraction."""
 
     hgnc_id: int
-    hgnc_symbol: str  # Current HGNC symbol, needed for variant normalizer
+    hgnc_symbol: str
     variant_text: str
-    genome_build: str | None  # From evidence extraction (e.g. "GRCh38"), None if unknown
+    genome_build: str | None  # From evidence extraction; None if unknown
     box_id: int
 
 
 @dataclass
 class VariantFrequencyResult:
-    """Result of looking up frequency for a single variant."""
+    """One row destined for the ``variant_frequencies`` table."""
 
-    variant_id: str  # gnomAD pseudo-VCF format
+    variant_id: str  # pseudo-VCF when normalization succeeded; original_text on failure
     hgnc_id: int
     doi: str
     box_id: int
-    normalization: dict[str, Any]  # HGVS c/p information
-    gnomad: dict[str, Any]  # gnomAD response or error
-    error: str | None = None
+    normalization: dict[str, Any]
+    gnomad: dict[str, Any]
 
 
-@dataclass
-class VariantProcessingResults:
-    """Results from processing variants including statistics."""
+# ---------------------------------------------------------------------------
+# Settings — pydantic-settings, .env is read automatically.
+# ---------------------------------------------------------------------------
 
-    results: list[VariantFrequencyResult]
-    total_variants: int
-    failed_normalizations: int
+
+class VariantLookupSettings(BaseSettings):
+    """Loaded from environment + .env at command startup.
+
+    Fails the command with a clean message if either variable is missing —
+    see ``_load_settings`` below.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    base_url: str = Field(..., alias="VARIANT_LOOKUP_BASE_URL")
+    api_key: str = Field(..., alias="VARIANT_LOOKUP_API_KEY")
+
+
+def _load_settings() -> VariantLookupSettings:
+    try:
+        return VariantLookupSettings()  # type: ignore[call-arg]
+    except ValidationError as e:
+        missing = sorted({str(err["loc"][0]) for err in e.errors() if err["type"] == "missing"})
+        logger.error(
+            "Required environment variables not set: %s. See README.md § 'External services'.",
+            ", ".join(missing),
+        )
+        raise typer.Exit(1) from e
+
+
+# ---------------------------------------------------------------------------
+# Async HTTP client.
+# ---------------------------------------------------------------------------
+
+
+def _is_5xx_or_transport(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+
+class VariantLookupClient:
+    """Async wrapper around ``POST /v1/variant``.
+
+    Concurrency: ``max_in_flight`` semaphore. 429s honour ``Retry-After``
+    (handled in-band); 5xx and transport errors retry via tenacity.
+    """
+
+    def __init__(self, settings: VariantLookupSettings, max_in_flight: int) -> None:
+        self._endpoint = f"{settings.base_url.rstrip('/')}/v1/variant"
+        self._headers = {"Authorization": f"Bearer {settings.api_key}"}
+        self._semaphore = asyncio.Semaphore(max_in_flight)
+        self._http = httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
+
+    async def lookup_one(self, body: dict[str, Any]) -> dict[str, Any]:
+        async with self._semaphore:
+            return await self._post_with_retries(body)
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(7),
+        wait=tenacity.wait_exponential_jitter(initial=1, max=30),
+        retry=tenacity.retry_if_exception(_is_5xx_or_transport),
+        before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
+    )
+    async def _post_with_retries(self, body: dict[str, Any]) -> dict[str, Any]:
+        # Inner 429 loop: nginx limit_conn returns 429 + Retry-After when the
+        # cluster cap is exceeded; honour the header rather than backing off
+        # blindly. Bounded so a misbehaving service doesn't spin forever.
+        for _ in range(10):
+            response = await self._http.post(self._endpoint, json=body, headers=self._headers)
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.json()  # type: ignore[no-any-return]
+            retry_after = float(response.headers.get("Retry-After", "1.0"))
+            await asyncio.sleep(retry_after)
+        # Still 429 after 10 honoured retries — let tenacity see the 5xx-shaped
+        # error so the caller's resumable rerun picks it up later.
+        response.raise_for_status()
+        raise RuntimeError("unreachable: 429 loop fell through without raising")
+
+
+# ---------------------------------------------------------------------------
+# DB helpers (extraction → storage).
+# ---------------------------------------------------------------------------
 
 
 def load_extracted_variants(
     db_path: Path, hgnc_resolver: HgncResolver
 ) -> dict[str, list[ExtractedVariant]]:
-    """Load variants from evidence extractions in the database.
-
-    Returns dict mapping DOI to list of ExtractedVariant objects.
-    """
+    """Load variants from evidence extractions, grouped by paper DOI."""
     logger.info(f"Loading extracted variants from {db_path}...")
-
     variants_by_doi: dict[str, list[ExtractedVariant]] = {}
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-
-        # Get all papers with evidence extraction
         cursor.execute("""
             SELECT doi, evidence_extraction_json
             FROM papers
@@ -87,7 +184,6 @@ def load_extracted_variants(
 
         for row in cursor.fetchall():
             doi = row["doi"]
-
             try:
                 extraction_data = json.loads(row["evidence_extraction_json"])
             except json.JSONDecodeError:
@@ -98,27 +194,16 @@ def load_extracted_variants(
             if genome_build == "unknown":
                 genome_build = None
 
-            # Extract variants from each gene evaluation (only resolved ones with hgnc_id)
-            gene_evaluations = extraction_data.get("gene_evaluations", [])
-
-            for eval_data in gene_evaluations:
+            for eval_data in extraction_data.get("gene_evaluations", []):
                 hgnc_id = eval_data.get("hgnc_id")
                 if hgnc_id is None:
                     continue
-
                 hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-
-                # Get variants array with box_ids
-                variant_entries = eval_data.get("variants", [])
-
-                for variant_entry in variant_entries:
+                for variant_entry in eval_data.get("variants", []):
                     variant_text = variant_entry.get("variant")
                     box_id = variant_entry.get("box_id")
-
                     if variant_text and box_id is not None:
-                        if doi not in variants_by_doi:
-                            variants_by_doi[doi] = []
-                        variants_by_doi[doi].append(
+                        variants_by_doi.setdefault(doi, []).append(
                             ExtractedVariant(
                                 hgnc_id=hgnc_id,
                                 hgnc_symbol=hgnc_symbol,
@@ -128,19 +213,19 @@ def load_extracted_variants(
                             )
                         )
 
-    total_variants = sum(len(variants) for variants in variants_by_doi.values())
-    logger.info(f"Loaded {total_variants} variants from {len(variants_by_doi)} papers")
+    total = sum(len(v) for v in variants_by_doi.values())
+    logger.info(f"Loaded {total} variants from {len(variants_by_doi)} papers")
     return variants_by_doi
 
 
 def get_processed_variant_keys(db_path: Path) -> set[tuple[str, int, str]]:
-    """Return the set of (paper_doi, box_id, original_text) tuples already stored.
+    """Return ``(paper_doi, box_id, original_text)`` triples already stored.
 
-    A variant is considered processed once any row exists for it — including a
-    normalization_error row. Use --retry-errors to re-run error rows; a plain
-    rerun fills in only variants that have no row at all (so it cheaply backfills
-    papers that were partially processed because new variants got extracted, but
-    won't churn rows that were already attempted).
+    A variant counts as processed once any row exists for it (including a
+    ``normalization_error`` sentinel). Use ``--retry-errors`` to re-run
+    error rows; a plain rerun fills in only variants that have no row at
+    all, so partially-processed papers with newly extracted variants get
+    cheaply backfilled without churning rows that already landed.
     """
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
@@ -151,545 +236,360 @@ def get_processed_variant_keys(db_path: Path) -> set[tuple[str, int, str]]:
         return {(doi, box_id, original_text) for doi, box_id, original_text in cursor.fetchall()}
 
 
-def _is_retryable(exc: BaseException) -> bool:
-    """Only retry on transient errors: 429, 5xx, and transport-level failures."""
-    if isinstance(exc, httpx.TransportError):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code == 429 or exc.response.status_code >= 500
-    return False
-
-
-@tenacity.retry(
-    stop=tenacity.stop_after_attempt(7),
-    wait=tenacity.wait_exponential_jitter(initial=2, max=120),
-    retry=tenacity.retry_if_exception(_is_retryable),
-    before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
-)
-def _gnomad_request(url: str, payload: dict[str, Any]) -> httpx.Response:
-    """Make a single gnomAD API request, retrying on transient errors."""
-    response = httpx.post(url, json=payload, timeout=30, follow_redirects=True)
-    response.raise_for_status()
-    return response
-
-
-def query_gnomad_v4(variant_id: str) -> dict[str, Any]:
-    """Query gnomAD v4 API for variant frequency information.
-
-    Args:
-        variant_id: Pseudo-VCF format like "17-43045606-C-G"
-
-    Returns:
-        Dict with gnomAD data or error information
-    """
-    # GraphQL endpoint for gnomAD v4
-    url = "https://gnomad.broadinstitute.org/api"
-
-    # GraphQL query for variant information
-    query = """
-    query GnomadVariant($variantId: String!, $datasetId: DatasetId!) {
-      variant(variantId: $variantId, dataset: $datasetId) {
-        joint {
-          ac
-          an
-          homozygote_count
-          hemizygote_count
-          faf95 {
-            popmax
-            popmax_population
-          }
-        }
-      }
-    }
-    """
-
-    # Variables for the query
-    variables = {"variantId": variant_id, "datasetId": "gnomad_r4"}
-    payload = {"query": query, "variables": variables}
-
-    try:
-        response = _gnomad_request(url, payload)
-        result = response.json()
-
-        if "errors" in result:
-            error_msg = result["errors"][0].get("message", "Unknown error")
-            if "Variant not found" in error_msg:
-                # This is expected - many variants won't be in gnomAD
-                return {"variant_not_found": True}
-            else:
-                return {"error": f"gnomAD API error: {error_msg}"}
-
-        data = result.get("data")
-        return data if data is not None else {}
-
-    except (httpx.HTTPStatusError, httpx.TransportError, tenacity.RetryError) as e:
-        logger.warning(f"Network error querying gnomAD for {variant_id} after retries: {e}")
-        return {"error": f"Network error: {e!s}"}
-    except Exception as e:
-        logger.warning(f"Unexpected error querying gnomAD for {variant_id}: {e}")
-        return {"error": f"Unexpected error: {e!s}"}
-
-
-def process_variants_for_doi(
-    doi: str, variants: list[ExtractedVariant], variant_normalizer: VariantNormalizer
-) -> VariantProcessingResults:
-    """Process all variants for a single paper through normalization and gnomAD lookup.
-
-    Processes variants sequentially within a paper. Papers themselves are processed
-    in parallel by the caller.
-    """
-    results = []
-    failed_normalizations = 0
-    total_variants = len(variants)
-
-    for variant in variants:
-        hgnc_id = variant.hgnc_id
-        hgnc_symbol = variant.hgnc_symbol
-        variant_text = variant.variant_text
-        genome_build = variant.genome_build
-        box_id = variant.box_id
-
-        try:
-            # Step 1: Normalize variant to get HGVS and pseudo-VCF
-            logger.debug(
-                f"Normalizing variant '{variant_text}' for gene {hgnc_symbol} from DOI {doi}"
-            )
-
-            hgvs_variant = variant_normalizer.hgvs(variant_text, hgnc_symbol, genome_build)
-            p_vcfs = variant_normalizer.pseudo_vcf(hgvs_variant)
-
-            if not p_vcfs:
-                raise ValueError("No pseudo-VCF coordinates generated")
-
-            # Multiple pseudo-VCF results can occur when back-translating ambiguous protein changes.
-            # For rare disease assessment, we need the MAXIMUM allele count across all possible
-            # translations to properly evaluate variant rarity. A variant is only as rare as its
-            # most common translation in the population.
-            best_p_vcf = None
-            best_gnomad_result = None
-            max_ac = -1
-
-            for p_vcf in p_vcfs:
-                variant_id = p_vcf.p_vcf
-
-                logger.debug(
-                    f"Querying gnomAD for variant {variant_id} ({len(p_vcfs)} total translations)"
-                )
-                gnomad_result = query_gnomad_v4(variant_id)
-
-                # Extract allele count for comparison
-                current_ac = -1
-                if "error" not in gnomad_result and "variant_not_found" not in gnomad_result:
-                    variant_info: dict[str, Any] | None = gnomad_result.get("variant")
-                    if variant_info and variant_info.get("joint", {}).get("ac") is not None:
-                        current_ac = variant_info["joint"]["ac"]
-
-                # Select variant with highest AC (most common = least rare)
-                # On tie, prefer lexicographically first variant_id for consistency
-                if current_ac > max_ac or (
-                    current_ac == max_ac and (best_p_vcf is None or variant_id < best_p_vcf.p_vcf)
-                ):
-                    max_ac = current_ac
-                    best_p_vcf = p_vcf
-                    best_gnomad_result = gnomad_result
-
-            # Use the variant with maximum AC
-            if best_p_vcf is None or best_gnomad_result is None:
-                raise ValueError("No valid variant result found")
-
-            p_vcf = best_p_vcf
-            gnomad_result = best_gnomad_result
-            variant_id = p_vcf.p_vcf
-
-            # Prepare normalization data
-            normalization = {
-                "hgvs_variant": str(hgvs_variant),
-                "hgvs_c": p_vcf.hgvs_c,
-                "hgvs_p": p_vcf.hgvs_p,
-                "original_text": variant_text,
-                "total_translations": len(p_vcfs),
-                "selected_for_max_ac": max_ac if max_ac >= 0 else None,
-            }
-
-            result = VariantFrequencyResult(
-                variant_id=variant_id,
-                hgnc_id=hgnc_id,
-                doi=doi,
-                box_id=box_id,
-                normalization=normalization,
-                gnomad=gnomad_result,
-            )
-            results.append(result)
-
-        except Exception as e:
-            logger.warning(
-                "Failed to process variant %r for gene %s from DOI %s: %s: %s",
-                variant_text,
-                hgnc_symbol,
-                doi,
-                type(e).__name__,
-                e,
-            )
-            failed_normalizations += 1
-            results.append(
-                VariantFrequencyResult(
-                    variant_id=variant_text,
-                    hgnc_id=hgnc_id,
-                    doi=doi,
-                    box_id=box_id,
-                    normalization={
-                        "original_text": variant_text,
-                        "error": str(e),
-                        "error_class": type(e).__name__,
-                    },
-                    gnomad={"normalization_error": str(e)},
-                )
-            )
-
-    return VariantProcessingResults(
-        results=results, total_variants=total_variants, failed_normalizations=failed_normalizations
-    )
-
-
 def store_results_for_doi(doi: str, results: list[VariantFrequencyResult], db_path: Path) -> None:
-    """Store variant frequency results for a single paper atomically in a transaction."""
+    """Persist a paper's results atomically. Drops within-batch duplicates
+    on the ``(variant_id, paper_doi, box_id)`` key — same gene/variant
+    cited at the same box_id."""
     if not results:
         logger.debug(f"No results to store for DOI {doi}")
         return
 
-    # Deduplicate by (variant_id, doi, box_id) - keep first occurrence
     seen_keys: set[tuple[str, str, int]] = set()
-    unique_results = []
-    duplicates_skipped = 0
-
-    for result in results:
-        key = (result.variant_id, result.doi, result.box_id)
+    unique: list[VariantFrequencyResult] = []
+    for r in results:
+        key = (r.variant_id, r.doi, r.box_id)
         if key not in seen_keys:
             seen_keys.add(key)
-            unique_results.append(result)
-        else:
-            duplicates_skipped += 1
-
-    if duplicates_skipped > 0:
-        logger.debug(f"Skipped {duplicates_skipped} duplicate entries for DOI {doi}")
-
-    logger.debug(f"Storing {len(unique_results)} variant frequency results for DOI {doi}...")
+            unique.append(r)
+    duplicates = len(results) - len(unique)
+    if duplicates:
+        logger.debug(f"Skipped {duplicates} duplicate entries for DOI {doi}")
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
-
-        # Insert all unique results for this paper atomically
-        for result in unique_results:
+        for r in unique:
             cursor.execute(
                 """
                 INSERT INTO variant_frequencies
-                (variant_id, hgnc_id, paper_doi, box_id, normalization, gnomad)
+                  (variant_id, hgnc_id, paper_doi, box_id, normalization, gnomad)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """,
+                """,
                 (
-                    result.variant_id,
-                    result.hgnc_id,
-                    result.doi,
-                    result.box_id,
-                    json.dumps(result.normalization),
-                    json.dumps(result.gnomad),
+                    r.variant_id,
+                    r.hgnc_id,
+                    r.doi,
+                    r.box_id,
+                    json.dumps(r.normalization),
+                    json.dumps(r.gnomad),
                 ),
             )
-
         conn.commit()
+    logger.debug(f"Stored {len(unique)} variant frequency results for DOI {doi}")
 
-    logger.debug(f"Stored {len(unique_results)} variant frequency results for DOI {doi}")
+
+# ---------------------------------------------------------------------------
+# Per-variant resolution: request body → response → max-AC pick → DB row.
+# ---------------------------------------------------------------------------
 
 
-def print_summary_statistics(processing_results: VariantProcessingResults) -> None:
-    """Print summary statistics about the variant frequency lookup."""
+def _build_request_body(ev: ExtractedVariant) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "gene": ev.hgnc_symbol,
+        "variant": ev.variant_text,
+    }
+    if ev.genome_build is not None:
+        body["genome_build"] = ev.genome_build
+    return body
 
-    total = processing_results.total_variants
-    normalization_errors = processing_results.failed_normalizations
-    successful_normalizations = total - normalization_errors
 
-    # Count gnomAD lookup results (only for successfully normalized variants).
-    # Rows whose gnomad payload carries normalization_error never reached gnomAD,
-    # so they're already accounted for in the "Failed normalization" bucket above.
-    found_in_gnomad = 0
+def _pick_max_ac_normalized(normalized: list[dict[str, Any]]) -> tuple[dict[str, Any], int | None]:
+    """Pick the back-translation with the highest gnomAD AC.
+
+    Tiebreak: lexicographically first pseudo_vcf — preserves the old
+    ``fetch_variant_frequencies.py:289-291`` deterministic-on-tie rule.
+    Returns the selected entry plus the AC that drove the choice (None
+    when every translation is "not found in gnomAD").
+    """
+    best: dict[str, Any] | None = None
+    best_ac = -1
+    for entry in normalized:
+        freq = entry.get("frequency")
+        ac = freq["ac"] if freq is not None else -1
+        if ac > best_ac or (
+            ac == best_ac and (best is None or entry["pseudo_vcf"] < best["pseudo_vcf"])
+        ):
+            best = entry
+            best_ac = ac
+    assert best is not None, "_pick_max_ac_normalized called with empty list"
+    return best, (best_ac if best_ac >= 0 else None)
+
+
+def _result_from_response(
+    ev: ExtractedVariant, doi: str, response: dict[str, Any]
+) -> VariantFrequencyResult:
+    error = response.get("error")
+    if error is not None:
+        return VariantFrequencyResult(
+            variant_id=ev.variant_text,
+            hgnc_id=ev.hgnc_id,
+            doi=doi,
+            box_id=ev.box_id,
+            normalization={
+                "original_text": ev.variant_text,
+                "error_code": error.get("code", ""),
+                "error_message": error.get("message", ""),
+                "upstream": error.get("upstream"),
+            },
+            gnomad={"normalization_error": True},
+        )
+
+    normalized = response.get("normalized") or []
+    if not normalized:
+        return VariantFrequencyResult(
+            variant_id=ev.variant_text,
+            hgnc_id=ev.hgnc_id,
+            doi=doi,
+            box_id=ev.box_id,
+            normalization={
+                "original_text": ev.variant_text,
+                "error_code": "NO_NORMALIZED_VARIANTS",
+                "error_message": "service returned an empty normalized[] list",
+                "upstream": None,
+            },
+            gnomad={"normalization_error": True},
+        )
+
+    picked, selected_ac = _pick_max_ac_normalized(normalized)
+    freq = picked.get("frequency")
+    gnomad_payload: dict[str, Any] = freq if freq is not None else {"variant_not_found": True}
+
+    return VariantFrequencyResult(
+        variant_id=picked["pseudo_vcf"],
+        hgnc_id=ev.hgnc_id,
+        doi=doi,
+        box_id=ev.box_id,
+        normalization={
+            "hgvs_c": picked.get("hgvs_c"),
+            "hgvs_p": picked.get("hgvs_p"),
+            "original_text": ev.variant_text,
+            "total_normalizations": len(normalized),
+            "selected_for_max_ac": selected_ac,
+        },
+        gnomad=gnomad_payload,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Async fan-out + per-paper flush.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _PaperBucket:
+    """In-memory state tracking a paper's in-flight variants."""
+
+    remaining: int
+    results: list[VariantFrequencyResult] = field(default_factory=list)
+
+
+def _chromosome_sort_key(
+    ev: ExtractedVariant, hgnc_resolver: HgncResolver
+) -> tuple[int, str, int, int]:
+    """Sort key for backend cache locality.
+
+    Tuple of (chromosome rank, chromosome label, hgnc_id, box_id):
+    - chromosome rank groups same-chromosome variants (echtvar archive +
+      MANE-select transcript cache locality)
+    - hgnc_id within a chromosome groups same-gene variants (Mutalyzer
+      reference-sequence cache locality)
+    - box_id final tiebreaker for determinism
+    """
+    chrom = hgnc_resolver.get_chromosome(ev.hgnc_id)
+    # Numeric chromosomes first (1..22), then X, then Y, then MT, then unknown.
+    if chrom is None:
+        rank = 1000
+        label = ""
+    elif chrom.isdigit():
+        rank = int(chrom)
+        label = chrom
+    elif chrom == "X":
+        rank = 100
+        label = chrom
+    elif chrom == "Y":
+        rank = 101
+        label = chrom
+    elif chrom == "MT":
+        rank = 102
+        label = chrom
+    else:
+        rank = 999
+        label = chrom
+    return (rank, label, ev.hgnc_id, ev.box_id)
+
+
+async def _resolve_all(
+    flat_sorted: list[tuple[str, ExtractedVariant]],
+    client: VariantLookupClient,
+    db_path: Path,
+    progress: Progress,
+    task_id: TaskID,
+) -> list[VariantFrequencyResult]:
+    """Issue one ``/v1/variant`` request per variant, flush each paper
+    atomically as its last variant lands, return all results for stats."""
+    pending: dict[str, _PaperBucket] = {}
+    for doi, _ in flat_sorted:
+        bucket = pending.setdefault(doi, _PaperBucket(remaining=0))
+        bucket.remaining += 1
+
+    all_results: list[VariantFrequencyResult] = []
+    completed_papers = 0
+
+    async def _one(doi: str, ev: ExtractedVariant) -> None:
+        nonlocal completed_papers
+        try:
+            body = _build_request_body(ev)
+            response = await client.lookup_one(body)
+            result = _result_from_response(ev, doi, response)
+        except (httpx.HTTPError, tenacity.RetryError) as e:
+            logger.warning(
+                "Variant %r for gene %s in DOI %s failed after retries: %s: %s",
+                ev.variant_text,
+                ev.hgnc_symbol,
+                doi,
+                type(e).__name__,
+                e,
+            )
+            # Leave the row absent so the next resumable rerun retries it.
+            bucket = pending[doi]
+            bucket.remaining -= 1
+            if bucket.remaining == 0:
+                store_results_for_doi(doi, bucket.results, db_path)
+                all_results.extend(bucket.results)
+                del pending[doi]
+                completed_papers += 1
+                progress.update(task_id, advance=1, description=f"[green]Completed DOI {doi}")
+            return
+
+        bucket = pending[doi]
+        bucket.results.append(result)
+        bucket.remaining -= 1
+        if bucket.remaining == 0:
+            store_results_for_doi(doi, bucket.results, db_path)
+            all_results.extend(bucket.results)
+            del pending[doi]
+            completed_papers += 1
+            progress.update(task_id, advance=1, description=f"[green]Completed DOI {doi}")
+
+    tasks = [asyncio.create_task(_one(doi, ev)) for doi, ev in flat_sorted]
+    await asyncio.gather(*tasks)
+    return all_results
+
+
+# ---------------------------------------------------------------------------
+# Stats + retry-errors path.
+# ---------------------------------------------------------------------------
+
+
+def print_summary_statistics(results: list[VariantFrequencyResult]) -> None:
+    total = len(results)
+    normalization_errors = sum(1 for r in results if r.gnomad.get("normalization_error"))
+    successful = total - normalization_errors
+
+    found = 0
     not_found = 0
-    api_errors = 0
-
-    for result in processing_results.results:
-        if result.error or "normalization_error" in result.gnomad:
+    for r in results:
+        if r.gnomad.get("normalization_error"):
             continue
-        if "error" in result.gnomad:
-            api_errors += 1
-        elif "variant_not_found" in result.gnomad:
+        if r.gnomad.get("variant_not_found"):
             not_found += 1
-        elif "variant" in result.gnomad:
-            found_in_gnomad += 1
+        elif "ac" in r.gnomad:
+            found += 1
 
     print("\n" + "=" * 60)
     print("VARIANT FREQUENCY LOOKUP SUMMARY")
     print("=" * 60)
-
     print(f"Total variants processed: {total}")
     if total > 0:
+        print(f"Successfully normalized: {successful} ({successful / total * 100:.1f}%)")
         print(
-            f"Successfully normalized: {successful_normalizations} ({successful_normalizations / total * 100:.1f}%)"
-        )
-        print(
-            f"Failed normalization: {normalization_errors} ({normalization_errors / total * 100:.1f}%)"
+            f"Failed normalization: {normalization_errors} "
+            f"({normalization_errors / total * 100:.1f}%)"
         )
 
     print("\ngnomAD v4 lookup results:")
-    print(f"  Found in gnomAD: {found_in_gnomad}")
+    print(f"  Found in gnomAD: {found}")
     print(f"  Not found in gnomAD: {not_found}")
-    print(f"  API/network errors: {api_errors}")
 
-    # Show some high-frequency variants if any
-    high_freq_variants = []
-    for result in processing_results.results:
-        if (
-            not result.error
-            and "error" not in result.gnomad
-            and "variant_not_found" not in result.gnomad
-            and "normalization_error" not in result.gnomad
-        ):
-            variant_data = result.gnomad.get("variant")
-            if variant_data and variant_data.get("joint", {}).get("ac", 0) > 30:
-                high_freq_variants.append(
-                    (result.variant_id, variant_data["joint"]["ac"], result.hgnc_id)
-                )
-
-    if high_freq_variants:
-        print(f"\n⚠️  High-frequency variants (AC > 30): {len(high_freq_variants)}")
-        for variant_id, ac, hgnc_id in high_freq_variants[:5]:
-            print(f"    HGNC:{hgnc_id}: {variant_id} (AC={ac})")
-        if len(high_freq_variants) > 5:
-            print(f"    ... and {len(high_freq_variants) - 5} more")
+    high_freq = [
+        (r.variant_id, r.gnomad["ac"], r.hgnc_id)
+        for r in results
+        if "ac" in r.gnomad and r.gnomad.get("ac", 0) > 30
+    ]
+    if high_freq:
+        print(f"\n⚠️  High-frequency variants (AC > 30): {len(high_freq)}")
+        for vid, ac, hgnc_id in high_freq[:5]:
+            print(f"    HGNC:{hgnc_id}: {vid} (AC={ac})")
+        if len(high_freq) > 5:
+            print(f"    ... and {len(high_freq) - 5} more")
 
 
-def _retry_errored_variants(db_path: Path) -> None:
-    """Re-process variants that previously failed.
+async def _retry_errored_variants(
+    db_path: Path, client: VariantLookupClient, hgnc_resolver: HgncResolver
+) -> None:
+    """Re-resolve rows whose ``gnomad`` payload is ``{"normalization_error": true}``.
 
-    Two failure shapes are stored in variant_frequencies:
-      * gnomAD-side errors:  gnomad.$.error set, but normalization succeeded.
-        We just re-query gnomAD and overwrite the gnomad column.
-      * Normalization-side errors:  gnomad.$.normalization_error set, no real
-        pseudo-VCF stored. We rebuild the ExtractedVariant from the row and
-        re-run the full normalize-then-gnomAD pipeline; on success the row's
-        sentinel variant_id is replaced with the real one, so we delete the
-        old row and insert a fresh result.
+    Reads ``normalization.original_text`` and the paper's ``genome_build``,
+    re-submits through the same async fan-out, then deletes the old row
+    before the new INSERT so the unique key doesn't collide on the
+    ``original_text`` sentinel ``variant_id``.
     """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, variant_id, hgnc_id, paper_doi, box_id, normalization, gnomad
+            SELECT id, variant_id, hgnc_id, paper_doi, box_id, normalization
             FROM variant_frequencies
-            WHERE json_extract(gnomad, '$.error') IS NOT NULL
-               OR json_extract(gnomad, '$.normalization_error') IS NOT NULL
+            WHERE json_extract(gnomad, '$.normalization_error') IS NOT NULL
         """)
-        error_rows = cursor.fetchall()
+        rows = cursor.fetchall()
 
-    if not error_rows:
+    if not rows:
         print("No errored variants found.")
         return
 
-    gnomad_error_rows = []
-    normalization_error_rows = []
-    for row in error_rows:
-        gnomad = json.loads(row["gnomad"])
-        if "normalization_error" in gnomad:
-            normalization_error_rows.append(row)
-        else:
-            gnomad_error_rows.append(row)
+    paper_dois = {row["paper_doi"] for row in rows}
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        placeholders = ",".join("?" * len(paper_dois))
+        cur = conn.execute(
+            f"SELECT doi, evidence_extraction_json FROM papers WHERE doi IN ({placeholders})",
+            list(paper_dois),
+        )
+        paper_genome_build: dict[str, str | None] = {}
+        for paper_row in cur.fetchall():
+            extraction = json.loads(paper_row["evidence_extraction_json"])
+            build = extraction.get("genome_build")
+            if build == "unknown":
+                build = None
+            paper_genome_build[paper_row["doi"]] = build
 
-    fixed = 0
-    still_errored = 0
-
-    if gnomad_error_rows:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TextColumn("({task.completed}/{task.total})"),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task("Retrying gnomAD errors...", total=len(gnomad_error_rows))
-
-            for row in gnomad_error_rows:
-                row_id = row["id"]
-                variant_id = row["variant_id"]
-
-                gnomad_result = query_gnomad_v4(variant_id)
-
-                if "error" in gnomad_result:
-                    still_errored += 1
-                else:
-                    fixed += 1
-                    with sqlite3.connect(db_path) as conn:
-                        conn.execute(
-                            "UPDATE variant_frequencies SET gnomad = ? WHERE id = ?",
-                            (json.dumps(gnomad_result), row_id),
-                        )
-                        conn.commit()
-
-                progress.update(
-                    task,
-                    advance=1,
-                    description=f"[green]Fixed: {fixed}[/green] | [red]Failed: {still_errored}[/red]",
-                )
-
-    if normalization_error_rows:
-        hgnc_resolver = HgncResolver.from_file()
-        variant_normalizer = VariantNormalizer()
-
-        paper_dois = {row["paper_doi"] for row in normalization_error_rows}
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            placeholders = ",".join("?" * len(paper_dois))
-            cur = conn.execute(
-                f"SELECT doi, evidence_extraction_json FROM papers WHERE doi IN ({placeholders})",
-                list(paper_dois),
-            )
-            paper_genome_build: dict[str, str | None] = {}
-            for paper_row in cur.fetchall():
-                extraction = json.loads(paper_row["evidence_extraction_json"])
-                build = extraction.get("genome_build")
-                if build == "unknown":
-                    build = None
-                paper_genome_build[paper_row["doi"]] = build
-
-        variants_by_doi: dict[str, list[ExtractedVariant]] = {}
-        old_ids_by_doi: dict[str, list[int]] = {}
-        for row in normalization_error_rows:
-            doi = row["paper_doi"]
-            normalization = json.loads(row["normalization"])
-            variant_text = normalization["original_text"]
-            variants_by_doi.setdefault(doi, []).append(
+    flat: list[tuple[str, ExtractedVariant]] = []
+    old_ids: list[int] = []
+    for row in rows:
+        doi = row["paper_doi"]
+        normalization = json.loads(row["normalization"])
+        original_text = normalization["original_text"]
+        flat.append(
+            (
+                doi,
                 ExtractedVariant(
                     hgnc_id=row["hgnc_id"],
                     hgnc_symbol=hgnc_resolver.get_symbol(row["hgnc_id"]),
-                    variant_text=variant_text,
-                    genome_build=paper_genome_build[doi],
+                    variant_text=original_text,
+                    genome_build=paper_genome_build.get(doi),
                     box_id=row["box_id"],
-                )
+                ),
             )
-            old_ids_by_doi.setdefault(doi, []).append(row["id"])
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TextColumn("({task.completed}/{task.total})"),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task(
-                "Retrying normalization errors...", total=len(normalization_error_rows)
-            )
-
-            for doi, variants in variants_by_doi.items():
-                with sqlite3.connect(db_path) as conn:
-                    conn.executemany(
-                        "DELETE FROM variant_frequencies WHERE id = ?",
-                        [(rid,) for rid in old_ids_by_doi[doi]],
-                    )
-                    conn.commit()
-
-                processing_results = process_variants_for_doi(doi, variants, variant_normalizer)
-                store_results_for_doi(doi, processing_results.results, db_path)
-
-                for result in processing_results.results:
-                    if "normalization_error" in result.gnomad or "error" in result.gnomad:
-                        still_errored += 1
-                    else:
-                        fixed += 1
-                    progress.update(
-                        task,
-                        advance=1,
-                        description=f"[green]Fixed: {fixed}[/green] | [red]Failed: {still_errored}[/red]",
-                    )
-
-    print(f"\nDone. Fixed: {fixed}, still errored: {still_errored}")
-
-
-@app.callback(invoke_without_command=True)
-def lookup(
-    db_path: Path = typer.Option(
-        default=Path("data/db.sqlite"), help="Path to SQLite database with extracted variants"
-    ),
-    max_workers: int = typer.Option(default=5, help="Number of papers to process in parallel"),
-    retry_errors: bool = typer.Option(
-        default=False,
-        help="Retry previously errored rows: re-query gnomAD for $.error rows and re-run the full normalize-then-gnomAD pipeline for $.normalization_error rows",
-    ),
-) -> None:
-    """Look up variant frequencies from gnomAD v4 for all extracted variants.
-
-    Processes papers in parallel with resumability - already processed papers are skipped.
-    """
-
-    if not db_path.exists():
-        logger.error(f"Database not found at {db_path}")
-        raise typer.Exit(1)
-
-    if retry_errors:
-        _retry_errored_variants(db_path)
-        return
-
-    # Step 1: Load variants from evidence extractions, grouped by DOI
-    hgnc_resolver = HgncResolver.from_file()
-    variants_by_doi = load_extracted_variants(db_path, hgnc_resolver)
-
-    if not variants_by_doi:
-        logger.warning("No variants found in database")
-        print("No variants found in database")
-        return
-
-    # Step 2: Filter out already-attempted variants (per paper_doi + box_id + variant_text).
-    # See get_processed_variant_keys for the resumability semantics.
-    processed_keys = get_processed_variant_keys(db_path)
-    skipped_variants = 0
-    for doi in list(variants_by_doi.keys()):
-        remaining = [
-            v for v in variants_by_doi[doi] if (doi, v.box_id, v.variant_text) not in processed_keys
-        ]
-        skipped_variants += len(variants_by_doi[doi]) - len(remaining)
-        if remaining:
-            variants_by_doi[doi] = remaining
-        else:
-            del variants_by_doi[doi]
-    dois_to_process = list(variants_by_doi.keys())
-
-    if not dois_to_process:
-        logger.info(
-            "All variants already attempted (rerun with --retry-errors to retry error rows)"
         )
-        print("All variants already attempted (rerun with --retry-errors to retry error rows)")
-        return
+        old_ids.append(row["id"])
 
-    if skipped_variants > 0:
-        logger.info(f"Skipping {skipped_variants} already-attempted variants")
+    flat.sort(key=lambda pair: _chromosome_sort_key(pair[1], hgnc_resolver))
 
-    logger.info(f"Processing {len(dois_to_process)} papers with {max_workers} parallel workers")
-
-    # Step 3: Process papers in parallel
-    variant_normalizer = VariantNormalizer()
-    all_results: list[VariantFrequencyResult] = []
-    total_failed_normalizations = 0
-    total_variants_processed = 0
-
-    def process_and_store_doi(doi: str) -> VariantProcessingResults:
-        """Process a single paper and store results (called in worker thread)."""
-        variants = variants_by_doi[doi]
-
-        # Process all variants for this paper
-        processing_results = process_variants_for_doi(doi, variants, variant_normalizer)
-
-        # Store results atomically for this paper
-        store_results_for_doi(doi, processing_results.results, db_path)
-
-        return processing_results
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "DELETE FROM variant_frequencies WHERE id = ?", [(rid,) for rid in old_ids]
+        )
+        conn.commit()
 
     with Progress(
         SpinnerColumn(),
@@ -699,45 +599,119 @@ def lookup(
         TextColumn("({task.completed}/{task.total})"),
         TimeRemainingColumn(),
     ) as progress:
-        task = progress.add_task("Processing papers...", total=len(dois_to_process))
+        # Per-paper completion drives the progress bar — counts papers, not variants.
+        paper_count = len({doi for doi, _ in flat})
+        task_id = progress.add_task("Retrying errored variants...", total=paper_count)
+        results = await _resolve_all(flat, client, db_path, progress, task_id)
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all papers to the worker pool
-            future_to_doi = {
-                executor.submit(process_and_store_doi, doi): doi for doi in dois_to_process
-            }
+    fixed = sum(1 for r in results if not r.gnomad.get("normalization_error"))
+    still_errored = len(results) - fixed
+    print(f"\nDone. Fixed: {fixed}, still errored: {still_errored}")
 
-            # Main thread: sequentially pull completed results from queue
-            for future in as_completed(future_to_doi):
-                doi = future_to_doi[future]
-                processing_results = future.result()
-                num_variants = processing_results.total_variants
 
-                # Accumulate statistics in main thread (no lock needed)
-                all_results.extend(processing_results.results)
-                total_failed_normalizations += processing_results.failed_normalizations
-                total_variants_processed += processing_results.total_variants
+# ---------------------------------------------------------------------------
+# CLI entry point.
+# ---------------------------------------------------------------------------
 
-                # Update progress
-                progress.update(
-                    task,
-                    advance=1,
-                    description=f"[green]Completed DOI {doi} ({num_variants} variants)",
-                )
 
-    # Step 4: Print summary statistics
-    combined_results = VariantProcessingResults(
-        results=all_results,
-        total_variants=total_variants_processed,
-        failed_normalizations=total_failed_normalizations,
-    )
-    print_summary_statistics(combined_results)
+async def _main(
+    db_path: Path, settings: VariantLookupSettings, max_in_flight: int, retry_errors: bool
+) -> None:
+    hgnc_resolver = HgncResolver.from_file()
+    client = VariantLookupClient(settings, max_in_flight=max_in_flight)
+    try:
+        if retry_errors:
+            await _retry_errored_variants(db_path, client, hgnc_resolver)
+            return
 
-    logger.info("✅ Variant frequency lookup complete")
+        variants_by_doi = load_extracted_variants(db_path, hgnc_resolver)
+        if not variants_by_doi:
+            logger.warning("No variants found in database")
+            print("No variants found in database")
+            return
+
+        processed_keys = get_processed_variant_keys(db_path)
+        skipped = 0
+        for doi in list(variants_by_doi.keys()):
+            remaining = [
+                v
+                for v in variants_by_doi[doi]
+                if (doi, v.box_id, v.variant_text) not in processed_keys
+            ]
+            skipped += len(variants_by_doi[doi]) - len(remaining)
+            if remaining:
+                variants_by_doi[doi] = remaining
+            else:
+                del variants_by_doi[doi]
+
+        if not variants_by_doi:
+            msg = "All variants already attempted (rerun with --retry-errors to retry error rows)"
+            logger.info(msg)
+            print(msg)
+            return
+
+        if skipped:
+            logger.info(f"Skipping {skipped} already-attempted variants")
+
+        flat: list[tuple[str, ExtractedVariant]] = [
+            (doi, ev) for doi, evs in variants_by_doi.items() for ev in evs
+        ]
+        flat.sort(key=lambda pair: _chromosome_sort_key(pair[1], hgnc_resolver))
+        logger.info(
+            f"Processing {len(flat)} variants across {len(variants_by_doi)} papers "
+            f"with up to {max_in_flight} in-flight requests"
+        )
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("({task.completed}/{task.total})"),
+            TimeRemainingColumn(),
+        ) as progress:
+            task_id = progress.add_task("Processing papers...", total=len(variants_by_doi))
+            results = await _resolve_all(flat, client, db_path, progress, task_id)
+
+        print_summary_statistics(results)
+        logger.info("✅ Variant frequency lookup complete")
+    finally:
+        await client.aclose()
+
+
+@app.callback(invoke_without_command=True)
+def lookup(
+    db_path: Path = typer.Option(
+        default=Path("data/db.sqlite"),
+        help="Path to SQLite database with extracted variants",
+    ),
+    max_in_flight: int = typer.Option(
+        default=_DEFAULT_MAX_IN_FLIGHT,
+        help="Cap on concurrent in-flight requests to the variant-lookup service.",
+    ),
+    retry_errors: bool = typer.Option(
+        default=False,
+        help='Re-resolve rows whose gnomad payload is {"normalization_error": true}.',
+    ),
+) -> None:
+    """Look up variant frequencies for all extracted variants.
+
+    Issues one HTTPS request per variant to the variant-lookup service
+    (``POST /v1/variant``), bounded by an in-flight semaphore. Variants
+    are sorted by gene chromosome to maximise cache locality in the
+    backend. Resumable: rerunning skips variants that already have any
+    row in ``variant_frequencies`` (use ``--retry-errors`` to retry
+    rows that landed as ``normalization_error``).
+    """
+    settings = _load_settings()
+    if not db_path.exists():
+        logger.error(f"Database not found at {db_path}")
+        raise typer.Exit(1)
+
+    asyncio.run(_main(db_path, settings, max_in_flight, retry_errors))
 
 
 def main() -> None:
-    """Main entry point."""
     app()
 
 

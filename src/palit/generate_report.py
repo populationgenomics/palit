@@ -491,40 +491,22 @@ def _create_variant_frequency_from_db_row(
     citation_page: int | None,
     display_id: str,
 ) -> VariantFrequency:
-    """Create a VariantFrequency object from database row data."""
-    gnomad_not_found = "variant_not_found" in gnomad
-    gnomad_error = gnomad.get("error")
-    gnomad_ac = None
-    gnomad_an = None
-    gnomad_hom = None
-    gnomad_het = None
-    gnomad_hemi = None
-    gnomad_faf95_popmax = None
-    gnomad_faf95_popmax_population = None
+    """Create a VariantFrequency object from database row data.
 
-    if not gnomad_not_found and gnomad_error is None:
-        variant_data = gnomad.get("variant")
-        if variant_data and variant_data.get("joint"):
-            joint_data = variant_data["joint"]
-            gnomad_ac = joint_data.get("ac")
-            gnomad_an = joint_data.get("an")
-            gnomad_hom = joint_data.get("homozygote_count")
-            gnomad_hemi = joint_data.get("hemizygote_count")
+    The ``gnomad`` JSON is the flat shape written by
+    ``fetch_variant_frequencies``: success rows carry ``ac`` / ``an`` /
+    ``homozygote_count`` / ``heterozygote_count`` / ``hemizygote_count``
+    / ``faf95_popmax`` / ``faf95_popmax_population`` directly; sentinel
+    rows carry ``{"variant_not_found": true}`` or
+    ``{"normalization_error": true}``.
+    """
+    gnomad_not_found = gnomad.get("variant_not_found", False)
+    gnomad_error = "normalization_error" if gnomad.get("normalization_error") else None
 
-            # Calculate heterozygotes: het = ac - (2 * hom) - hemi
-            if gnomad_ac is not None:
-                gnomad_het = gnomad_ac
-                if gnomad_hom is not None:
-                    gnomad_het -= 2 * gnomad_hom
-                if gnomad_hemi is not None:
-                    gnomad_het -= gnomad_hemi
-
-            # Extract FAF95 data
-            faf95_data = joint_data.get("faf95")
-            if faf95_data:
-                gnomad_faf95_popmax = faf95_data.get("popmax")
-                popmax_pop = faf95_data.get("popmax_population")
-                gnomad_faf95_popmax_population = POPULATION_NAMES.get(popmax_pop, popmax_pop)
+    popmax_pop = gnomad.get("faf95_popmax_population")
+    gnomad_faf95_popmax_population = (
+        POPULATION_NAMES.get(popmax_pop, popmax_pop) if popmax_pop else None
+    )
 
     return VariantFrequency(
         variant_id=variant_id,
@@ -533,12 +515,12 @@ def _create_variant_frequency_from_db_row(
         hgvs_c=normalization.get("hgvs_c"),
         hgvs_p=normalization.get("hgvs_p"),
         original_text=normalization.get("original_text", ""),
-        gnomad_ac=gnomad_ac,
-        gnomad_an=gnomad_an,
-        gnomad_hom=gnomad_hom,
-        gnomad_het=gnomad_het,
-        gnomad_hemi=gnomad_hemi,
-        gnomad_faf95_popmax=gnomad_faf95_popmax,
+        gnomad_ac=gnomad.get("ac"),
+        gnomad_an=gnomad.get("an"),
+        gnomad_hom=gnomad.get("homozygote_count"),
+        gnomad_het=gnomad.get("heterozygote_count"),
+        gnomad_hemi=gnomad.get("hemizygote_count"),
+        gnomad_faf95_popmax=gnomad.get("faf95_popmax"),
         gnomad_faf95_popmax_population=gnomad_faf95_popmax_population,
         gnomad_link=f"https://gnomad.broadinstitute.org/variant/{variant_id}?dataset=gnomad_r4",
         citation_page=citation_page,

@@ -237,9 +237,19 @@ def get_processed_variant_keys(db_path: Path) -> set[tuple[str, int, str]]:
 
 
 def store_results_for_doi(doi: str, results: list[VariantFrequencyResult], db_path: Path) -> None:
-    """Persist a paper's results atomically. Drops within-batch duplicates
-    on the ``(variant_id, paper_doi, box_id)`` key — same gene/variant
-    cited at the same box_id."""
+    """Persist a paper's results atomically.
+
+    Two layers of dedup on ``(variant_id, paper_doi, box_id)``:
+
+    1. Within-batch: a paper can cite the same variant via different aliases
+       at the same box (e.g. ``c.770C>T`` and ``p.Ser257Leu``); we keep the
+       first.
+    2. Against the DB via ``INSERT OR IGNORE``: a retry-errors run can
+       re-resolve a previously-errored alias to a pseudo-VCF that another
+       alias already landed under in an earlier run, and a re-extraction
+       can add a new alias for an already-stored variant. Both cases mean
+       the row is already captured — silently no-op.
+    """
     if not results:
         logger.debug(f"No results to store for DOI {doi}")
         return
@@ -255,12 +265,13 @@ def store_results_for_doi(doi: str, results: list[VariantFrequencyResult], db_pa
     if duplicates:
         logger.debug(f"Skipped {duplicates} duplicate entries for DOI {doi}")
 
+    inserted = 0
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         for r in unique:
             cursor.execute(
                 """
-                INSERT INTO variant_frequencies
+                INSERT OR IGNORE INTO variant_frequencies
                   (variant_id, hgnc_id, paper_doi, box_id, normalization, gnomad)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
@@ -273,8 +284,16 @@ def store_results_for_doi(doi: str, results: list[VariantFrequencyResult], db_pa
                     json.dumps(r.gnomad),
                 ),
             )
+            inserted += cursor.rowcount
         conn.commit()
-    logger.debug(f"Stored {len(unique)} variant frequency results for DOI {doi}")
+    ignored = len(unique) - inserted
+    if ignored:
+        logger.debug(
+            f"DOI {doi}: stored {inserted} new rows, skipped {ignored} already present "
+            f"under a different alias at the same box"
+        )
+    else:
+        logger.debug(f"Stored {inserted} variant frequency results for DOI {doi}")
 
 
 # ---------------------------------------------------------------------------

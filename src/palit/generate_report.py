@@ -297,7 +297,8 @@ class FavoriteJournalSections:
     novel: list[FavoriteJournalPaper]
     rating_upgrade: list[FavoriteJournalPaper]
     moi_expansion: list[FavoriteJournalPaper]
-    additional_evidence: list[FavoriteJournalPaper]
+    unreviewed: list[FavoriteJournalPaper]
+    already_reviewed: list[FavoriteJournalPaper]
     filtered: list[FavoriteJournalPaper]
     manual_download: list[FavoriteJournalPaper]
     not_relevant: list[FavoriteJournalPaper]
@@ -309,7 +310,8 @@ class FavoriteJournalSections:
             len(self.novel)
             + len(self.rating_upgrade)
             + len(self.moi_expansion)
-            + len(self.additional_evidence)
+            + len(self.unreviewed)
+            + len(self.already_reviewed)
             + len(self.filtered)
             + len(self.manual_download)
             + len(self.not_relevant)
@@ -324,6 +326,20 @@ class PanelMatch:
     panel_id: int
     panel_name: str
     rationale: str
+
+
+@dataclass(frozen=True)
+class ExistingPanelReviews:
+    """PanelApp evaluations captured at assess time for one target panel.
+
+    Stored on each known gene; the panel id is the single panel returned by
+    ``find_gene_panel`` during ``assess-genes``. An empty ``evaluations`` list
+    means no expert has reviewed the gene on that panel — the signal that
+    drives the "Unreviewed on Target Panel" section.
+    """
+
+    panel_id: int
+    evaluations: list[dict[str, Any]]
 
 
 @dataclass
@@ -344,6 +360,7 @@ class GeneAssessment:
     missing_panels: list[PanelMatch]  # Suggested panels gene is not in
     existing_panels: list[PanelMatch]  # Panels gene is already in
     prefill_json: str  # HTML-escaped JSON for data-prefill attribute
+    existing_panel_reviews: ExistingPanelReviews | None  # Reviews at assess time, or None
 
 
 @dataclass
@@ -353,6 +370,7 @@ class GeneAssessmentResults:
     novel_genes: list[GeneAssessment]
     known_genes: list[GeneAssessment]
     target_panel_data: PanelGeneData
+    target_panel_names: dict[int, str]  # panel_id → display name, for current target panels
 
 
 @dataclass
@@ -394,6 +412,9 @@ class ComprehensiveStats:
     moi_expansions_count: int
     moi_contradictions_count: int
 
+    # Known genes on the target panel with zero expert reviews
+    unreviewed_count: int
+
     # Preprint stats
     preprints_relevant: int
     papers_filtered: int
@@ -424,7 +445,8 @@ class KnownGeneCategories:
     amber_to_green: list[GeneAssessment]
     red_to_amber: list[GeneAssessment]
     no_change_with_moi: list[GeneAssessment]
-    no_change_without_moi: list[GeneAssessment]
+    no_change_unreviewed: list[GeneAssessment]
+    no_change_reviewed: list[GeneAssessment]
 
     @property
     def total(self) -> int:
@@ -434,7 +456,8 @@ class KnownGeneCategories:
             + len(self.amber_to_green)
             + len(self.red_to_amber)
             + len(self.no_change_with_moi)
-            + len(self.no_change_without_moi)
+            + len(self.no_change_unreviewed)
+            + len(self.no_change_reviewed)
         )
 
 
@@ -705,7 +728,8 @@ def load_gene_assessments(
                 assessment_json,
                 paper_id_mapping,
                 matched_panels_json,
-                filtered_papers_json
+                filtered_papers_json,
+                existing_panel_reviews_json
             FROM gene_assessments
             ORDER BY hgnc_id
         """)
@@ -718,6 +742,13 @@ def load_gene_assessments(
             filtered_doi_reasons: dict[str, str] = {
                 fp["doi"]: fp["reason"] for fp in json.loads(row["filtered_papers_json"] or "[]")
             }
+            existing_panel_reviews: ExistingPanelReviews | None = None
+            if row["existing_panel_reviews_json"]:
+                payload = json.loads(row["existing_panel_reviews_json"])
+                existing_panel_reviews = ExistingPanelReviews(
+                    panel_id=payload["panel_id"],
+                    evaluations=payload["evaluations"],
+                )
 
             # Calculate rating from assessment
             new_rating = calculate_gene_rating(assessment_json)
@@ -947,6 +978,7 @@ def load_gene_assessments(
                 missing_panels=missing_panels,
                 existing_panels=existing_panels,
                 prefill_json=prefill_json,
+                existing_panel_reviews=existing_panel_reviews,
             )
 
             # Categorize by panel membership
@@ -984,10 +1016,17 @@ def load_gene_assessments(
 
     logger.info(f"Loaded {len(novel_genes)} novel genes, {len(known_genes)} known genes")
 
+    target_panel_names = {
+        pid: all_panels_data.panel_names[pid]
+        for pid in target_panel_data.panel_ids
+        if pid in all_panels_data.panel_names
+    }
+
     return GeneAssessmentResults(
         novel_genes=novel_genes,
         known_genes=known_genes,
         target_panel_data=target_panel_data,
+        target_panel_names=target_panel_names,
     )
 
 
@@ -1290,10 +1329,26 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
         return manual_download_papers
 
 
-def _gene_contribution_bucket(gene: GeneAssessment, is_novel: bool) -> str:
+def _is_unreviewed_on_target(gene: GeneAssessment, target_panel_ids: set[int]) -> bool:
+    """True iff the gene has zero expert reviews on its target panel.
+
+    Falls through to False when the stored panel isn't in the current target
+    set (e.g. assess and report ran with different ``--target-panel-ids``),
+    so the gene lands in "Already Reviewed" rather than a false positive.
+    """
+    reviews = gene.existing_panel_reviews
+    if reviews is None or reviews.panel_id not in target_panel_ids:
+        return False
+    return not reviews.evaluations
+
+
+def _gene_contribution_bucket(
+    gene: GeneAssessment, is_novel: bool, target_panel_ids: set[int]
+) -> str:
     """Classify a gene by the kind of contribution it represents.
 
-    Returns one of: 'novel', 'rating_upgrade', 'moi_expansion', 'additional_evidence'.
+    Returns one of: 'novel', 'rating_upgrade', 'moi_expansion', 'unreviewed',
+    'already_reviewed'.
     """
     if is_novel:
         return "novel"
@@ -1301,14 +1356,17 @@ def _gene_contribution_bucket(gene: GeneAssessment, is_novel: bool) -> str:
         return "rating_upgrade"
     if gene.moi_comparison and gene.moi_comparison.highlighted:
         return "moi_expansion"
-    return "additional_evidence"
+    if _is_unreviewed_on_target(gene, target_panel_ids):
+        return "unreviewed"
+    return "already_reviewed"
 
 
 _BUCKET_PRIORITY = (
     "novel",
     "rating_upgrade",
     "moi_expansion",
-    "additional_evidence",
+    "unreviewed",
+    "already_reviewed",
 )
 
 
@@ -1316,13 +1374,14 @@ def load_favorite_journal_papers(
     db_path: Path,
     novel_genes: list[GeneAssessment],
     known_genes: list[GeneAssessment],
+    target_panel_ids: set[int],
 ) -> FavoriteJournalSections:
     """Load every initial-search paper from FAVORITE_JOURNALS, bucketed by the
     kind of contribution it made — mirroring the report's gene structure
-    (novel / rating upgrade / MoI expansion / additional evidence) and the
-    reasons a paper did not contribute (filtered out of aggregate / requiring
-    manual download / screened out by relevance / off-panel evidence).
-    Expansion papers are excluded entirely."""
+    (novel / rating upgrade / MoI expansion / unreviewed / already reviewed)
+    and the reasons a paper did not contribute (filtered out of aggregate /
+    requiring manual download / screened out by relevance / off-panel
+    evidence). Expansion papers are excluded entirely."""
     gene_anchors: dict[int, FavoriteJournalGeneLink] = {}
     gene_buckets: dict[int, str] = {}
     for gene in novel_genes:
@@ -1331,14 +1390,18 @@ def load_favorite_journal_papers(
             hgnc_symbol=gene.hgnc_symbol,
             anchor=f"#novel-gene-{gene.hgnc_id}",
         )
-        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(gene, is_novel=True)
+        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(
+            gene, is_novel=True, target_panel_ids=target_panel_ids
+        )
     for gene in known_genes:
         gene_anchors[gene.hgnc_id] = FavoriteJournalGeneLink(
             hgnc_id=gene.hgnc_id,
             hgnc_symbol=gene.hgnc_symbol,
             anchor=f"#known-gene-{gene.hgnc_id}",
         )
-        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(gene, is_novel=False)
+        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(
+            gene, is_novel=False, target_panel_ids=target_panel_ids
+        )
 
     # Build doi -> [(hgnc_id, filtered_reason)] from each gene's contributing papers.
     # A paper can appear under multiple genes; filtered_reason is per (gene, paper).
@@ -1370,7 +1433,8 @@ def load_favorite_journal_papers(
         novel=[],
         rating_upgrade=[],
         moi_expansion=[],
-        additional_evidence=[],
+        unreviewed=[],
+        already_reviewed=[],
         filtered=[],
         manual_download=[],
         not_relevant=[],
@@ -1440,13 +1504,14 @@ def load_favorite_journal_papers(
 
     logger.info(
         "Featured journals: %d total — novel=%d, rating_upgrade=%d, moi_expansion=%d, "
-        "additional_evidence=%d, filtered=%d, manual_download=%d, not_relevant=%d, "
-        "off_panel=%d",
+        "unreviewed=%d, already_reviewed=%d, filtered=%d, manual_download=%d, "
+        "not_relevant=%d, off_panel=%d",
         sections.total,
         len(sections.novel),
         len(sections.rating_upgrade),
         len(sections.moi_expansion),
-        len(sections.additional_evidence),
+        len(sections.unreviewed),
+        len(sections.already_reviewed),
         len(sections.filtered),
         len(sections.manual_download),
         len(sections.not_relevant),
@@ -1547,6 +1612,12 @@ def calculate_comprehensive_statistics(
                 elif gene.moi_comparison.status == "contradiction":
                     moi_contradictions += 1
 
+        # Count unreviewed known genes (per current target panel set)
+        target_panel_id_set = set(results.target_panel_data.panel_ids)
+        unreviewed_count = sum(
+            1 for gene in results.known_genes if _is_unreviewed_on_target(gene, target_panel_id_set)
+        )
+
         # Preprint stats (computed from already-loaded data)
         preprint_dois = {
             p.doi for gene in all_genes for p in gene.contributing_papers if p.preprint
@@ -1575,6 +1646,7 @@ def calculate_comprehensive_statistics(
             # MoI change stats
             moi_expansions_count=moi_expansions,
             moi_contradictions_count=moi_contradictions,
+            unreviewed_count=unreviewed_count,
             # Preprint stats
             preprints_relevant=len(preprint_dois),
             papers_filtered=papers_filtered,
@@ -1763,6 +1835,7 @@ def generate_html_report(
     output_dir: Path,
     report_id: str,
     target_panel_ids: list[int],
+    target_panel_names: dict[int, str],
     *,
     panelapp_integration: bool,
 ) -> str:
@@ -1801,17 +1874,27 @@ def generate_html_report(
         else:
             no_change.append(gene)
 
-    # Split no_change into highlighted MoI changes and others
+    # Split no_change into three: MoI-expansion highlight, unreviewed on target panel,
+    # and the remainder (already reviewed by at least one expert).
+    target_panel_id_set = set(target_panel_ids)
+    no_change_with_moi: list[GeneAssessment] = []
+    no_change_unreviewed: list[GeneAssessment] = []
+    no_change_reviewed: list[GeneAssessment] = []
+    for gene in no_change:
+        if gene.moi_comparison and gene.moi_comparison.highlighted:
+            no_change_with_moi.append(gene)
+        elif _is_unreviewed_on_target(gene, target_panel_id_set):
+            no_change_unreviewed.append(gene)
+        else:
+            no_change_reviewed.append(gene)
+
     known_categories = KnownGeneCategories(
         red_to_green=red_to_green,
         amber_to_green=amber_to_green,
         red_to_amber=red_to_amber,
-        no_change_with_moi=[
-            g for g in no_change if g.moi_comparison and g.moi_comparison.highlighted
-        ],
-        no_change_without_moi=[
-            g for g in no_change if not (g.moi_comparison and g.moi_comparison.highlighted)
-        ],
+        no_change_with_moi=no_change_with_moi,
+        no_change_unreviewed=no_change_unreviewed,
+        no_change_reviewed=no_change_reviewed,
     )
 
     # Set up Jinja2 environment
@@ -1930,6 +2013,7 @@ def generate_html_report(
         pdf_base_path=pdf_relative_path,
         panelapp_integration=panelapp_integration,
         report_config_json=report_config_json,
+        target_panel_names=target_panel_names,
         gnomad_thresholds={
             "het": GNOMAD_HET_THRESHOLD,
             "hom": GNOMAD_HOM_THRESHOLD,
@@ -1998,12 +2082,12 @@ def main(
     panel_validation = load_panel_publications_validation(db_path, target_panel_ids)
     low_confidence_papers = load_low_confidence_irrelevant_papers(db_path)
     manual_download_papers = load_manual_download_papers(db_path)
-    favorite_journal_papers = load_favorite_journal_papers(
-        db_path, results.novel_genes, results.known_genes
-    )
-    statistics = calculate_comprehensive_statistics(db_path, results, panel_validation)
     # Use actual target_panel_ids from results (handles None -> defaults)
     actual_panel_ids = list(results.target_panel_data.panel_ids)
+    favorite_journal_papers = load_favorite_journal_papers(
+        db_path, results.novel_genes, results.known_genes, set(actual_panel_ids)
+    )
+    statistics = calculate_comprehensive_statistics(db_path, results, panel_validation)
 
     html_content = generate_html_report(
         novel_genes=results.novel_genes,
@@ -2019,6 +2103,7 @@ def main(
         output_dir=Path("."),  # Root of the package
         report_id=report_id,
         target_panel_ids=actual_panel_ids,
+        target_panel_names=results.target_panel_names,
         panelapp_integration=panelapp_integration,
     )
 

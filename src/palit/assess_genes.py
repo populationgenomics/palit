@@ -423,6 +423,7 @@ class PaperBatchProcessor:
         assessment_data: tuple[str, dict[str, Any]],
         paper_id_to_doi: dict[str, str],
         filtered_papers: list[dict[str, str]] | None = None,
+        existing_panel_reviews: dict[str, Any] | None = None,
     ) -> None:
         """Store aggregate assessment result in gene_assessments table.
 
@@ -431,9 +432,16 @@ class PaperBatchProcessor:
             assessment_data: Tuple of (raw_response, parsed_json)
             paper_id_to_doi: Mapping of AuthorYear paper IDs to DOIs used for this assessment
             filtered_papers: Papers excluded from assessment [{doi, reason}]
+            existing_panel_reviews: PanelApp evaluations for the single target panel
+                returned by ``find_gene_panel`` at assess time. Shape:
+                ``{"panel_id": <int>, "evaluations": [<raw evaluation dicts>]}``.
+                None when the gene was not on any target panel.
         """
         raw_response, json_data = assessment_data
         filtered_json = json.dumps(filtered_papers) if filtered_papers else None
+        existing_panel_reviews_json = (
+            json.dumps(existing_panel_reviews) if existing_panel_reviews is not None else None
+        )
 
         with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             cursor = conn.cursor()
@@ -443,8 +451,8 @@ class PaperBatchProcessor:
                     """
                     INSERT OR REPLACE INTO gene_assessments
                     (hgnc_id, assessment_raw, assessment_json, paper_id_mapping,
-                     filtered_papers_json)
-                    VALUES (?, ?, ?, ?, ?)
+                     filtered_papers_json, existing_panel_reviews_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 """,
                     (
                         hgnc_id,
@@ -452,6 +460,7 @@ class PaperBatchProcessor:
                         json.dumps(json_data),
                         json.dumps(paper_id_to_doi),
                         filtered_json,
+                        existing_panel_reviews_json,
                     ),
                 )
 
@@ -670,6 +679,8 @@ class _GeneBatchItem:
     evidence_list: list[dict[str, Any]]
     mondo_name_lookup: dict[str, MondoResolution]
     filtered_papers: list[dict[str, Any]] | None
+    existing_panel_id: int | None
+    existing_reviews: list[dict[str, Any]]
 
 
 async def _process_assessments(
@@ -816,6 +827,8 @@ async def _process_assessments(
                         evidence_list=evidence_list,
                         mondo_name_lookup=mondo_name_lookup,
                         filtered_papers=filtered_papers or None,
+                        existing_panel_id=existing_panel_id,
+                        existing_reviews=existing_reviews,
                     )
                 )
 
@@ -870,11 +883,20 @@ async def _process_assessments(
                         )
                         failed_genes.append(item.hgnc_id)
                         continue
+                    existing_panel_reviews: dict[str, Any] | None = (
+                        {
+                            "panel_id": item.existing_panel_id,
+                            "evaluations": item.existing_reviews,
+                        }
+                        if item.existing_panel_id is not None
+                        else None
+                    )
                     db_processor.update_gene_assessment(
                         item.hgnc_id,
                         (result.raw_response, result.parsed_json),
                         item.paper_id_to_doi,
                         filtered_papers=item.filtered_papers,
+                        existing_panel_reviews=existing_panel_reviews,
                     )
                     pass_processed += 1
                     pbar.update(1)

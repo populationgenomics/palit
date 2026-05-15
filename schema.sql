@@ -97,7 +97,12 @@ CREATE TABLE gene_assessments (
     paper_id_mapping JSON NOT NULL,  -- {AuthorYear: DOI} mapping used during assessment
     filtered_papers_json JSON,  -- [{doi, reason}] papers excluded from assessment (e.g. preprint family gate)
     matched_panels_raw TEXT,  -- Raw LLM response for panel matching including reasoning
-    matched_panels_json JSON    -- Array: [{"panel_id": 137, "rationale": "..."}, ...]
+    matched_panels_json JSON,    -- Array: [{"panel_id": 137, "rationale": "..."}, ...]
+    -- Reviews on the single target panel returned by find_gene_panel at assess time,
+    -- as fetched via PanelApp's evaluations endpoint. Shape:
+    --   {"panel_id": <int>, "evaluations": [<raw evaluation dicts>]}
+    -- NULL when the gene was not on any target panel at assess time.
+    existing_panel_reviews_json JSON
 );
 
 -- match_panels.py: find genes needing panel matching

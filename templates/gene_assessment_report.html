@@ -36,7 +36,7 @@
     {% macro moi_comparison_badge(moi_comp) %}
     {% if moi_comp and moi_comp.highlighted %}
         <span class="moi-badge {{ moi_comp.css_class }}" title="{{ moi_comp.message }}">
-            {{ moi_comp.icon }} MoI {{ "Expansion" if moi_comp.status == "expansion" else "Change" }}
+            {{ moi_comp.icon }} MoI {{ "expansion" if moi_comp.status == "expansion" else "change" }}
         </span>
     {% endif %}
     {% endmacro %}
@@ -626,9 +626,15 @@
                 </div>
                 {% endif %}
 
-                {% if known_categories.no_change_with_moi %}
+                {% set no_change_total = known_categories.no_change_with_moi|length + known_categories.no_change_unreviewed|length + known_categories.no_change_reviewed|length %}
+                {% if no_change_total %}
                 <div class="toc-section-header">
-                    No Rating Change - MoI Expansion ({{ known_categories.no_change_with_moi|length }})
+                    No Rating Change ({{ no_change_total }})
+                </div>
+
+                {% if known_categories.no_change_with_moi %}
+                <div class="toc-subsection-header">
+                    MoI Expansion ({{ known_categories.no_change_with_moi|length }})
                 </div>
                 <div class="toc-section toc-no-change">
                     <ul class="toc-gene-list">
@@ -639,20 +645,34 @@
                 </div>
                 {% endif %}
 
-                {% if known_categories.no_change_without_moi %}
-                <div class="toc-section-header">
-                    Additional Evidence - No Rating Change ({{ known_categories.no_change_without_moi|length }})
+                {% if known_categories.no_change_unreviewed %}
+                <div class="toc-subsection-header">
+                    Unreviewed on Target Panel ({{ known_categories.no_change_unreviewed|length }})
+                </div>
+                <div class="toc-section toc-no-change">
+                    <ul class="toc-gene-list">
+                        {% for gene in known_categories.no_change_unreviewed %}
+                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if known_categories.no_change_reviewed %}
+                <div class="toc-subsection-header">
+                    Already Reviewed ({{ known_categories.no_change_reviewed|length }})
                 </div>
                 <div class="toc-section toc-no-change">
                     <details class="toc-collapsed-section">
                         <summary>Show gene list</summary>
                         <ul class="toc-gene-list">
-                            {% for gene in known_categories.no_change_without_moi %}
+                            {% for gene in known_categories.no_change_reviewed %}
                             <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}</a></li>
                             {% endfor %}
                         </ul>
                     </details>
                 </div>
+                {% endif %}
                 {% endif %}
             </li>
             {% endif %}
@@ -678,6 +698,7 @@
                 <li><strong>Panel Suggestions:</strong> {{ statistics.total_panel_suggestions }}</li>
                 <li><strong>Mode of Inheritance Expansions:</strong> {{ statistics.moi_expansions_count }}</li>
                 <li><strong>Mode of Inheritance Contradictions:</strong> {{ statistics.moi_contradictions_count }}</li>
+                <li><strong>Unreviewed on Target Panel:</strong> {{ statistics.unreviewed_count }}</li>
                 <li><strong>Preprints with Evidence:</strong> {{ statistics.preprints_relevant }}</li>
                 {% if statistics.papers_filtered %}<li><strong>Papers Excluded (Preprint Family Gate):</strong> {{ statistics.papers_filtered }}</li>{% endif %}
                 <li><strong>Panel Publications Correctly Identified:</strong> {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% ({{ statistics.true_positives_count }}/{{ statistics.true_positives_count + statistics.false_negatives_count }})</li>
@@ -764,9 +785,14 @@
                 "Papers whose evidence supports adding a new mode of inheritance to a known gene (no rating change).",
             ) }}
             {{ featured_bucket(
-                favorite_journal_papers.additional_evidence,
-                "Additional evidence (no rating or MoI change)",
-                "Papers that contributed to a known gene's assessment but did not change its rating or MoI.",
+                favorite_journal_papers.unreviewed,
+                "Contributed to unreviewed genes",
+                "Papers that contributed to a known gene with zero expert reviews on its target panel — our analysis offers the first review even with no rating change.",
+            ) }}
+            {{ featured_bucket(
+                favorite_journal_papers.already_reviewed,
+                "Additional evidence (already reviewed, no rating or MoI change)",
+                "Papers that contributed to a known gene's assessment but did not change its rating or MoI; the gene already has at least one expert review on its target panel.",
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.filtered,
@@ -879,9 +905,15 @@
             {% endfor %}
             {% endif %}
 
-            {% if known_categories.no_change_with_moi %}
+            {% set no_change_total = known_categories.no_change_with_moi|length + known_categories.no_change_unreviewed|length + known_categories.no_change_reviewed|length %}
+            {% if no_change_total %}
             <div class="subsection-header">
-                <h3>No Rating Change - MoI Expansion ({{ known_categories.no_change_with_moi|length }})</h3>
+                <h3>No Rating Change ({{ no_change_total }})</h3>
+            </div>
+
+            {% if known_categories.no_change_with_moi %}
+            <div class="sub-subsection-header" id="known-no-change-moi">
+                <h4>MoI Expansion ({{ known_categories.no_change_with_moi|length }})</h4>
             </div>
             {% for gene in known_categories.no_change_with_moi %}
             <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
@@ -899,11 +931,36 @@
             {% endfor %}
             {% endif %}
 
-            {% if known_categories.no_change_without_moi %}
-            <div class="subsection-header">
-                <h3>Additional Evidence - No Rating Change ({{ known_categories.no_change_without_moi|length }})</h3>
+            {% if known_categories.no_change_unreviewed %}
+            <div class="sub-subsection-header" id="known-no-change-unreviewed">
+                <h4>Unreviewed on Target Panel ({{ known_categories.no_change_unreviewed|length }})</h4>
             </div>
-            {% for gene in known_categories.no_change_without_moi %}
+            {% for gene in known_categories.no_change_unreviewed %}
+            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
+                <h3>
+                    {{ gene_header(gene) }}
+                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
+                    <span class="rating-arrow">→</span>
+                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
+                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    <span class="unreviewed-badge" title="No expert review on PanelApp for this gene/panel">⚠️ Unreviewed</span>
+                    {{ prefill_button(gene, 'review') }}
+                    {{ assignment_slot(gene) }}
+                </h3>
+                {% set panel_id = gene.existing_panel_reviews.panel_id %}
+                <p class="unreviewed-note">
+                    No reviews on {{ target_panel_names.get(panel_id, "Panel " ~ panel_id) }} panel
+                </p>
+                {{ gene_article_body(gene, pdf_base_path) }}
+            </article>
+            {% endfor %}
+            {% endif %}
+
+            {% if known_categories.no_change_reviewed %}
+            <div class="sub-subsection-header" id="known-no-change-reviewed">
+                <h4>Already Reviewed ({{ known_categories.no_change_reviewed|length }})</h4>
+            </div>
+            {% for gene in known_categories.no_change_reviewed %}
             <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
                 <h3>
                     {{ gene_header(gene) }}
@@ -917,6 +974,7 @@
                 {{ gene_article_body(gene, pdf_base_path) }}
             </article>
             {% endfor %}
+            {% endif %}
             {% endif %}
         </section>
         {% endif %}

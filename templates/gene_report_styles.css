@@ -310,6 +310,40 @@ section > h2 {
     background: #fafafa;
 }
 
+.unreviewed-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 3px;
+    font-size: 0.75em;
+    background: #e8daef;
+    color: #4a235a;
+    border: 1px solid #8e44ad;
+    margin-left: 8px;
+    cursor: help;
+}
+
+.unreviewed-note {
+    font-size: 0.9em;
+    color: #4a235a;
+    margin: 4px 0 12px 0;
+    font-style: italic;
+}
+
+.toc-subsection-header,
+.sub-subsection-header {
+    margin: 10px 0 6px 0;
+    color: #2c3e50;
+    font-size: 0.9em;
+    font-weight: 600;
+    padding-left: 8px;
+}
+
+.sub-subsection-header h4 {
+    margin: 14px 0 8px 0;
+    color: #2c3e50;
+    font-size: 1.05em;
+}
+
 .gene-assessment > h3 {
     margin-top: 0;
     margin-bottom: 15px;

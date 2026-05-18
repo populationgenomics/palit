@@ -219,8 +219,6 @@ class VariantFrequency:
     """Variant frequency information from gnomAD."""
 
     variant_id: str  # gnomAD pseudo-VCF format
-    doi: str
-    box_id: int
     hgvs_c: str | None
     hgvs_p: str | None
     original_text: str
@@ -232,10 +230,9 @@ class VariantFrequency:
     gnomad_faf95_popmax: float | None  # FAF95 popmax value
     gnomad_faf95_popmax_population: str | None  # Population name for FAF95
     gnomad_link: str  # Direct link to gnomAD
-    citation_page: int | None  # PDF page number for citation
-    display_id: str  # "PMID {pmid}" for published papers, AuthorYear for preprints
     gnomad_not_found: bool  # True if variant not found in gnomAD
     gnomad_error: str | None  # Error message if gnomAD lookup failed
+    citations: list[CitationLink]  # Papers reporting this variant, sorted by (display_id, page)
 
 
 @dataclass
@@ -507,12 +504,9 @@ POPULATION_NAMES = {
 
 def _create_variant_frequency_from_db_row(
     variant_id: str,
-    doi: str,
-    box_id: int,
     normalization: dict[str, Any],
     gnomad: dict[str, Any],
-    citation_page: int | None,
-    display_id: str,
+    citations: list[CitationLink],
 ) -> VariantFrequency:
     """Create a VariantFrequency object from database row data.
 
@@ -533,8 +527,6 @@ def _create_variant_frequency_from_db_row(
 
     return VariantFrequency(
         variant_id=variant_id,
-        doi=doi,
-        box_id=box_id,
         hgvs_c=normalization.get("hgvs_c"),
         hgvs_p=normalization.get("hgvs_p"),
         original_text=normalization.get("original_text", ""),
@@ -546,10 +538,9 @@ def _create_variant_frequency_from_db_row(
         gnomad_faf95_popmax=gnomad.get("faf95_popmax"),
         gnomad_faf95_popmax_population=gnomad_faf95_popmax_population,
         gnomad_link=f"https://gnomad.broadinstitute.org/variant/{variant_id}?dataset=gnomad_r4",
-        citation_page=citation_page,
-        display_id=display_id,
         gnomad_not_found=gnomad_not_found,
         gnomad_error=gnomad_error,
+        citations=citations,
     )
 
 
@@ -558,23 +549,30 @@ def load_variant_frequencies_for_gene(
 ) -> list[VariantFrequency]:
     """Load variant frequency information for a specific gene.
 
+    Variants are deduplicated by ``variant_id``: when the same allele is
+    reported by multiple contributing papers, the gnomAD numbers (queried
+    by genomic coordinate) are identical and would otherwise render as
+    visually duplicate rows. Per-paper citation links are merged into the
+    returned VariantFrequency's ``citations`` list.
+
     Args:
         cursor: Database cursor
         hgnc_id: HGNC ID of the gene to load variants for
         contributing_papers: Papers contributing to this gene assessment
 
     Returns:
-        List of VariantFrequency objects with gnomAD data and citation info
+        List of VariantFrequency objects with successful gnomAD lookups
+        first, then ``variant_not_found``, then normalization errors;
+        ``variant_id`` breaks ties within each bucket. Each entry carries
+        a deduplicated, ordered list of citations.
     """
-    # Create lookups from contributing papers
-    bbox_mappings = {}
+    bbox_mappings: dict[str, dict[int, int]] = {}
     display_ids: dict[str, str] = {}
     for paper in contributing_papers:
         display_ids[paper.doi] = paper.display_id
         if paper.citation_pages:
             bbox_mappings[paper.doi] = paper.citation_pages
 
-    # Load variant frequencies from database (only for contributing papers)
     contributing_dois = list(display_ids.keys())
     placeholders = ",".join("?" * len(contributing_dois))
     cursor.execute(
@@ -588,41 +586,56 @@ def load_variant_frequencies_for_gene(
         FROM variant_frequencies vf
         WHERE vf.hgnc_id = ?
           AND vf.paper_doi IN ({placeholders})
-        ORDER BY vf.paper_doi DESC, vf.variant_id
     """,
         (hgnc_id, *contributing_dois),
     )
 
-    variant_frequencies = []
+    rows_by_variant: dict[str, list[sqlite3.Row]] = {}
     for row in cursor.fetchall():
-        variant_id = row["variant_id"]
-        doi = row["paper_doi"]
-        box_id = row["box_id"]
+        rows_by_variant.setdefault(row["variant_id"], []).append(row)
 
-        # Parse JSON fields
+    parsed: list[tuple[str, dict[str, Any], dict[str, Any], list[sqlite3.Row]]] = []
+    for variant_id, rows in rows_by_variant.items():
         try:
-            normalization = json.loads(row["normalization"])
-            gnomad = json.loads(row["gnomad"])
+            normalization = json.loads(rows[0]["normalization"])
+            gnomad = json.loads(rows[0]["gnomad"])
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse JSON for variant {variant_id}: {e}")
             continue
+        parsed.append((variant_id, normalization, gnomad, rows))
 
-        # Get citation page from bbox mapping
-        citation_page = None
-        if doi in bbox_mappings and box_id in bbox_mappings[doi]:
-            citation_page = bbox_mappings[doi][box_id]
+    def sort_key(
+        item: tuple[str, dict[str, Any], dict[str, Any], list[sqlite3.Row]],
+    ) -> tuple[int, str]:
+        variant_id, _, gnomad, _ = item
+        if gnomad.get("normalization_error"):
+            bucket = 2
+        elif gnomad.get("variant_not_found"):
+            bucket = 1
+        else:
+            bucket = 0
+        return (bucket, variant_id)
 
-        # Create variant frequency object using helper
-        variant_freq = _create_variant_frequency_from_db_row(
-            variant_id=variant_id,
-            doi=doi,
-            box_id=box_id,
-            normalization=normalization,
-            gnomad=gnomad,
-            citation_page=citation_page,
-            display_id=display_ids[doi],
+    parsed.sort(key=sort_key)
+
+    variant_frequencies: list[VariantFrequency] = []
+    for variant_id, normalization, gnomad, rows in parsed:
+        citation_set: set[CitationLink] = set()
+        for row in rows:
+            doi = row["paper_doi"]
+            page = bbox_mappings.get(doi, {}).get(row["box_id"])
+            if page is not None:
+                citation_set.add(CitationLink(display_id=display_ids[doi], doi=doi, page=page))
+        citations = sorted(citation_set, key=lambda c: (c.display_id, c.page))
+
+        variant_frequencies.append(
+            _create_variant_frequency_from_db_row(
+                variant_id=variant_id,
+                normalization=normalization,
+                gnomad=gnomad,
+                citations=citations,
+            )
         )
-        variant_frequencies.append(variant_freq)
 
     return variant_frequencies
 
@@ -660,7 +673,6 @@ def load_variant_frequencies_for_paper(
         variant_id = row["variant_id"]
         box_id = row["box_id"]
 
-        # Parse JSON fields
         try:
             normalization = json.loads(row["normalization"])
             gnomad = json.loads(row["gnomad"])
@@ -668,22 +680,20 @@ def load_variant_frequencies_for_paper(
             logger.warning(f"Failed to parse JSON for variant {variant_id} in paper {doi}: {e}")
             continue
 
-        # Get citation page from bbox mapping
-        citation_page = None
+        citations: list[CitationLink] = []
         if citation_pages and box_id in citation_pages:
-            citation_page = citation_pages[box_id]
+            citations.append(
+                CitationLink(display_id=display_id, doi=doi, page=citation_pages[box_id])
+            )
 
-        # Create variant frequency object using helper
-        variant_freq = _create_variant_frequency_from_db_row(
-            variant_id=variant_id,
-            doi=doi,
-            box_id=box_id,
-            normalization=normalization,
-            gnomad=gnomad,
-            citation_page=citation_page,
-            display_id=display_id,
+        variant_frequencies.append(
+            _create_variant_frequency_from_db_row(
+                variant_id=variant_id,
+                normalization=normalization,
+                gnomad=gnomad,
+                citations=citations,
+            )
         )
-        variant_frequencies.append(variant_freq)
 
     return variant_frequencies
 

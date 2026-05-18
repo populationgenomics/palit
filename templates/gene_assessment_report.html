@@ -400,9 +400,9 @@
                 {% endif %}
                 <td>
                     <a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>
-                    {% if variant.citation_page %}
-                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ variant.doi | encode_doi }}.pdf#page={{ variant.citation_page }}" target="_blank">[{{ variant.display_id | short_id }}:p{{ variant.citation_page }}]</a>
-                    {% endif %}
+                    {% for citation in variant.citations %}
+                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ citation.doi | encode_doi }}.pdf#page={{ citation.page }}" target="_blank">[{{ citation.display_id | short_id }}:p{{ citation.page }}]</a>
+                    {% endfor %}
                 </td>
             </tr>
             {% endfor %}

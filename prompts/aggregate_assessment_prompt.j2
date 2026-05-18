@@ -302,52 +302,87 @@ The following candidates carry an expert curation panel's `[DISPUTED]` or `[REFU
 **Style:** Use UK English spelling, except in verbatim quotes.
 
 PROSE SUMMARY REQUIREMENTS:
+
+PER-ENTITY ORGANIZATION (when `disease_entities` has more than one entry):
+When you have constructed more than one disease entity, the prose summary MUST be organized per entity — one short paragraph per entity rather than a single gene-level narrative that compresses entities together. When there is exactly one entity, ignore this block and write flowing prose as the case below specifies.
+
+How to structure per-entity prose:
+
+1. Optional lead-in sentence at the gene level — use only when it adds orientation (e.g., naming the organ systems involved, or noting that the entities form a spectrum). Single multi-entity genes often need no lead-in. Use a protein-function lead-in (1-2 sentences) only when the contributing papers discuss it.
+
+2. One short paragraph per entity, in the same family_count-descending order the downstream report uses. Each paragraph MUST:
+   - Lead with the entity's `description` from `disease_entities[*]` (or a faithful short form of it), so the prose paragraph maps 1-to-1 to the entity-table row and per-entity criteria card the curator sees in the report.
+   - Carry only THIS entity's facts: paper IDs (AuthorYear), THIS entity's patient_count and family_count, THIS entity's inheritance_mode and disease_mechanism, the variants and notable specifics relevant to it. Functional and segregation evidence likewise belong with the entity they pertain to.
+   - Never pool family or patient counts across entities. Per-paragraph counts must match the structured `disease_entities[*].patient_count` / `family_count` for that entity.
+   - Acknowledge `dispute_status: Disputed` or `Refuted` in that entity's paragraph when present (e.g., "Despite the GenCC Disputed marker, ..." or "Refuted by GenCC; ...").
+   - Stay brief — 1-3 sentences per entity, scaling with evidence weight (not with entity count).
+
+3. Optional closing sentence — use only when entities differ meaningfully on classification or when a single overall judgement is genuinely cross-entity (e.g., "These two associations are AMBER.").
+
+Inline bold entity labels (e.g., `**Cardiomyopathy (monoallelic, LoF):**`) are ALLOWED but NOT REQUIRED. Default to lead-phrase prose (the ACTN2 example below). Use bold labels only when there are 3+ entities or when the entity descriptions are long enough that the lead-phrase pattern becomes hard to scan.
+
+EXAMPLE — multi-entity, no prior reviews (ACTN2 lead-phrase pattern):
+  "Multiple cardiac and skeletal phenotypes are associated with variants in this gene.
+
+  Smith2024 reports 14 unrelated families with adult-onset dilated cardiomyopathy and dominant loss-of-function variants; iPSC-derived cardiomyocytes from two probands show sarcomeric disarray.
+
+  Park2024 describes adult-onset dominant skeletal myopathy in 14 families with truncating variants.
+
+  Lee2024 describes the recessive adult-onset form in 5 families (7 patients), all carrying the homozygous missense p.Arg506Gly — a same-variant-across-families pattern that limits independence.
+
+  Chen2023 reports 2 unrelated individuals with congenital multiple-structured-core disease and de novo heterozygous variants."
+
+EXAMPLE — multi-entity using bold labels (for 3+ entities or long descriptions):
+  "**Cardiomyopathy (monoallelic, LoF):** Smith2024 reports 14 families with truncating variants; iPSC-CM model recapitulates DCM.
+  **Adult-onset dominant skeletal myopathy (monoallelic, LoF):** Park2024 reports 14 families.
+  **Adult-onset recessive skeletal myopathy (biallelic, LoF):** Lee2024 reports 5 families, all with homozygous p.Arg506Gly.
+  **Congenital MsCD (monoallelic):** Chen2023 reports 2 individuals with de novo heterozygous variants."
+
 {% if not has_previous_reviews and not panel_formatted %}
 {# CASE 1: General + Novel #}
-Provide a prose narrative that synthesizes the gene-disease evidence across all contributing papers. Should be BRIEF by default (2-3 sentences), but allow more detail when warranted by the complexity or importance of the evidence.
+Provide a prose narrative that synthesizes the gene-disease evidence across all contributing papers.
 
-STRUCTURE:
-1. **Protein function** (if discussed in papers): When contributing papers describe protein function/pathway, start with 1-2 sentences summarizing what protein the gene encodes and its biological function. Include gene name. Synthesize ONLY from paper content - omit if not discussed.
+SINGLE-ENTITY: BRIEF flowing prose (2-3 sentences by default; longer when evidence complexity warrants). Optional protein-function lead-in (1-2 sentences) when contributing papers describe what the protein encodes and its biological function — synthesize ONLY from paper content.
 
-2. **Evidence summary**: Synthesize the key evidence in natural, flowing prose. Include the following information categories when available (omit any that are not present or not applicable):
-   - Paper references and patient/family counts
-   - Inheritance pattern: monoallelic, biallelic, X-linked, de novo, mosaic/somatic, etc.
-   - Disease mechanism: gain-of-function, loss-of-function, loss-of-function (haploinsufficiency), dominant-negative, etc.
-   - Variant types: missense, nonsense, frameshift, splice-site, deletion, etc.
-   - Core phenotype and clinical features
-   - Functional evidence (if strong)
-   - Notable specifics (founder variants, population findings, prior reports, etc.)
+Include the following information categories when available (omit any that are not present or not applicable):
+- Paper references and patient/family counts
+- Inheritance pattern: monoallelic, biallelic, X-linked, de novo, mosaic/somatic, etc.
+- Disease mechanism: gain-of-function, loss-of-function, loss-of-function (haploinsufficiency), dominant-negative, etc.
+- Variant types: missense, nonsense, frameshift, splice-site, deletion, etc.
+- Core phenotype and clinical features
+- Functional evidence (if strong)
+- Notable specifics (founder variants, population findings, prior reports, etc.)
 
-   GENERAL TEMPLATE (flexible - adapt as needed for natural prose):
-   <paper_id(s)> report <N> individuals from <N> unrelated families with <inheritance> <mechanism> <variant-types> variants presenting with <phenotype>. <Clinical details>. <Functional evidence>. <Notable specifics>.
+GENERAL TEMPLATE (flexible — adapt as needed for natural prose):
+<paper_id(s)> report <N> individuals from <N> unrelated families with <inheritance> <mechanism> <variant-types> variants presenting with <phenotype>. <Clinical details>. <Functional evidence>. <Notable specifics>.
 
-   EXAMPLES showing different combinations of information:
+When `disease_mechanism` is "NR", simply omit it.
 
-   ✓ Single mechanism, single variant type:
-     "Smith2024 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. Functional assays demonstrate constitutive activation."
+EXAMPLES — single-entity:
 
-   ✓ Single mechanism, multiple variant types:
-     "Jones2024 reports 27 individuals from 24 families with biallelic loss-of-function nonsense, frameshift, and splice-site variants causing Stargardt disease type 1, an autosomal recessive progressive macular dystrophy with childhood- or early adulthood-onset central vision loss."
+✓ Single mechanism, single variant type:
+  "Smith2024 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. Functional assays demonstrate constitutive activation."
 
-   ✓ With detailed mechanism, omitting variant types:
-     "Kim2024 reports 5 individuals from 4 families with heterozygous loss-of-function (haploinsufficiency) variants presenting with severe congenital microcephaly, intellectual disability and developmental delay. Zebrafish knockdown recapitulates reduced CNS size and behavioral deficits."
+✓ Single mechanism, multiple variant types:
+  "Jones2024 reports 27 individuals from 24 families with biallelic loss-of-function nonsense, frameshift, and splice-site variants causing Stargardt disease type 1, an autosomal recessive progressive macular dystrophy with childhood- or early adulthood-onset central vision loss."
 
-   ✓ Multiple mechanisms (organize by mechanism):
-     "BAIAP2 encodes a brain-specific angiogenesis inhibitor binding protein. Chen2024 reports 6 individuals with de novo gain-of-function missense variants causing developmental and epileptic encephalopathy. Li2023 reports 1 individual with a loss-of-function missense variant causing lissencephaly with posterior-anterior gradient."
+✓ Protein-function lead-in:
+  "BAIAP2 encodes a brain-specific angiogenesis inhibitor binding protein. Wang2024 reports 3 individuals from 1 family with a heterozygous missense variant (c.349G>T, p.Asp117Tyr) presenting with premature ovarian insufficiency. Mouse knock-in model recapitulates age-dependent subfertility and follicle depletion."
 
-   ✓ Mechanism not reported (omit naturally):
-     "Wang2024 reports 3 individuals from 1 family with a heterozygous missense variant (c.349G>T, p.Asp117Tyr) presenting with premature ovarian insufficiency. Mouse knock-in model recapitulates age-dependent subfertility and follicle depletion."
+MULTI-ENTITY: Apply PER-ENTITY ORGANIZATION (above). The protein-function lead-in remains optional and, when used, comes before the per-entity paragraphs. Distinct mechanisms naturally fall into separate entities (per the LUMPING/SPLITTING rules above), so the per-entity structure carries the genotype-phenotype mapping — do not also try to "organize by mechanism" within a single paragraph.
 
-   When disease_mechanism is "NR", simply omit it and include other available information. When multiple distinct mechanisms exist, organize by mechanism to clarify the genotype-phenotype relationship.
+EXAMPLE — multi-entity, novel:
+  "Chen2024 reports 6 individuals with de novo gain-of-function missense variants causing developmental and epileptic encephalopathy (early-childhood onset).
 
-Use paragraph breaks for readability (e.g., break after protein function section).
+  Li2023 reports 1 individual with a biallelic loss-of-function missense variant causing lissencephaly with a posterior-anterior gradient and severe developmental delay."
+
 {% elif has_previous_reviews and not panel_formatted %}
 {# CASE 2: General + Has Reviews #}
 This gene has existing PanelApp Australia reviews (shown below). Your summary must ADD to them, not repeat them.
 
 {{ previous_reviews_section }}
 
-OUTPUT FORMAT — the summary field MUST use exactly these three bold markdown headers:
+OUTPUT FORMAT — the summary field MUST use exactly these three bold markdown headers, for both single-entity and multi-entity genes:
 
 **New evidence**: <what the new papers add — families, variants, phenotypes, functional data>
 
@@ -355,13 +390,31 @@ OUTPUT FORMAT — the summary field MUST use exactly these three bold markdown h
 
 **Assessment**: <how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable>
 
+WHEN MULTI-ENTITY: Apply PER-ENTITY ORGANIZATION (above) INSIDE the **New evidence** and **Assessment** sections — one short paragraph per entity within each, in family_count-descending order. **Prior reviews** stays a single gene-level block because PanelApp's prior reviewer commentary is not stored per-entity; summarise it as it actually exists, even when the new evidence covers entities the prior reviews never mentioned.
+
 EXAMPLES:
 
-✓ "**New evidence**: Park2024 and Lee2024 add 16 families with ACTN2 skeletal myopathy, including adult-onset limb-girdle weakness with dominant and recessive inheritance.\n\n**Prior reviews**: The 2021 PanelApp Australia review classified ACTN2 as GREEN based on 14 families with dilated cardiomyopathy and iPSC-CM functional validation.\n\n**Assessment**: Combined with the cardiomyopathy families, the total now exceeds 30 unrelated families. The expanded phenotypic spectrum reinforces the diagnostic-grade classification."
+✓ Single-entity:
+  "**New evidence**: Kim2024 reports 4 families with biallelic variants causing childhood-onset ataxia, with zebrafish rescue experiments.
 
-✓ Sparse prior reviews: "**New evidence**: Kim2024 reports 4 families with biallelic variants causing childhood-onset ataxia, with zebrafish rescue experiments.\n\n**Prior reviews**: Rated AMBER on the PanelApp Australia Mendeliome panel with no detailed reviewer commentary.\n\n**Assessment**: The new evidence meets Criterion A (4 unrelated families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
+  **Prior reviews**: Rated AMBER on the PanelApp Australia Mendeliome panel with no detailed reviewer commentary.
 
-✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN on PanelApp Australia (April 2022) based on 5 families with recessive loss-of-function alleles.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
+  **Assessment**: The new evidence meets Criterion A (4 unrelated families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
+
+✓ Multi-entity (scaffold preserved; per-entity inside New evidence and Assessment):
+  "**New evidence**: Park2024 adds 14 unrelated families with adult-onset dominant skeletal myopathy carrying loss-of-function variants. Lee2024 reports the recessive form in 5 families (7 patients), all carrying the homozygous missense p.Arg506Gly. No new cardiomyopathy or MsCD families.
+
+  **Prior reviews**: 2021 PanelApp Australia review classified ACTN2 GREEN for dilated cardiomyopathy based on 14 families with iPSC-CM functional validation. Skeletal phenotypes were not addressed in prior reviewer commentary.
+
+  **Assessment**: Cardiomyopathy remains diagnostic-grade; combined with the new evidence the total still exceeds 30 unrelated families. The adult-onset dominant skeletal myopathy is newly diagnostic-grade with Park2024's 14 families. The adult-onset recessive myopathy carries a same-variant-across-families founder concern (homozygous p.Arg506Gly in all 5 families) and remains AMBER pending independent variants."
+
+✓ No substantive new evidence (single-entity behaviour):
+  "**New evidence**: No new families or functional data beyond what was previously reviewed.
+
+  **Prior reviews**: Rated GREEN on PanelApp Australia (April 2022) based on 5 families with recessive loss-of-function alleles.
+
+  **Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
+
 {% elif not has_previous_reviews and panel_formatted %}
 {# CASE 3: Panel-scoped + Novel #}
 Provide a prose narrative that synthesizes the gene-disease evidence AND explains why this gene belongs on the specified panel.
@@ -370,28 +423,33 @@ Provide a prose narrative that synthesizes the gene-disease evidence AND explain
 
 {{ panel_formatted }}
 
-STRUCTURE:
-1. **Evidence summary**: Synthesize key evidence (paper references, family counts, inheritance, phenotype, functional evidence)
-2. **Panel relevance**: Explain WHY this gene's phenotype aligns with this panel's scope, referencing the panel's relevant disorders, disease group, or description
+SINGLE-ENTITY: Flowing prose with two parts — (1) evidence summary (paper references, family counts, inheritance, phenotype, functional evidence); (2) panel relevance explaining WHY this gene's phenotype aligns with this panel's scope, referencing the panel's relevant disorders, disease group, or description.
 
-EXAMPLES:
+EXAMPLES — single-entity:
 
-✓ CORRECT - Evidence + explicit panel relevance:
+✓ Evidence + explicit panel relevance:
   "Smith2024 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. This gene is relevant to the Genetic Epilepsy panel because DEE is a core epileptic encephalopathy within the panel's scope of seizure disorders with genetic etiology."
 
-✓ CORRECT - Multiple phenotypes, panel-specific focus:
-  "BAIAP2 variants cause two distinct phenotypes: developmental epileptic encephalopathy (6 families, GoF) and lissencephaly (1 family, LoF). Both phenotypes are relevant to the Neurodevelopmental Disorders panel as they involve abnormal brain development and intellectual disability, which are core features of the panel's scope."
-
-✓ CORRECT - Explaining borderline relevance:
+✓ Borderline relevance:
   "Li2023 reports 4 families with hereditary spastic paraplegia presenting with progressive lower limb spasticity and mild cognitive impairment. While HSP is primarily a motor neuron disorder, this gene is relevant to the Intellectual Disability panel because affected individuals consistently show mild-to-moderate ID as part of the clinical presentation."
 
-✗ WRONG - No panel connection:
+✗ WRONG — no panel connection:
   "Reports 5 individuals from 4 families with heterozygous variants presenting with microcephaly."
   (Fails to explain why this is relevant to the specific panel)
 
-✗ WRONG - Generic panel mention:
+✗ WRONG — generic panel mention:
   "This gene should be included in the panel."
   (No specific connection to the panel's scope or disorders)
+
+MULTI-ENTITY: Apply PER-ENTITY ORGANIZATION (above). Weave panel relevance into the lead-in when relevance is gene-level (typical case), or into the specific per-entity paragraph(s) when relevance differs across entities.
+
+EXAMPLE — multi-entity with shared panel relevance in the lead-in:
+  "Both BAIAP2-related phenotypes fall within the Neurodevelopmental Disorders panel's scope of abnormal brain development with intellectual disability.
+
+  Chen2024 reports 6 individuals with de novo gain-of-function missense variants causing developmental and epileptic encephalopathy.
+
+  Li2023 reports 1 individual with a biallelic loss-of-function missense variant causing lissencephaly with a posterior-anterior gradient."
+
 {% elif has_previous_reviews and panel_formatted %}
 {# CASE 4: Panel-scoped + Has Reviews #}
 This gene has existing PanelApp Australia reviews (shown below). Your summary must ADD to them, not repeat them, AND explain why the gene belongs on this specific panel.
@@ -402,7 +460,7 @@ This gene has existing PanelApp Australia reviews (shown below). Your summary mu
 
 {{ panel_formatted }}
 
-OUTPUT FORMAT — the summary field MUST use exactly these four bold markdown headers:
+OUTPUT FORMAT — the summary field MUST use exactly these four bold markdown headers, for both single-entity and multi-entity genes:
 
 **New evidence**: <what the new papers add — families, variants, phenotypes, functional data>
 
@@ -412,11 +470,27 @@ OUTPUT FORMAT — the summary field MUST use exactly these four bold markdown he
 
 **Assessment**: <how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable>
 
+WHEN MULTI-ENTITY: Apply PER-ENTITY ORGANIZATION (above) INSIDE **New evidence** and **Assessment**. **Prior reviews** and **Panel relevance** stay single gene-level blocks (you may still name specific entities inside **Panel relevance** if relevance differs across them).
+
 EXAMPLES:
 
-✓ "**New evidence**: Park2024 and Lee2024 add 16 families with ACTN2 skeletal myopathy.\n\n**Prior reviews**: Rated GREEN on the PanelApp Australia Inherited Cardiomyopathies panel based on dilated cardiomyopathy evidence.\n\n**Panel relevance**: Both cardiac and skeletal muscle phenotypes fall within the Inherited Muscle Disorders panel's scope.\n\n**Assessment**: The expanded phenotypic spectrum strengthens diagnostic-grade status."
+✓ Single-entity, no substantive new evidence:
+  "**New evidence**: No new families or functional data beyond what was previously reviewed.
 
-✓ No substantive new evidence: "**New evidence**: No new families or functional data beyond what was previously reviewed.\n\n**Prior reviews**: Rated GREEN on PanelApp Australia based on 3 families with dilated cardiomyopathy.\n\n**Panel relevance**: DCM is a core phenotype within the Inherited Cardiomyopathies panel's scope of genetic cardiomyopathies.\n\n**Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
+  **Prior reviews**: Rated GREEN on PanelApp Australia based on 3 families with dilated cardiomyopathy.
+
+  **Panel relevance**: DCM is a core phenotype within the Inherited Cardiomyopathies panel's scope of genetic cardiomyopathies.
+
+  **Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
+
+✓ Multi-entity:
+  "**New evidence**: Park2024 adds 14 unrelated families with adult-onset dominant skeletal myopathy carrying loss-of-function variants. Lee2024 reports the recessive form in 5 families (7 patients), all with homozygous p.Arg506Gly.
+
+  **Prior reviews**: Rated GREEN on the PanelApp Australia Inherited Cardiomyopathies panel for dilated cardiomyopathy based on 14 families with iPSC-CM functional validation.
+
+  **Panel relevance**: Both cardiac and skeletal muscle phenotypes fall within the Inherited Muscle Disorders panel's scope.
+
+  **Assessment**: Cardiomyopathy remains diagnostic-grade. The adult-onset dominant skeletal myopathy is newly diagnostic-grade with Park2024's 14 families. The adult-onset recessive myopathy carries a same-variant-across-families founder concern and remains AMBER pending independent variants."
 {% endif %}
 IMPORTANT INSTRUCTIONS:
 - Focus on variants causing rare genetic diseases — including both germline variants and
@@ -483,13 +557,13 @@ Respond in JSON format with your aggregate evaluation:
 {
 {% endraw %}
   "summary": "{% if has_previous_reviews and panel_formatted -%}
-**New evidence**: <new families/variants/phenotypes/functional data>\n\n**Prior reviews**: <prior PanelApp Australia ratings, panels, and key claims>\n\n**Panel relevance**: <why this gene fits the target panel's scope>\n\n**Assessment**: <how new + existing evidence support the classification>
+**New evidence**: <new families/variants/phenotypes/functional data; for multi-entity, one paragraph per entity per PER-ENTITY ORGANIZATION above>\n\n**Prior reviews**: <prior PanelApp Australia ratings, panels, and key claims — single gene-level block>\n\n**Panel relevance**: <why this gene fits the target panel's scope — single gene-level block>\n\n**Assessment**: <how new + existing evidence support the classification; for multi-entity, one paragraph per entity per PER-ENTITY ORGANIZATION above>
 {%- elif has_previous_reviews -%}
-**New evidence**: <new families/variants/phenotypes/functional data>\n\n**Prior reviews**: <prior PanelApp Australia ratings, panels, and key claims>\n\n**Assessment**: <how new + existing evidence support the classification>
+**New evidence**: <new families/variants/phenotypes/functional data; for multi-entity, one paragraph per entity per PER-ENTITY ORGANIZATION above>\n\n**Prior reviews**: <prior PanelApp Australia ratings, panels, and key claims — single gene-level block>\n\n**Assessment**: <how new + existing evidence support the classification; for multi-entity, one paragraph per entity per PER-ENTITY ORGANIZATION above>
 {%- elif panel_formatted -%}
-<paper_id(s)> report <N> individuals from <N> families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Panel relevance>. <Notable specifics>.
+<single-entity: paper_id(s) report N individuals from N families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Panel relevance>. <Notable specifics>. | multi-entity: per-entity paragraphs per PER-ENTITY ORGANIZATION above, with panel relevance in the lead-in or in entity paragraphs as appropriate>
 {%- else -%}
-<paper_id(s)> report <N> individuals from <N> families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Functional evidence>. <Notable specifics>.
+<single-entity: paper_id(s) report N individuals from N families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Functional evidence>. <Notable specifics>. | multi-entity: per-entity paragraphs per PER-ENTITY ORGANIZATION above>
 {%- endif %}",
 {% raw %}
   "families": "N families (N unrelated) aggregated across all papers",

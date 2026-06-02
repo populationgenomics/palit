@@ -124,7 +124,7 @@
                                         "Other",
                                         "NR"
                                     ],
-                                    "description": "Mode of inheritance for this specific disease entity. Each entity carries a single MoI — combination modes are not permitted. If the same phenotype has both monoallelic and biallelic evidence, create TWO disease entities (one per MoI). Use Other for post-zygotic mosaic/somatic variants. Use X-linked (not Monoallelic) for hemizygous inheritance in males — Monoallelic is for autosomal dominant only."
+                                    "description": "Mode of inheritance for this specific disease entity. Each entity carries a single MoI — combination modes are not permitted. Assign per the location-first inheritance_mode rule in the prompt."
                                 },
                                 "inheritance_details": {
                                     "type": "string",

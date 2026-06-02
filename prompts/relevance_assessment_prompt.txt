@@ -27,6 +27,16 @@ You are a genetics literature curator assistant. Your task is to identify PubMed
   - Assess the paper as relevant if it contains valid SNV-based gene-disease associations.
   - Only extract the SNV-related gene-disease associations; omit any CNV-based findings.
 
+**Critical Exclusion: Gene Fusions**
+- EXCLUDE gene-disease associations based solely on gene fusions — chimeric genes or fusion transcripts formed by joining two genes through a translocation or other structural rearrangement.
+  - Exclude fusions even when one partner is the gene of interest, and even if described as "novel," "recurrent," or diagnostically useful.
+  - Exclude regardless of somatic or germline status — this overrides the somatic/mosaic inclusion above; the pathogenic driver is the fusion product, not a sequence-level variant disrupting a single gene.
+  - Balanced (copy-number-neutral) translocation fusions are NOT captured by the CNV exclusion above, so they are excluded here.
+  - Example exclusions: EWSR1-FLI1, EWSR1-NFATC1, and other fusion-driven entities.
+- IMPORTANT: If a paper covers BOTH gene fusions AND sequence-level variants (SNVs, small indels, point mutations), the paper IS RELEVANT for its SNV content.
+  - Assess the paper as relevant if it contains valid SNV-based gene-disease associations.
+  - Only extract the SNV-related gene-disease associations; omit any fusion-based findings.
+
 **Critical Exclusion: Risk Factors & Polygenic Studies**
 - ALWAYS EXCLUDE articles about risk factors, polygenic architecture, or statistical associations (as opposed to causal variants).
   - Exclude descriptions of "multigenic inheritance," "polygenic risk," or "complex genetic architecture."

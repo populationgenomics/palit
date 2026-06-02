@@ -93,7 +93,7 @@ For each disease entity, you must explicitly assess the six weakening factors be
 For each factor: emit `{"factor": "<enum>", "present": true|false, "details": "<1-2 sentences citing specific evidence; for present=false use 'Not present' or a brief sanity-check statement>"}`.
 
 CRITERION A: Multiple Unrelated Cases with Plausible Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs and gene fusions) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
 
 For each entity, set `criterion_A.result` to true if and only if that entity's `family_count` is ≥3 AFTER applying the QUALIFYING VARIANT GATE and the SAME-VARIANT-ACROSS-FAMILIES collapse rule. Count only families that pass both. Strong functional evidence does NOT compensate for fewer qualifying families — that path is Criterion C, with its own bar below. Do not pool counts across entities.
 
@@ -107,7 +107,7 @@ KEY REQUIREMENTS:
   * Exclusion of phenocopies and alternative diagnoses
 
 CRITERION B: Cis-regulatory Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs and gene fusions) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
 
 For each entity, set `criterion_B.result` to true if and only if that entity's `family_count` is >3 with qualifying cis-regulatory variants, after applying the qualifying gate and the same-variant collapse rule. The qualifying gate adapts to regulatory variants — "predicted/proven null" becomes "demonstrated to abolish or substantially reduce expression of the target gene"; functional validation must show the regulatory effect on the specific reported variant.
 
@@ -383,6 +383,22 @@ IMPORTANT INSTRUCTIONS:
     create a gene evaluation for it
   * The top-level "families" field should also reflect only gene-specific variant families,
     consistent with family_count in disease_entities
+- GENE FUSION EXCLUSION: PanelApp gene curation is based on sequence-level variants that
+  specifically disrupt individual genes, not on gene fusions — chimeric genes or fusion
+  transcripts formed by joining two genes via a translocation or other structural rearrangement.
+  * Do NOT count families whose only link to the gene is through a gene fusion (e.g.,
+    EWSR1-FLI1, EWSR1-NFATC1) toward family_count or patient_count — the pathogenic driver is
+    the fusion product, not a sequence-level variant disrupting this gene. This applies
+    regardless of somatic or germline status, even when the fusion was diagnostically useful.
+  * Balanced (copy-number-neutral) translocation fusions are NOT captured by the CNV exclusion
+    above; exclude them here.
+  * Base Criteria A–E on gene-specific sequence-level variant families only.
+  * You MAY reference fusion findings as supporting context in the prose summary, but clearly
+    distinguish this from gene-specific evidence and do not include fusion families in counts.
+  * If a gene has ONLY gene-fusion evidence in this paper (no gene-specific sequence-level
+    variants), do not create a gene evaluation for it.
+  * The top-level "families" field should also reflect only gene-specific sequence-level
+    variant families.
 - DIGENIC/OLIGOGENIC EXCLUSION: Digenic and oligogenic inheritance are out of scope.
   * Do NOT count families whose disease causation requires variants in multiple different genes
     toward family_count or patient_count. Base Criteria A-E on monogenic families only.

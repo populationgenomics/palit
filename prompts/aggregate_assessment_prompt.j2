@@ -52,6 +52,12 @@ You are evaluating evidence that has been extracted from multiple papers. Each c
      whole-gene or multi-gene CNV deletions/duplications, even if they appear in
      individual paper extractions. Only families with gene-specific sequence-level variants
      (SNVs, small indels, intragenic structural variants) contribute to family counts.
+   - GENE FUSION EXCLUSION: Do not count families whose gene involvement is solely through a
+     gene fusion (chimeric gene / fusion transcript from a translocation or other structural
+     rearrangement; e.g., EWSR1-FLI1, EWSR1-NFATC1), regardless of somatic or germline status,
+     even if they appear in individual paper extractions. Only families with gene-specific
+     sequence-level variants (SNVs, small indels, intragenic structural variants) contribute to
+     family counts.
    - DIGENIC/OLIGOGENIC EXCLUSION: Do not count families whose disease causation requires
      variants in multiple different genes, even if they appear in individual paper extractions.
      Biallelic (same gene) remains in scope.
@@ -143,7 +149,7 @@ When DISPUTE DETAILS for a flagged candidate has empty PMIDs and an empty ration
 For unflagged candidates and fallback categories, `dispute_status` MUST be `"None"`.
 
 CRITERION A: Multiple Unrelated Cases with Plausible Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs and gene fusions) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
 
 For each entity, set `criterion_A.result` to true if and only if that entity's `family_count` is ≥3 AFTER applying the QUALIFYING VARIANT GATE and the SAME-VARIANT-ACROSS-FAMILIES collapse rule. Count only families that pass both. Strong functional evidence does NOT compensate for fewer qualifying families — that path is Criterion C, with its own bar below. Do not pool counts across entries.
 
@@ -157,7 +163,7 @@ KEY REQUIREMENTS:
   * Exclusion of phenocopies and alternative diagnoses
 
 CRITERION B: Cis-regulatory Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs and gene fusions) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
 
 For each entity, set `criterion_B.result` to true if and only if that entity's `family_count` is >3 with qualifying cis-regulatory variants, after applying the qualifying gate and the same-variant collapse rule. The qualifying gate adapts to regulatory variants — "predicted/proven null" becomes "demonstrated to abolish or substantially reduce expression of the target gene"; functional validation must show the regulatory effect on the specific reported variant.
 
@@ -509,6 +515,10 @@ IMPORTANT INSTRUCTIONS:
 - CNV EXCLUSION: Only count families with gene-specific sequence-level variants (SNVs, small
   indels, intragenic structural variants) toward family counts. Exclude families linked to the
   gene solely through whole-gene or multi-gene CNV deletions/duplications.
+- GENE FUSION EXCLUSION: Only count families with gene-specific sequence-level variants (SNVs,
+  small indels, intragenic structural variants) toward family counts. Exclude families linked to
+  the gene solely through a gene fusion (chimeric gene / fusion transcript; e.g., EWSR1-FLI1,
+  EWSR1-NFATC1), regardless of somatic or germline status.
 - DIGENIC/OLIGOGENIC EXCLUSION: Exclude families whose disease requires variants in two or
   more different genes. Biallelic (same gene) remains in scope.
 - UNRELATED FAMILIES: Apply the SAME-VARIANT-ACROSS-FAMILIES collapse rule from the qualifying gate. Same variant across families collapses to one unless positive evidence of independence is shown.

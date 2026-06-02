@@ -20,7 +20,10 @@ from palit.panelapp_client import (
     PanelAppClient,
     format_panel_for_prompt,
 )
-from palit.panelapp_integration import validate_entities_criteria_complete
+from palit.panelapp_integration import (
+    validate_entities_criteria_complete,
+    validate_independent_family_counts,
+)
 from palit.papers import doi_to_path
 
 app = typer.Typer(help="Extract structured evidence from full-text papers using vLLM")
@@ -511,6 +514,19 @@ async def _process_evidence(
                         logger.warning(
                             f"Incomplete per-entity evidence_assessments for DOI {paper_prompt.doi}, "
                             f"genes: {incomplete}"
+                        )
+                        failed_papers.append(paper_prompt.doi)
+                        continue
+
+                    inconsistent_counts = [
+                        ge.get("gene_symbol", "?")
+                        for ge in result.parsed_json.get("gene_evaluations", [])
+                        if not validate_independent_family_counts(ge.get("disease_entities", []))
+                    ]
+                    if inconsistent_counts:
+                        logger.warning(
+                            f"Inconsistent independent_family_count for DOI {paper_prompt.doi}, "
+                            f"genes: {inconsistent_counts}"
                         )
                         failed_papers.append(paper_prompt.doi)
                         continue

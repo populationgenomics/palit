@@ -4,14 +4,14 @@ GENE: {gene_symbol}
 
 WORKFLOW CONTEXT: These papers will be individually analyzed to extract evidence (families, phenotypes, variants, functional data), then aggregated to assess whether this gene meets diagnostic criteria. Select papers that provide the most useful, complementary evidence when combined.
 
-CORE PRINCIPLE: Comprehensive coverage of distinct disease entities with information-dense papers. The diagnostic bar is met per disease entity (distinct disease entity) with ~3+ UNRELATED families. Prefer recent comprehensive papers over multiple partial earlier papers covering the same phenotype.
+CORE PRINCIPLE: Comprehensive coverage of distinct disease entities with information-dense papers. The diagnostic bar is met per disease entity (distinct disease entity) with ~3+ INDEPENDENT families. Prefer recent comprehensive papers over multiple partial earlier papers covering the same phenotype.
 
 KEY INSIGHT - DISEASE ENTITIES AND INHERITANCE:
 A gene may cause multiple DISTINCT diseases (disease entities), and the SAME phenotype may show different modes of inheritance. Each combination needs independent evidence. For example:
-- Phenotype A with biallelic inheritance: Epilepsy syndrome (5 unrelated families)
-- Phenotype A with monoallelic inheritance: Epilepsy syndrome (3 unrelated families)
-- Phenotype B with biallelic inheritance: Cardiomyopathy (3 unrelated families)
-These are counted SEPARATELY, not summed. Each phenotype-inheritance combination needs ~3+ unrelated families.
+- Phenotype A with biallelic inheritance: Epilepsy syndrome (5 independent families)
+- Phenotype A with monoallelic inheritance: Epilepsy syndrome (3 independent families)
+- Phenotype B with biallelic inheritance: Cardiomyopathy (3 independent families)
+These are counted SEPARATELY, not summed. Each phenotype-inheritance combination needs ~3+ independent families.
 
 SELECTION PRIORITIES (ranked):
 
@@ -23,16 +23,16 @@ SELECTION PRIORITIES (ranked):
 
 2. COMPREHENSIVENESS - Information-dense papers that efficiently meet the bar
    - Recent comprehensive reviews or large cohort studies (PREFERRED for information density)
-   - Papers with sufficient UNRELATED families to meet diagnostic bar (~3+ families per phenotype)
+   - Papers with sufficient INDEPENDENT families to meet diagnostic bar (~3+ families per phenotype)
    - Publications that synthesize and extend earlier findings
    - Papers that clearly subsume earlier partial reports
    - For well-established phenotypes: ONE comprehensive recent paper is better than multiple older partial papers
 
 3. EVIDENCE STRENGTH - Sufficient pathogenicity evidence per disease entity
-   - Multiple truly UNRELATED families (not same founder variant, not re-analysis of same cohorts)
+   - Multiple independent families (distinct ancestral origins; not re-analysis of the same cohort)
    - Strong functional validation when needed (especially for missense variants)
    - Segregation analysis, de novo mutations, compelling variant evidence
-   - Note: ~3-5 unrelated families usually meets the bar; 20 ≈ 200 for our purposes
+   - Note: ~3-5 independent families usually meets the bar; 20 ≈ 200 for our purposes
 
 4. RECENCY - When phenotype coverage is similar, strongly prefer recent papers
    - Recent papers often incorporate earlier findings with additional families
@@ -79,7 +79,7 @@ Example input:
 <paper id=0><date>2020-03-15</date><title>Biallelic NIN variants cause Seckel syndrome</title><abstract>We report 8 families with microcephaly...</abstract></paper>
 <paper id=1><date>2019-06-20</date><title>NIN protein expression in cell division</title><abstract>Basic biology study of centrosome...</abstract></paper>
 <paper id=2><date>2021-11-10</date><title>Growth outcomes in Seckel syndrome</title><abstract>Clinical management and treatment...</abstract></paper>
-<paper id=3><date>2023-02-01</date><title>Novel NIN variants expand phenotype to include renal anomalies</title><abstract>Three unrelated families...</abstract></paper>
+<paper id=3><date>2023-02-01</date><title>Novel NIN variants expand phenotype to include renal anomalies</title><abstract>Three families...</abstract></paper>
 
 Example output (selecting only the 2 relevant papers from the 4 presented):
 {{

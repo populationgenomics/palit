@@ -30,7 +30,7 @@ Critically, you must NOT stitch criteria across entries. Setting entry X's crite
 
 Per-entity rules in brief (full rules in the criterion sections):
 
-- A/B/C: the entity's `family_count` must reach the threshold (≥3 for A; >3 for B; 2-3 for C with the Pillar 2 functional bar) AFTER applying the qualifying gate and the same-variant-across-families collapse rule. Do not pool counts across entries, regardless of shared `inheritance_mode`, `disease_mechanism`, or phenotype overlap.
+- A/B/C: the entity's `independent_family_count` must reach the threshold (≥3 for A; >3 for B; 2-3 for C with the Pillar 2 functional bar). Do not pool counts across entries, regardless of shared `inheritance_mode`, `disease_mechanism`, or phenotype overlap.
 - D: the entity's gene–disease relationship must be Mendelian (monogenic) and clinically actionable.
 - E: there is no convincing contradictory evidence to the entity's own gene–disease relationship.
 
@@ -76,7 +76,7 @@ For each criterion that evaluates to TRUE, you MUST provide specific citations f
 Example citation format:
 {% raw %}
 "citations": [
-  {"paper_id": "Smith2024", "box_id": 42, "commentary": "Reports 5 unrelated families with pathogenic variants"},
+  {"paper_id": "Smith2024", "box_id": 42, "commentary": "Reports 5 families with pathogenic variants"},
   {"paper_id": "Jones2023", "box_id": 18, "commentary": "Confirms segregation analysis with LOD score 3.2"}
 ]
 {% endraw %}
@@ -91,7 +91,7 @@ A reported variant counts toward Criterion A/B/C only if it QUALIFIES under all 
     (c) **Other variant type with at least one of**:
         (i) Segregation with affected status across ≥2 informative meioses (multiple affected carriers, unaffected non-carriers documented in the family).
         (ii) Variant-specific functional validation — an assay tests the actual reported variant (not just gene knockdown) and demonstrates a mechanistic deficit.
-        (iii) Recurrence as the same variant in unrelated affected individuals across demonstrably distinct populations or independent ancestries.
+        (iii) Recurrence as the same variant in affected individuals from demonstrably distinct populations or independent ancestries.
 
 (2) No contradictory population evidence — population allele frequency must be plausible for the reported MoI:
     - Autosomal dominant (Monoallelic): gnomAD allele frequency ≤ 0.0001 (1 in 10,000)
@@ -103,20 +103,29 @@ A reported variant counts toward Criterion A/B/C only if it QUALIFIES under all 
 
 Variants that do not pass this gate must NOT be counted toward family_count for Criteria A/B/C, even if they appear in the contributing papers. State this exclusion in the criterion rationale where it materially affects the count.
 
-SAME VARIANT ACROSS FAMILIES — when counting qualifying families, the same variant across multiple families counts as ONE family unless the contributing papers provide POSITIVE evidence of independence:
-- de novo origin confirmed in EACH family, OR
-- the affected individuals come from demonstrably distinct populations (different continents, ethnicities, or known unrelated cohorts) AND the variant is at a position consistent with recurrent mutation (e.g., CpG site, structural hotspot, or established mutational mechanism), OR
-- explicit haplotype analysis showing different ancestral chromosomes.
+TOTAL vs INDEPENDENT FAMILY COUNT — report two counts per entity.
 
-Geographic clustering, shared ethnicity, or unaddressed ancestry → collapse to one family. The burden of proof sits on showing independence; silence is not evidence of independence.
+`family_count` (total): families reported with a qualifying variant for this entity, aggregated across all papers (dedupe paper overlap via previously_reported_sources). Count families, not individuals — affected relatives in one pedigree are ONE family, however large the pedigree. Do NOT reduce this for shared alleles, shared ancestry, or geography.
 
-Note: gate condition (1)(c)(iii) above ("recurrence across distinct populations") and the SAME-VARIANT-ACROSS-FAMILIES rule address different questions. (1)(c)(iii) lets a variant *qualify* (we believe it is plausibly pathogenic because it has been seen in different populations). The collapse rule decides *how many independent observations* the variant contributes; cross-population recurrence alone does not establish independence (a founder allele can spread across populations) — independence additionally requires either a recurrent-mutation mechanism or haplotype evidence.
+`independent_family_count` (≤ family_count): of those, how many are independent observations of the gene–disease link — families that do not descend from a common ancestral origin of the variant. Criteria A/B/C use this count. It is the sum of:
+- each family whose qualifying variant is not shared with another family → 1;
+- each de novo–confirmed family (parents wild-type) → 1, even if the variant recurs (a de novo event is a new origin; recurrent de novo is the strongest evidence);
+- for each variant shared by ≥2 inherited (non–de novo) families, that group's contribution by the FIRST matching rule:
+  1. shared haplotype shown across the carriers → 1 (one proven origin);
+  2. families from different countries/continents or clearly distinct ancestries → count each (a single founder allele rarely spans distinct ancestries);
+  3. otherwise — same community/consanguineous cluster, same broad population, or ancestry not reported → 1 (treat as one origin; missing ancestry does NOT make families independent).
+
+HARD FLOOR (overrides rule 3 only): a variant shared by MORE THAN 10 families is too large a signal to fold into a single data point — count it at family size (less any explicitly documented close relatives), and record the likely shared origin as a founder caveat rather than discarding the recurrence. (A single consanguineous pedigree remains ONE family and never reaches this floor.)
+
+Founder/recurrence is a confidence caveat (`founder_or_recurrent_variant`); the shared-origin collapse above is its only count effect — do not penalise twice, and it never feeds Criterion E.
+
+Always set `count_reduction_reasoning` to the two counts plus the per-group disposition, e.g. "7 total: 5 distinct variants → 5; L14V in 2 Han/Shanghai families, no haplotype → 1; independent 6". Write "No reduction (N families)" only when the counts are equal.
 
 EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST (PER ENTITY):
 
 For each disease entity, you must explicitly assess the six weakening factors below and emit them in that entity's `evidence_weakening_factors` array (always all six entries per entity). Any criterion rationale for that entity must explicitly reference any factor with `present: true` that affects the verdict.
 
-1. **founder_or_recurrent_variant**: Same variant appears across multiple counted families within this entity without positive evidence of independent origins (apply the SAME-VARIANT-ACROSS-FAMILIES rule from the gate).
+1. **founder_or_recurrent_variant**: The same variant recurs across counted families without evidence of independent origins (see TOTAL vs INDEPENDENT FAMILY COUNT). A confidence caveat: where it reflects a shared ancestral origin it is already captured in `independent_family_count`, and it never, on its own, fails Criterion E.
 2. **inherited_no_segregation_with_affected**: Variants are inherited from carrier parents who are unaffected, of unknown affected status, or where segregation with affected status is not documented across informative meioses.
 3. **missense_no_variant_specific_functional**: A missense-dominated cohort for this entity without variant-specific functional validation (assays must test the actual reported variants, not just gene knockdown).
 4. **population_frequency_incompatible_with_moi**: One or more reported variants for this entity exceed plausible population-frequency thresholds for the assumed MoI based on what the contributing papers report (do not infer thresholds for variants whose frequencies are not reported in the papers).
@@ -141,17 +150,17 @@ For each disease entity matched to a flagged candidate, take an explicit decisio
 
 The following are NOT, on their own, valid grounds to overrule:
   - **Recency.** A post-dispute paper that repeats the defects the panel cited (variants above the panel's frequency threshold; missense without variant-specific functional rescue; no segregation across informative meioses; etc.) does not overrule. The panel's concerns were about evidence quality, not evidence age.
-  - **Family count.** "≥3 unrelated families" or "≥4 unrelated families" is not an overrule rationale — the panel saw families and rejected the gene-disease relationship on grounds other than count.
+  - **Family count.** "≥3 independent families" or "≥4 independent families" is not an overrule rationale — the panel saw families and rejected the gene-disease relationship on grounds other than count.
   - **Reanalysis or recitation of papers in any panel's PMID list,** regardless of how the new paper frames or extends the data.
 
 When DISPUTE DETAILS for a flagged candidate has empty PMIDs and an empty rationale, default to uphold — overrule cannot be reasoned about against an unstated standard.
 
 For unflagged candidates and fallback categories, `dispute_status` MUST be `"None"`.
 
-CRITERION A: Multiple Unrelated Cases with Plausible Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs and gene fusions) an interpretable functional region of this gene identified in multiple (3 or more) unrelated cases/families with the phenotype."
+CRITERION A: Multiple Independent Cases with Plausible Mutations
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs and gene fusions) an interpretable functional region of this gene identified in multiple (3 or more) independent cases/families with the phenotype."
 
-For each entity, set `criterion_A.result` to true if and only if that entity's `family_count` is ≥3 AFTER applying the QUALIFYING VARIANT GATE and the SAME-VARIANT-ACROSS-FAMILIES collapse rule. Count only families that pass both. Strong functional evidence does NOT compensate for fewer qualifying families — that path is Criterion C, with its own bar below. Do not pool counts across entries.
+For each entity, set `criterion_A.result` to true if and only if that entity's `independent_family_count` is ≥3 (with the QUALIFYING VARIANT GATE applied). Strong functional evidence does NOT compensate for fewer qualifying families — that path is Criterion C, with its own bar below. Do not pool counts across entries.
 
 KEY REQUIREMENTS:
 - Count FAMILIES, not individual patients (multiple affected siblings = 1 family).
@@ -163,16 +172,16 @@ KEY REQUIREMENTS:
   * Exclusion of phenocopies and alternative diagnoses
 
 CRITERION B: Cis-regulatory Mutations
-"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs and gene fusions) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) unrelated cases/families with the phenotype."
+"There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs and gene fusions) cis-regulatory elements convincingly affecting the expression of a single gene identified in multiple (>3) independent cases/families with the phenotype."
 
-For each entity, set `criterion_B.result` to true if and only if that entity's `family_count` is >3 with qualifying cis-regulatory variants, after applying the qualifying gate and the same-variant collapse rule. The qualifying gate adapts to regulatory variants — "predicted/proven null" becomes "demonstrated to abolish or substantially reduce expression of the target gene"; functional validation must show the regulatory effect on the specific reported variant.
+For each entity, set `criterion_B.result` to true if and only if that entity's `independent_family_count` is >3 with qualifying cis-regulatory variants (qualifying gate applied). The qualifying gate adapts to regulatory variants — "predicted/proven null" becomes "demonstrated to abolish or substantially reduce expression of the target gene"; functional validation must show the regulatory effect on the specific reported variant.
 
 CRITERION C: Fewer Cases with Strong Functional Evidence
-"As definitions A or B but in 2 or 3 unrelated cases/families with the phenotype, with the addition of convincing bioinformatic or functional evidence of causation."
+"As definitions A or B but in 2 or 3 independent cases/families with the phenotype, with the addition of convincing bioinformatic or functional evidence of causation."
 
 Criterion C is rare and demands a high functional bar. For an entity, set `criterion_C.result` to true ONLY when BOTH pillars hold for that entity:
 
-**Pillar 1**: The entity has 2 or 3 unrelated families with QUALIFYING variants (apply the gate and the same-variant collapse rule). Once the entity reaches ≥4 qualifying families, evaluate under Criterion A instead.
+**Pillar 1**: The entity has an `independent_family_count` of 2 or 3 with qualifying variants. Once it reaches ≥4, evaluate under Criterion A instead.
 
 **Pillar 2**: The contributing papers' functional evidence for THIS entity's phenotype matches AT LEAST ONE of the following acceptance patterns:
 
@@ -229,13 +238,15 @@ Otherwise set `criterion_E.result` to true for the entity.
 
 Note: E is about gene-disease *validity* for this entity (is there convincing contradiction about causation?). Paper-internal contradictions and minor outliers belong in `quality_concerns` or this entity's `evidence_weakening_factors`, not E.
 
+WEAKENING FACTORS DO NOT FAIL E: the six `evidence_weakening_factors` (founder/recurrent variant, inherited-without-segregation, missense-without-functional, population-frequency, non-Mendelian, sub-Pillar-2 functional) are confidence caveats — already reflected in `independent_family_count`, the criterion rationales, and the checklist. They are NOT, individually or aggregated, grounds to set `criterion_E` false; do not synthesise them into a "contradictory evidence" finding. A recurrent/founder allele, inherited variants lacking segregation, or a single high-frequency outlier never fail E. With a strong `independent_family_count`, set E false only for a compelling, reproduced contradiction.
+
 STRUCTURED FIELD REQUIREMENTS:
 Provide ultra-concise FACTUAL information aggregated across all papers. Use telegraphic style.
 
 CRITICAL: Use "NR" (Not Reported) when information is not explicitly stated across papers.
 NEVER infer, estimate, or make assumptions about missing data.
 
-- families: exact count aggregated across all papers, how many unrelated (e.g., "12 families (12 unrelated)" or "NR")
+- families: total families reported aggregated across all papers, and how many independent (e.g., "12 families reported (10 independent)" or "NR")
 {% if mondo_candidates %}
 KNOWN MONDO DISEASE NAMES FOR THIS GENE:
 The following specific MONDO disease names are known for {{ gene_symbol }}. For each disease entity, select the most appropriate mondo_disease_name from these candidates. You MUST use the EXACT spelling shown in quotes. If no candidate matches (e.g., a novel disease association), fall back to the high-level categories listed below.
@@ -278,7 +289,9 @@ The following candidates carry an expert curation panel's `[DISPUTED]` or `[REFU
     RULE: If the gene is mitochondrial, ALWAYS select "Mitochondrial disease" (or a specific mitochondrial disease candidate if available). Otherwise select the most specific applicable match.
   * dispute_status: One of "None"|"Disputed"|"Refuted". Encodes your decision on a flagged candidate: "Disputed"/"Refuted" upholds the candidate's `[DISPUTED]`/`[REFUTED]` marker (criterion_A/B/C results for THIS entity in its `evidence_assessments` must then be false); "None" overrules the prior dispute/refutation (any A/B/C you return true for this entity must state the overrule explicitly in its rationale). Unflagged candidates and fallback categories MUST be "None". Do not escalate (Disputed → Refuted), demote (Refuted → Disputed), or fabricate disputes on unflagged candidates.
   * patient_count: number of patients for this specific disease entity aggregated across all papers (always required)
-  * family_count: number of unrelated families for this specific disease entity aggregated across all papers. Use null when family count is not reported (null means NR - not reported)
+  * family_count: total families reported for this disease entity aggregated across all papers (count families, not individuals; dedupe paper overlap via previously_reported_sources). Use null when not reported (NR). See TOTAL vs INDEPENDENT FAMILY COUNT.
+  * independent_family_count: of those, how many are independent observations (no shared ancestral origin) — the count Criteria A/B/C use. ≤ family_count; null only when family_count is null.
+  * count_reduction_reasoning: the two counts plus the reason for any collapse, or "No reduction (N families)".
   * disease_mechanism: molecular mechanism by which variants cause this disease entity, synthesized from contributing papers. Use free text to describe mechanism as stated in papers. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in papers. Synthesize ONLY from paper content.
   * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Each entity carries a single MoI — combination modes are not permitted. Decide in this order:
     1. LOCATION FIRST. If the gene lies on the X chromosome (outside the pseudoautosomal regions), inheritance_mode is "X-linked" for EVERY entity of that gene, regardless of the proband's zygosity: hemizygous males, heterozygous females (X-linked dominant or skewed X-inactivation), de novo, or inherited. A single heterozygous or de novo allele in an X-linked gene is "X-linked", NOT "Monoallelic". "Monoallelic" and "Biallelic" are AUTOSOMAL-ONLY labels — never apply them to an X-chromosome gene, never record "Monoallelic"/"Biallelic" while relegating "X-linked" to inheritance_details, and never split an X-linked gene into separate "Monoallelic" and "X-linked" entities. If a contributing paper calls an X-linked gene's variant "heterozygous", "de novo", or "monoallelic", still classify the entity "X-linked". (Pseudoautosomal genes such as SHOX inherit autosomally — treat them as autosomal.)
@@ -293,12 +306,12 @@ The following candidates carry an expert curation panel's `[DISPUTED]` or `[REFU
   * evidence_assessments: REQUIRED per entity — exactly 5 entries (criterion_A through criterion_E) capturing the PanelApp diagnostic evidence assessment for THIS entity's gene–disease relationship. See the CRITERION A–E sections above for per-entity rules. The examples below omit this field for brevity but it must always be present. The downstream system aggregates: GREEN iff at least one entity satisfies `(A or B or C) AND D AND E` on its own.
   Examples (showing entity descriptors only; `evidence_weakening_factors` and `evidence_assessments` arrays are required but elided for readability — see the JSON OUTPUT FORMAT below for full shape):
 {% raw %}
-  - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 15, "family_count": 8, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Smith2024", "box_id": 42, "commentary": "clinical features and patient counts"}, {"paper_id": "Jones2023", "box_id": 18, "commentary": "family counts"}]}]
-  - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 12, "family_count": null, "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"paper_id": "Lee2022", "box_id": 23, "commentary": "phenotype description"}]}]
-  - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 8, "family_count": 5, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Kim2024", "box_id": 34, "commentary": "ALS phenotype and counts"}, {"paper_id": "Park2023", "box_id": 56, "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 10, "family_count": 3, "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Wang2022", "box_id": 78, "commentary": "dental phenotype and family data"}]}]
-  - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 6, "family_count": 6, "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Chen2024", "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 1, "family_count": 1, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Li2023", "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
-  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 18, "family_count": 12, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Park2024", "box_id": 31, "commentary": "dominant families with adult-onset weakness"}]}, {"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 5, "family_count": 4, "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Lee2024", "box_id": 49, "commentary": "recessive families, compound heterozygous null alleles"}]}]
-  - Candidate flagged Disputed (mirror the marker in dispute_status; criterion-gating then applies): [{"description": "congenital heart disease (atrioventricular septal defect, tricuspid atresia, tetralogy of Fallot)", "mondo_disease_name": "congenital heart disease", "dispute_status": "Disputed", "patient_count": 13, "family_count": 4, "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "variable penetrance", "citations": [{"paper_id": "Ferese2018", "box_id": 71, "commentary": "three families with NFATC1 missense variants and AVSD"}]}]
+  - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 15, "family_count": 8, "independent_family_count": 8, "count_reduction_reasoning": "No reduction (8 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Smith2024", "box_id": 42, "commentary": "clinical features and patient counts"}, {"paper_id": "Jones2023", "box_id": 18, "commentary": "family counts"}]}]
+  - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 12, "family_count": null, "independent_family_count": null, "count_reduction_reasoning": "Not reported", "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"paper_id": "Lee2022", "box_id": 23, "commentary": "phenotype description"}]}]
+  - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 8, "family_count": 5, "independent_family_count": 5, "count_reduction_reasoning": "No reduction (5 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Kim2024", "box_id": 34, "commentary": "ALS phenotype and counts"}, {"paper_id": "Park2023", "box_id": 56, "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 10, "family_count": 3, "independent_family_count": 3, "count_reduction_reasoning": "No reduction (3 families)", "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Wang2022", "box_id": 78, "commentary": "dental phenotype and family data"}]}]
+  - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 6, "family_count": 6, "independent_family_count": 6, "count_reduction_reasoning": "No reduction (6 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Chen2024", "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Li2023", "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
+  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 18, "family_count": 12, "independent_family_count": 12, "count_reduction_reasoning": "No reduction (12 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Park2024", "box_id": 31, "commentary": "dominant families with adult-onset weakness"}]}, {"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 5, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "compound-het null alleles, distinct variants → No reduction (4 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Lee2024", "box_id": 49, "commentary": "recessive families, compound heterozygous null alleles"}]}]
+  - Candidate flagged Disputed (mirror the marker in dispute_status; criterion-gating then applies): [{"description": "congenital heart disease (atrioventricular septal defect, tricuspid atresia, tetralogy of Fallot)", "mondo_disease_name": "congenital heart disease", "dispute_status": "Disputed", "patient_count": 13, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "variable penetrance", "citations": [{"paper_id": "Ferese2018", "box_id": 71, "commentary": "three families with NFATC1 missense variants and AVSD"}]}]
 {% endraw %}
 - variants: list all variants reported across papers WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
 - population_freq: ONLY if papers report gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
@@ -322,7 +335,7 @@ How to structure per-entity prose:
 
 1. Optional lead-in sentence at the gene level — use only when it adds orientation (e.g., naming the organ systems involved, or noting that the entities form a spectrum). Single multi-entity genes often need no lead-in. Use a protein-function lead-in (1-2 sentences) only when the contributing papers discuss it.
 
-2. One short paragraph per entity, in the same family_count-descending order the downstream report uses. Each paragraph MUST:
+2. One short paragraph per entity, in the same independent_family_count-descending order the downstream report uses. Each paragraph MUST:
    - Lead with the entity's `description` from `disease_entities[*]` (or a faithful short form of it), so the prose paragraph maps 1-to-1 to the entity-table row and per-entity criteria card the curator sees in the report.
    - Carry only THIS entity's facts: paper IDs (AuthorYear), THIS entity's patient_count and family_count, THIS entity's inheritance_mode and disease_mechanism, the variants and notable specifics relevant to it. Functional and segregation evidence likewise belong with the entity they pertain to.
    - Never pool family or patient counts across entities. Per-paragraph counts must match the structured `disease_entities[*].patient_count` / `family_count` for that entity.
@@ -336,13 +349,13 @@ Inline bold entity labels (e.g., `**Cardiomyopathy (monoallelic, LoF):**`) are A
 EXAMPLE — multi-entity, no prior reviews (ACTN2 lead-phrase pattern):
   "Multiple cardiac and skeletal phenotypes are associated with variants in this gene.
 
-  Smith2024 reports 14 unrelated families with adult-onset dilated cardiomyopathy and dominant loss-of-function variants; iPSC-derived cardiomyocytes from two probands show sarcomeric disarray.
+  Smith2024 reports 14 families with adult-onset dilated cardiomyopathy and dominant loss-of-function variants; iPSC-derived cardiomyocytes from two probands show sarcomeric disarray.
 
   Park2024 describes adult-onset dominant skeletal myopathy in 14 families with truncating variants.
 
-  Lee2024 describes the recessive adult-onset form in 5 families (7 patients), all carrying the homozygous missense p.Arg506Gly — a same-variant-across-families pattern that limits independence.
+  Lee2024 describes the recessive adult-onset form in 5 families (7 patients), all homozygous for p.Arg506Gly with no haplotype or distinct-ancestry evidence — one shared origin, so independent_family_count is 1.
 
-  Chen2023 reports 2 unrelated individuals with congenital multiple-structured-core disease and de novo heterozygous variants."
+  Chen2023 reports 2 families with congenital multiple-structured-core disease and de novo heterozygous variants."
 
 EXAMPLE — multi-entity using bold labels (for 3+ entities or long descriptions):
   "**Cardiomyopathy (monoallelic, LoF):** Smith2024 reports 14 families with truncating variants; iPSC-CM model recapitulates DCM.
@@ -366,7 +379,7 @@ Include the following information categories when available (omit any that are n
 - Notable specifics (founder variants, population findings, prior reports, etc.)
 
 GENERAL TEMPLATE (flexible — adapt as needed for natural prose):
-<paper_id(s)> report <N> individuals from <N> unrelated families with <inheritance> <mechanism> <variant-types> variants presenting with <phenotype>. <Clinical details>. <Functional evidence>. <Notable specifics>.
+<paper_id(s)> report <N> individuals from <N> families with <inheritance> <mechanism> <variant-types> variants presenting with <phenotype>. <Clinical details>. <Functional evidence>. <Notable specifics>.
 
 When `disease_mechanism` is "NR", simply omit it.
 
@@ -402,7 +415,7 @@ OUTPUT FORMAT — the summary field MUST use exactly these three bold markdown h
 
 **Assessment**: <how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable>
 
-WHEN MULTI-ENTITY: Apply PER-ENTITY ORGANIZATION (above) INSIDE the **New evidence** and **Assessment** sections — one short paragraph per entity within each, in family_count-descending order. **Prior reviews** stays a single gene-level block because PanelApp's prior reviewer commentary is not stored per-entity; summarise it as it actually exists, even when the new evidence covers entities the prior reviews never mentioned.
+WHEN MULTI-ENTITY: Apply PER-ENTITY ORGANIZATION (above) INSIDE the **New evidence** and **Assessment** sections — one short paragraph per entity within each, in independent_family_count-descending order. **Prior reviews** stays a single gene-level block because PanelApp's prior reviewer commentary is not stored per-entity; summarise it as it actually exists, even when the new evidence covers entities the prior reviews never mentioned.
 
 EXAMPLES:
 
@@ -411,14 +424,14 @@ EXAMPLES:
 
   **Prior reviews**: Rated AMBER on the PanelApp Australia Mendeliome panel with no detailed reviewer commentary.
 
-  **Assessment**: The new evidence meets Criterion A (4 unrelated families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
+  **Assessment**: The new evidence meets Criterion A (4 independent families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
 
 ✓ Multi-entity (scaffold preserved; per-entity inside New evidence and Assessment):
-  "**New evidence**: Park2024 adds 14 unrelated families with adult-onset dominant skeletal myopathy carrying loss-of-function variants. Lee2024 reports the recessive form in 5 families (7 patients), all carrying the homozygous missense p.Arg506Gly. No new cardiomyopathy or MsCD families.
+  "**New evidence**: Park2024 adds 14 families with adult-onset dominant skeletal myopathy carrying loss-of-function variants. Lee2024 reports the recessive form in 5 families (7 patients), all carrying the homozygous missense p.Arg506Gly. No new cardiomyopathy or MsCD families.
 
   **Prior reviews**: 2021 PanelApp Australia review classified ACTN2 GREEN for dilated cardiomyopathy based on 14 families with iPSC-CM functional validation. Skeletal phenotypes were not addressed in prior reviewer commentary.
 
-  **Assessment**: Cardiomyopathy remains diagnostic-grade; combined with the new evidence the total still exceeds 30 unrelated families. The adult-onset dominant skeletal myopathy is newly diagnostic-grade with Park2024's 14 families. The adult-onset recessive myopathy carries a same-variant-across-families founder concern (homozygous p.Arg506Gly in all 5 families) and remains AMBER pending independent variants."
+  **Assessment**: Cardiomyopathy remains diagnostic-grade; combined with the new evidence the total still exceeds 30 families. The adult-onset dominant skeletal myopathy is newly diagnostic-grade with Park2024's 14 families. The adult-onset recessive myopathy rests on one shared origin (homozygous p.Arg506Gly in all 5 families, no haplotype/distinct-ancestry evidence) → independent_family_count 1, so AMBER despite 5 families."
 
 ✓ No substantive new evidence (single-entity behaviour):
   "**New evidence**: No new families or functional data beyond what was previously reviewed.
@@ -496,13 +509,13 @@ EXAMPLES:
   **Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
 
 ✓ Multi-entity:
-  "**New evidence**: Park2024 adds 14 unrelated families with adult-onset dominant skeletal myopathy carrying loss-of-function variants. Lee2024 reports the recessive form in 5 families (7 patients), all with homozygous p.Arg506Gly.
+  "**New evidence**: Park2024 adds 14 families with adult-onset dominant skeletal myopathy carrying loss-of-function variants. Lee2024 reports the recessive form in 5 families (7 patients), all with homozygous p.Arg506Gly.
 
   **Prior reviews**: Rated GREEN on the PanelApp Australia Inherited Cardiomyopathies panel for dilated cardiomyopathy based on 14 families with iPSC-CM functional validation.
 
   **Panel relevance**: Both cardiac and skeletal muscle phenotypes fall within the Inherited Muscle Disorders panel's scope.
 
-  **Assessment**: Cardiomyopathy remains diagnostic-grade. The adult-onset dominant skeletal myopathy is newly diagnostic-grade with Park2024's 14 families. The adult-onset recessive myopathy carries a same-variant-across-families founder concern and remains AMBER pending independent variants."
+  **Assessment**: Cardiomyopathy remains diagnostic-grade. The adult-onset dominant skeletal myopathy is newly diagnostic-grade with Park2024's 14 families. The adult-onset recessive myopathy rests on one shared origin (homozygous p.Arg506Gly in all 5 families) → independent_family_count 1, so AMBER."
 {% endif %}
 IMPORTANT INSTRUCTIONS:
 - Focus on variants causing rare genetic diseases — including both germline variants and
@@ -521,8 +534,8 @@ IMPORTANT INSTRUCTIONS:
   EWSR1-NFATC1), regardless of somatic or germline status.
 - DIGENIC/OLIGOGENIC EXCLUSION: Exclude families whose disease requires variants in two or
   more different genes. Biallelic (same gene) remains in scope.
-- UNRELATED FAMILIES: Apply the SAME-VARIANT-ACROSS-FAMILIES collapse rule from the qualifying gate. Same variant across families collapses to one unless positive evidence of independence is shown.
-- FOUNDER / RECURRENT VARIANT TERMINOLOGY: Do not describe a variant as a "founder allele", "founder variant", or as showing a "founder effect" unless one of the following holds: (a) a contributing paper uses that term about the specific variant, (b) a contributing paper documents shared haplotype evidence linking carriers, or (c) a contributing paper cites prior work establishing founder status. Elevated allele frequency in a specific ancestry alone is consistent with founder effect but does not establish it — alternative explanations include drift, recurrent mutation at hotspots (e.g., CpG sites), and simple polymorphism. Describe the observation in the contributing papers' own terms (e.g., "present at higher frequency in X population", "carrier frequency 1:N suggesting a founder effect") rather than escalating to "founder allele". This applies wherever variants are described — `summary`, `prior_reports`, `quality_concerns`, and citation commentary alike. (The structured `evidence_weakening_factors.founder_or_recurrent_variant` factor is about counting impact and is governed by the SAME-VARIANT-ACROSS-FAMILIES rule, not by this terminology rule.)
+- INDEPENDENT FAMILIES: Criteria A/B/C count `independent_family_count`, not `family_count` — see TOTAL vs INDEPENDENT FAMILY COUNT for how shared-origin families collapse.
+- FOUNDER / RECURRENT VARIANT TERMINOLOGY: Do not describe a variant as a "founder allele", "founder variant", or as showing a "founder effect" unless one of the following holds: (a) a contributing paper uses that term about the specific variant, (b) a contributing paper documents shared haplotype evidence linking carriers, or (c) a contributing paper cites prior work establishing founder status. Elevated allele frequency in a specific ancestry alone is consistent with founder effect but does not establish it — alternative explanations include drift, recurrent mutation at hotspots (e.g., CpG sites), and simple polymorphism. Describe the observation in the contributing papers' own terms (e.g., "present at higher frequency in X population", "carrier frequency 1:N suggesting a founder effect") rather than escalating to "founder allele". This applies wherever variants are described — `summary`, `prior_reports`, `quality_concerns`, and citation commentary alike. (The structured `evidence_weakening_factors.founder_or_recurrent_variant` factor concerns counting/independence and is governed by the TOTAL vs INDEPENDENT FAMILY COUNT rule, not by this terminology rule.)
 - PHENOTYPE REQUIREMENTS: Detailed individual patient descriptions required, not summaries
 - Count families as primary units, mention patient numbers as supplementary
 - VARIANT QUALIFICATION: All Criterion A/B/C family counts use only families whose variants pass the QUALIFYING VARIANT GATE. Predicted/proven null variants in haploinsufficient genes qualify directly under gate clause (1)(b); other variant types must meet (1)(c)(i)–(iii).
@@ -582,7 +595,7 @@ Respond in JSON format with your aggregate evaluation:
 <single-entity: paper_id(s) report N individuals from N families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Functional evidence>. <Notable specifics>. | multi-entity: per-entity paragraphs per PER-ENTITY ORGANIZATION above>
 {%- endif %}",
 {% raw %}
-  "families": "N families (N unrelated) aggregated across all papers",
+  "families": "N families reported (N independent) aggregated across all papers",
   "variants": "all variants reported across papers (type)",
   "population_freq": "gnomAD: frequencies when reported",
   "segregation": "strongest segregation evidence across papers",
@@ -595,6 +608,8 @@ Respond in JSON format with your aggregate evaluation:
       "dispute_status": "None|Disputed|Refuted",
       "patient_count": N,
       "family_count": N_or_null,
+      "independent_family_count": N_or_null,
+      "count_reduction_reasoning": "two counts + reason for any collapse, or No reduction (N families)",
       "disease_mechanism": "mechanism or NR",
       "inheritance_mode": "<one of the enum values>",
       "inheritance_details": "<additional details or empty string>",

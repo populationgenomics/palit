@@ -23,7 +23,11 @@ from palit.panelapp_client import (
     collect_panelapp_gene_publications,
     format_panel_for_prompt,
 )
-from palit.panelapp_integration import MONDO_CATEGORIES, validate_entities_criteria_complete
+from palit.panelapp_integration import (
+    MONDO_CATEGORIES,
+    validate_entities_criteria_complete,
+    validate_independent_family_counts,
+)
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
@@ -880,6 +884,15 @@ async def _process_assessments(
                         logger.warning(
                             f"Incomplete per-entity criteria for {item.hgnc_symbol} "
                             f"(each disease_entity must carry criterion_A through criterion_E)"
+                        )
+                        failed_genes.append(item.hgnc_id)
+                        continue
+                    if not validate_independent_family_counts(
+                        result.parsed_json.get("disease_entities", [])
+                    ):
+                        logger.warning(
+                            f"Inconsistent independent_family_count for {item.hgnc_symbol} "
+                            f"(must be null iff family_count is null, else 0 <= independent <= total)"
                         )
                         failed_genes.append(item.hgnc_id)
                         continue

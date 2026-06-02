@@ -1930,11 +1930,11 @@ def generate_html_report(
     env.filters["derive_moi_details"] = lambda pgs: derive_aggregate_moi(pgs)[1]
 
     # Add custom sort filter that handles None values
-    def sort_by_family_count(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Sort disease entities by family_count, treating None as 0."""
-        return sorted(entities, key=lambda e: e.get("family_count") or 0, reverse=True)
+    def sort_by_rating_count(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Sort disease entities by the rating-relevant independent family count (None as 0)."""
+        return sorted(entities, key=lambda e: e.get("independent_family_count") or 0, reverse=True)
 
-    env.filters["sort_by_family_count"] = sort_by_family_count
+    env.filters["sort_by_rating_count"] = sort_by_rating_count
 
     # Badge data formatters: each returns {text, label, css} or None.
     # The `badge` macro in the template renders any non-None result via a

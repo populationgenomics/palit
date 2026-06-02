@@ -21,7 +21,7 @@
                     },
                     "summary": {
                         "type": "string",
-                        "description": "Prose narrative summarizing the gene-disease evidence from this paper. Should be detailed enough for aggregation: report patient/family counts, inheritance pattern, core clinical features, and functional evidence if present."
+                        "description": "Prose evidence summary for this gene."
                     },
                     "variants": {
                         "type": "array",
@@ -30,11 +30,11 @@
                             "properties": {
                                 "variant": {
                                     "type": "string",
-                                    "description": "The variant in standard notation"
+                                    "description": "Variant in standard notation."
                                 },
                                 "box_id": {
                                     "type": "integer",
-                                    "description": "Box ID where the most complete notation appears"
+                                    "description": "Source box ID."
                                 }
                             },
                             "required": [
@@ -43,20 +43,21 @@
                             ],
                             "additionalProperties": false
                         },
-                        "description": "Unique variants with citations for automated processing"
+                        "description": "Unique variants with citations."
                     },
                     "families": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Free-text family-count summary."
                     },
                     "disease_entities": {
                         "type": "array",
-                        "description": "Array of distinct disease entities reported in this paper, each with separate patient and family counts AND its own per-entity criteria evaluation (evidence_assessments + evidence_weakening_factors). The PanelApp GREEN check (`(A or B or C) AND D AND E`) is applied to each entity independently downstream.",
+                        "description": "Distinct (phenotype x MoI) disease entities.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "description": {
                                     "type": "string",
-                                    "description": "Specific disease name (where applicable) or clinical description, including important modifiers like age of onset, severity, or progression"
+                                    "description": "Disease name or clinical description."
                                 },
                                 "mondo_id": {
                                     "type": "string",
@@ -67,43 +68,54 @@
                                         "MONDO:0005047",
                                         "MONDO:0044970"
                                     ],
-                                    "description": "Disease category classification. MONDO:0700092 = Neurodevelopmental disorder, MONDO:0003778 = Inborn error of immunity, MONDO:0002254 = Syndromic disease, MONDO:0005047 = Infertility disorder, MONDO:0044970 = Mitochondrial disease. If gene is mitochondrial, always select MONDO:0044970. Otherwise select most specific category."
+                                    "description": "Disease category."
                                 },
                                 "patient_count": {
                                     "type": "integer",
-                                    "description": "Number of patients for this specific disease entity in this paper"
+                                    "description": "Patients for this entity."
                                 },
                                 "family_count": {
                                     "type": [
                                         "integer",
                                         "null"
                                     ],
-                                    "description": "Number of unrelated families for this specific disease entity in this paper. Use null when not reported (NR)."
+                                    "description": "Total families reported (count families, not individuals); null if NR."
+                                },
+                                "independent_family_count": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "description": "Independent families used for Criteria A/B/C; <= family_count; null iff family_count null."
+                                },
+                                "count_reduction_reasoning": {
+                                    "type": "string",
+                                    "description": "Why family_count and independent_family_count differ, or 'No reduction'."
                                 },
                                 "disease_mechanism": {
                                     "type": "string",
-                                    "description": "Molecular mechanism by which variants cause disease, extracted from paper. Use free text to describe mechanism as stated in paper. Common examples: 'loss-of-function', 'gain-of-function', 'dominant-negative', 'loss-of-function (haploinsufficiency)', 'unknown mechanism'. Use 'NR' when not discussed in paper. Extract ONLY from paper content."
+                                    "description": "Molecular mechanism, or NR."
                                 },
                                 "previously_reported_sources": {
                                     "type": "array",
-                                    "description": "Papers that are the ORIGINAL SOURCE of specific families discussed in this paper. Purpose: prevent double-counting families across multiple papers. Extract only when paper explicitly discusses families from another paper (e.g., 'including the 3 families from Smith et al.'). Empty array means all families are new to this paper, or no families reported.",
+                                    "description": "Papers that originally reported families re-counted here (prevents double-counting).",
                                     "items": {
                                         "type": "object",
                                         "properties": {
                                             "title": {
                                                 "type": "string",
-                                                "description": "Full title from the References/Bibliography section. Use 'NR' if References unavailable or title cannot be found."
+                                                "description": "Source paper title, or NR."
                                             },
                                             "family_count": {
                                                 "type": [
                                                     "integer",
                                                     "null"
                                                 ],
-                                                "description": "How many families from this source. Use null if not specified."
+                                                "description": "Families from this source; null if unspecified."
                                             },
                                             "context": {
                                                 "type": "string",
-                                                "description": "Quote from main text explaining which families came from this source (e.g., 'including the 3 families previously reported by Smith et al. [ref 15]')"
+                                                "description": "Quote identifying the shared families."
                                             }
                                         },
                                         "required": [
@@ -124,25 +136,25 @@
                                         "Other",
                                         "NR"
                                     ],
-                                    "description": "Mode of inheritance for this specific disease entity. Each entity carries a single MoI — combination modes are not permitted. Assign per the location-first inheritance_mode rule in the prompt."
+                                    "description": "Mode of inheritance for this entity."
                                 },
                                 "inheritance_details": {
                                     "type": "string",
-                                    "description": "Additional inheritance clarifications for this disease entity (e.g., 'reduced penetrance', 'imprinting', 'variable expressivity', 'post-zygotic mosaic'). Use empty string if none."
+                                    "description": "Inheritance clarifications, or empty string."
                                 },
                                 "citations": {
                                     "type": "array",
-                                    "description": "Array of citations (box IDs) where this disease entity is described in the paper",
+                                    "description": "Box-ID citations for this entity.",
                                     "items": {
                                         "type": "object",
                                         "properties": {
                                             "box_id": {
                                                 "type": "integer",
-                                                "description": "Box ID where the disease entity information appears"
+                                                "description": "Source box ID."
                                             },
                                             "commentary": {
                                                 "type": "string",
-                                                "description": "Brief description of what this citation shows (e.g., 'family counts', 'clinical features')"
+                                                "description": "What the citation shows."
                                             }
                                         },
                                         "required": [
@@ -155,7 +167,7 @@
                                 "evidence_weakening_factors": {
                                     "type": "array",
                                     "minItems": 1,
-                                    "description": "Per-entity structured weakening checklist. MUST contain exactly six entries, one per factor enum value, in any order. This entity's evidence_assessments rationales must explicitly reference any factor with present=true that affects the verdict for that criterion.",
+                                    "description": "Six per-entity weakening factors, one per enum value.",
                                     "items": {
                                         "type": "object",
                                         "properties": {
@@ -169,15 +181,15 @@
                                                     "phenotype_non_mendelian",
                                                     "functional_below_criterion_c_threshold"
                                                 ],
-                                                "description": "Identifier of the weakening factor."
+                                                "description": "Weakening factor identifier."
                                             },
                                             "present": {
                                                 "type": "boolean",
-                                                "description": "True if the factor is present in this entity's evidence from this paper; false otherwise."
+                                                "description": "Whether the factor applies."
                                             },
                                             "details": {
                                                 "type": "string",
-                                                "description": "1-2 sentences citing the specific evidence that triggers this factor for this entity. For present=false, use 'Not present' or a brief sanity-check statement."
+                                                "description": "Brief supporting evidence, or 'Not present'."
                                             }
                                         },
                                         "required": [
@@ -191,7 +203,7 @@
                                 "evidence_assessments": {
                                     "type": "array",
                                     "minItems": 1,
-                                    "description": "Per-entity PanelApp diagnostic evidence assessments (criterion_A through criterion_E) based on this paper's evidence for this entity. MUST contain exactly 5 entries. Evaluated independently per entity — the GREEN aggregator downstream requires a SINGLE entity to satisfy `(A or B or C) AND D AND E` on its own.",
+                                    "description": "Five per-entity criteria (criterion_A through criterion_E).",
                                     "items": {
                                         "type": "object",
                                         "properties": {
@@ -237,7 +249,7 @@
                                                     "criterion_D",
                                                     "criterion_E"
                                                 ],
-                                                "description": "Criterion identifier"
+                                                "description": "Criterion identifier."
                                             }
                                         },
                                         "required": [
@@ -256,6 +268,8 @@
                                 "mondo_id",
                                 "patient_count",
                                 "family_count",
+                                "independent_family_count",
+                                "count_reduction_reasoning",
                                 "disease_mechanism",
                                 "inheritance_mode",
                                 "inheritance_details",
@@ -269,7 +283,7 @@
                     },
                     "variants_summary": {
                         "type": "string",
-                        "description": "Human-readable telegraphic summary with variant types for curators"
+                        "description": "Human-readable variant summary."
                     },
                     "population_freq": {
                         "type": "string"
@@ -285,27 +299,27 @@
                     },
                     "quality_concerns": {
                         "type": "array",
-                        "description": "Significant issues that should make curators cautious about this evidence. Empty array if no major concerns.",
+                        "description": "Evidence-quality concerns; empty if none.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "concern": {
                                     "type": "string",
-                                    "description": "Clear description of the issue and why it matters for evidence interpretation"
+                                    "description": "The issue and why it matters."
                                 },
                                 "citations": {
                                     "type": "array",
-                                    "description": "Citations pointing to where the problematic claim or contradiction appears",
+                                    "description": "Citations to the problematic claim.",
                                     "items": {
                                         "type": "object",
                                         "properties": {
                                             "box_id": {
                                                 "type": "integer",
-                                                "description": "Box ID where the problematic claim appears"
+                                                "description": "Source box ID."
                                             },
                                             "commentary": {
                                                 "type": "string",
-                                                "description": "Brief explanation of what this citation demonstrates"
+                                                "description": "What the citation shows."
                                             }
                                         },
                                         "required": [

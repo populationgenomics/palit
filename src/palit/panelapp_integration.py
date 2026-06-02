@@ -65,6 +65,22 @@ def get_entity_criterion(entity: dict[str, Any], name: CriterionName) -> dict[st
     return {}
 
 
+def validate_independent_family_counts(entities: list[dict[str, Any]]) -> bool:
+    """Check each entity's independent_family_count is consistent with family_count:
+    null exactly when family_count is null, otherwise 0 <= independent <= family_count.
+    """
+    for entity in entities:
+        total = entity.get("family_count")
+        independent = entity.get("independent_family_count")
+        if total is None or independent is None:
+            if total is not None or independent is not None:
+                return False
+            continue
+        if not 0 <= independent <= total:
+            return False
+    return True
+
+
 # MONDO ID to category information (abbreviation, description)
 # CSS class is derived from abbrev.lower()
 MONDO_CATEGORIES = {
@@ -179,11 +195,12 @@ def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> tuple[str, s
 
 
 def count_families_by_moi(disease_entities: list[dict[str, Any]]) -> dict[str, int]:
-    """Largest single-entity family count per inheritance mode from disease_entities.
+    """Largest single-entity independent family count per inheritance mode.
 
     Each disease entity is an independent gene-disease association, so the
-    relevant per-MoI count is the strongest single entity, not the sum. Falls
-    back to patient_count when family_count is null.
+    relevant per-MoI count is the strongest single entity, not the sum. Reads
+    independent_family_count; when that is null (NR) it falls back to
+    patient_count (a pre-existing heuristic for the MoI-expansion highlight only).
 
     Monoallelic_and_biallelic is a legacy enum value; entries carrying it
     contribute their count to both Monoallelic and Biallelic.
@@ -205,9 +222,10 @@ def count_families_by_moi(disease_entities: list[dict[str, Any]]) -> dict[str, i
         if not moi or moi == "NR":
             continue
 
-        family_count = entity.get("family_count")
-        count = family_count if family_count is not None else entity.get("patient_count", 0)
-        if count is None or count <= 0:
+        count = entity["independent_family_count"]
+        if count is None:  # NR family count — fall back to patients (highlight heuristic only)
+            count = entity.get("patient_count", 0)
+        if count <= 0:
             continue
 
         if moi == "Monoallelic_and_biallelic":
@@ -306,7 +324,7 @@ def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
 
     Rating logic:
     - 3 (GREEN) if at least one disease entity satisfies (A OR B OR C) AND D AND E by itself
-    - 2 (AMBER) if not GREEN but more than one family reported for any phenotype
+    - 2 (AMBER) if not GREEN but more than one independent family for any phenotype
     - 1 (RED) otherwise
 
     Args:
@@ -321,8 +339,10 @@ def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
 
     disease_entities = gene_eval.get("disease_entities", [])
     if disease_entities:
-        max_family_count = max(entity.get("family_count") or 0 for entity in disease_entities)
-        if max_family_count > 1:
+        max_independent = max(
+            entity["independent_family_count"] or 0 for entity in disease_entities
+        )
+        if max_independent > 1:
             return 2
 
     return 1

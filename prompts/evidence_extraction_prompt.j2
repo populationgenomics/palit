@@ -218,9 +218,12 @@ NEVER infer, estimate, or make assumptions about missing data.
       * "expanding the cohort from our prior work [ref 5]"
       * "the original 5 families in [ref 3] plus 2 new families"
 
+    - ✅ EXTRACT - SCREENING / COHORT PAPERS re-including a known proband (the failure mode this rule most often misses):
+      When this paper reports a family for a gene in its OWN cohort (you assigned that gene family_count ≥ 1) AND attributes that gene's disease finding to a prior study — "previously reported [ref]", "first revealed/described in [ref]", "as shown by [ref]", or a table cell / footnote / shading marking the variant or family as previously reported or known — that proband is almost always THE SAME individual the prior study reported. Populate previously_reported_sources for it (title from the cited reference; family_count = the overlapping count; context = the attributing quote). This holds EVEN WHEN the sentence reads like disease background ("a novel cause of X was identified in a patient [ref]"): a cohort/screening paper restating a prior gene–disease discovery is re-counting the proband it contributed to that discovery, not adding a new one.
+
     - ❌ DO NOT EXTRACT - These discuss variants/diseases, not the same families:
       * "the variant c.940G>A was previously reported in a patient [ref 12]" (DIFFERENT patient with same variant - recurrent variant)
-      * "this syndrome was first described by Boyden et al. [ref 2]" (background about disease, not specific families)
+      * "this syndrome was first described by Boyden et al. [ref 2]" (background about disease, not specific families) — BUT if THIS paper ALSO reports a family carrying that gene's variant and cites [ref 2] as where it was reported, that family is the same proband → EXTRACT (see the screening/cohort rule above)
       * "similar phenotypes were reported in [ref 8]" (comparison, not same people)
       * "the gene is known to cause disease [ref 5]" (general background)
       * "SCN1A variants cause epilepsy [ref 10]" (disease mechanism)
@@ -229,6 +232,8 @@ NEVER infer, estimate, or make assumptions about missing data.
     - THE TEST: Would counting both papers mean counting the same people twice?
       * "3 families including the 2 from Smith et al." → YES, same people → EXTRACT Smith et al.
       * "3 new families with the same variant reported by Smith et al." → NO, different people → DON'T EXTRACT
+      * cohort paper lists a proband for a gene in its table AND says that finding was "previously reported [ref N]" → YES, the cited study already counted this person → EXTRACT [ref N]
+    - DEFAULT WHEN UNCERTAIN: if a family you are counting is plausibly the same proband as one in a cited study (explicit attribution, shared rare variant, or same population/centre) but you cannot be certain, STILL populate previously_reported_sources. Silently counting one proband as two inflates the evidence toward a false positive; flagging a possible duplicate merely prompts downstream review. Do NOT drop the signal "to avoid speculation".
 
     - Each entry must include:
       * title: Paper title ONLY from References/Bibliography section - no authors, no journal, no year, no pages.

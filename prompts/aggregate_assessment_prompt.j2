@@ -301,6 +301,11 @@ The following candidates carry an expert curation panel's `[DISPUTED]` or `[REFU
 
 **Style:** Use UK English spelling, except in verbatim quotes.
 
+CAUSAL & MECHANISTIC LANGUAGE — calibrate to evidence strength (applies to `summary`, all prose, `prior_reports`, `quality_concerns`, and citation commentary):
+- Reserve "cause(s)/causing" and unqualified mechanism labels ("loss-of-function", "gain-of-function", "haploinsufficiency") for entities where causation is well-supported: a proven-null variant in an established loss-of-function gene, segregation across informative meioses, OR robust variant-specific functional validation (ideally with rescue or in-vivo corroboration).
+- When support is weaker — missense (or other non-null) variants resting on in-vitro reporter/biochemical assays, or without segregation — hedge: "associated with", "identified in", "candidate", "in-vitro evidence of reduced/impaired [function]", "consistent with a loss-of-function effect", or "predicted loss-of-function". Do not state the disease-level mechanism as established.
+- Keep the variant-level functional readout ("the variants reduced transactivation in vitro") distinct from the disease-level mechanism claim ("haploinsufficiency causes the phenotype"). The assays show the former; the latter must be earned.
+
 PROSE SUMMARY REQUIREMENTS:
 
 PER-ENTITY ORGANIZATION (when `disease_entities` has more than one entry):
@@ -511,7 +516,7 @@ IMPORTANT INSTRUCTIONS:
 - Count families as primary units, mention patient numbers as supplementary
 - VARIANT QUALIFICATION: All Criterion A/B/C family counts use only families whose variants pass the QUALIFYING VARIANT GATE. Predicted/proven null variants in haploinsufficient genes qualify directly under gate clause (1)(b); other variant types must meet (1)(c)(i)–(iii).
 - CRITERION C BAR: Use the two-pillar rule; biochemical or heterologous-overexpression evidence alone does not satisfy Pillar 2.
-- SUMMARY must be CONCISE and FACTUAL - only report what's explicitly stated
+- SUMMARY must be CONCISE, FACTUAL, and CALIBRATED - only report what's explicitly stated, and match causal/mechanistic strength to the evidence (see CAUSAL & MECHANISTIC LANGUAGE above): prefer "associated with" over "causing" when segregation is absent and functional support is in-vitro only
 
 After completing your aggregate assessment, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
 

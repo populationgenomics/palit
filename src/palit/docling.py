@@ -232,12 +232,13 @@ def convert_pdfs(
         console.print(f"[red]Database not found: {db_path}[/red]")
         raise typer.Exit(1)
 
-    # Query DB for papers that have been downloaded
+    # Query DB for papers in this panel's download scope. Their PDFs may have
+    # arrived via automated fetch or manual download; convert any whose PDF is
+    # present. download_status IS NOT NULL excludes papers never selected for this
+    # panel (the papers directory is a corpus shared across all panels).
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT doi FROM papers WHERE download_status = 'downloaded'"
-        ).fetchall()
+        rows = conn.execute("SELECT doi FROM papers WHERE download_status IS NOT NULL").fetchall()
 
     # Filter to PDFs that exist and need conversion
     pdfs_to_convert = []

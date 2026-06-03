@@ -1,0 +1,42 @@
+# Dependabot configuration for palit.
+#
+# Strategy:
+# - Weekly version-update PRs, grouped so minor/patch bumps land in a single
+#   PR. Majors still get individual PRs so they can be reviewed in isolation.
+# - Security-update PRs (opened as soon as an advisory drops) reuse the same
+#   group; that switch is toggled separately at
+#   Settings -> Code security -> "Dependabot security updates".
+# - 7-day cooldown matches the local supply-chain hygiene policy
+#   (`exclude-newer = "7 days"` in the global uv config). Without it Dependabot
+#   would open PRs for versions CI then rejects because they are too fresh.
+# - One uv entry is enough: palit is a single uv project at the repo root, and
+#   Dependabot resolves the whole uv.lock — every extra (`ml`, `docling-macos`)
+#   and the `dev` dependency-group included.
+#
+# Auto-merge is intentionally NOT wired up: `main` has no branch protection and
+# CI runs lint/mypy only (no test job), so there is no gate to merge behind.
+
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "lgruen-vcgs"
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "deps"
+    cooldown:
+      default-days: 7
+    groups:
+      python-non-major:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

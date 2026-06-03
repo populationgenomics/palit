@@ -1,0 +1,10 @@
+# Code review ownership for palit.
+#
+# GitHub requests a review from the matching owner on every PR that touches
+# these paths — including Dependabot's. This replaces Dependabot's `reviewers:`
+# option, which GitHub retired in 2025 (it now silently ignores that key);
+# CODEOWNERS is the supported mechanism for auto-requesting reviewers.
+#
+# `main` is unprotected, so this only *requests* review (a notification) — it
+# never blocks merging.
+* @lgruen-vcgs

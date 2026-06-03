@@ -12,6 +12,9 @@
 # - One uv entry is enough: palit is a single uv project at the repo root, and
 #   Dependabot resolves the whole uv.lock — every extra (`ml`, `docling-macos`)
 #   and the `dev` dependency-group included.
+# - Review requests come from .github/CODEOWNERS. Dependabot's `reviewers:`
+#   option was retired by GitHub in 2025 (it is now silently ignored), so the
+#   code owner is what gets a review request on each PR.
 #
 # Auto-merge is intentionally NOT wired up: `main` has no branch protection and
 # CI runs lint/mypy only (no test job), so there is no gate to merge behind.
@@ -24,8 +27,6 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
-    reviewers:
-      - "lgruen-vcgs"
     labels:
       - "dependencies"
       - "python"

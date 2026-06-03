@@ -167,9 +167,9 @@ def _parse_crossref_paper(record: dict[str, Any], source_details: str) -> Paper:
     retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
     reraise=True,
 )
-def _fetch_crossref_page(client: httpx.Client, url: str) -> dict[str, Any]:
+def _fetch_crossref_page(client: httpx.Client, url: str, params: dict[str, str]) -> dict[str, Any]:
     """Fetch a single page from the Crossref API with retries."""
-    response = client.get(url, timeout=90)
+    response = client.get(url, params=params, timeout=90)
     response.raise_for_status()
     result: dict[str, Any] = response.json()
     return result
@@ -184,26 +184,29 @@ def fetch_rs_papers(
 ) -> list[Paper]:
     """Fetch Research Square preprints from Crossref API for a date range.
 
-    Paginates through the Crossref API (1000 results per page) until all results
-    are fetched. Deduplicates multiple versions by normalized DOI, keeping the
-    highest version.
+    Uses Crossref cursor-based deep paging (1000 results per page) until all
+    results are fetched. Cursor paging is required because offset paging is
+    capped at 10000 results, which these date ranges routinely exceed.
+    Deduplicates multiple versions by normalized DOI, keeping the highest version.
     """
     source_details = f"researchsquare/{start_date}/{end_date}"
     papers: list[Paper] = []
-    offset = 0
 
-    base_url = (
-        "https://api.crossref.org/works?"
-        "filter=type:posted-content,prefix:10.21203,"
-        f"from-posted-date:{start_date},until-posted-date:{end_date},"
-        f"has-abstract:true&rows={CROSSREF_PAGE_SIZE}&mailto={mailto}"
-    )
+    url = "https://api.crossref.org/works"
+    params = {
+        "filter": (
+            "type:posted-content,prefix:10.21203,"
+            f"from-posted-date:{start_date},until-posted-date:{end_date},"
+            "has-abstract:true"
+        ),
+        "rows": str(CROSSREF_PAGE_SIZE),
+        "mailto": mailto,
+        "cursor": "*",
+    }
 
     with httpx.Client() as client:
         while True:
-            url = f"{base_url}&offset={offset}"
-
-            data = _fetch_crossref_page(client, url)
+            data = _fetch_crossref_page(client, url, params)
             message = data["message"]
             items: list[dict[str, Any]] = message.get("items", [])
 
@@ -217,10 +220,7 @@ def fetch_rs_papers(
                 papers.append(_parse_crossref_paper(record, source_details))
 
             progress.update(task, completed=len(papers))
-            offset += CROSSREF_PAGE_SIZE
-
-            if offset >= total_results:
-                break
+            params["cursor"] = message["next-cursor"]
 
     # Deduplicate by normalized DOI, keeping highest version
     seen: dict[str, Paper] = {}

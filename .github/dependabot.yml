@@ -15,6 +15,10 @@
 # - Review requests come from .github/CODEOWNERS. Dependabot's `reviewers:`
 #   option was retired by GitHub in 2025 (it is now silently ignored), so the
 #   code owner is what gets a review request on each PR.
+# - No explicit `labels:` — Dependabot applies its defaults (`dependencies`
+#   plus the `python:uv` ecosystem label, which it auto-creates). Naming a label
+#   here that Dependabot does not auto-create makes it error whenever that label
+#   is missing from the repo.
 #
 # Auto-merge is intentionally NOT wired up: `main` has no branch protection and
 # CI runs lint/mypy only (no test job), so there is no gate to merge behind.
@@ -27,9 +31,6 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "python"
     commit-message:
       prefix: "deps"
     cooldown:

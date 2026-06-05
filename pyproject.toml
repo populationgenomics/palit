@@ -50,6 +50,15 @@ ml = [
 [project.scripts]
 palit = "palit.cli:app"
 
+[tool.uv]
+# Supply-chain hygiene: never resolve a version uploaded in the last 7 days.
+# Declared here (not only in the global uv config) so every resolver — local,
+# CI, and Dependabot — shares the identical cutoff and produces a lockfile that
+# already complies with it. Mirrors the Dependabot `cooldown` in
+# .github/dependabot.yml. Override per package with `exclude-newer-package`
+# (e.g. to accept a security fix younger than the window).
+exclude-newer = "7 days"
+
 [tool.pyright]
 venvPath = "."
 venv = ".venv"

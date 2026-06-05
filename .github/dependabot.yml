@@ -6,9 +6,11 @@
 # - Security-update PRs (opened as soon as an advisory drops) reuse the same
 #   group; that switch is toggled separately at
 #   Settings -> Code security -> "Dependabot security updates".
-# - 7-day cooldown matches the local supply-chain hygiene policy
-#   (`exclude-newer = "7 days"` in the global uv config). Without it Dependabot
-#   would open PRs for versions CI then rejects because they are too fresh.
+# - 7-day cooldown matches the supply-chain hygiene policy `exclude-newer =
+#   "7 days"`, declared in pyproject `[tool.uv]` (and the global uv config) so
+#   local, CI, and Dependabot resolution share the same cutoff. Without it
+#   Dependabot would open PRs for versions CI then rejects because they are too
+#   fresh.
 # - One uv entry is enough: palit is a single uv project at the repo root, and
 #   Dependabot resolves the whole uv.lock — every extra (`ml`, `docling-macos`)
 #   and the `dev` dependency-group included.

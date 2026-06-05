@@ -31,6 +31,7 @@ from palit.panelapp_integration import (
     PANELAPP_MOI_TO_ENUM,
     calculate_gene_rating,
     count_families_by_moi,
+    decompose_moi,
     derive_aggregate_moi,
     panelapp_confidence_to_color,
     prepare_prefill_data,
@@ -52,6 +53,9 @@ GNOMAD_HEMI_THRESHOLD = 30  # X-linked - hemizygote count
 
 # Minimum families required to highlight an MoI expansion
 MIN_FAMILIES_FOR_MOI_EXPANSION = 2
+
+# Upper bound on panels named in a suppressed-MoI reason before falling back to a count
+MAX_NAMED_PANELS = 3
 
 # Hand-picked journals surfaced in the "Papers in Featured Journals" section.
 # Strings are PubMed-style and must match papers.journal verbatim.
@@ -178,7 +182,8 @@ def apply_moi_suppression(
 
     Rules:
         1. Weak expansion — insufficient family evidence for the added mode
-        2. Incidentalome cross-panel — new MoI already exists in another panel
+        2. Incidentalome already-recorded — every constituent mode of the new MoI
+           is already recorded across the gene's panels
     """
     # Rule 1: Weak expansion (insufficient family evidence for the added mode)
     existing_norm = (existing_moi or "").replace("_", " ").lower()
@@ -196,13 +201,40 @@ def apply_moi_suppression(
                 f" inheritance (threshold: {MIN_FAMILIES_FOR_MOI_EXPANSION})"
             )
 
-    # Rule 2: Incidentalome — suppress if the new MoI already exists in any panel
+    # Rule 2: Incidentalome — the Incidentalome deliberately carries only the
+    # incidental-findings subset of a gene's associations; the rest live on
+    # phenotype panels (off the Mendeliome). An aggregate MoI whose every
+    # constituent mode is already recorded across the gene's panels is the
+    # expected artifact of that scoping, not new information — suppress it.
     gene_panels = all_panels_data.gene_to_panels.get(hgnc_id, set())
     if INCIDENTALOME_PANEL_ID in gene_panels:
-        if new_moi in all_panels_data.gene_mois.get(hgnc_id, set()):
-            return "MoI already present in another panel (Incidentalome gene)"
+        panel_mois = all_panels_data.gene_panel_mois.get(hgnc_id, {})
+        recorded = {mode for moi in panel_mois.values() for mode in decompose_moi(moi)}
+        if not decompose_moi(new_moi) - recorded:
+            return _moi_already_recorded_reason(new_moi, panel_mois, all_panels_data.panel_names)
 
     return ""
+
+
+def _moi_already_recorded_reason(
+    new_moi: str, panel_mois: dict[int, str], panel_names: dict[int, str]
+) -> str:
+    """Name the panels that already record each mode of a suppressed MoI change.
+
+    e.g. "Biallelic already on Red cell disorders; Monoallelic already on 9 panels".
+    Names panels when a mode is on at most MAX_NAMED_PANELS of them (the curator's
+    signal is the rarely-placed mode); otherwise reports a count.
+    """
+    parts: list[str] = []
+    for mode in sorted(decompose_moi(new_moi)):
+        names = sorted(
+            panel_names[pid] for pid, moi in panel_mois.items() if mode in decompose_moi(moi)
+        )
+        if not names:
+            continue
+        where = ", ".join(names) if len(names) <= MAX_NAMED_PANELS else f"{len(names)} panels"
+        parts.append(f"{mode} already on {where}")
+    return "; ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -1612,11 +1644,11 @@ def calculate_comprehensive_statistics(
             for p in gene.contributing_papers:
                 all_dois.add(p.doi)
 
-        # Count MoI changes
+        # Count MoI changes surfaced to curators (highlighted only)
         moi_expansions = 0
         moi_contradictions = 0
         for gene in all_genes:
-            if gene.moi_comparison:
+            if gene.moi_comparison and gene.moi_comparison.highlighted:
                 if gene.moi_comparison.status == "expansion":
                     moi_expansions += 1
                 elif gene.moi_comparison.status == "contradiction":

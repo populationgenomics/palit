@@ -432,6 +432,12 @@ section > h2 {
     border: 1px solid #ffb74d;
 }
 
+/* Auto-dismissed MoI change: modes already recorded across the gene's panels */
+
+.moi-not-highlighted {
+    opacity: 0.55;
+}
+
 /* Quality Concerns */
 
 .quality-concerns {

@@ -120,6 +120,19 @@ PANELAPP_MOI_TO_ENUM.update(
 )
 
 
+def decompose_moi(moi: str) -> frozenset[str]:
+    """Split an MoI enum into its constituent simple inheritance modes.
+
+    "Monoallelic_and_biallelic" is the only combined enum; every other value
+    (Monoallelic, Biallelic, X-linked, Mitochondrial, Other) is already simple
+    and maps to itself. Lets us compare an aggregate MoI against per-panel MoIs
+    at the mode level, since each PanelApp panel records one mode per gene.
+    """
+    if moi == "Monoallelic_and_biallelic":
+        return frozenset({"Monoallelic", "Biallelic"})
+    return frozenset({moi})
+
+
 @dataclass
 class PrefillData:
     """Prefill form data for PanelApp integration."""

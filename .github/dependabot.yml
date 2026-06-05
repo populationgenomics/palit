@@ -44,3 +44,12 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # transformers 5.9.x hardcodes torch.float64 in RT-DETR v2, crashing
+    # docling's layout model on Apple Silicon MPS (docling#3483). The cap also
+    # lives in pyproject's [tool.uv] constraint-dependencies; this entry stops
+    # Dependabot from opening a range-widening PR that bumps past it once those
+    # versions age past the cooldown. Remove both once docling PR #2721 (MPS
+    # float16 support) ships.
+    ignore:
+      - dependency-name: "transformers"
+        versions: [">=5.9.0"]

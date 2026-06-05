@@ -58,6 +58,16 @@ palit = "palit.cli:app"
 # .github/dependabot.yml. Override per package with `exclude-newer-package`
 # (e.g. to accept a security fix younger than the window).
 exclude-newer = "7 days"
+# transformers 5.9.0 hardcodes torch.float64 in RT-DETR v2's positional
+# embedding, which Apple Silicon MPS cannot allocate, so docling's layout model
+# crashes during `palit docling convert` on macOS (docling#3483,
+# huggingface/transformers#46174). 5.8.x is the last MPS-safe line and is
+# accepted by both docling-ibm-models and vllm (the HPC dependency), so this
+# single cap keeps one transformers version across all platforms. We constrain
+# rather than depend: palit code never imports transformers directly — it is
+# pulled in transitively. Remove once docling ships MPS float16 support (docling
+# PR #2721). Mirrored by a Dependabot ignore in .github/dependabot.yml.
+constraint-dependencies = ["transformers>=5.8.1,<5.9.0"]
 
 [tool.pyright]
 venvPath = "."

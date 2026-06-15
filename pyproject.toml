@@ -29,7 +29,7 @@ dependencies = [
     "tenacity",
     "tqdm",
     "typer",
-    "boto3>=1.43.18",
+    "boto3>=1.43.24",
 ]
 
 [project.optional-dependencies]
@@ -43,7 +43,7 @@ ml = [
     "scipy>=1.17",
     "torch",
     "transformers",
-    "vllm>=0.21.0; sys_platform == 'linux'",
+    "vllm>=0.22.1; sys_platform == 'linux'",
     "wandb",
 ]
 

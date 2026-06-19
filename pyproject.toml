@@ -29,7 +29,7 @@ dependencies = [
     "tenacity",
     "tqdm",
     "typer",
-    "boto3>=1.43.24",
+    "boto3>=1.43.29",
 ]
 
 [project.optional-dependencies]

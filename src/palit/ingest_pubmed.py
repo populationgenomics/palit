@@ -364,19 +364,12 @@ def download_day(day: date, output_dir: Path) -> DownloadResult:
     """
     output_file = output_dir / f"pubmed_{day}.xml.gz"
 
-    # Skip if file already exists and is large enough
-    if output_file.exists():
-        file_size = output_file.stat().st_size
-        if file_size >= MIN_FILE_SIZE:
-            logger.debug(f"{day}: File already exists ({file_size} bytes), skipping")
-            return DownloadResult(
-                day=day,
-                success=True,
-                file_path=output_file,
-                file_size=file_size,
-                attempts=0,  # 0 attempts means it was already cached
-            )
-
+    # Always re-fetch, overwriting any cached dump. A day's PubMed index keeps
+    # changing for weeks after the date, so re-downloading the ingest window's days
+    # is what gives late-indexed "straggler" papers their second chance. Overwriting
+    # is safe: papers from an earlier fetch are already persisted in the prior run's
+    # DB (and report), and --previous-db narrows this run to just the new stragglers.
+    # The buffer window bounds re-fetching to ~2 months per run.
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             # Build esearch and efetch pipeline. We use efetch, as the daily update files at

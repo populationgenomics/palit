@@ -28,9 +28,9 @@ from rich.progress import (
 from torch.utils.data import DataLoader
 from transformers import DataCollatorWithPadding
 
-from palit.ingest_pubmed import extract_papers_from_xml
 from palit.papers import Paper, serialize_source_metadata
 from palit.progress import LoggingProgress as Progress
+from palit.pubmed_xml import extract_papers_from_xml
 from palit.screening_classifier.inference import (
     LabeledPaper,
     LoadedCheckpoint,

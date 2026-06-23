@@ -14,12 +14,12 @@ from rich.console import Console
 from rich.progress import TaskID
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
+from palit import ledger as ledger_ops
 from palit.papers import (
     Paper,
     ResearchSquareMetadata,
     RxivMetadata,
     format_crossref_authors,
-    load_previous_dois,
     parse_crossref_date,
     serialize_source_metadata,
     strip_xml_tags,
@@ -327,8 +327,8 @@ def main(
     mailto: str = typer.Option(
         "panelapp-support@mcri.edu.au", "--mailto", help="Contact email for Crossref polite pool"
     ),
-    previous_db: Path | None = typer.Option(
-        None, "--previous-db", help="Previous run DB for set-difference filtering"
+    ledger: Path = typer.Option(
+        ledger_ops.DEFAULT_LEDGER_PATH, "--ledger", help="Ledger database path"
     ),
 ) -> None:
     """Ingest preprints from bioRxiv, medRxiv, and/or Research Square."""
@@ -337,16 +337,18 @@ def main(
             console.print(f"[red]Unknown server: {s}. Valid: {', '.join(VALID_SERVERS)}[/red]")
             raise typer.Exit(1)
 
-    # Load previous DOIs for set-difference filtering
-    previous_dois: set[str] | None = None
-    if previous_db is not None:
-        if not previous_db.exists():
-            console.print(f"[red]Previous DB not found: {previous_db}[/red]")
-            raise typer.Exit(1)
-        previous_dois = load_previous_dois(previous_db)
+    if not ledger.exists():
         console.print(
-            f"[cyan]Filtering against {len(previous_dois)} papers from {previous_db}[/cyan]"
+            f"[red]Ledger not found at {ledger}. Create it first: "
+            f"`palit ledger init --ledger {ledger}`.[/red]"
         )
+        raise typer.Exit(1)
+
+    # Skip preprints whose disposition the ledger has already settled (majority
+    # not-relevant, or downloaded). Relevant-not-downloaded carry-overs come back
+    # through seed-run-db during ingest-pubmed, so they need no handling here.
+    settled = ledger_ops.settled_dois(ledger)
+    console.print(f"[cyan]Skipping {len(settled)} DOIs already settled in the ledger[/cyan]")
 
     console.print(
         f"[cyan]Ingesting preprints: {start_date} to {end_date} "
@@ -378,12 +380,12 @@ def main(
                 progress.update(task, total=0, completed=0)
                 continue
 
-            if previous_dois:
+            if settled:
                 before = len(papers)
-                papers = [p for p in papers if p.doi not in previous_dois]
+                papers = [p for p in papers if p.doi not in settled]
                 filtered = before - len(papers)
                 if filtered:
-                    logger.info(f"{display}: filtered {filtered} papers already in previous DB")
+                    logger.info(f"{display}: skipped {filtered} DOIs already settled in ledger")
 
             inserted = insert_papers(papers, db_path)
             total_inserted += inserted

@@ -33,7 +33,8 @@ uv run pre-commit install
 
 The system uses multiple databases:
 
-- **Main workflow** (`data/db.sqlite`): Created from `schema.sql` by `palit ingest-preprints` or `palit ingest-pubmed`
+- **Main workflow** (`data/db.sqlite`): Per-run database, created from `schema.sql`, seeded from the ledger by `palit ingest-pubmed`
+- **Ingestion ledger** (`data/pubmed_ingestion_ledger.sqlite`): Created from `ledger_schema.sql` by `palit ledger init`. The single canonical dedup/disposition memory across all runs (see "PubMed ingestion ledger" below)
 - **Screening workflow** (`data/pubmed_baseline_screening.sqlite`): Created from `schema.sql` by `palit screen-pubmed`
 - **Classifier training** (`data/screening_classifier/training.sqlite`): Created from `src/palit/screening_classifier/training.sql` (only needed for training)
 
@@ -57,15 +58,24 @@ VARIANT_LOOKUP_API_KEY=<bearer-token>
 ```bash
 # Configuration
 PANEL_DATE=2025-10-01
+START_DATE=2025-10-01
 END_DATE=2025-10-15
+LEDGER=data/pubmed_ingestion_ledger.sqlite
 
-# 1. Setup: Create database and ingest papers (creates DB from schema.sql if needed)
-#    --previous-db widens the date range into the previous run's window and skips
-#    papers already ingested (buffer window for API flakiness resilience).
-#    Preprints first: ensures preprint metadata (version) is preserved for automatic
-#    PDF download. PubMed backfills PMIDs into preprint rows without overwriting.
-uv run palit ingest-preprints --previous-db data/db_prev.sqlite $BUFFER_START $END_DATE
-uv run palit ingest-pubmed --previous-db data/db_prev.sqlite $BUFFER_START $END_DATE
+# 0. One-time: create the ledger — the dedup/disposition memory shared across all
+#    runs (see "PubMed ingestion ledger" below). Seed it from existing run DBs with
+#    `palit ledger seed` if you have prior corpora.
+uv run palit ledger init --ledger $LEDGER
+
+# 1. Ingest papers for the window through the ledger. The ledger replaces the old
+#    buffer window + --previous-db: late-indexed stragglers arrive via the FTP
+#    update-file sync (constant cost, unbounded horizon), and papers already settled
+#    (majority not-relevant, or downloaded) are never reconsidered while
+#    relevant-not-downloaded papers are re-emitted for a download retry. Preprints
+#    first so their metadata (version) survives for automatic PDF download;
+#    ingest-pubmed backfills PMIDs into preprint rows without overwriting them.
+uv run palit ingest-preprints --ledger $LEDGER $START_DATE $END_DATE
+uv run palit ingest-pubmed --ledger $LEDGER $START_DATE $END_DATE
 
 # 2. Assess relevance of papers
 uv run palit assess-relevance --panel-date $PANEL_DATE
@@ -125,6 +135,55 @@ uv run palit annotate-pdfs
 
 # 13. Generate assessment report package with panel recommendations
 uv run palit generate-report --report-id report_mendeliome --panel-date $PANEL_DATE
+
+# 14. Fold this run's dispositions back into the ledger so future runs skip the
+#     papers settled here and resume any relevant-not-downloaded ones. Covers
+#     expansion/discovered-citation papers too (keyed by DOI). Separate from, and
+#     run alongside, the baseline-screening update below.
+uv run palit ledger writeback --run-db data/db.sqlite --run-id report_mendeliome --ledger $LEDGER
+```
+
+## PubMed Ingestion Ledger
+
+PubMed keeps indexing records weeks-to-months after their create date (CRDT), so a
+fixed fetch window silently loses thousands of late-indexed papers every month. The
+ingestion ledger (`data/pubmed_ingestion_ledger.sqlite`) is a single canonical
+database that makes ingestion robust to this lag. It records, per DOI, the refreshed
+bibliographic metadata plus the terminal disposition each run wrote back, and is the
+dedup/disposition memory that replaces the old per-run buffer window + `--previous-db`
+set-difference.
+
+Two sources feed it, complementary by recency:
+
+- **FTP update files** (`https://ftp.ncbi.nlm.nih.gov/pubmed/updatefiles/`) — applied
+  incrementally by file number. A late-indexed straggler arrives in whatever file
+  first adds it, so old-date papers are caught at constant per-run cost without
+  re-fetching old days. Revised records (e.g. a late-attached abstract) reappear in
+  later files and refresh the row.
+- **Thin live efetch** over the current window — the freshest view of the newest
+  papers, where the FTP files can briefly lag.
+
+Each run partitions previously-seen DOIs into **settled** (majority not-relevant, or
+downloaded — never reconsidered) and **actionable** (never assessed, or
+relevant-but-not-downloaded — re-emitted into the run). A CRDT month is finalised and
+dropped from the actionable set after a 6-month **closure horizon**, which bounds the
+work set.
+
+```bash
+LEDGER=data/pubmed_ingestion_ledger.sqlite
+
+# Create the ledger once.
+uv run palit ledger init --ledger $LEDGER
+
+# Seed it from existing run databases (cross-era: DOI- and PMID-keyed corpora).
+uv run palit ledger seed --ledger $LEDGER --db data/db_2026_april.sqlite --db data/db_2026_may.sqlite ...
+
+# Apply any new FTP update files to the ledger (also done inside ingest-pubmed).
+uv run palit ledger sync --ledger $LEDGER
+
+# Per run: ingest-pubmed seeds the run DB from the ledger's actionable set;
+# at run end, fold dispositions back.
+uv run palit ledger writeback --run-db data/db.sqlite --run-id <run> --ledger $LEDGER
 ```
 
 ## Relevance Screening Classifier

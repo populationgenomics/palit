@@ -16,7 +16,6 @@ from rich.console import Console
 from rich.progress import track
 
 from palit.hgnc import HgncResolver
-from palit.ingest_pubmed import extract_papers_from_xml
 from palit.papers import (
     CrossrefMetadata,
     Paper,
@@ -25,6 +24,7 @@ from palit.papers import (
     serialize_source_metadata,
     strip_xml_tags,
 )
+from palit.pubmed_xml import extract_papers_from_xml
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 

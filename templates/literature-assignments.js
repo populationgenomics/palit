@@ -140,6 +140,7 @@ var LiteratureAssignments = {
     this._buildTocLinkMap();
     this.highlightTocLinks();
     this.renderAllWidgets();
+    this.renderBulkPanel();
   },
 
   _readJsonBlock: function (id) {
@@ -633,6 +634,446 @@ var LiteratureAssignments = {
     if (tokenEl) return tokenEl.value;
     var match = document.cookie.match(/csrftoken=([^;]+)/);
     return match ? match[1] : "";
+  },
+
+  /* ==========================================================================
+     Bulk assignment panel
+     Balanced, uniformly-random gene -> curator dealing across selected ToC
+     sections. Drives the same per-gene assign endpoint as the widgets, in a
+     sequential loop (per-gene optimistic locking; tiny volume).
+     ========================================================================== */
+
+  /**
+   * A gene is "live" (excluded from bulk assignment) when it already has a
+   * non-pending assignment (assigned/skipped) or a recorded completion.
+   */
+  _isLive: function (hgncId) {
+    var a = this.config.assignments[hgncId];
+    if (a && a.status !== "pending") return true;
+    return this._isCompleted(hgncId);
+  },
+
+  _isCompleted: function (hgncId) {
+    var c = this.completionStatus[hgncId];
+    return !!(c && c.completed);
+  },
+
+  /**
+   * Read the selectable ToC sections from the DOM. Each section <div> carries
+   * data-section-key / data-section-label / data-section-default, and the gene
+   * links inside it are the section's members. Genes belong to exactly one
+   * section, so no cross-section dedup is needed here.
+   */
+  _collectSections: function () {
+    var sections = [];
+    var divs = document.querySelectorAll("[data-section-key]");
+    for (var i = 0; i < divs.length; i++) {
+      var div = divs[i];
+      var hgncIds = [];
+      var links = div.querySelectorAll(
+        'a[href^="#novel-gene-"], a[href^="#known-gene-"]'
+      );
+      for (var j = 0; j < links.length; j++) {
+        var match = links[j].getAttribute("href").match(/#(?:novel|known)-gene-(.+)$/);
+        if (match) hgncIds.push("HGNC:" + match[1]);
+      }
+      sections.push({
+        key: div.dataset.sectionKey,
+        label: div.dataset.sectionLabel,
+        default: div.hasAttribute("data-section-default"),
+        hgncIds: hgncIds,
+      });
+    }
+    return sections;
+  },
+
+  /**
+   * Cryptographically-seeded Fisher-Yates shuffle (returns a new array).
+   */
+  _shuffle: function (arr) {
+    var a = arr.slice();
+    var r = new Uint32Array(1);
+    for (var i = a.length - 1; i > 0; i--) {
+      crypto.getRandomValues(r);
+      var j = r[0] % (i + 1);
+      var tmp = a[i];
+      a[i] = a[j];
+      a[j] = tmp;
+    }
+    return a;
+  },
+
+  /**
+   * Deal genes to curators: shuffle both, then round-robin via i % K. Every
+   * curator ends up with floor(N/K) or ceil(N/K) genes, and every balanced
+   * assignment is equally likely. Returns [{curator, genes}].
+   */
+  _planAssignment: function (hgncIds, curators) {
+    var dealtGenes = this._shuffle(hgncIds);
+    var dealtCurators = this._shuffle(curators);
+    var plan = dealtCurators.map(function (c) {
+      return { curator: c, genes: [] };
+    });
+    dealtGenes.forEach(function (h, i) {
+      plan[i % plan.length].genes.push(h);
+    });
+    return plan;
+  },
+
+  renderBulkPanel: function () {
+    var self = this;
+    var body = document.getElementById("bulk-assign-body");
+    if (!body) return;
+
+    var sections = this._collectSections().filter(function (s) {
+      return s.hgncIds.length > 0;
+    });
+
+    if (!this.config.curators.length || !sections.length) {
+      body.innerHTML =
+        '<p class="bulk-empty">Nothing to assign: ' +
+        (this.config.curators.length ? "no gene sections" : "no curators") +
+        " available.</p>";
+      return;
+    }
+
+    var curatorBoxes = this.config.curators
+      .map(function (c) {
+        return (
+          '<label class="bulk-check"><input type="checkbox" class="bulk-curator" value="' +
+          c.id +
+          '" checked> ' +
+          self._escapeHtml(c.initials) +
+          "</label>"
+        );
+      })
+      .join("");
+
+    var sectionBoxes = sections
+      .map(function (s) {
+        return (
+          '<label class="bulk-check"><input type="checkbox" class="bulk-section" value="' +
+          self._escapeHtml(s.key) +
+          '"' +
+          (s.default ? " checked" : "") +
+          "> " +
+          self._escapeHtml(s.label) +
+          " (" +
+          s.hgncIds.length +
+          ")</label>"
+        );
+      })
+      .join("");
+
+    body.innerHTML =
+      '<div class="bulk-controls">' +
+      '<fieldset class="bulk-fieldset"><legend>Curators</legend>' +
+      '<div class="bulk-check-grid">' +
+      curatorBoxes +
+      "</div></fieldset>" +
+      '<fieldset class="bulk-fieldset"><legend>ToC sections</legend>' +
+      '<div class="bulk-check-grid">' +
+      sectionBoxes +
+      "</div></fieldset>" +
+      "</div>" +
+      '<div class="bulk-actions">' +
+      '<button type="button" class="bulk-btn bulk-assign-btn">Randomly assign…</button>' +
+      '<button type="button" class="bulk-btn bulk-unassign-btn">Unassign…</button>' +
+      "</div>" +
+      '<div class="bulk-preview" id="bulk-preview"></div>';
+
+    // Cache the section map so handlers don't re-scan the DOM.
+    var sectionMap = {};
+    sections.forEach(function (s) {
+      sectionMap[s.key] = s;
+    });
+    this._bulkSectionMap = sectionMap;
+
+    body
+      .querySelector(".bulk-assign-btn")
+      .addEventListener("click", function () {
+        self.previewAssign();
+      });
+    body
+      .querySelector(".bulk-unassign-btn")
+      .addEventListener("click", function () {
+        self.previewUnassign();
+      });
+  },
+
+  /**
+   * Curator objects for the checked curator boxes.
+   */
+  _selectedCurators: function () {
+    var ids = {};
+    document
+      .querySelectorAll(".bulk-curator:checked")
+      .forEach(function (cb) {
+        ids[parseInt(cb.value)] = true;
+      });
+    return this.config.curators.filter(function (c) {
+      return ids[c.id];
+    });
+  },
+
+  /**
+   * Union of HGNC ids across the checked sections (deduped).
+   */
+  _selectedSectionGenes: function () {
+    var self = this;
+    var seen = {};
+    var genes = [];
+    document
+      .querySelectorAll(".bulk-section:checked")
+      .forEach(function (cb) {
+        var section = self._bulkSectionMap[cb.value];
+        if (!section) return;
+        section.hgncIds.forEach(function (h) {
+          if (!seen[h]) {
+            seen[h] = true;
+            genes.push(h);
+          }
+        });
+      });
+    return genes;
+  },
+
+  _clearPreview: function () {
+    var preview = document.getElementById("bulk-preview");
+    if (preview) preview.innerHTML = "";
+  },
+
+  previewAssign: function () {
+    var self = this;
+    var preview = document.getElementById("bulk-preview");
+    var curators = this._selectedCurators();
+    var genes = this._selectedSectionGenes();
+    var assignable = genes.filter(function (h) {
+      return !self._isLive(h);
+    });
+    var skipped = genes.length - assignable.length;
+
+    if (!curators.length) {
+      preview.innerHTML = '<p class="bulk-warn">Select at least one curator.</p>';
+      return;
+    }
+    if (!assignable.length) {
+      preview.innerHTML =
+        '<p class="bulk-warn">No assignable genes in the selected sections' +
+        (skipped ? " (" + skipped + " already assigned/completed)." : ".") +
+        "</p>";
+      return;
+    }
+
+    var plan = this._planAssignment(assignable, curators);
+    var planRows = plan
+      .map(function (p) {
+        var symbols = p.genes
+          .map(function (h) {
+            return self._escapeHtml(self._getGeneSymbol(h));
+          })
+          .join(", ");
+        return (
+          '<li><span class="bulk-plan-curator">' +
+          self._escapeHtml(p.curator.initials) +
+          " (" +
+          p.genes.length +
+          ")</span> " +
+          symbols +
+          "</li>"
+        );
+      })
+      .join("");
+
+    preview.innerHTML =
+      '<p class="bulk-preview-summary">Assign <strong>' +
+      assignable.length +
+      "</strong> gene(s) across <strong>" +
+      curators.length +
+      "</strong> curator(s)." +
+      (skipped
+        ? ' <span class="bulk-skip-note">' +
+          skipped +
+          " already assigned/completed — skipped.</span>"
+        : "") +
+      "</p>" +
+      '<ul class="bulk-plan">' +
+      planRows +
+      "</ul>" +
+      '<div class="bulk-confirm-actions">' +
+      '<button type="button" class="bulk-btn bulk-confirm-btn">Confirm &amp; assign</button>' +
+      '<button type="button" class="bulk-btn bulk-cancel-btn">Cancel</button>' +
+      "</div>";
+
+    // Build the jobs from the previewed plan so confirm executes exactly what
+    // was shown (no re-shuffle).
+    var jobs = [];
+    plan.forEach(function (p) {
+      p.genes.forEach(function (h) {
+        jobs.push({ hgncId: h, assignedTo: p.curator.id });
+      });
+    });
+
+    preview
+      .querySelector(".bulk-confirm-btn")
+      .addEventListener("click", function () {
+        self._runBulk(jobs, "Assigning");
+      });
+    preview
+      .querySelector(".bulk-cancel-btn")
+      .addEventListener("click", function () {
+        self._clearPreview();
+      });
+  },
+
+  previewUnassign: function () {
+    var self = this;
+    var preview = document.getElementById("bulk-preview");
+    var genes = this._selectedSectionGenes().filter(function (h) {
+      var a = self.config.assignments[h];
+      return a && a.status === "assigned" && !self._isCompleted(h);
+    });
+
+    if (!genes.length) {
+      preview.innerHTML =
+        '<p class="bulk-warn">No assigned genes to revert in the selected sections.</p>';
+      return;
+    }
+
+    var rows = genes
+      .map(function (h) {
+        var who = self._getCuratorName(self.config.assignments[h].assigned_to);
+        return (
+          "<li>" +
+          self._escapeHtml(self._getGeneSymbol(h)) +
+          (who ? ' <span class="bulk-plan-curator">' + self._escapeHtml(who) + "</span>" : "") +
+          "</li>"
+        );
+      })
+      .join("");
+
+    preview.innerHTML =
+      '<p class="bulk-preview-summary">Revert <strong>' +
+      genes.length +
+      "</strong> assigned gene(s) to pending. " +
+      '<span class="bulk-skip-note">Completed and skipped genes are left untouched.</span></p>' +
+      '<ul class="bulk-plan bulk-plan-flat">' +
+      rows +
+      "</ul>" +
+      '<div class="bulk-confirm-actions">' +
+      '<button type="button" class="bulk-btn bulk-confirm-btn">Confirm &amp; unassign</button>' +
+      '<button type="button" class="bulk-btn bulk-cancel-btn">Cancel</button>' +
+      "</div>";
+
+    var jobs = genes.map(function (h) {
+      return { hgncId: h, assignedTo: null };
+    });
+
+    preview
+      .querySelector(".bulk-confirm-btn")
+      .addEventListener("click", function () {
+        self._runBulk(jobs, "Reverting");
+      });
+    preview
+      .querySelector(".bulk-cancel-btn")
+      .addEventListener("click", function () {
+        self._clearPreview();
+      });
+  },
+
+  /**
+   * Assign (or, with assignedTo === null, revert to pending) a single gene.
+   * Updates local state and refreshes the gene's widget + ToC link on success;
+   * throws on failure so the bulk loop can record it.
+   */
+  assignGene: async function (hgncId, assignedTo) {
+    var current = this.config.assignments[hgncId];
+    var resp = await fetch("/api/v1/literature-assignments/assign/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": this.getCsrfToken(),
+      },
+      body: JSON.stringify({
+        report_id: this.config.reportId,
+        hgnc_id: hgncId,
+        assigned_to: assignedTo,
+        expected_updated_at: current ? current.updated_at : null,
+      }),
+    });
+    if (!resp.ok) {
+      var data = await resp.json().catch(function () {
+        return {};
+      });
+      throw new Error("HTTP " + resp.status + ": " + (data.message || resp.status));
+    }
+    var updated = await resp.json();
+    this.config.assignments[hgncId] = updated;
+    delete this.completionStatus[hgncId];
+    this.refreshGene(hgncId);
+  },
+
+  /**
+   * Run a list of {hgncId, assignedTo} jobs sequentially, reporting progress
+   * and a final summary into the preview region.
+   */
+  _runBulk: async function (jobs, verb) {
+    var preview = document.getElementById("bulk-preview");
+    var actionBtns = document.querySelectorAll(".bulk-actions .bulk-btn");
+    actionBtns.forEach(function (b) {
+      b.disabled = true;
+    });
+
+    preview.innerHTML =
+      '<p class="bulk-progress">' +
+      verb +
+      '… <span id="bulk-progress-count">0/' +
+      jobs.length +
+      "</span></p>";
+    var counter = document.getElementById("bulk-progress-count");
+
+    var failed = [];
+    var done = 0;
+    for (var i = 0; i < jobs.length; i++) {
+      try {
+        await this.assignGene(jobs[i].hgncId, jobs[i].assignedTo);
+      } catch (e) {
+        failed.push({ hgncId: jobs[i].hgncId, error: e.message });
+      }
+      done++;
+      if (counter) counter.textContent = done + "/" + jobs.length;
+    }
+
+    var ok = jobs.length - failed.length;
+    var self = this;
+    var failHtml = "";
+    if (failed.length) {
+      failHtml =
+        '<ul class="bulk-failures">' +
+        failed
+          .map(function (f) {
+            return (
+              "<li>" +
+              self._escapeHtml(self._getGeneSymbol(f.hgncId)) +
+              ": " +
+              self._escapeHtml(f.error) +
+              "</li>"
+            );
+          })
+          .join("") +
+        "</ul>";
+    }
+    preview.innerHTML =
+      '<p class="bulk-result">Done. ' +
+      ok +
+      " updated" +
+      (failed.length ? ", " + failed.length + " failed" : "") +
+      ".</p>" +
+      failHtml;
+
+    actionBtns.forEach(function (b) {
+      b.disabled = false;
+    });
   },
 };
 

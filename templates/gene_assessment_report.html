@@ -550,7 +550,7 @@
                 <div class="toc-section-header">
                     <span class="rating-badge rating-green">GREEN</span> Candidates ({{ novel_categories.green|length }})
                 </div>
-                <div class="toc-section toc-novel-to-green">
+                <div class="toc-section toc-novel-to-green" data-section-key="novel-green" data-section-label="Novel → GREEN" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in novel_categories.green %}
                         <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
@@ -563,7 +563,7 @@
                 <div class="toc-section-header">
                     <span class="rating-badge rating-amber">AMBER</span> Candidates ({{ novel_categories.amber|length }})
                 </div>
-                <div class="toc-section toc-novel-to-amber">
+                <div class="toc-section toc-novel-to-amber" data-section-key="novel-amber" data-section-label="Novel → AMBER" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in novel_categories.amber %}
                         <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
@@ -576,7 +576,7 @@
                 <div class="toc-section-header">
                     <span class="rating-badge rating-red">RED</span> Candidates ({{ novel_categories.red|length }})
                 </div>
-                <div class="toc-section toc-novel-to-red">
+                <div class="toc-section toc-novel-to-red" data-section-key="novel-red" data-section-label="Novel → RED" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in novel_categories.red %}
                         <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
@@ -594,7 +594,7 @@
                 <div class="toc-section-header">
                     <span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.red_to_green|length }})
                 </div>
-                <div class="toc-section toc-red-to-green">
+                <div class="toc-section toc-red-to-green" data-section-key="red-to-green" data-section-label="RED → GREEN" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.red_to_green %}
                         <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
@@ -607,7 +607,7 @@
                 <div class="toc-section-header">
                     <span class="rating-badge rating-amber">AMBER</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.amber_to_green|length }})
                 </div>
-                <div class="toc-section toc-amber-to-green">
+                <div class="toc-section toc-amber-to-green" data-section-key="amber-to-green" data-section-label="AMBER → GREEN" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.amber_to_green %}
                         <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
@@ -620,7 +620,7 @@
                 <div class="toc-section-header">
                     <span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-amber">AMBER</span> Upgrades ({{ known_categories.red_to_amber|length }})
                 </div>
-                <div class="toc-section toc-red-to-amber">
+                <div class="toc-section toc-red-to-amber" data-section-key="red-to-amber" data-section-label="RED → AMBER" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.red_to_amber %}
                         <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
@@ -639,7 +639,7 @@
                 <div class="toc-subsection-header">
                     MoI Expansion ({{ known_categories.no_change_with_moi|length }})
                 </div>
-                <div class="toc-section toc-no-change">
+                <div class="toc-section toc-no-change toc-moi-expansion" data-section-key="moi-expansion" data-section-label="MoI Expansion" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.no_change_with_moi %}
                         <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}<span class="moi-expansion-indicator">➕</span></a></li>
@@ -652,7 +652,7 @@
                 <div class="toc-subsection-header">
                     Unreviewed on Target Panel ({{ known_categories.no_change_unreviewed|length }})
                 </div>
-                <div class="toc-section toc-no-change">
+                <div class="toc-section toc-no-change" data-section-key="no-change-unreviewed" data-section-label="Unreviewed on Target Panel">
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.no_change_unreviewed %}
                         <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}</a></li>
@@ -665,7 +665,7 @@
                 <div class="toc-subsection-header">
                     Already Reviewed ({{ known_categories.no_change_reviewed|length }})
                 </div>
-                <div class="toc-section toc-no-change">
+                <div class="toc-section toc-no-change" data-section-key="no-change-reviewed" data-section-label="Already Reviewed">
                     <details class="toc-collapsed-section">
                         <summary>Show gene list</summary>
                         <ul class="toc-gene-list">
@@ -688,6 +688,14 @@
             {% endif %}
         </ul>
     </nav>
+
+    {% if panelapp_integration %}
+    {# Bulk assignment panel: body is populated by literature-assignments.js #}
+    <details class="bulk-assign-panel">
+        <summary>Bulk assignment</summary>
+        <div class="bulk-assign-body" id="bulk-assign-body"></div>
+    </details>
+    {% endif %}
 
     <main>
         <section id="statistics">

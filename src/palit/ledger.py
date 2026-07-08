@@ -772,8 +772,10 @@ def seed(
 
 @app.command(name="seed-run-db")
 def seed_run_db_command(
-    run_db: Path = typer.Argument(..., help="Run database to seed (must already exist)"),
     end_date: str = typer.Argument(..., help="Run window end date (YYYY-MM-DD)"),
+    db_path: Path = typer.Option(
+        ..., "--db-path", help="Run database to seed (must already exist)"
+    ),
     ledger: Path = typer.Option(DEFAULT_LEDGER_PATH, "--ledger", help="Ledger database path"),
     closure_horizon_months: int = typer.Option(
         DEFAULT_CLOSURE_HORIZON_MONTHS, "--closure-horizon-months", help="Closure horizon"
@@ -781,12 +783,12 @@ def seed_run_db_command(
 ) -> None:
     """Copy the actionable set within the closure horizon into a run database."""
     _require_ledger(ledger)
-    if not run_db.exists():
-        console.print(f"[red]Run DB not found: {run_db}[/red]")
+    if not db_path.exists():
+        console.print(f"[red]Run DB not found: {db_path}[/red]")
         raise typer.Exit(1)
     floor = subtract_months(date.fromisoformat(end_date), closure_horizon_months).isoformat()
-    n = seed_run_db_from_ledger(ledger, run_db, horizon_floor=floor, end_date=end_date)
-    console.print(f"[green]✓[/green] Seeded {n} actionable papers into {run_db}")
+    n = seed_run_db_from_ledger(ledger, db_path, horizon_floor=floor, end_date=end_date)
+    console.print(f"[green]✓[/green] Seeded {n} actionable papers into {db_path}")
 
 
 @app.command(name="writeback")

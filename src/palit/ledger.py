@@ -791,17 +791,17 @@ def seed_run_db_command(
 
 @app.command(name="writeback")
 def writeback_command(
-    run_db: Path = typer.Argument(..., help="Finished run database"),
+    db_path: Path = typer.Option(..., "--db-path", help="Finished run database"),
     run_id: str = typer.Option(..., "--run-id", help="Run/report id recorded for traceability"),
     ledger: Path = typer.Option(DEFAULT_LEDGER_PATH, "--ledger", help="Ledger database path"),
 ) -> None:
     """Fold a finished run's dispositions back into the ledger."""
     _require_ledger(ledger)
-    if not run_db.exists():
-        console.print(f"[red]Run DB not found: {run_db}[/red]")
+    if not db_path.exists():
+        console.print(f"[red]Run DB not found: {db_path}[/red]")
         raise typer.Exit(1)
-    n = writeback(ledger, run_db, run_id)
-    console.print(f"[green]✓[/green] Wrote back {n} dispositions from {run_db}")
+    n = writeback(ledger, db_path, run_id)
+    console.print(f"[green]✓[/green] Wrote back {n} dispositions from {db_path}")
 
 
 if __name__ == "__main__":

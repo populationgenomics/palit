@@ -140,7 +140,7 @@ uv run palit generate-report --report-id report_mendeliome --panel-date $PANEL_D
 #     papers settled here and resume any relevant-not-downloaded ones. Covers
 #     expansion/discovered-citation papers too (keyed by DOI). Separate from, and
 #     run alongside, the baseline-screening update below.
-uv run palit ledger writeback --run-db data/db.sqlite --run-id report_mendeliome --ledger $LEDGER
+uv run palit ledger writeback --db-path data/db.sqlite --run-id report_mendeliome --ledger $LEDGER
 ```
 
 ## PubMed Ingestion Ledger
@@ -183,7 +183,7 @@ uv run palit ledger sync --ledger $LEDGER
 
 # Per run: ingest-pubmed seeds the run DB from the ledger's actionable set;
 # at run end, fold dispositions back.
-uv run palit ledger writeback --run-db data/db.sqlite --run-id <run> --ledger $LEDGER
+uv run palit ledger writeback --db-path data/db.sqlite --run-id <run> --ledger $LEDGER
 ```
 
 ## Relevance Screening Classifier

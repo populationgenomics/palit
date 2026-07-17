@@ -43,7 +43,7 @@ ml = [
     "scipy>=1.17",
     "torch",
     "transformers",
-    "vllm>=0.22.1; sys_platform == 'linux'",
+    "vllm>=0.24.0; sys_platform == 'linux'",
     "wandb",
 ]
 

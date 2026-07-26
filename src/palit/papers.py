@@ -16,6 +16,7 @@ class SkipReason(enum.Enum):
     NO_DATE = "no_date"
     NO_TITLE = "no_title"
     NO_ABSTRACT = "no_abstract"
+    NON_ENGLISH = "non_english"
 
 
 def doi_to_path(doi: str, base_dir: Path, suffix: str = ".pdf") -> Path:

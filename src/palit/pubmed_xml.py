@@ -64,6 +64,20 @@ def extract_journal(article_elem: etree._Element) -> str:
     return ""
 
 
+def extract_languages(article_elem: etree._Element) -> list[str]:
+    """Extract the article's language codes from Language elements.
+
+    An article carries one Language per language it is published in, as a
+    three-letter code ('eng', 'chi', 'ger'). Bilingual articles list several
+    (e.g. 'eng' + 'spa'). The element is absent from some unindexed records.
+    """
+    return [
+        elem.text.strip()
+        for elem in article_elem.findall(".//MedlineCitation/Article/Language")
+        if elem.text
+    ]
+
+
 def extract_date(date_element: etree._Element | None) -> str | None:
     """Extract date from PubMedPubDate element."""
     if date_element is None:
@@ -92,6 +106,8 @@ def extract_paper(
     require_abstract: bool = True,
 ) -> Paper | SkipReason:
     """Extract paper data from PubmedArticle element.
+
+    Articles published only in a language other than English are skipped.
 
     Args:
         article_elem: The XML element containing the paper data
@@ -129,6 +145,14 @@ def extract_paper(
 
     if require_abstract and not abstract:
         return SkipReason.NO_ABSTRACT
+
+    # Non-English articles are out of scope: their full text is unavailable through
+    # the PMC OA path, so a relevant one only ever reaches manual retrieval. Checked
+    # after the gates above so the NON_ENGLISH tally counts exactly what this filter
+    # costs. A record with no Language element is kept.
+    languages = extract_languages(article_elem)
+    if languages and "eng" not in languages:
+        return SkipReason.NON_ENGLISH
 
     # Extract authors and journal
     authors = extract_authors(article_elem)

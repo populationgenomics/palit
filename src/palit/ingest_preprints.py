@@ -98,9 +98,13 @@ def fetch_rxiv_papers(
 
     Paginates until the API reports no further posts. The page size is chosen by
     the server and differs between bioRxiv and medRxiv, so it is never assumed.
+    A preprint revised inside the range is returned once per posted version;
+    only the highest version of each is kept.
     """
     source_details = f"{server.source}/{start_date}/{end_date}"
-    papers: list[Paper] = []
+    highest: dict[str, Paper] = {}
+    versions: dict[str, int] = {}
+    fetched = 0
     cursor = 0
 
     with httpx.Client() as client:
@@ -118,11 +122,21 @@ def fetch_rxiv_papers(
             progress.update(task, total=int(data["messages"][0]["total"]))
 
             for record in collection:
-                papers.append(_parse_rxiv_paper(record, server, source_details))
+                doi = record["doi"]
+                version = int(record["version"])
+                if versions.get(doi, 0) < version:
+                    versions[doi] = version
+                    highest[doi] = _parse_rxiv_paper(record, server, source_details)
 
-            progress.update(task, completed=len(papers))
+            fetched += len(collection)
+            progress.update(task, completed=fetched)
             cursor += len(collection)
 
+    papers = list(highest.values())
+    logger.info(
+        f"Fetched {fetched} records from {server.journal}, "
+        f"{len(papers)} unique papers after version dedup"
+    )
     return papers
 
 

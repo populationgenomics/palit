@@ -32,7 +32,6 @@ app = typer.Typer(help="Download and ingest preprints from bioRxiv, medRxiv, and
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-RXIV_PAGE_SIZE = 100  # bioRxiv/medRxiv API returns max 100 results per page
 CROSSREF_PAGE_SIZE = 1000  # Crossref allows up to 1000 results per page
 _RS_VERSION_SUFFIX = re.compile(r"/v\d+$")
 
@@ -97,7 +96,8 @@ def fetch_rxiv_papers(
 ) -> list[Paper]:
     """Fetch all papers from a bioRxiv/medRxiv server for a date range.
 
-    Paginates through the API (100 results per page) until all results are fetched.
+    Paginates until the API reports no further posts. The page size is chosen by
+    the server and differs between bioRxiv and medRxiv, so it is never assumed.
     """
     source_details = f"{server.source}/{start_date}/{end_date}"
     papers: list[Paper] = []
@@ -108,24 +108,20 @@ def fetch_rxiv_papers(
             url = f"{server.base_url}/details/{server.source}/{start_date}/{end_date}/{cursor}/json"
 
             data = _fetch_rxiv_page(client, url)
-            collection = data.get("collection", [])
 
+            # Past the last page the API answers "no posts found" and omits the
+            # collection entirely; that is the only reliable end-of-results signal.
+            collection = data.get("collection", [])
             if not collection:
                 break
 
-            messages = data["messages"]
-            count: int = messages[0]["count"]
-            progress.update(task, total=int(messages[0]["total"]))
+            progress.update(task, total=int(data["messages"][0]["total"]))
 
             for record in collection:
                 papers.append(_parse_rxiv_paper(record, server, source_details))
 
             progress.update(task, completed=len(papers))
-
-            if count < RXIV_PAGE_SIZE:
-                break
-
-            cursor += RXIV_PAGE_SIZE
+            cursor += len(collection)
 
     return papers
 

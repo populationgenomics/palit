@@ -4,13 +4,17 @@
 
 import json
 import logging
+import random
 import sqlite3
 import tempfile
+import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from importlib.metadata import version as package_version
 from pathlib import Path
+from urllib.parse import urlparse
 
 import boto3
 import httpx
@@ -20,7 +24,14 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from pypdf import PdfReader, PdfWriter
 from rich.console import Console
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 from palit.panelapp_client import PanelAppClient
 from palit.papers import doi_to_path
@@ -382,7 +393,7 @@ def _resolve_latest_version(s3, pmcid: str) -> int | None:  # type: ignore[no-un
 
 @retry(
     stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
+    wait=wait_exponential_jitter(initial=2, max=30),
     retry=retry_if_exception_type(ClientError),
     reraise=True,
 )
@@ -402,17 +413,104 @@ def _s3_url_to_key(s3_url: str) -> str:
     return path.split("?")[0]
 
 
-@retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
-    reraise=True,
-)
-def _fetch_with_retry(client: httpx.Client, url: str, timeout: float) -> httpx.Response:
-    """HTTP GET with retries for transient errors."""
-    response = client.get(url, timeout=timeout, follow_redirects=True)
-    response.raise_for_status()
-    return response
+# Cloudflare fronts the preprint servers and rate-limits per host. Bounding
+# in-flight requests per host rather than by worker-pool size lets a batch that
+# mixes bioRxiv, medRxiv and Research Square still use the whole pool.
+_MAX_IN_FLIGHT_PER_HOST = 2
+
+# The default python-httpx User-Agent scores poorly with Cloudflare's bot
+# management. Identify the tool rather than impersonating a browser.
+_USER_AGENT = f"palit/{package_version('palit')} (open-access preprint retrieval)"
+
+# A rate-limit window lasts far longer than a plain exponential backoff waits,
+# so the 429 loop is both longer-lived and separately bounded.
+_MAX_429_ATTEMPTS = 6
+_BASE_429_WAIT_S = 15.0
+_MAX_429_WAIT_S = 300.0
+
+
+def _is_retryable_http(exc: BaseException) -> bool:
+    """Transport failures and server errors are worth retrying; other 4xx are final.
+
+    429 never reaches here: it is handled in-band against ``Retry-After``, and
+    exhausting that loop is terminal for the run.
+    """
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+
+class PreprintDownloader:
+    """Fetches preprint PDFs from behind Cloudflare's per-host rate limiter.
+
+    One shared client keeps the connection pool and Cloudflare's session cookies
+    alive for the whole run, so each PDF is not evaluated as a fresh visitor. A
+    per-host semaphore bounds concurrency so a wide worker pool cannot overrun a
+    single server. 429s honour ``Retry-After``; 5xx and transport errors back
+    off through tenacity.
+    """
+
+    def __init__(self, timeout: float) -> None:
+        self._http = httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": _USER_AGENT},
+        )
+        self._semaphores: dict[str, threading.Semaphore] = {}
+        self._semaphores_lock = threading.Lock()
+
+    def close(self) -> None:
+        self._http.close()
+
+    def _semaphore_for(self, url: str) -> threading.Semaphore:
+        host = urlparse(url).netloc
+        with self._semaphores_lock:
+            semaphore = self._semaphores.get(host)
+            if semaphore is None:
+                semaphore = threading.Semaphore(_MAX_IN_FLIGHT_PER_HOST)
+                self._semaphores[host] = semaphore
+            return semaphore
+
+    def fetch(self, url: str) -> httpx.Response:
+        """GET ``url``, waiting out rate limits and retrying transient failures."""
+        with self._semaphore_for(url):
+            return self._fetch_with_retry(url)
+
+    @retry(
+        stop=stop_after_attempt(4),
+        wait=wait_exponential_jitter(initial=2, max=60),
+        retry=retry_if_exception(_is_retryable_http),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    def _fetch_with_retry(self, url: str) -> httpx.Response:
+        for attempt in range(_MAX_429_ATTEMPTS):
+            response = self._http.get(url)
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response
+            delay = _retry_after_delay(response, attempt)
+            logger.warning(f"Rate limited on {url}; waiting {delay:.0f}s before retry")
+            time.sleep(delay)
+        # Still limited after the full budget — surface the 429 so the caller
+        # records an error and the next run picks the paper up again.
+        response.raise_for_status()
+        raise RuntimeError("unreachable: 429 loop fell through without raising")
+
+
+def _retry_after_delay(response: httpx.Response, attempt: int) -> float:
+    """Seconds to wait after a 429, preferring the server's own guidance.
+
+    RFC 9110 also permits an HTTP-date in ``Retry-After``; the preprint servers
+    send delta-seconds, and anything else falls back to our own jittered
+    backoff rather than failing the run over a header.
+    """
+    retry_after = response.headers.get("Retry-After", "")
+    if retry_after.isdigit():
+        return min(float(retry_after), _MAX_429_WAIT_S)
+    return min(_BASE_429_WAIT_S * 2.0**attempt, _MAX_429_WAIT_S) + random.uniform(0, 5)
 
 
 def download_pmc_paper(
@@ -614,14 +712,13 @@ def download_preprint_paper(
     version: int,
     db_path: Path,
     target_dir: Path,
-    timeout: float,
+    downloader: PreprintDownloader,
 ) -> DownloadResult:
     """Download a single preprint PDF by constructing its URL from metadata."""
     url = _build_preprint_url(source, doi, version)
 
     try:
-        with httpx.Client() as client:
-            response = _fetch_with_retry(client, url, timeout)
+        response = downloader.fetch(url)
 
         content_type = response.headers.get("content-type", "")
         if "application/pdf" not in content_type:
@@ -656,12 +753,18 @@ def download_preprints_cmd(
         Path("data/papers"), "--target-dir", "-t", help="Directory to save PDFs"
     ),
     timeout: float = typer.Option(30.0, "--timeout", help="HTTP request timeout in seconds"),
-    max_workers: int = typer.Option(5, "--max-workers", "-w", help="Number of parallel downloads"),
+    max_workers: int = typer.Option(
+        5,
+        "--max-workers",
+        "-w",
+        help=f"Parallel downloads (capped at {_MAX_IN_FLIGHT_PER_HOST} per host)",
+    ),
 ) -> None:
     """Download PDFs for scheduled preprint papers (bioRxiv, medRxiv, Research Square).
 
     Constructs PDF URLs from DOI + version in source_metadata and downloads directly.
-    All preprints are open access. Any download failure aborts with non-zero exit.
+    All preprints are open access. Any download failure aborts with non-zero exit;
+    papers that fail keep download_status='scheduled', so a rerun retries only those.
     """
     if not db_path.exists():
         raise FileNotFoundError(f"Database not found: {db_path}")
@@ -702,27 +805,37 @@ def download_preprints_cmd(
 
     downloaded = 0
     errors: list[tuple[str, str]] = []
+    downloader = PreprintDownloader(timeout)
 
-    with Progress() as progress:
-        task = progress.add_task("Downloading...", total=len(papers_needing_download))
+    try:
+        with Progress() as progress:
+            task = progress.add_task("Downloading...", total=len(papers_needing_download))
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    download_preprint_paper, doi, source, version, db_path, target_dir, timeout
-                ): doi
-                for doi, source, version in papers_needing_download
-            }
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        download_preprint_paper,
+                        doi,
+                        source,
+                        version,
+                        db_path,
+                        target_dir,
+                        downloader,
+                    ): doi
+                    for doi, source, version in papers_needing_download
+                }
 
-            for future in as_completed(futures):
-                result = future.result()
-                if result.status == "downloaded":
-                    downloaded += 1
-                    logger.info(f"DOI {result.doi}: {result.message}")
-                else:
-                    errors.append((result.doi, result.message))
-                    logger.error(f"DOI {result.doi}: {result.message}")
-                progress.advance(task)
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result.status == "downloaded":
+                        downloaded += 1
+                        logger.info(f"DOI {result.doi}: {result.message}")
+                    else:
+                        errors.append((result.doi, result.message))
+                        logger.error(f"DOI {result.doi}: {result.message}")
+                    progress.advance(task)
+    finally:
+        downloader.close()
 
     console.print("\n[bold]Preprint Download Summary:[/bold]")
     console.print(f"  Downloaded: {downloaded}")

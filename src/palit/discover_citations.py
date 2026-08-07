@@ -3,6 +3,7 @@
 
 import json
 import logging
+import re
 import sqlite3
 import subprocess
 from dataclasses import dataclass
@@ -27,6 +28,12 @@ from palit.papers import (
 from palit.pubmed_xml import extract_papers_from_xml
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+
+# PubMed reads these as boolean operators even in lowercase, so a title using them as
+# ordinary words is mangled: "UV-sensitive syndrome but not Cockayne syndrome" becomes
+# a NOT clause excluding the very paper being searched for. They carry no search signal
+# in a title, so dropping them costs nothing.
+BOOLEAN_OPERATORS = re.compile(r"\b(?:AND|OR|NOT)\b", re.IGNORECASE)
 
 console = Console()
 app = typer.Typer(help="Discover papers referenced in evidence extractions")
@@ -110,6 +117,11 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
     return sources
 
 
+def strip_boolean_operators(title: str) -> str:
+    """Remove the words PubMed would parse as boolean operators from a title."""
+    return " ".join(BOOLEAN_OPERATORS.sub(" ", title).split())
+
+
 def search_pubmed_by_title(title: str) -> int | None:
     """Search PubMed for a paper by title using esearch.
 
@@ -126,7 +138,7 @@ def search_pubmed_by_title(title: str) -> int | None:
             "db": "pubmed",
             "retmode": "json",
             "field": "title",
-            "term": title,
+            "term": strip_boolean_operators(title),
         }
 
         # We use the ESearch endpoint directly instead of the `esearch` CLI, as the

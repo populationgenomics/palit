@@ -103,8 +103,10 @@ uv run palit discover-citations discover
 # 5a. Optionally add papers manually that weren't found automatically
 uv run palit discover-citations add --gene GENE_SYMBOL PMID1 PMID2 ...
 
-# 6. Expand literature beyond citations
-uv run palit expand-literature --cutoff-date $PANEL_DATE
+# 6. Expand literature beyond citations. Tournament selection over the screened
+#    baseline, then unconditional seeding of the publications PanelApp already
+#    cites for each gene (see "PanelApp publication seeding" below).
+uv run palit expand-literature --cutoff-date $PANEL_DATE --panel-date $PANEL_DATE
 
 # 7. Download expansion papers (same workflow as step 3)
 uv run palit download-papers attempt-pmc
@@ -142,6 +144,29 @@ uv run palit generate-report --report-id report_mendeliome --panel-date $PANEL_D
 #     run alongside, the baseline-screening update below.
 uv run palit ledger writeback --db-path data/db.sqlite --run-id report_mendeliome --ledger $LEDGER
 ```
+
+## PanelApp Publication Seeding
+
+Tournament selection keeps a minimal, non-redundant evidence set, so it routinely
+discards papers a PanelApp curator has already cited — a single-family report loses
+to a comprehensive cohort by design. Others were never candidates at all, because the
+screened baseline does not reach back far enough to contain them. Either way the
+report's "new evidence" framing ends up resting on papers we never read.
+
+`expand-literature` therefore finishes with an unconditional seeding pass: for every
+gene this run assesses, the publications PanelApp cites for it — the gene entity's
+list plus those cited in individual reviews, the same union `assess-genes` compares
+evidence against — are fetched from PubMed (batched efetch) or CrossRef and stored as
+expansion papers with `source_details = 'panelapp:{hgnc_id}'`. They then flow through
+the normal download and extraction steps.
+
+Seeding runs after `--force-all`'s expansion wipe, so seeded papers survive it, and
+before the tournament's early return, so a rerun still picks up publications added to
+a panel since. It is idempotent: papers already held are counted and skipped.
+
+Publications that never resolve to a DOI, and those whose PDF cannot be obtained, are
+logged and simply stay out of the corpus — seeding widens coverage but does not
+guarantee it.
 
 ## PubMed Ingestion Ledger
 

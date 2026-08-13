@@ -105,6 +105,31 @@ class PanelGeneData:
     gene_moi: dict[int, str]  # hgnc_id → mode of inheritance
 
 
+def find_gene_panel(
+    hgnc_id: int,
+    target_panel_ids: list[int],
+    panel_data: PanelGeneData,
+) -> int | None:
+    """Find first target panel containing this gene.
+
+    Iterates through target panels in the given order and returns the first
+    panel that contains the gene.
+
+    Args:
+        hgnc_id: HGNC ID of the gene to look up
+        target_panel_ids: Ordered list of panel IDs to check
+        panel_data: PanelApp gene data with panel mappings
+
+    Returns:
+        Panel ID if found, None if gene is novel (not in any target panel).
+    """
+    gene_panels = panel_data.gene_panel_mapping.get(hgnc_id, set())
+    for panel_id in target_panel_ids:
+        if panel_id in gene_panels:
+            return panel_id
+    return None
+
+
 @dataclass
 class AllPanelsData:
     """Gene data from ALL panels with panel information."""

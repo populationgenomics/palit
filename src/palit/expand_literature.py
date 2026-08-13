@@ -13,6 +13,8 @@ from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
 from palit.llm import LLMProcessor, create_llm_processor
+from palit.panelapp_client import PanelAppClient
+from palit.panelapp_publications import seed_panelapp_publications
 from palit.papers import Paper, deserialize_source_metadata, serialize_source_metadata
 from palit.tournament import TournamentOutcome, run_tournament_selection
 
@@ -218,6 +220,16 @@ def main(
         "--cutoff-date",
         help="Only consider papers up to this date (YYYY-MM-DD)",
     ),
+    panel_date: str = typer.Option(
+        ...,
+        "--panel-date",
+        help="Panel state date (YYYY-MM-DD) whose snapshot supplies PanelApp's cited publications",
+    ),
+    target_panel_ids: list[int] | None = typer.Option(
+        None,
+        "--target-panel-ids",
+        help="Panel IDs to source PanelApp publications from. Can be specified multiple times. Defaults to TARGET_PANEL_IDS.",
+    ),
     db_path: Path = typer.Option(
         Path("data/db.sqlite"),
         "--db-path",
@@ -302,7 +314,13 @@ def main(
         help="Maximum number of papers to consider per gene",
     ),
 ) -> None:
-    """Expand literature using tournament selection for all genes with evidence."""
+    """Expand literature for all genes with evidence, from two sources.
+
+    Tournament selection picks a minimal, non-redundant set from the screened
+    baseline. Seeding then adds, unconditionally, every publication PanelApp
+    already cites for those genes — papers the tournament would discard as
+    redundant, or that the baseline never contained.
+    """
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
@@ -359,14 +377,21 @@ def main(
         )
         genes = [row[0] for row in cursor.fetchall()]
 
+    # Load HGNC resolver for gene symbol lookup
+    hgnc_resolver = HgncResolver.from_file()
+
+    # Seed the publications PanelApp already cites. Runs after --force-all's
+    # expansion wipe so seeded papers survive it, and before the tournament's
+    # early return so a rerun still picks up publications added to a panel.
+    panelapp_client = PanelAppClient(panel_date)
+    panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
+    seed_panelapp_publications(db_path, panelapp_client, panel_data, hgnc_resolver)
+
     logger.info(f"Found {len(genes)} gene(s) to expand")
 
     if not genes:
         logger.info("No genes require expansion")
         return
-
-    # Load HGNC resolver for gene symbol lookup
-    hgnc_resolver = HgncResolver.from_file()
 
     # Initialize LLM processor
     logger.info("Initializing LLM processor...")

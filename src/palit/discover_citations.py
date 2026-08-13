@@ -6,6 +6,7 @@ import logging
 import re
 import sqlite3
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,9 @@ ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 # a NOT clause excluding the very paper being searched for. They carry no search signal
 # in a title, so dropping them costs nothing.
 BOOLEAN_OPERATORS = re.compile(r"\b(?:AND|OR|NOT)\b", re.IGNORECASE)
+
+# Generous enough for a full batch of PMIDs, which takes far longer than a single record.
+EFETCH_TIMEOUT_SECONDS = 300
 
 console = Console()
 app = typer.Typer(help="Discover papers referenced in evidence extractions")
@@ -185,56 +189,80 @@ def search_pubmed_by_title(title: str) -> int | None:
         return None
 
 
-def fetch_paper_metadata(pmid: int, hgnc_id: int, citing_doi: str) -> Paper | None:
+def fetch_papers_by_pmids(pmids: Sequence[int], source_details: str) -> list[Paper]:
+    """Fetch paper metadata for a batch of PMIDs in a single efetch call.
+
+    Papers without a DOI are dropped by the extractor, so the result can be
+    shorter than `pmids`; callers that need to know which PMIDs resolved should
+    compare against the returned papers.
+
+    Args:
+        pmids: PubMed IDs to fetch in one request
+        source_details: Provenance string applied to every returned paper
+
+    Returns:
+        Paper objects for the PMIDs that resolved to a DOI
+    """
+    if not pmids:
+        return []
+
+    efetch_cmd = [
+        "efetch",
+        "-db",
+        "pubmed",
+        "-id",
+        ",".join(str(p) for p in pmids),
+        "-format",
+        "xml",
+    ]
+
+    try:
+        result = subprocess.run(
+            efetch_cmd,
+            capture_output=True,
+            timeout=EFETCH_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning(f"Failed to fetch metadata for {len(pmids)} PMID(s): {e}")
+        return []
+
+    if result.returncode != 0:
+        logger.warning(f"efetch failed for {len(pmids)} PMID(s)")
+        return []
+
+    # Allow papers without abstracts for cited papers (case reports, etc.)
+    papers, _stats = extract_papers_from_xml(
+        result.stdout,
+        source_type="expansion",
+        source_details=source_details,
+        require_abstract=False,
+    )
+    return papers
+
+
+def fetch_paper_metadata(pmid: int, source_details: str) -> Paper | None:
     """Fetch paper metadata from PubMed using efetch.
 
     Args:
         pmid: PubMed ID
-        hgnc_id: HGNC ID for source_details
-        citing_doi: DOI of paper citing this reference, or "manual" for manually added papers
+        source_details: Provenance string for the paper
 
     Returns:
         Paper object if successful (and has a DOI), None otherwise
     """
-    try:
-        efetch_cmd = ["efetch", "-db", "pubmed", "-id", str(pmid), "-format", "xml"]
-
-        result = subprocess.run(
-            efetch_cmd,
-            capture_output=True,
-            timeout=30,
-        )
-
-        if result.returncode != 0:
-            logger.warning(f"efetch failed for PMID {pmid}")
-            return None
-
-        # Allow papers without abstracts for cited papers (case reports, etc.)
-        papers, _stats = extract_papers_from_xml(
-            result.stdout,
-            source_type="expansion",
-            source_details=f"referenced:{hgnc_id}:{citing_doi}",
-            require_abstract=False,
-        )
-
-        if not papers:
-            logger.warning(f"No paper data extracted for PMID {pmid} (may lack DOI)")
-            return None
-
-        return papers[0]
-
-    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as e:
-        logger.warning(f"Failed to fetch metadata for PMID {pmid}: {e}")
+    papers = fetch_papers_by_pmids([pmid], source_details)
+    if not papers:
+        logger.warning(f"No paper data extracted for PMID {pmid} (may lack DOI)")
         return None
+    return papers[0]
 
 
-def fetch_paper_metadata_by_doi(doi: str, hgnc_id: int, citing_doi: str) -> Paper | None:
+def fetch_paper_metadata_by_doi(doi: str, source_details: str) -> Paper | None:
     """Fetch paper metadata from CrossRef by DOI.
 
     Args:
         doi: Digital Object Identifier
-        hgnc_id: HGNC ID for source_details
-        citing_doi: DOI of paper citing this reference, or "manual" for manually added papers
+        source_details: Provenance string for the paper
 
     Returns:
         Paper object if successful, None otherwise
@@ -282,7 +310,7 @@ def fetch_paper_metadata_by_doi(doi: str, hgnc_id: int, citing_doi: str) -> Pape
         source_date=parse_crossref_date(date_obj),
         source_metadata=CrossrefMetadata(),
         source_type="expansion",
-        source_details=f"referenced:{hgnc_id}:{citing_doi}",
+        source_details=source_details,
     )
 
 
@@ -398,7 +426,7 @@ def discover(
             continue
 
         # Fetch metadata (efetch returns XML from which we extract DOI)
-        paper = fetch_paper_metadata(pmid, source.hgnc_id, source.citing_doi)
+        paper = fetch_paper_metadata(pmid, f"referenced:{source.hgnc_id}:{source.citing_doi}")
         if paper is None:
             logger.warning(f"Failed to fetch metadata for PMID {pmid}")
             not_found += 1
@@ -503,9 +531,10 @@ def add(
     failed = 0
 
     for id_type, id_value in classified:
+        source_details = f"referenced:{hgnc_id}:manual"
         if id_type == "pmid":
             assert isinstance(id_value, int)
-            paper = fetch_paper_metadata(id_value, hgnc_id, citing_doi="manual")
+            paper = fetch_paper_metadata(id_value, source_details)
             display_id = f"PMID {id_value}"
         else:
             assert isinstance(id_value, str)
@@ -514,7 +543,7 @@ def add(
                 logger.info(f"DOI {id_value} already in database, skipping")
                 skipped += 1
                 continue
-            paper = fetch_paper_metadata_by_doi(id_value, hgnc_id, citing_doi="manual")
+            paper = fetch_paper_metadata_by_doi(id_value, source_details)
             display_id = f"DOI {id_value}"
 
         if paper is None:

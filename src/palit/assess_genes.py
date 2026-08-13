@@ -21,6 +21,7 @@ from palit.panelapp_client import (
     PanelGeneData,
     PanelPublications,
     collect_panelapp_gene_publications,
+    find_gene_panel,
     format_panel_for_prompt,
 )
 from palit.panelapp_integration import (
@@ -182,31 +183,6 @@ def resolve_mondo_names(
                 {"submitter": r.submitter, "date": r.date} for r in resolution.dispute_records
             ]
     return unresolved
-
-
-def find_gene_panel(
-    hgnc_id: int,
-    target_panel_ids: list[int],
-    panel_data: PanelGeneData,
-) -> int | None:
-    """Find first target panel containing this gene.
-
-    Iterates through target panels in the given order and returns the first
-    panel that contains the gene.
-
-    Args:
-        hgnc_id: HGNC ID of the gene to look up
-        target_panel_ids: Ordered list of panel IDs to check
-        panel_data: PanelApp gene data with panel mappings
-
-    Returns:
-        Panel ID if found, None if gene is novel (not in any target panel).
-    """
-    gene_panels = panel_data.gene_panel_mapping.get(hgnc_id, set())
-    for panel_id in target_panel_ids:
-        if panel_id in gene_panels:
-            return panel_id
-    return None
 
 
 def _max_family_count(evidence: dict[str, Any]) -> int | None:

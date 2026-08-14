@@ -16,9 +16,9 @@ dependencies = [
     "jinja2",
     "jsonschema",
     "lxml",
-    "markdown>=3.10.2",
+    "markdown>=3.10.3",
     "metapub",
-    "nh3>=0.3.5",
+    "nh3>=0.3.6",
     "openai",
     "plotly",
     "pydantic-ai-slim[bedrock,openai]",
@@ -29,7 +29,7 @@ dependencies = [
     "tenacity",
     "tqdm",
     "typer",
-    "boto3>=1.43.24",
+    "boto3>=1.43.67",
 ]
 
 [project.optional-dependencies]
@@ -40,10 +40,10 @@ ml = [
     "flashinfer-python; sys_platform == 'linux'",
     "openai-harmony",
     "scikit-learn",
-    "scipy>=1.17",
+    "scipy>=1.18.0",
     "torch",
     "transformers",
-    "vllm>=0.22.1; sys_platform == 'linux'",
+    "vllm>=0.26.0; sys_platform == 'linux'",
     "wandb",
 ]
 

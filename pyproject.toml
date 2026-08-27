@@ -9,6 +9,7 @@ description = "PanelApp Australia literature assessment for rare disease gene cu
 readme = "README.md"
 requires-python = "==3.13.*"
 dependencies = [
+    "anthropic>=0.88.0",
     "cryptography",
     "defusedxml",
     "docling",

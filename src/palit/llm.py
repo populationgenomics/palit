@@ -4,6 +4,9 @@
 Provides a common ``LLMProcessor`` protocol with implementations:
 
 * **HarmonyProcessor** — vLLM offline batch inference (``openai/gpt-oss-*``)
+* **AnthropicProcessor** — concurrent Anthropic Messages calls (``anthropic/*``)
+* **AnthropicBatchProcessor** — Anthropic Message Batches (``anthropic-batch/*``)
+* **BedrockBatchProcessor** — Bedrock batch inference via S3 (``bedrock-batch/*``)
 * **PydanticAIProcessor** — Pydantic AI for Bedrock and OpenAI-compatible APIs
 
 Use :func:`create_llm_processor` to obtain the right backend for a model string.
@@ -43,12 +46,15 @@ def create_llm_processor(
 
     Dispatch logic:
     - ``openai/gpt-oss-*`` → HarmonyProcessor (vLLM offline batch)
+    - ``anthropic-batch/*`` → AnthropicBatchProcessor (Message Batches, 50% discount)
+    - ``anthropic/*`` → AnthropicProcessor (Anthropic Messages, concurrent)
     - ``bedrock-batch/*`` → BedrockBatchProcessor (S3 batch, 50% discount)
     - ``bedrock/*`` → PydanticAIProcessor (AWS Bedrock real-time)
     - Everything else → PydanticAIProcessor (OpenAI-compatible, reads OPENAI_BASE_URL)
 
     Extra *kwargs* are forwarded to the backend constructor (e.g.
-    ``s3_bucket``, ``s3_prefix``, ``role_arn``, ``region`` for ``bedrock-batch/``).
+    ``s3_bucket``, ``s3_prefix``, ``role_arn``, ``region`` for ``bedrock-batch/``;
+    ``effort``, ``max_retries`` for ``anthropic/``).
     """
     if model.startswith("openai/gpt-oss-"):
         # vLLM/Harmony are optional ML dependencies (Linux GPU only)
@@ -61,6 +67,26 @@ def create_llm_processor(
             tensor_parallel_size=tensor_parallel_size,
             max_model_len=max_model_len,
             reasoning_effort=reasoning_effort,
+        )
+
+    if model.startswith("anthropic-batch/"):
+        from palit.llm_anthropic import AnthropicBatchProcessor
+
+        return AnthropicBatchProcessor(
+            model_id=model.removeprefix("anthropic-batch/"),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+
+    if model.startswith("anthropic/"):
+        from palit.llm_anthropic import AnthropicProcessor
+
+        return AnthropicProcessor(
+            model_id=model.removeprefix("anthropic/"),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
         )
 
     if model.startswith("bedrock-batch/"):

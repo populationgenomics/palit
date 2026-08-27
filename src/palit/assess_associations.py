@@ -562,7 +562,11 @@ def main(
         "openai/gpt-oss-120b",
         "--model",
         "-m",
-        help="Model name for vLLM",
+        help=(
+            "Model string; the prefix selects the backend: openai/gpt-oss-* (vLLM), "
+            "anthropic/*, anthropic-batch/*, bedrock/*, bedrock-batch/*, "
+            "or a bare name for an OpenAI-compatible server"
+        ),
     ),
     temperature: float = typer.Option(
         1.0,

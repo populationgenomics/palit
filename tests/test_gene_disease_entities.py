@@ -20,7 +20,6 @@ from palit.entities import (
     load_entities,
     load_entities_by_doi,
     load_gencc_rows,
-    parse_entity_ref,
 )
 from palit.hgnc import HgncResolver
 
@@ -283,7 +282,7 @@ def test_one_disease_under_two_mois_stores_two_rows(tmp_path: Path, resolver: Hg
     insert_entities(db_path, build_entities(rows, SUBMITTER, ["TUBA4A"], resolver, SOURCE))
 
     entities = load_entities(db_path)
-    assert [entity_ref(e) for e in entities] == [
+    assert [entity_ref(e.mondo_id, e.moi) for e in entities] == [
         "MONDO:0979231|Biallelic",
         "MONDO:0979231|Monoallelic",
     ]
@@ -357,20 +356,9 @@ def _entity(id_: int, hgnc_id: int, mondo_id: str, title: str, moi: str) -> Dise
     )
 
 
-def test_entity_ref_round_trips() -> None:
+def test_entity_ref_labels_the_disease_and_inheritance_pair() -> None:
     entity = _entity(1, 12407, "MONDO:0979231", "maturation arrest 23", "Monoallelic_and_biallelic")
-    ref = entity_ref(entity)
-    assert ref == "MONDO:0979231|Monoallelic_and_biallelic"
-    assert parse_entity_ref(ref) == (entity.mondo_id, entity.moi)
-
-
-@pytest.mark.parametrize(
-    "ref",
-    ["MONDO:0979231", "MONDO:0979231|Monoallelic|Biallelic", "OMIM:613287|Monoallelic"],
-)
-def test_malformed_entity_ref_raises(ref: str) -> None:
-    with pytest.raises(ValueError, match=re.escape(ref)):
-        parse_entity_ref(ref)
+    assert entity_ref(entity.mondo_id, entity.moi) == "MONDO:0979231|Monoallelic_and_biallelic"
 
 
 # --- prompt block -----------------------------------------------------------
@@ -390,16 +378,23 @@ def test_format_entity_block(resolver: HgncResolver) -> None:
         "FIXED DISEASE ASSOCIATIONS\n"
         "\n"
         "Extract evidence only for the genes listed here. Assign every disease entity\n"
-        "block you emit to exactly one of the gene's listed associations via its\n"
-        "entity_ref, or to null if no listed association fits.\n"
+        "block you emit to exactly one of the gene's listed associations: set its\n"
+        "`entity` to that association's mondo_id and moi, copied from the two labelled\n"
+        "values below, or to null if no listed association fits. The indented line under\n"
+        "each association describes it — disease name and inheritance — so you can match\n"
+        "the paper against it; that text is never copied into `entity`.\n"
         "\n"
         "AARS1 (HGNC:20)\n"
-        "  MONDO:0013212|Monoallelic — Charcot-Marie-Tooth type 2N — monoallelic (autosomal dominant)\n"
+        "  - mondo_id: MONDO:0013212 | moi: Monoallelic\n"
+        "    Charcot-Marie-Tooth type 2N — monoallelic (autosomal dominant)\n"
         "\n"
         "HK1 (HGNC:4922)\n"
-        "  MONDO:0009212|Biallelic — hemolytic anemia — biallelic (autosomal recessive)\n"
+        "  - mondo_id: MONDO:0009212 | moi: Biallelic\n"
+        "    hemolytic anemia — biallelic (autosomal recessive)\n"
         "\n"
         "TUBA4A (HGNC:12407)\n"
-        "  MONDO:0979231|Biallelic — maturation arrest 23 — biallelic (autosomal recessive)\n"
-        "  MONDO:0979231|Monoallelic — maturation arrest 23 — monoallelic (autosomal dominant)"
+        "  - mondo_id: MONDO:0979231 | moi: Biallelic\n"
+        "    maturation arrest 23 — biallelic (autosomal recessive)\n"
+        "  - mondo_id: MONDO:0979231 | moi: Monoallelic\n"
+        "    maturation arrest 23 — monoallelic (autosomal dominant)"
     )

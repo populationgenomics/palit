@@ -61,8 +61,11 @@ MOI_DISPLAY: dict[str, str] = {
 ENTITY_BLOCK_HEADER = """FIXED DISEASE ASSOCIATIONS
 
 Extract evidence only for the genes listed here. Assign every disease entity
-block you emit to exactly one of the gene's listed associations via its
-entity_ref, or to null if no listed association fits."""
+block you emit to exactly one of the gene's listed associations: set its
+`entity` to that association's mondo_id and moi, copied from the two labelled
+values below, or to null if no listed association fits. The indented line under
+each association describes it — disease name and inheritance — so you can match
+the paper against it; that text is never copied into `entity`."""
 
 
 @dataclass(frozen=True)
@@ -92,26 +95,16 @@ class DiseaseEntity:
     source: str
 
 
-def entity_ref(entity: DiseaseEntity | GeneDiseaseEntityInput) -> str:
-    """Render an entity as the reference the extraction LLM emits.
+def entity_ref(mondo_id: str, moi: str) -> str:
+    """Render the (disease, inheritance mode) pair that identifies an association.
 
     Entities are keyed by (gene, disease, inheritance mode), so the disease alone
     does not identify one: a gene curated as both dominant and recessive for the
-    same MONDO term has two entities. The gene is implied by the block the model
-    is answering about, leaving "MONDO:0979231|Monoallelic".
+    same MONDO term has two entities. The gene is implied by the block being
+    resolved, leaving "MONDO:0979231|Monoallelic" as a lookup key within a gene
+    and as a compact label for logs and validation messages.
     """
-    return f"{entity.mondo_id}|{entity.moi}"
-
-
-def parse_entity_ref(ref: str) -> tuple[str, str]:
-    """Split an entity reference back into (mondo_id, moi)."""
-    parts = ref.split("|")
-    if len(parts) != 2:
-        raise ValueError(f"Malformed entity ref (expected 'MONDO:<id>|<moi>'): {ref}")
-    mondo_id, moi = parts
-    if not mondo_id.startswith("MONDO:"):
-        raise ValueError(f"Entity ref does not name a MONDO term: {ref}")
-    return mondo_id, moi
+    return f"{mondo_id}|{moi}"
 
 
 def load_gencc_rows(path: Path) -> list[dict[str, str]]:
@@ -317,6 +310,12 @@ def load_entities_by_doi(db_path: Path) -> dict[str, dict[int, list[DiseaseEntit
 def format_entity_block(by_gene: dict[int, list[DiseaseEntity]], resolver: HgncResolver) -> str:
     """Render the fixed associations of one paper's genes for the extraction prompt.
 
+    Each association spans two lines: its two identifying fields under the labels
+    the model must emit them under, then an indented description of the disease.
+    Labelling the fields separately gives the model two values to copy across
+    rather than one string to reassemble, and keeps the descriptive text visibly
+    outside them.
+
     Genes are ordered by symbol and entities by MONDO ID then inheritance mode so
     the block is stable across runs. The GenCC classification is deliberately left
     out: the model must weigh the literature, not restate someone else's verdict.
@@ -327,7 +326,8 @@ def format_entity_block(by_gene: dict[int, list[DiseaseEntity]], resolver: HgncR
         lines.append(f"{resolver.get_symbol(hgnc_id)} (HGNC:{hgnc_id})")
         for entity in sorted(by_gene[hgnc_id], key=lambda e: (e.mondo_id, e.moi)):
             gloss = MOI_PROMPT_GLOSS[entity.moi]
-            lines.append(f"  {entity_ref(entity)} — {entity.disease_title} — {gloss}")
+            lines.append(f"  - mondo_id: {entity.mondo_id} | moi: {entity.moi}")
+            lines.append(f"    {entity.disease_title} — {gloss}")
     return "\n".join(lines)
 
 

@@ -22,10 +22,10 @@ _FIXTURE_GENES = [
     (12407, "TUBA4A", ["TUBA1"]),
 ]
 
-AARS1_DOMINANT = "MONDO:0013212|Monoallelic"
-AARS1_RECESSIVE = "MONDO:0100000|Biallelic"
-TUBA4A_BOTH = "MONDO:0979231|Monoallelic_and_biallelic"
-SHARED_RECESSIVE = "MONDO:0009212|Biallelic"
+AARS1_DOMINANT = ("MONDO:0013212", "Monoallelic")
+AARS1_RECESSIVE = ("MONDO:0100000", "Biallelic")
+TUBA4A_BOTH = ("MONDO:0979231", "Monoallelic_and_biallelic")
+SHARED_RECESSIVE = ("MONDO:0009212", "Biallelic")
 
 
 @pytest.fixture
@@ -47,8 +47,8 @@ def resolver(tmp_path: Path) -> HgncResolver:
     return HgncResolver.from_file(path)
 
 
-def _entity(id_: int, hgnc_id: int, ref: str) -> DiseaseEntity:
-    mondo_id, moi = ref.split("|")
+def _entity(id_: int, hgnc_id: int, association: tuple[str, str]) -> DiseaseEntity:
+    mondo_id, moi = association
     return DiseaseEntity(
         id=id_,
         hgnc_id=hgnc_id,
@@ -71,8 +71,11 @@ def entities_for_paper() -> dict[int, list[DiseaseEntity]]:
     }
 
 
-def _block(ref: str | None, inheritance_mode: str = "Monoallelic") -> dict[str, Any]:
-    return {"entity_ref": ref, "inheritance_mode": inheritance_mode}
+def _block(
+    association: tuple[str, str] | None, inheritance_mode: str = "Monoallelic"
+) -> dict[str, Any]:
+    entity = None if association is None else {"mondo_id": association[0], "moi": association[1]}
+    return {"entity": entity, "inheritance_mode": inheritance_mode}
 
 
 def _parsed(*gene_evaluations: dict[str, Any]) -> dict[str, Any]:
@@ -115,14 +118,27 @@ def test_null_reference_passes_and_may_repeat(
     assert result.errors == []
 
 
-def test_unknown_reference_is_an_error(
+def test_well_formed_but_unlisted_mondo_id_is_an_error(
     entities_for_paper: dict[int, list[DiseaseEntity]], resolver: HgncResolver
 ) -> None:
-    parsed = _parsed(_gene_eval("AARS1", _block("MONDO:0000001|Monoallelic")))
+    # MONDO:0000001 satisfies the schema's id pattern but is listed for no gene.
+    parsed = _parsed(_gene_eval("AARS1", _block(("MONDO:0000001", "Monoallelic"))))
     result = validate_entity_assignments(parsed, entities_for_paper, resolver)
     assert len(result.errors) == 1
-    assert "MONDO:0000001|Monoallelic" in result.errors[0]
+    assert "MONDO:0000001" in result.errors[0]
     assert result.off_target_symbols == []
+
+
+def test_listed_mondo_id_under_the_wrong_moi_is_an_error(
+    entities_for_paper: dict[int, list[DiseaseEntity]], resolver: HgncResolver
+) -> None:
+    # TUBA4A lists MONDO:0979231 only as Monoallelic_and_biallelic, and lists
+    # Biallelic only for a different disease: the pair, not either field, is the key.
+    parsed = _parsed(_gene_eval("TUBA4A", _block(("MONDO:0979231", "Biallelic"), "Biallelic")))
+    result = validate_entity_assignments(parsed, entities_for_paper, resolver)
+    assert len(result.errors) == 1
+    assert "MONDO:0979231" in result.errors[0]
+    assert "Biallelic" in result.errors[0]
 
 
 def test_another_genes_reference_is_an_error(
@@ -132,7 +148,7 @@ def test_another_genes_reference_is_an_error(
     parsed = _parsed(_gene_eval("AARS1", _block(SHARED_RECESSIVE, "Biallelic")))
     result = validate_entity_assignments(parsed, entities_for_paper, resolver)
     assert len(result.errors) == 1
-    assert SHARED_RECESSIVE in result.errors[0]
+    assert SHARED_RECESSIVE[0] in result.errors[0]
 
 
 def test_repeated_reference_within_one_gene_is_an_error(
@@ -206,7 +222,7 @@ def test_inheritance_mismatch_warns_without_failing(
     assert result.errors == []
     assert result.off_target_symbols == []
     assert "differs from" in caplog.text
-    assert AARS1_DOMINANT in caplog.text
+    assert "MONDO:0013212|Monoallelic" in caplog.text
 
 
 @pytest.mark.parametrize("inheritance_mode", ["NR", "Other"])
@@ -254,6 +270,26 @@ def test_entity_ids_resolve_per_gene(
     hk1, tuba4a = parsed["gene_evaluations"]
     assert [block["entity_id"] for block in hk1["disease_entities"]] == [3]
     assert [block["entity_id"] for block in tuba4a["disease_entities"]] == [5, None]
+    # The model's own choice stays beside the id it resolved to.
+    assert hk1["disease_entities"][0]["entity"] == {
+        "mondo_id": SHARED_RECESSIVE[0],
+        "moi": SHARED_RECESSIVE[1],
+    }
+
+
+def test_same_disease_under_two_mois_resolves_to_distinct_ids(resolver: HgncResolver) -> None:
+    # One disease curated as both dominant and recessive: only the moi tells the
+    # two associations apart, so each block must land on its own entity id.
+    dominant = ("MONDO:0979231", "Monoallelic")
+    recessive = ("MONDO:0979231", "Biallelic")
+    entities_for_paper = {12407: [_entity(7, 12407, dominant), _entity(8, 12407, recessive)]}
+    parsed = _parsed(_gene_eval("TUBA4A", _block(dominant), _block(recessive, "Biallelic")))
+
+    assert validate_entity_assignments(parsed, entities_for_paper, resolver).errors == []
+    annotate_entity_ids(parsed, entities_for_paper, resolver)
+
+    blocks = parsed["gene_evaluations"][0]["disease_entities"]
+    assert [block["entity_id"] for block in blocks] == [7, 8]
 
 
 def test_entity_ids_require_off_target_evaluations_to_be_dropped(

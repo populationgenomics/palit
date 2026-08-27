@@ -59,12 +59,40 @@
                                     "type": "string",
                                     "description": "Disease name or clinical description."
                                 },
-                                "entity_ref": {
-                                    "type": [
-                                        "string",
-                                        "null"
+                                "entity": {
+                                    "anyOf": [
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "mondo_id": {
+                                                    "type": "string",
+                                                    "pattern": "^MONDO:[0-9]{7}$",
+                                                    "description": "MONDO id of the fixed association, exactly as listed under this gene in FIXED DISEASE ASSOCIATIONS."
+                                                },
+                                                "moi": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                        "Monoallelic",
+                                                        "Biallelic",
+                                                        "Monoallelic_and_biallelic",
+                                                        "X-linked",
+                                                        "Mitochondrial",
+                                                        "Other"
+                                                    ],
+                                                    "description": "Inheritance mode of the fixed association, exactly as listed."
+                                                }
+                                            },
+                                            "required": [
+                                                "mondo_id",
+                                                "moi"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        {
+                                            "type": "null"
+                                        }
                                     ],
-                                    "description": "Fixed association this block's evidence belongs to, copied verbatim from the gene's FIXED DISEASE ASSOCIATIONS list ('MONDO:<id>|<inheritance>'); null when no listed association fits."
+                                    "description": "The fixed association this block's evidence belongs to; null when none of the gene's listed associations fits."
                                 },
                                 "entity_match_reasoning": {
                                     "type": "string",
@@ -265,7 +293,7 @@
                             },
                             "required": [
                                 "description",
-                                "entity_ref",
+                                "entity",
                                 "entity_match_reasoning",
                                 "patient_count",
                                 "family_count",

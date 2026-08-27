@@ -104,7 +104,7 @@ def _weakening_factors(*, present: tuple[str, ...]) -> list[dict[str, Any]]:
 def _block(
     *,
     entity_id: int | None,
-    entity_ref: str | None,
+    entity: dict[str, str] | None,
     description: str,
     reasoning: str,
     inheritance_mode: str,
@@ -115,7 +115,7 @@ def _block(
     """One extracted disease entity block, as stored in evidence_extraction_json."""
     return {
         "description": description,
-        "entity_ref": entity_ref,
+        "entity": entity,
         "entity_id": entity_id,
         "entity_match_reasoning": reasoning,
         "patient_count": 7,
@@ -267,7 +267,7 @@ def _seed_db(path: Path) -> Path:
                         [
                             _block(
                                 entity_id=1,
-                                entity_ref="MONDO:0000001|Monoallelic",
+                                entity={"mondo_id": "MONDO:0000001", "moi": "Monoallelic"},
                                 description="Alpha syndrome, dominant form",
                                 reasoning="Dominant Alpha syndrome matches the listed association.",
                                 inheritance_mode="Monoallelic",
@@ -275,7 +275,7 @@ def _seed_db(path: Path) -> Path:
                             ),
                             _block(
                                 entity_id=None,
-                                entity_ref=None,
+                                entity=None,
                                 description="Isolated optic atrophy",
                                 reasoning="No listed association covers isolated optic atrophy.",
                                 inheritance_mode="Monoallelic",
@@ -299,7 +299,7 @@ def _seed_db(path: Path) -> Path:
                         [
                             _block(
                                 entity_id=2,
-                                entity_ref="MONDO:0000001|Biallelic",
+                                entity={"mondo_id": "MONDO:0000001", "moi": "Biallelic"},
                                 description="Alpha syndrome, recessive form",
                                 reasoning="Recessive Alpha syndrome matches the listed association.",
                                 inheritance_mode="Monoallelic",

@@ -100,12 +100,12 @@ class EntityAssignmentResult:
     off_target_symbols: list[str]
 
 
-def schema_expects_entity_refs(schema: dict[str, Any]) -> bool:
-    """Whether a response schema is the disaggregated one, i.e. requires entity_ref."""
+def schema_expects_entity_assignments(schema: dict[str, Any]) -> bool:
+    """Whether a response schema is the disaggregated one, i.e. requires `entity`."""
     disease_entities = schema["properties"]["gene_evaluations"]["items"]["properties"][
         "disease_entities"
     ]
-    return "entity_ref" in disease_entities["items"]["required"]
+    return "entity" in disease_entities["items"]["required"]
 
 
 def build_disaggregated_context(db_path: Path, resolver: HgncResolver) -> DisaggregatedContext:
@@ -130,12 +130,14 @@ def validate_entity_assignments(
 ) -> EntityAssignmentResult:
     """Check each disease entity block against its gene's fixed associations.
 
-    A block references an association by `entity_ref`, or carries null when the
-    model found no fitting association. A reference must belong to the gene it
-    was emitted under and may be used at most once per gene evaluation. An
-    observed inheritance mode that contradicts the association's own mode is a
-    signal worth surfacing, not an error: the paper is reporting something the
-    curation source does not list.
+    A block names an association by its `entity` object — the mondo_id and moi of
+    one of the gene's fixed associations — or carries null when the model found no
+    fitting association. The pair must belong to the gene the block was emitted
+    under and may be used at most once per gene evaluation, so a mondo_id listed
+    for the gene under a different inheritance mode is still an error. An observed
+    inheritance mode that contradicts the association's own mode is a signal worth
+    surfacing, not an error: the paper is reporting something the curation source
+    does not list.
     """
     errors: list[str] = []
     off_target_symbols: list[str] = []
@@ -147,22 +149,27 @@ def validate_entity_assignments(
             off_target_symbols.append(symbol)
             continue
 
-        by_ref = {entity_ref(entity): entity for entity in entities_for_paper[entry.hgnc_id]}
+        by_ref = {
+            entity_ref(entity.mondo_id, entity.moi): entity
+            for entity in entities_for_paper[entry.hgnc_id]
+        }
         seen: set[str] = set()
         for block in gene_eval["disease_entities"]:
-            ref: str | None = block["entity_ref"]
-            if ref is None:
+            choice: dict[str, str] | None = block["entity"]
+            if choice is None:
                 continue
 
+            ref = entity_ref(choice["mondo_id"], choice["moi"])
             entity = by_ref.get(ref)
             if entity is None:
                 errors.append(
-                    f"{symbol}: entity_ref '{ref}' is not one of this gene's fixed "
-                    f"associations {sorted(by_ref)}"
+                    f"{symbol}: entity mondo_id '{choice['mondo_id']}' with moi "
+                    f"'{choice['moi']}' is not one of this gene's fixed associations "
+                    f"{sorted(by_ref)}"
                 )
                 continue
             if ref in seen:
-                errors.append(f"{symbol}: entity_ref '{ref}' used by more than one disease entity")
+                errors.append(f"{symbol}: association '{ref}' used by more than one disease entity")
                 continue
             seen.add(ref)
 
@@ -195,7 +202,11 @@ def annotate_entity_ids(
 ) -> None:
     """Attach the fixed-association row id each disease entity block was assigned to.
 
-    Resolution happens on the references as validated, before
+    The `entity` object the model emitted is left in place beside the id it
+    resolves to, so the stored extraction still shows what the model chose.
+    Downstream stages key on `entity_id` alone.
+
+    Resolution happens on the assignments as validated, before
     `normalize_extraction_genes` rewrites gene symbols across the serialized
     JSON. The ids it writes are integers, so that rewrite cannot corrupt them.
     """
@@ -208,10 +219,16 @@ def annotate_entity_ids(
                 f"are resolved"
             )
 
-        ids_by_ref = {entity_ref(e): e.id for e in entities_for_paper[entry.hgnc_id]}
+        ids_by_ref = {
+            entity_ref(e.mondo_id, e.moi): e.id for e in entities_for_paper[entry.hgnc_id]
+        }
         for block in gene_eval["disease_entities"]:
-            ref: str | None = block["entity_ref"]
-            block["entity_id"] = None if ref is None else ids_by_ref[ref]
+            choice: dict[str, str] | None = block["entity"]
+            block["entity_id"] = (
+                None
+                if choice is None
+                else ids_by_ref[entity_ref(choice["mondo_id"], choice["moi"])]
+            )
 
 
 def validate_box_ids(data: Any, valid_box_ids: set[int]) -> bool:
@@ -943,10 +960,10 @@ def main(
     schema: dict[str, Any] = json.loads(schema_path.read_text())
     logger.info(f"  Loaded schema from {schema_path}")
 
-    if schema_expects_entity_refs(schema) != disaggregated:
+    if schema_expects_entity_assignments(schema) != disaggregated:
         logger.error(
             f"Schema {schema_path} does not match the requested mode: --disaggregated needs the "
-            f"schema whose disease entities require entity_ref "
+            f"schema whose disease entities require an `entity` assignment "
             f"(prompts/evidence_extraction_disaggregated_schema.json, paired with "
             f"prompts/evidence_extraction_disaggregated_prompt.j2)"
         )

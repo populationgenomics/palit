@@ -11,6 +11,7 @@ import pytest
 from palit.generate_association_report import (
     AssociationStats,
     GeneSection,
+    build_toc,
     generate_association_report,
     load_association_report_data,
 )
@@ -495,6 +496,24 @@ def test_filtered_papers_are_carried_through(
     assert biallelic.filtered_papers[0].reason == "Preprint family gate"
 
 
+def test_toc_buckets_associations_by_rating_with_unassessed_last(
+    report_data: tuple[list[GeneSection], AssociationStats],
+) -> None:
+    sections, _ = report_data
+    buckets = build_toc(sections)
+
+    # No association was rated AMBER, so that bucket is dropped entirely.
+    assert [(b.color, b.badge, len(b.entries)) for b in buckets] == [
+        ("green", "Green", 1),
+        ("red", "Red", 1),
+        ("grey", "No evidence", 1),
+    ]
+    green = buckets[0].entries[0]
+    assert (green.hgnc_symbol, green.anchor) == ("AARS1", "assoc-1")
+    # An association with no evidence has no article to link to.
+    assert buckets[2].entries[0].anchor is None
+
+
 # --- rendering --------------------------------------------------------------
 
 
@@ -513,6 +532,15 @@ def test_report_renders_every_section(
     # The prompt gloss carries a legacy parenthetical; display labels must not.
     assert "(autosomal dominant)" not in text
     assert "(autosomal recessive)" not in text
+
+    # The table of contents buckets associations into one colored panel per rating.
+    assert 'class="toc-section toc-rating-green"' in html
+    assert 'href="#assoc-1"' in html
+
+    # The criteria assessment is collapsed by default, as in the per-gene report.
+    criteria_summary = "<summary><strong>PanelApp criteria assessment</strong></summary>"
+    assert criteria_summary in html
+    assert html[html.rindex("<details", 0, html.index(criteria_summary)) :].startswith("<details>")
 
     assert "crosstab-table" in html
     assert "Strong-equiv" in text

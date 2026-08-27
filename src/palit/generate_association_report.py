@@ -146,6 +146,24 @@ class GenccColumn:
 
 
 @dataclass(frozen=True)
+class TocEntry:
+    """One table-of-contents line: an association and the article it links to."""
+
+    entity: DiseaseEntity
+    hgnc_symbol: str
+    anchor: str | None  # None for associations with no article to link to
+
+
+@dataclass(frozen=True)
+class TocBucket:
+    """One rating's table-of-contents panel: its badge, its color and its entries."""
+
+    color: str  # "green" / "amber" / "red" / "grey" — badge and panel modifier
+    badge: str  # Badge text; the badge stylesheet upper-cases it
+    entries: list[TocEntry]
+
+
+@dataclass(frozen=True)
 class AssociationStats:
     """Corpus-level counts, headlined by the rating-versus-source concordance table."""
 
@@ -176,6 +194,42 @@ def gencc_columns() -> list[GenccColumn]:
             GenccColumn(confidence=confidence, label=label, classifications=", ".join(titles))
         )
     return columns
+
+
+def build_toc(sections: list[GeneSection]) -> list[TocBucket]:
+    """Bucket every association by the rating this corpus earned it.
+
+    The gene sections arrive sorted by symbol and, within a gene, strongest
+    association first, so each bucket inherits that order. Associations with no
+    evidence in the corpus have no article to link to and land in a final bucket.
+    """
+    by_rating: dict[int, list[TocEntry]] = {rating: [] for rating in RATING_LEVELS}
+    unassessed: list[TocEntry] = []
+
+    for section in sections:
+        for association in section.associations:
+            by_rating[association.rating].append(
+                TocEntry(
+                    entity=association.entity,
+                    hgnc_symbol=section.hgnc_symbol,
+                    anchor=f"assoc-{association.entity.id}",
+                )
+            )
+        unassessed.extend(
+            TocEntry(entity=entity, hgnc_symbol=section.hgnc_symbol, anchor=None)
+            for entity in section.unassessed
+        )
+
+    buckets = [
+        TocBucket(
+            color=panelapp_confidence_to_color(rating).lower(),
+            badge=panelapp_confidence_to_color(rating),
+            entries=by_rating[rating],
+        )
+        for rating in RATING_LEVELS
+    ]
+    buckets.append(TocBucket(color="grey", badge="No evidence", entries=unassessed))
+    return [bucket for bucket in buckets if bucket.entries]
 
 
 def entity_blocks_for(
@@ -519,6 +573,7 @@ def generate_association_report(
     return template.render(
         sections=sections,
         statistics=statistics,
+        toc=build_toc(sections),
         rating_levels=RATING_LEVELS,
         gencc_columns=gencc_columns(),
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

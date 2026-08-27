@@ -289,19 +289,59 @@
     color: #495057;
 }
 
-/* Table of contents: one nested list of associations per gene */
+/* Table of contents: one colored panel per rating, association entries inside.
+   The panels mirror the gene report's transition panels, with our rating as the
+   axis instead of a panel transition. */
 
+.toc-heading {
+    color: #2c3e50;
+    font-weight: 600;
+}
+
+.toc-rating-green {
+    background: linear-gradient(to right, #e9ecef 0%, #d4edda 100%);
+    border-left: 4px solid #28a745;
+}
+
+.toc-rating-amber {
+    background: linear-gradient(to right, #e9ecef 0%, #fff3cd 100%);
+    border-left: 4px solid #ffc107;
+}
+
+.toc-rating-red {
+    background: linear-gradient(to right, #e9ecef 0%, #f8d7da 100%);
+    border-left: 4px solid #dc3545;
+}
+
+.toc-rating-grey {
+    background: #f8f9fa;
+    border-left: 4px solid #6c757d;
+}
+
+/* Two columns rather than the gene report's six: an entry is a gene symbol,
+   a disease title, an inheritance mode and a chip, not a bare symbol. */
 .toc-association-list {
-    list-style-type: none;
-    margin: 6px 0 12px 0;
-    padding-left: 16px;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    column-gap: 24px;
+    row-gap: 6px;
+    list-style: none;
+    padding: 0;
+    margin: 0;
 }
 
 .toc-association-list li {
-    margin: 5px 0;
-    line-height: 1.6;
+    margin: 0;
+    line-height: 1.5;
+    font-size: 0.95em;
 }
 
 .toc-unassessed {
     color: #6c757d;
+}
+
+@media (max-width: 1024px) {
+    .toc-association-list {
+        grid-template-columns: 1fr;
+    }
 }

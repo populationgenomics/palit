@@ -13,6 +13,7 @@ import typer
 from jinja2 import Environment, FileSystemLoader
 from tqdm import tqdm
 
+from palit.aggregation import fetch_valid_box_ids_by_doi, filter_preprint_evidence
 from palit.hgnc import HgncResolver
 from palit.llm import LLMProcessor, create_llm_processor
 from palit.mondo_lookup import DisputeRecord, DisputeStatus, MondoCandidate, MondoLookup
@@ -29,7 +30,7 @@ from palit.panelapp_integration import (
     validate_entities_criteria_complete,
     validate_independent_family_counts,
 )
-from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
+from palit.papers import generate_paper_ids
 
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
 logger = logging.getLogger(__name__)
@@ -185,54 +186,6 @@ def resolve_mondo_names(
     return unresolved
 
 
-def _max_family_count(evidence: dict[str, Any]) -> int | None:
-    """Compute max family_count across all disease entities in an evidence entry.
-
-    Returns None if all family_count values are None (not reported).
-    """
-    max_fc: int | None = None
-    for gene_eval in evidence.get("gene_evaluations", []):
-        for entity in gene_eval.get("disease_entities", []):
-            fc = entity.get("family_count")
-            if fc is not None:
-                max_fc = max(max_fc, fc) if max_fc is not None else fc
-    return max_fc
-
-
-def filter_preprint_evidence(
-    evidence_list: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Split evidence into (kept, filtered) based on preprint family count gate.
-
-    Preprints with max family_count < MIN_PREPRINT_FAMILIES (or all null) are
-    filtered out. Published papers always pass.
-
-    Returns:
-        Tuple of (kept evidence, filtered evidence with doi+reason dicts)
-    """
-    kept: list[dict[str, Any]] = []
-    filtered: list[dict[str, Any]] = []
-    for evidence in evidence_list:
-        if not is_preprint(evidence.get("journal"), evidence.get("pmid")):
-            kept.append(evidence)
-            continue
-        max_fc = _max_family_count(evidence)
-        if max_fc is not None and max_fc >= MIN_PREPRINT_FAMILIES:
-            kept.append(evidence)
-        elif max_fc is None:
-            filtered.append(
-                {"doi": evidence["doi"], "reason": "Preprint: family count not reported"}
-            )
-        else:
-            filtered.append(
-                {
-                    "doi": evidence["doi"],
-                    "reason": f"Preprint: {max_fc} families (min {MIN_PREPRINT_FAMILIES} required)",
-                }
-            )
-    return kept, filtered
-
-
 def evidence_already_in_panelapp(
     evidence_list: list[dict[str, Any]],
     panelapp_publications: PanelPublications,
@@ -293,43 +246,6 @@ def validate_box_ids_with_doi(
                 return False
 
     return True
-
-
-def fetch_valid_box_ids_by_doi(
-    db_path: Path, evidence_list: list[dict[str, Any]]
-) -> dict[str, set[int]]:
-    """Query database to get valid box IDs for each paper in evidence_list.
-
-    Args:
-        db_path: Path to SQLite database
-        evidence_list: List of evidence dicts containing DOIs
-
-    Returns:
-        Map from DOI to set of valid box IDs for that paper
-    """
-    dois = {evidence["doi"] for evidence in evidence_list}
-
-    if not dois:
-        return {}
-
-    valid_box_ids_by_doi: dict[str, set[int]] = {}
-
-    with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-        cursor = conn.cursor()
-
-        for doi in dois:
-            cursor.execute("SELECT bbox_mapping FROM papers WHERE doi = ?", (doi,))
-            row = cursor.fetchone()
-
-            if row and row[0]:
-                try:
-                    bbox_mapping = json.loads(row[0])
-                    valid_box_ids_by_doi[doi] = {int(box_id) for box_id in bbox_mapping.keys()}
-                except (json.JSONDecodeError, ValueError) as e:
-                    logger.warning(f"Error parsing bbox_mapping for DOI {doi}: {e}")
-                    continue
-
-    return valid_box_ids_by_doi
 
 
 class PaperBatchProcessor:

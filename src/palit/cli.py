@@ -10,14 +10,17 @@ from rich.logging import RichHandler
 from palit import (
     analyze_concordance,
     annotate_pdfs,
+    assess_associations,
     assess_genes,
     assess_relevance,
     discover_citations,
     docling,
     download_papers,
+    entities,
     expand_literature,
     extract_evidence,
     fetch_variant_frequencies,
+    generate_association_report,
     generate_report,
     ingest_preprints,
     ingest_pubmed,
@@ -61,13 +64,16 @@ app.add_typer(analyze_concordance.app, name="analyze-concordance")
 app.add_typer(download_papers.app, name="download-papers")
 app.add_typer(docling.app, name="docling")
 app.add_typer(generate_report.app, name="generate-report")
+app.add_typer(generate_association_report.app, name="generate-association-report")
 app.add_typer(scan_mechanisms.app, name="scan-mechanisms")
 app.add_typer(assess_relevance.app, name="assess-relevance")
 app.add_typer(extract_evidence.app, name="extract-evidence")
 app.add_typer(assess_genes.app, name="assess-genes")
+app.add_typer(assess_associations.app, name="assess-associations")
 app.add_typer(match_panels.app, name="match-panels")
 app.add_typer(expand_literature.app, name="expand-literature")
 app.add_typer(reduce_literature.app, name="reduce-literature")
+app.add_typer(entities.app, name="seed-entities")
 
 # Conditionally register ML-only commands (require torch, transformers, vLLM)
 try:

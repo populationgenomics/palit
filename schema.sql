@@ -138,3 +138,64 @@ CREATE TABLE variant_frequencies (
 CREATE INDEX idx_variant_frequencies_variant_id ON variant_frequencies(variant_id);
 CREATE INDEX idx_variant_frequencies_hgnc_id ON variant_frequencies(hgnc_id);
 CREATE INDEX idx_variant_frequencies_paper_doi ON variant_frequencies(paper_doi);
+
+-- Fixed gene-disease associations ("entities") the pipeline assesses against.
+-- Seeded from an external curation source by `palit seed-entities` and read-only
+-- thereafter: no pipeline stage creates, edits or deletes rows here.
+CREATE TABLE gene_disease_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hgnc_id INTEGER NOT NULL,
+    mondo_id TEXT NOT NULL,
+    disease_title TEXT NOT NULL,
+
+    -- Same inheritance vocabulary as evidence extraction, plus the combined
+    -- value understood by panelapp_integration.decompose_moi.
+    moi TEXT NOT NULL CHECK(moi IN ('Monoallelic', 'Biallelic', 'Monoallelic_and_biallelic', 'X-linked', 'Mitochondrial', 'Other')),
+
+    -- Source inheritance labels behind `moi`, in source row order ("; "-joined).
+    -- Distinct source labels that map to the same enum for one (gene, MONDO) —
+    -- e.g. "X-linked" and "X-linked recessive" — are deduplicated into a single
+    -- entity carrying both titles, and must agree on their classification.
+    gencc_moi_titles TEXT NOT NULL,
+
+    -- Report display only; never fed to a prompt, so assessments stay independent
+    -- of the source's own verdict.
+    gencc_classification TEXT NOT NULL,
+
+    source TEXT NOT NULL,  -- Provenance, e.g. 'gencc:PanelApp Australia'
+
+    -- An entity is a (gene, disease, inheritance mode) triple: the same gene and
+    -- MONDO term curated as both dominant and recessive is two entities, each
+    -- rated on its own evidence.
+    UNIQUE(hgnc_id, mondo_id, moi)
+);
+
+CREATE INDEX idx_gene_disease_entities_hgnc ON gene_disease_entities(hgnc_id);
+
+-- Which papers carry evidence for which entity
+CREATE TABLE entity_mentions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL,
+    paper_doi TEXT NOT NULL,
+
+    FOREIGN KEY (entity_id) REFERENCES gene_disease_entities(id),
+    FOREIGN KEY (paper_doi) REFERENCES papers(doi),
+    UNIQUE(entity_id, paper_doi)
+);
+
+CREATE INDEX idx_entity_mentions_entity ON entity_mentions(entity_id);
+CREATE INDEX idx_entity_mentions_paper ON entity_mentions(paper_doi);
+
+-- Single aggregate assessment per gene-disease entity
+CREATE TABLE gene_disease_assessments (
+    entity_id INTEGER PRIMARY KEY,
+    hgnc_id INTEGER NOT NULL,  -- For report generation and indexing
+    assessment_raw TEXT NOT NULL,   -- Raw LLM response including reasoning
+    assessment_json JSON NOT NULL,  -- Contains full aggregate assessment
+    paper_id_mapping JSON NOT NULL,  -- {AuthorYear: DOI} mapping used during assessment
+    filtered_papers_json JSON,  -- [{doi, reason}] papers excluded from assessment (e.g. preprint family gate)
+
+    FOREIGN KEY (entity_id) REFERENCES gene_disease_entities(id)
+);
+
+CREATE INDEX idx_gene_disease_assessments_hgnc ON gene_disease_assessments(hgnc_id);

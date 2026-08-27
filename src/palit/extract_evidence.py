@@ -14,6 +14,14 @@ from jinja2 import Environment, FileSystemLoader
 from tqdm import tqdm
 
 from palit.docling import serialize_with_bbox_ids
+from palit.entities import (
+    DiseaseEntity,
+    entities_by_gene,
+    entity_ref,
+    format_entity_block,
+    load_entities,
+    load_entities_by_doi,
+)
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import LLMProcessor, PromptResult, create_llm_processor
 from palit.panelapp_client import (
@@ -21,6 +29,7 @@ from palit.panelapp_client import (
     format_panel_for_prompt,
 )
 from palit.panelapp_integration import (
+    decompose_moi,
     validate_entities_criteria_complete,
     validate_independent_family_counts,
 )
@@ -32,6 +41,19 @@ logger = logging.getLogger(__name__)
 # SQLite busy timeout in seconds. When sharding, multiple processes write to
 # the same database; the default 5 s can be too short for large batch commits.
 DB_TIMEOUT_SECONDS = 60
+
+# Disaggregated runs only process papers whose relevance assessment named at
+# least one gene that has fixed disease associations. The work query and the
+# statistics query the retry loop exits on must carry this predicate identically:
+# a paper counted as "remaining" but never fetched makes the loop abort with
+# "no progress".
+DISAGGREGATED_PAPER_FILTER = """
+                AND EXISTS (
+                    SELECT 1 FROM gene_mentions gm
+                    JOIN gene_disease_entities e ON e.hgnc_id = gm.hgnc_id
+                    WHERE gm.paper_doi = papers.doi
+                    AND gm.source = 'relevance_assessment'
+                )"""
 
 
 @dataclass
@@ -49,6 +71,147 @@ class DeepAnalysisPreparation:
 
     paper_prompts: list[PaperPrompt]
     missing_dois: list[str]
+
+
+@dataclass(frozen=True)
+class DisaggregatedContext:
+    """The fixed disease associations a disaggregated extraction run assigns to.
+
+    `entities_by_doi` holds, per paper, the associations of the genes that
+    paper's relevance assessment named; `prompt_blocks` holds the rendered
+    FIXED DISEASE ASSOCIATIONS block for those same genes. Both are keyed by
+    DOI so a paper's prompt only ever lists its own genes.
+    """
+
+    entities_by_doi: dict[str, dict[int, list[DiseaseEntity]]]
+    prompt_blocks: dict[str, str]
+
+
+@dataclass
+class EntityAssignmentResult:
+    """Outcome of checking one paper's entity assignments.
+
+    `errors` are model mistakes the paper is retried for; `off_target_symbols`
+    name gene evaluations for genes this paper was not mapped to, which are
+    dropped from the extraction instead.
+    """
+
+    errors: list[str]
+    off_target_symbols: list[str]
+
+
+def schema_expects_entity_refs(schema: dict[str, Any]) -> bool:
+    """Whether a response schema is the disaggregated one, i.e. requires entity_ref."""
+    disease_entities = schema["properties"]["gene_evaluations"]["items"]["properties"][
+        "disease_entities"
+    ]
+    return "entity_ref" in disease_entities["items"]["required"]
+
+
+def build_disaggregated_context(db_path: Path, resolver: HgncResolver) -> DisaggregatedContext:
+    """Load the fixed associations and render one prompt block per paper."""
+    entities = load_entities(db_path)
+    by_gene = entities_by_gene(entities)
+    logger.info(f"  Loaded {len(entities)} fixed disease associations over {len(by_gene)} genes")
+
+    entities_by_doi = load_entities_by_doi(db_path)
+    prompt_blocks = {
+        doi: format_entity_block(paper_genes, resolver)
+        for doi, paper_genes in entities_by_doi.items()
+    }
+    logger.info(f"  {len(entities_by_doi)} papers mapped to at least one association")
+    return DisaggregatedContext(entities_by_doi=entities_by_doi, prompt_blocks=prompt_blocks)
+
+
+def validate_entity_assignments(
+    parsed_json: dict[str, Any],
+    entities_for_paper: dict[int, list[DiseaseEntity]],
+    resolver: HgncResolver,
+) -> EntityAssignmentResult:
+    """Check each disease entity block against its gene's fixed associations.
+
+    A block references an association by `entity_ref`, or carries null when the
+    model found no fitting association. A reference must belong to the gene it
+    was emitted under and may be used at most once per gene evaluation. An
+    observed inheritance mode that contradicts the association's own mode is a
+    signal worth surfacing, not an error: the paper is reporting something the
+    curation source does not list.
+    """
+    errors: list[str] = []
+    off_target_symbols: list[str] = []
+
+    for gene_eval in parsed_json["gene_evaluations"]:
+        symbol: str = gene_eval["gene_symbol"]
+        entry = resolver.resolve(symbol)
+        if entry is None or entry.hgnc_id not in entities_for_paper:
+            off_target_symbols.append(symbol)
+            continue
+
+        by_ref = {entity_ref(entity): entity for entity in entities_for_paper[entry.hgnc_id]}
+        seen: set[str] = set()
+        for block in gene_eval["disease_entities"]:
+            ref: str | None = block["entity_ref"]
+            if ref is None:
+                continue
+
+            entity = by_ref.get(ref)
+            if entity is None:
+                errors.append(
+                    f"{symbol}: entity_ref '{ref}' is not one of this gene's fixed "
+                    f"associations {sorted(by_ref)}"
+                )
+                continue
+            if ref in seen:
+                errors.append(f"{symbol}: entity_ref '{ref}' used by more than one disease entity")
+                continue
+            seen.add(ref)
+
+            inheritance_mode: str = block["inheritance_mode"]
+            if inheritance_mode not in ("NR", "Other") and inheritance_mode not in decompose_moi(
+                entity.moi
+            ):
+                logger.warning(
+                    f"{symbol}: observed inheritance '{inheritance_mode}' differs from the "
+                    f"'{entity.moi}' inheritance of association '{ref}'"
+                )
+
+    return EntityAssignmentResult(errors=errors, off_target_symbols=off_target_symbols)
+
+
+def drop_off_target_evaluations(parsed_json: dict[str, Any], off_target_symbols: list[str]) -> None:
+    """Remove gene evaluations for genes outside this paper's fixed associations."""
+    off_target = set(off_target_symbols)
+    parsed_json["gene_evaluations"] = [
+        gene_eval
+        for gene_eval in parsed_json["gene_evaluations"]
+        if gene_eval["gene_symbol"] not in off_target
+    ]
+
+
+def annotate_entity_ids(
+    parsed_json: dict[str, Any],
+    entities_for_paper: dict[int, list[DiseaseEntity]],
+    resolver: HgncResolver,
+) -> None:
+    """Attach the fixed-association row id each disease entity block was assigned to.
+
+    Resolution happens on the references as validated, before
+    `normalize_extraction_genes` rewrites gene symbols across the serialized
+    JSON. The ids it writes are integers, so that rewrite cannot corrupt them.
+    """
+    for gene_eval in parsed_json["gene_evaluations"]:
+        symbol: str = gene_eval["gene_symbol"]
+        entry = resolver.resolve(symbol)
+        if entry is None or entry.hgnc_id not in entities_for_paper:
+            raise ValueError(
+                f"{symbol}: off-target gene evaluations must be dropped before entity ids "
+                f"are resolved"
+            )
+
+        ids_by_ref = {entity_ref(e): e.id for e in entities_for_paper[entry.hgnc_id]}
+        for block in gene_eval["disease_entities"]:
+            ref: str | None = block["entity_ref"]
+            block["entity_id"] = None if ref is None else ids_by_ref[ref]
 
 
 def validate_box_ids(data: Any, valid_box_ids: set[int]) -> bool:
@@ -144,7 +307,7 @@ class PaperBatchProcessor:
         self.db_path = db_path
 
     def get_papers_for_deep_analysis(
-        self, shard_index: int, num_shards: int
+        self, shard_index: int, num_shards: int, disaggregated: bool
     ) -> list[dict[str, Any]]:
         """
         Get papers that have been downloaded and haven't been processed for evidence extraction.
@@ -152,20 +315,22 @@ class PaperBatchProcessor:
         Args:
             shard_index: Shard index (0-based) for parallel processing
             num_shards: Total number of shards
+            disaggregated: Restrict to papers mapped to at least one fixed association
 
         Returns list of papers with doi, source_date, title, abstract.
         """
+        entity_filter = DISAGGREGATED_PAPER_FILTER if disaggregated else ""
         with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
             cursor.execute(
-                """
+                f"""
                 SELECT doi, source_date, title, abstract
                 FROM papers
                 WHERE download_status = 'downloaded'
                 AND evidence_extraction_json IS NULL
-                AND rowid % ? = ?
+                AND rowid % ? = ?{entity_filter}
                 ORDER BY doi
                 """,
                 (num_shards, shard_index),
@@ -179,6 +344,7 @@ class PaperBatchProcessor:
         paper_prompts: list[PaperPrompt],
         results: list[PromptResult | None],
         hgnc_resolver: HgncResolver,
+        disaggregated: bool,
     ) -> None:
         """
         Update evidence extraction and automatically sync gene_mentions with source.
@@ -187,6 +353,7 @@ class PaperBatchProcessor:
             paper_prompts: List of PaperPrompt objects with DOIs and bbox mappings
             results: List of PromptResult objects or None, same order as paper_prompts
             hgnc_resolver: HGNC resolver for gene symbol normalization
+            disaggregated: Also sync entity_mentions from the assigned entity ids
         """
         if not paper_prompts or not results:
             return
@@ -274,6 +441,24 @@ class PaperBatchProcessor:
                         ),
                     )
 
+                if disaggregated:
+                    # Sync entity_mentions from the associations this extraction assigned
+                    # evidence to; unattributed blocks (null entity_id) contribute nothing.
+                    cursor.execute("DELETE FROM entity_mentions WHERE paper_doi = ?", (doi,))
+                    entity_ids = {
+                        block["entity_id"]
+                        for gene_eval in normalized_json.get("gene_evaluations", [])
+                        for block in gene_eval["disease_entities"]
+                        if block["entity_id"] is not None
+                    }
+                    cursor.executemany(
+                        """
+                        INSERT OR IGNORE INTO entity_mentions (entity_id, paper_doi)
+                        VALUES (?, ?)
+                        """,
+                        [(entity_id, doi) for entity_id in sorted(entity_ids)],
+                    )
+
                 successful_updates += 1
 
             conn.commit()
@@ -281,19 +466,26 @@ class PaperBatchProcessor:
                 f"Updated {successful_updates} papers with evidence extraction and synchronized gene_mentions"
             )
 
-    def get_deep_analysis_statistics(self, shard_index: int, num_shards: int) -> dict[str, int]:
-        """Get statistics about deep analysis processing progress for this shard."""
+    def get_deep_analysis_statistics(
+        self, shard_index: int, num_shards: int, disaggregated: bool
+    ) -> dict[str, int]:
+        """Get statistics about deep analysis processing progress for this shard.
+
+        `disaggregated` applies the same paper filter as the work query, so
+        `remaining_papers` counts exactly the papers the next pass will fetch.
+        """
         logger.debug("Querying database for deep analysis statistics...")
+        entity_filter = DISAGGREGATED_PAPER_FILTER if disaggregated else ""
         with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             cursor = conn.cursor()
 
             # Papers eligible for deep analysis (downloaded full text)
             logger.debug("  Counting papers with downloaded full text...")
             cursor.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM papers
                 WHERE download_status = 'downloaded'
-                AND rowid % ? = ?
+                AND rowid % ? = ?{entity_filter}
                 """,
                 (num_shards, shard_index),
             )
@@ -302,10 +494,10 @@ class PaperBatchProcessor:
             # Papers already processed for gene rating
             logger.debug("  Counting already processed papers...")
             cursor.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM papers
                 WHERE evidence_extraction_json IS NOT NULL
-                AND rowid % ? = ?
+                AND rowid % ? = ?{entity_filter}
                 """,
                 (num_shards, shard_index),
             )
@@ -314,11 +506,11 @@ class PaperBatchProcessor:
             # Remaining papers to process
             logger.debug("  Counting remaining papers to process...")
             cursor.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM papers
                 WHERE download_status = 'downloaded'
                 AND evidence_extraction_json IS NULL
-                AND rowid % ? = ?
+                AND rowid % ? = ?{entity_filter}
                 """,
                 (num_shards, shard_index),
             )
@@ -341,6 +533,7 @@ def prepare_deep_analysis_prompts(
     papers_dir: Path,
     max_model_len: int,
     max_tokens: int,
+    entity_blocks: dict[str, str],
 ) -> DeepAnalysisPreparation:
     """Prepare prompts for deep analysis with full text from Docling JSON files.
 
@@ -351,6 +544,7 @@ def prepare_deep_analysis_prompts(
         papers_dir: Directory containing Docling JSON files
         max_model_len: Maximum model context length
         max_tokens: Maximum tokens to generate
+        entity_blocks: Rendered fixed-association block per DOI; empty in legacy mode
 
     Returns:
         DeepAnalysisPreparation with prepared prompts and missing DOIs
@@ -358,9 +552,10 @@ def prepare_deep_analysis_prompts(
     env = Environment(loader=FileSystemLoader(template_path.parent), autoescape=False)
     template = env.get_template(template_path.name)
 
-    # Character budget for full text (conservative token-to-char estimate)
-    overhead_tokens = max_tokens + 2000
-    available_chars = int((max_model_len - overhead_tokens) * CHARS_PER_TOKEN)
+    # Characters of context left once generation is reserved (conservative
+    # token-to-char estimate); the full text gets whatever the rest of the
+    # rendered prompt leaves over.
+    context_chars = int((max_model_len - max_tokens) * CHARS_PER_TOKEN)
 
     paper_prompts = []
     missing_dois = []
@@ -381,21 +576,34 @@ def prepare_deep_analysis_prompts(
             missing_dois.append(doi)
             continue
 
+        # A non-empty mapping means disaggregated mode, where every fetched paper
+        # has a precomputed block; a missing one is a data surprise, not a default.
+        render_args: dict[str, Any] = {
+            "title": paper["title"],
+            "date": paper["source_date"],
+            "abstract": paper["abstract"],
+            "panel_formatted": panel_formatted,
+            "entity_block": entity_blocks[doi] if entity_blocks else "",
+        }
+
+        # Measure the rendered prompt around this paper's full text rather than
+        # guessing at it: title, abstract and the fixed-association block all vary.
+        available_chars = context_chars - len(template.render(full_text="", **render_args))
+        if available_chars <= 0:
+            raise ValueError(
+                f"Prompt boilerplate exceeds the {context_chars} char context budget for DOI {doi}"
+                f" — raise --max-model-len or lower --max-tokens"
+            )
+
         if len(full_text) > available_chars:
             logger.warning(f"Truncating DOI {doi}: {len(full_text)} -> {available_chars} chars")
             full_text = (
                 full_text[:available_chars] + "\n\n[NOTE: Paper truncated to fit context window]"
             )
 
-        prompt = template.render(
-            title=paper["title"],
-            date=paper["source_date"],
-            abstract=paper["abstract"],
-            full_text=full_text,
-            panel_formatted=panel_formatted,
+        paper_prompts.append(
+            PaperPrompt(template.render(full_text=full_text, **render_args), doi, bbox_mapping)
         )
-
-        paper_prompts.append(PaperPrompt(prompt, doi, bbox_mapping))
 
     return DeepAnalysisPreparation(paper_prompts, missing_dois)
 
@@ -415,9 +623,13 @@ async def _process_evidence(
     max_retries: int,
     shard_index: int,
     num_shards: int,
+    context: DisaggregatedContext | None,
 ) -> None:
     """Run the evidence extraction retry loop."""
-    stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards)
+    disaggregated = context is not None
+    entity_blocks = context.prompt_blocks if context is not None else {}
+
+    stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards, disaggregated)
     initial_remaining = stats["remaining_papers"]
     total_processed = 0
     all_missing_dois: set[str] = set()
@@ -426,7 +638,9 @@ async def _process_evidence(
 
     with tqdm(total=initial_remaining, desc="Processing papers") as pbar:
         while retry_attempt < max_retries:
-            stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards)
+            stats = db_processor.get_deep_analysis_statistics(
+                shard_index, num_shards, disaggregated
+            )
             if stats["remaining_papers"] == 0:
                 logger.info("All papers successfully processed!")
                 break
@@ -437,7 +651,9 @@ async def _process_evidence(
                 )
 
             logger.info("Fetching papers for deep analysis...")
-            papers = db_processor.get_papers_for_deep_analysis(shard_index, num_shards)
+            papers = db_processor.get_papers_for_deep_analysis(
+                shard_index, num_shards, disaggregated
+            )
             logger.info(f"  Retrieved {len(papers)} papers for processing")
 
             if not papers:
@@ -452,6 +668,7 @@ async def _process_evidence(
                 papers_dir,
                 max_model_len,
                 max_tokens,
+                entity_blocks,
             )
             logger.info(f"  Successfully prepared {len(preparation.paper_prompts)} prompts")
             logger.info(f"  Missing JSON files: {len(preparation.missing_dois)}")
@@ -531,8 +748,33 @@ async def _process_evidence(
                         failed_papers.append(paper_prompt.doi)
                         continue
 
+                    if context is not None:
+                        entities_for_paper = context.entities_by_doi[paper_prompt.doi]
+                        assignment = validate_entity_assignments(
+                            result.parsed_json, entities_for_paper, hgnc_resolver
+                        )
+                        if assignment.errors:
+                            logger.warning(
+                                f"Invalid entity assignments for DOI {paper_prompt.doi}: "
+                                f"{assignment.errors}"
+                            )
+                            failed_papers.append(paper_prompt.doi)
+                            continue
+
+                        if assignment.off_target_symbols:
+                            logger.warning(
+                                f"DOI {paper_prompt.doi}: dropping evaluations for genes without "
+                                f"fixed associations for this paper: "
+                                f"{assignment.off_target_symbols}"
+                            )
+                            drop_off_target_evaluations(
+                                result.parsed_json, assignment.off_target_symbols
+                            )
+
+                        annotate_entity_ids(result.parsed_json, entities_for_paper, hgnc_resolver)
+
                     db_processor.update_paper_evidence_extraction(
-                        [paper_prompt], [result], hgnc_resolver
+                        [paper_prompt], [result], hgnc_resolver, disaggregated
                     )
                     pass_processed += 1
                     pbar.update(1)
@@ -550,7 +792,7 @@ async def _process_evidence(
 
             retry_attempt += 1
 
-    final_stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards)
+    final_stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards, disaggregated)
     logger.info("Deep analysis complete!")
     logger.info("Final statistics:")
     logger.info(f"  Successfully processed: {total_processed:,}")
@@ -642,6 +884,14 @@ def main(
         "--scope-panel-id",
         help="Panel ID for panel-scoped evidence extraction (only extracts genes relevant to this panel)",
     ),
+    disaggregated: bool = typer.Option(
+        False,
+        "--disaggregated/--no-disaggregated",
+        help=(
+            "Assign extracted evidence to the fixed gene-disease associations in "
+            "gene_disease_entities; requires the disaggregated prompt and schema"
+        ),
+    ),
     shard_index: int = typer.Option(
         0,
         "--shard-index",
@@ -666,6 +916,12 @@ def main(
 ) -> None:
     """Extract evidence from full text papers using vLLM inference."""
     # Validate inputs
+    if disaggregated and scope_panel_id is not None:
+        raise typer.BadParameter(
+            "--disaggregated assigns evidence to the fixed gene-disease associations, "
+            "which are not panel-scoped; drop --scope-panel-id"
+        )
+
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
@@ -687,6 +943,15 @@ def main(
     schema: dict[str, Any] = json.loads(schema_path.read_text())
     logger.info(f"  Loaded schema from {schema_path}")
 
+    if schema_expects_entity_refs(schema) != disaggregated:
+        logger.error(
+            f"Schema {schema_path} does not match the requested mode: --disaggregated needs the "
+            f"schema whose disease entities require entity_ref "
+            f"(prompts/evidence_extraction_disaggregated_schema.json, paired with "
+            f"prompts/evidence_extraction_disaggregated_prompt.j2)"
+        )
+        raise typer.Exit(1)
+
     # Initialize components
     logger.info("Initializing database processor...")
     db_processor = PaperBatchProcessor(db_path)
@@ -695,6 +960,9 @@ def main(
     # Load HGNC resolver for gene symbol normalization
     hgnc_resolver = HgncResolver.from_file()
     logger.info(f"  Loaded HgncResolver with {len(hgnc_resolver._by_symbol)} genes")
+
+    # Fail before the model is loaded if the fixed associations are missing
+    context = build_disaggregated_context(db_path, hgnc_resolver) if disaggregated else None
 
     # Build panel_formatted for template (empty string if not scoping to a panel)
     client = PanelAppClient(panel_date)
@@ -723,7 +991,7 @@ def main(
 
     # Get initial statistics
     logger.info("Fetching database statistics...")
-    stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards)
+    stats = db_processor.get_deep_analysis_statistics(shard_index, num_shards, disaggregated)
     logger.info(f"Deep analysis statistics (shard {shard_index}/{num_shards}):")
     logger.info(f"  Papers with downloaded full text: {stats['eligible_papers']:,}")
     logger.info(f"  Already processed: {stats['processed_papers']:,}")
@@ -748,6 +1016,7 @@ def main(
             max_retries=max_retries,
             shard_index=shard_index,
             num_shards=num_shards,
+            context=context,
         )
     )
 

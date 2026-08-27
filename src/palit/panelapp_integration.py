@@ -65,20 +65,20 @@ def get_entity_criterion(entity: dict[str, Any], name: CriterionName) -> dict[st
     return {}
 
 
-def validate_independent_family_counts(entities: list[dict[str, Any]]) -> bool:
-    """Check each entity's independent_family_count is consistent with family_count:
+def validate_independent_family_count(entity: dict[str, Any]) -> bool:
+    """Check one entity's independent_family_count is consistent with family_count:
     null exactly when family_count is null, otherwise 0 <= independent <= family_count.
     """
-    for entity in entities:
-        total = entity.get("family_count")
-        independent = entity.get("independent_family_count")
-        if total is None or independent is None:
-            if total is not None or independent is not None:
-                return False
-            continue
-        if not 0 <= independent <= total:
-            return False
-    return True
+    total = entity.get("family_count")
+    independent = entity.get("independent_family_count")
+    if total is None or independent is None:
+        return total is None and independent is None
+    return bool(0 <= independent <= total)
+
+
+def validate_independent_family_counts(entities: list[dict[str, Any]]) -> bool:
+    """Check every entity's independent_family_count is consistent with its family_count."""
+    return all(validate_independent_family_count(entity) for entity in entities)
 
 
 # MONDO ID to category information (abbreviation, description)
@@ -361,6 +361,30 @@ def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
     return 1
 
 
+def calculate_association_rating(assessment: dict[str, Any]) -> int:
+    """Calculate the rating confidence level for a single gene-disease association.
+
+    Rating logic (parallel to `calculate_gene_rating`, applied to one association):
+    - 3 (GREEN) if the association satisfies (A OR B OR C) AND D AND E
+    - 2 (AMBER) if not GREEN but more than one independent family
+    - 1 (RED) otherwise
+
+    Args:
+        assessment: Flat assessment dict carrying `evidence_assessments` (the 5 criteria)
+            and `independent_family_count` at the top level.
+
+    Returns:
+        Confidence level: 3 (GREEN), 2 (AMBER), or 1 (RED)
+    """
+    if entity_meets_green(assessment):
+        return 3
+
+    if (assessment["independent_family_count"] or 0) > 1:
+        return 2
+
+    return 1
+
+
 def panelapp_confidence_to_color(confidence: int | None) -> str:
     """Convert PanelApp confidence level to color name.
 
@@ -380,3 +404,34 @@ def panelapp_confidence_to_color(confidence: int | None) -> str:
         3: "Green",  # High evidence
     }
     return mapping.get(confidence, "Grey")
+
+
+# GenCC classification titles projected onto the PanelApp 0-3 confidence scale.
+# Display only: GenCC classifications are shown alongside our own rating and are
+# never fed to the model.
+GENCC_CLASSIFICATION_TO_CONFIDENCE: dict[str, int] = {
+    "Definitive": 3,
+    "Strong": 3,
+    "Moderate": 2,
+    "Limited": 1,
+    "Disputed Evidence": 1,
+    "Refuted Evidence": 0,
+    "No Known Disease Relationship": 0,
+    "Animal Model Only": 0,
+}
+
+
+def gencc_classification_to_confidence(classification: str) -> int:
+    """Map a GenCC classification title onto the PanelApp 0-3 confidence scale for display.
+
+    Args:
+        classification: GenCC classification title, e.g. "Definitive"
+
+    Returns:
+        PanelApp confidence level: 0 (Grey), 1 (Red), 2 (Amber), or 3 (Green)
+
+    Raises:
+        KeyError: If the classification is not a known GenCC term, so a change to the
+            GenCC vocabulary surfaces instead of rendering a silently wrong colour.
+    """
+    return GENCC_CLASSIFICATION_TO_CONFIDENCE[classification]

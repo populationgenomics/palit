@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gene-Disease Association Assessment Report</title>
+    <style>
+{% include 'gene_report_styles.css' %}
+{% include 'association_report_styles.css' %}
+    </style>
+</head>
+<body>
+    {# Link to a paper: PubMed where a PMID exists, DOI otherwise #}
+    {% macro paper_link(paper) %}
+    {% if paper.pmid %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ paper.pmid }}/" target="_blank">PMID {{ paper.pmid }}</a>{% else %}<a href="https://doi.org/{{ paper.doi }}" target="_blank">{{ paper.doi }}</a>{% endif %}
+    {%- endmacro %}
+
+    {# One citation reference. Without PDF links the same label renders as plain text. #}
+    {% macro citation_ref(doi, label, page) -%}
+    {% if pdf_links %}<a href="papers/{{ doi | encode_doi }}.pdf#page={{ page }}" target="_blank">[{{ label }}:p{{ page }}]</a>{% else %}<span class="citation-ref">[{{ label }}:p{{ page }}]</span>{% endif %}
+    {%- endmacro %}
+
+    {# Aggregate citations carry a DOI; resolve their box IDs to PDF pages. #}
+    {% macro citation_refs(citations, contributing_papers) -%}
+    {% for link in citations | prepare_citation_links(contributing_papers) %}{{ citation_ref(link.doi, link.display_id, link.page) }} {% endfor %}
+    {%- endmacro %}
+
+    {# Extraction citations carry only a box ID, resolved against their own paper. #}
+    {% macro block_citation_ref(paper, box_id) -%}
+    {% if paper.citation_pages and box_id in paper.citation_pages %}{{ citation_ref(paper.doi, paper.display_id, paper.citation_pages[box_id]) }}{% endif %}
+    {%- endmacro %}
+
+    {# The association's rating, and the source classification shown beside it. #}
+    {% macro rating_badge(rating) -%}
+    <span class="rating-badge rating-{{ rating | confidence_to_color | lower }}">{{ rating | confidence_to_color }}</span>
+    {%- endmacro %}
+
+    {% macro gencc_chip(entity) -%}
+    <span class="gencc-chip gencc-{{ entity.gencc_classification | gencc_confidence | confidence_to_color | lower }}" data-title="GenCC classification — display only; not provided to the model">GenCC: {{ entity.gencc_classification }}</span>
+    {%- endmacro %}
+
+    {% macro mondo_badge(entity) -%}
+    <a class="mondo-badge mondo-specific" href="https://monarchinitiative.org/{{ entity.mondo_id }}" target="_blank" data-title="{{ entity.disease_title }}">{{ entity.mondo_id }}</a>
+    {%- endmacro %}
+
+    {# Patients and families for one assessment or extraction block. #}
+    {% macro count_summary(counts) %}
+    <p class="entity-count-summary">
+        <strong>Patients:</strong> {{ counts.patient_count }} ·
+        <strong>Families:</strong>
+        {% if counts.family_count is none %}
+        not reported
+        {% elif counts.independent_family_count is not none and counts.independent_family_count != counts.family_count %}
+        {{ counts.family_count }} reported → {{ counts.independent_family_count }} independent
+        {% else %}
+        {{ counts.family_count }}
+        {% endif %}
+        <span class="count-note">(A/B/C use the independent count){% if counts.count_reduction_reasoning %} — {{ counts.count_reduction_reasoning }}{% endif %}</span>
+    </p>
+    {% endmacro %}
+
+    {# Criteria A-E for one assessment or extraction block. Aggregate citations resolve
+       through `contributing_papers`; extraction citations resolve through `paper`. #}
+    {% macro criteria_grid(assessment, contributing_papers=none, paper=none) %}
+    <div class="criteria-grid">
+        {% set criteria_meta = {
+            'criterion_A': ('Criterion A - Multiple Independent Cases', 'OR'),
+            'criterion_B': ('Criterion B - Cis-regulatory Mutations', 'OR'),
+            'criterion_C': ('Criterion C - Fewer Cases with Functional Evidence', 'AND'),
+            'criterion_D': ('Criterion D - Mendelian Inheritance', 'AND'),
+            'criterion_E': ('Criterion E - No Contradictory Evidence', none)
+        } %}
+        {% for crit in assessment.evidence_assessments %}
+            {% set crit_label = criteria_meta[crit.name][0] %}
+            {% set separator = criteria_meta[crit.name][1] %}
+            <span class="criterion-header criterion-{{ 'true' if crit.result else 'false' }}">
+                {{ '✓' if crit.result else '✗' }} {{ crit_label }} | Confidence: {{ crit.confidence }}
+            </span>
+            <strong>Rationale:</strong> {{ crit.rationale }}
+            {% if crit.citations %}
+            <div class="evidence-card">
+                <ul>
+                    {% for citation in crit.citations %}
+                    <li>
+                        {{ citation.commentary }}
+                        {% if contributing_papers %}
+                        {{ citation_refs([citation], contributing_papers) }}
+                        {% elif paper %}
+                        {{ block_citation_ref(paper, citation.box_id) }}
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            {% if separator %}
+            <div class="criterion-separator">{{ separator }}</div>
+            {% endif %}
+        {% endfor %}
+    </div>
+    {% endmacro %}
+
+    {# Weakening factors: the ones that apply are visible, the rest are one click away. #}
+    {% macro weakening_factors(factors) %}
+    {% set present = factors | selectattr('present') | list %}
+    {% set absent = factors | rejectattr('present') | list %}
+    {% if present %}
+    <div class="weakening-factors">
+        <h5><strong>Evidence-weakening factors ({{ present|length }})</strong></h5>
+        <ul>
+            {% for factor in present %}
+            <li><strong>{{ factor.factor | factor_label }}:</strong> {{ factor.details }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    {% if absent %}
+    <details class="weakening-factors-absent">
+        <summary>Checked and not present ({{ absent|length }})</summary>
+        <ul>
+            {% for factor in absent %}
+            <li><strong>{{ factor.factor | factor_label }}:</strong> {{ factor.details }}</li>
+            {% endfor %}
+        </ul>
+    </details>
+    {% endif %}
+    {% endmacro %}
+
+    {% macro variant_frequency_table(variants, inheritance_mode) %}
+    <table class="variant-frequency-table">
+        <thead>
+            <tr>
+                <th>HGVS c.</th>
+                <th>HGVS p.</th>
+                <th data-title="Alternate allele count in high quality genotypes">AC</th>
+                <th data-title="Number of heterozygotes">het</th>
+                <th data-title="Number of homozygotes">hom</th>
+                <th data-title="Number of hemizygotes">hemi</th>
+                <th data-title="Grpmax Filtering Allele Frequency: the maximum credible genetic ancestry group alternate allele frequency as a lower bound of the 95% confidence interval">FAF</th>
+                <th>Links</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for variant in variants %}
+            {% set flag_info = variant | get_variant_flag(inheritance_mode) %}
+            <tr class="{% if flag_info.should_flag %}high-frequency-variant{% endif %}">
+                <td>{% if variant.hgvs_c %}{{ variant.hgvs_c }}{% else %}<em>{{ variant.original_text }}</em>{% endif %}</td>
+                <td>{% if variant.hgvs_p %}{{ variant.hgvs_p }}{% else %}—{% endif %}</td>
+                <td>
+                    {% if variant.gnomad_not_found %}
+                    <em>not found</em>
+                    {% elif variant.gnomad_error %}
+                    <span class="hover-value lookup-error" data-title="{{ variant.gnomad_error }}">error</span>
+                    {% elif variant.gnomad_ac is not none %}
+                    <span class="hover-value" data-title="AN = {{ variant.gnomad_an }}">{{ variant.gnomad_ac }}</span>
+                    {% else %}
+                    —
+                    {% endif %}
+                </td>
+                <td>
+                    {% if variant.gnomad_het is not none %}{{ variant.gnomad_het }}{% if flag_info.should_flag and "het" in flag_info.flagged_metric %}<span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>{% endif %}{% else %}—{% endif %}
+                </td>
+                <td>
+                    {% if variant.gnomad_hom is not none %}{{ variant.gnomad_hom }}{% if flag_info.should_flag and "hom" in flag_info.flagged_metric %}<span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>{% endif %}{% else %}—{% endif %}
+                </td>
+                <td>
+                    {% if variant.gnomad_hemi is not none %}{{ variant.gnomad_hemi }}{% if flag_info.should_flag and "hemi" in flag_info.flagged_metric %}<span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>{% endif %}{% else %}—{% endif %}
+                </td>
+                <td>
+                    {% if variant.gnomad_faf95_popmax is not none %}<span class="hover-value" data-title="{{ variant.gnomad_faf95_popmax_population }}">{{ "%.2e" | format(variant.gnomad_faf95_popmax) }}</span>{% else %}—{% endif %}
+                </td>
+                <td>
+                    <a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>
+                    {% for citation in variant.citations %}
+                    | {{ citation_ref(citation.doi, citation.display_id, citation.page) }}
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endmacro %}
+
+    {# One paper's extracted block, as assigned to the association being read. #}
+    {% macro evidence_block(block, paper=none) %}
+    <section class="per-entity-criteria-section">
+        <h6 class="per-entity-criteria-heading">{{ block.description }}</h6>
+        <div class="per-entity-criteria-body">
+            <p class="assignment-rationale"><em><strong>Assignment rationale:</strong> {{ block.entity_match_reasoning }}</em></p>
+            {{ count_summary(block) }}
+            <p class="block-inheritance"><strong>Inheritance:</strong> {{ block.inheritance_mode | format_inheritance(block.inheritance_details) }}</p>
+            {% if paper %}
+            {{ criteria_grid(block, paper=paper) }}
+            {% endif %}
+        </div>
+    </section>
+    {% endmacro %}
+
+    <header>
+        <h1>Gene-Disease Association Assessment Report</h1>
+        <p>Generated on {{ generated_at }} | {{ statistics.contributing_papers }} contributing papers</p>
+        <p class="provenance">{{ statistics.total_associations }} fixed gene–disease–inheritance associations sourced from {{ statistics.source_label }}. GenCC classifications are shown for comparison only and were not visible to the model.</p>
+    </header>
+
+    <main>
+        <section id="statistics">
+            <h2>Statistics Overview</h2>
+
+            <ul class="stats-list">
+                <li><strong>Fixed associations:</strong> {{ statistics.total_associations }}</li>
+                <li><strong>Assessed:</strong> {{ statistics.assessed }}</li>
+                <li><strong>No evidence in this corpus:</strong> {{ statistics.unassessed }}</li>
+                <li><strong>Rated {{ 3 | confidence_to_color }}:</strong> {{ statistics.green }}</li>
+                <li><strong>Rated {{ 2 | confidence_to_color }}:</strong> {{ statistics.amber }}</li>
+                <li><strong>Rated {{ 1 | confidence_to_color }}:</strong> {{ statistics.red }}</li>
+                <li><strong>Contributing papers:</strong> {{ statistics.contributing_papers }}</li>
+                <li><strong>Unattributed evidence blocks:</strong> {{ statistics.unattributed_blocks }}</li>
+            </ul>
+
+            <details class="crosstab-details" open>
+                <summary><strong>Our rating × GenCC classification</strong></summary>
+                {# One wrapper per details body: the shared stylesheet gives every direct
+                   child of a <details> its own bordered card. #}
+                <div class="details-body">
+                <p class="crosstab-blurb"><em>Every assessed association, counted by the rating this corpus earned it (rows) against the classification the curation source recorded for the same association (columns). The source classification never entered a prompt, so the diagonal is agreement, not agreement by construction.</em></p>
+                <table class="crosstab-table">
+                    <thead>
+                        <tr>
+                            <th>Our rating</th>
+                            {% for column in gencc_columns %}
+                            <th data-title="{{ column.classifications }}">{{ column.label }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for rating in rating_levels %}
+                        <tr>
+                            <th>{{ rating_badge(rating) }}</th>
+                            {% for column in gencc_columns %}
+                            {% set count = statistics.rating_vs_gencc.get((rating, column.confidence)) %}
+                            <td class="crosstab-cell{% if rating == column.confidence %} crosstab-agree{% endif %}">{% if count %}{{ count }}{% endif %}</td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                </div>
+            </details>
+        </section>
+
+        <nav class="toc">
+            <h2>Associations</h2>
+            <ul>
+                {% for section in sections %}
+                <li>
+                    <a href="#gene-{{ section.hgnc_id }}">{{ section.hgnc_symbol }}</a>
+                    <ul class="toc-association-list">
+                        {% for association in section.associations %}
+                        <li>
+                            <a href="#assoc-{{ association.entity.id }}">{{ association.entity.disease_title }} ({{ association.entity.moi | moi_display }})</a>
+                            {{ rating_badge(association.rating) }}
+                            {{ gencc_chip(association.entity) }}
+                        </li>
+                        {% endfor %}
+                        {% for entity in section.unassessed %}
+                        <li class="toc-unassessed">
+                            {{ entity.disease_title }} ({{ entity.moi | moi_display }})
+                            <span class="rating-badge rating-grey">No evidence</span>
+                            {{ gencc_chip(entity) }}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </li>
+                {% endfor %}
+            </ul>
+        </nav>
+
+        {% for section in sections %}
+        <section class="gene-section">
+            <h2 id="gene-{{ section.hgnc_id }}">{{ section.hgnc_symbol }} <small>HGNC:{{ section.hgnc_id }}</small> — {{ section.entity_count }} association{{ '' if section.entity_count == 1 else 's' }}{% if section.associations|length != section.entity_count %} ({{ section.associations|length }} assessed){% endif %} · {{ section.paper_count }} paper{{ '' if section.paper_count == 1 else 's' }}</h2>
+
+            {% for association in section.associations %}
+            {% set assessment = association.assessment_json %}
+            <article class="gene-assessment association-assessment" id="assoc-{{ association.entity.id }}">
+                <h3>
+                    {{ association.hgnc_symbol }} — {{ association.entity.disease_title }} ({{ association.entity.moi | moi_display }})
+                    {{ mondo_badge(association.entity) }}
+                    {{ rating_badge(association.rating) }}
+                    {{ gencc_chip(association.entity) }}
+                </h3>
+
+                <div class="evidence-summary-expanded">
+                    <h5><strong>Summary</strong></h5>
+                    <div class="summary-content">{{ assessment.summary | markdown_to_html }}</div>
+
+                    {{ count_summary(assessment) }}
+
+                    <h5><strong>Evidence Details</strong></h5>
+                    <ul>
+                        <li><strong>Families:</strong> {{ assessment.families }}</li>
+                        <li>
+                            <strong>Mode of inheritance:</strong>
+                            {{ assessment.inheritance_mode | format_inheritance(assessment.inheritance_details) }}
+                            {% if association.assessed_moi_mismatch or association.moi_mismatch_dois %}
+                            <span class="moi-mismatch-note">⚠️ The evidence reports an inheritance mode outside this association's fixed mode ({{ association.entity.moi | moi_display }}){% if association.moi_mismatch_dois %}; see {% for paper in association.contributing_papers if paper.doi in association.moi_mismatch_dois %}{{ paper.display_id }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.</span>
+                            {% endif %}
+                        </li>
+                        <li><strong>Variants:</strong> {{ assessment.variants }}</li>
+                        <li><strong>Population frequency:</strong> {{ assessment.population_freq }}</li>
+                        <li><strong>Segregation:</strong> {{ assessment.segregation }}</li>
+                        <li><strong>Functional studies:</strong> {{ assessment.functional }}</li>
+                        <li><strong>Prior reports:</strong> {{ assessment.prior_reports }}</li>
+                        <li><strong>Disease mechanism:</strong> {{ assessment.disease_mechanism }}</li>
+                        {% set published_papers = association.contributing_papers | rejectattr('preprint') | list %}
+                        {% set preprint_papers = association.contributing_papers | selectattr('preprint') | list %}
+                        <li>
+                            <strong>Publications ({{ published_papers|length }}):</strong>
+                            {% for paper in published_papers %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}
+                        </li>
+                        {% if preprint_papers %}
+                        <li><strong>⚠️ Preprints ({{ preprint_papers|length }}):</strong> {% for paper in preprint_papers %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}</li>
+                        {% endif %}
+                    </ul>
+
+                    {% if assessment.citations %}
+                    <p class="association-citations"><strong>Citations:</strong> {{ citation_refs(assessment.citations, association.contributing_papers) }}</p>
+                    {% endif %}
+                </div>
+
+                <section class="per-entity-criteria-section">
+                    <h5 class="per-entity-criteria-heading">PanelApp criteria</h5>
+                    <div class="per-entity-criteria-body">
+                        {{ criteria_grid(assessment, contributing_papers=association.contributing_papers) }}
+                    </div>
+                </section>
+
+                {{ weakening_factors(assessment.evidence_weakening_factors) }}
+
+                {% if assessment.quality_concerns %}
+                <div class="quality-concerns">
+                    <h5><strong>⚠️ Quality concerns</strong></h5>
+                    <ul>
+                        {% for concern in assessment.quality_concerns %}
+                        <li>
+                            {{ concern.concern }}
+                            {% if concern.citations %}{{ citation_refs(concern.citations, association.contributing_papers) }}{% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if association.variant_frequencies %}
+                <div class="variant-frequency-section">
+                    <h5><strong>gnomAD v4 frequencies</strong></h5>
+                    {{ variant_frequency_table(association.variant_frequencies, assessment.inheritance_mode) }}
+                </div>
+                {% endif %}
+
+                {% if association.filtered_papers %}
+                <div class="excluded-papers">
+                    <h5><strong>Excluded papers ({{ association.filtered_papers|length }})</strong></h5>
+                    <ul>
+                        {% for filtered in association.filtered_papers %}
+                        <li><a href="https://doi.org/{{ filtered.doi }}" target="_blank">{{ filtered.doi }}</a> — {{ filtered.reason }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                <details class="contributing-papers">
+                    <summary><strong>Contributing papers ({{ association.contributing_papers|length }})</strong></summary>
+                    <div class="details-body">
+                    {% for paper in association.contributing_papers %}
+                    <article class="detailed-paper{% if paper.preprint %} paper-preprint{% endif %}">
+                        <header class="paper-header">
+                            <h6>
+                                {% if paper.preprint %}<span class="preprint-badge">Preprint</span> {% endif %}
+                                {{ paper_link(paper) }} — {{ paper.title }}
+                            </h6>
+                            <div class="paper-metadata">
+                                <ul>
+                                    {% if paper.journal %}<li><strong>Journal:</strong> {{ paper.journal }}</li>{% endif %}
+                                    <li><strong>Date:</strong> {{ paper.source_date or 'Unknown' }}</li>
+                                    <li><strong>DOI:</strong> <a href="https://doi.org/{{ paper.doi }}" target="_blank">{{ paper.doi }}</a></li>
+                                </ul>
+                            </div>
+                        </header>
+
+                        {% if paper.abstract %}
+                        <details class="paper-abstract">
+                            <summary><strong>Abstract</strong></summary>
+                            <p>{{ paper.abstract }}</p>
+                        </details>
+                        {% endif %}
+
+                        {% for block in association.entity_blocks[paper.doi] %}
+                        {{ evidence_block(block, paper=paper) }}
+                        {% endfor %}
+                    </article>
+                    {% endfor %}
+                    </div>
+                </details>
+            </article>
+            {% endfor %}
+
+            {% if section.unattributed %}
+            <details class="unattributed-evidence">
+                <summary><strong>Unattributed evidence ({{ section.unattributed|length }})</strong></summary>
+                <div class="details-body">
+                <p class="unattributed-blurb"><em>Evidence the model could not assign to any of this gene's fixed associations; no aggregation was performed over it.</em></p>
+                {% for item in section.unattributed %}
+                <article class="unattributed-block">
+                    <h6>{{ item.display_label }} — {{ item.block.description }}</h6>
+                    <p class="assignment-rationale"><em><strong>Assignment rationale:</strong> {{ item.block.entity_match_reasoning }}</em></p>
+                    {{ count_summary(item.block) }}
+                    <p class="block-inheritance"><strong>Inheritance:</strong> {{ item.block.inheritance_mode | format_inheritance(item.block.inheritance_details) }}</p>
+                </article>
+                {% endfor %}
+                </div>
+            </details>
+            {% endif %}
+
+            {% if section.unassessed %}
+            <div class="unassessed-associations">
+                <h5><strong>Associations without evidence in this corpus ({{ section.unassessed|length }})</strong></h5>
+                <ul>
+                    {% for entity in section.unassessed %}
+                    <li>
+                        {{ entity.disease_title }} ({{ entity.moi | moi_display }}) — no evidence in this corpus
+                        {{ mondo_badge(entity) }}
+                        {{ gencc_chip(entity) }}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </section>
+        {% endfor %}
+    </main>
+</body>
+</html>

@@ -145,6 +145,69 @@ uv run palit generate-report --report-id report_mendeliome --panel-date $PANEL_D
 uv run palit ledger writeback --db-path data/db.sqlite --run-id report_mendeliome --ledger $LEDGER
 ```
 
+## Disaggregated (Association-Level) Workflow
+
+The standard pipeline leaves it to the model to decide how a gene's diseases are lumped
+or split, so a gene's rating is only as reproducible as that decision. The disaggregated
+workflow takes the decision away: one curation submitter's GenCC entries are seeded as
+fixed gene–disease–inheritance associations (`gene_disease_entities`), extraction assigns
+every evidence block it emits to one of a gene's listed associations (or to none), and
+aggregation runs once per association instead of once per gene. Aggregation is
+evidence-only — it reads no panel state, so `assess-associations` has no `--panel-date`.
+The submitter's own classification is stored beside each association for comparison and
+is never put in a prompt.
+
+```bash
+DB=data/db_disaggregated.sqlite
+GENCC_TSV=data/gencc_submissions_2026-06-22.tsv
+PANEL_DATE=2026-06-22
+
+# 1. Create the working database.
+sqlite3 $DB < schema.sql
+
+# 2. Seed the fixed associations for the genes under curation. Re-seeding is
+#    idempotent and keeps entity ids stable, so a refreshed export does not orphan
+#    stored evidence or assessments.
+uv run palit seed-entities --db-path $DB \
+  --gencc-tsv $GENCC_TSV --submitter "PanelApp Australia" \
+  --gene AARS1 --gene ELP1 --gene HK1
+
+# 3. Seed the paper corpus: the papers plus a gene_mentions row per paper-gene pair
+#    with source='relevance_assessment', which is what extraction reads to decide
+#    which genes — and hence which associations — a paper is about.
+#    scripts/disaggregated_prototype/seed_db.py is a worked example.
+
+# 4. Download full text (the standard flow).
+uv run palit download-papers attempt-pmc --db-path $DB
+uv run palit download-papers download-preprints --db-path $DB
+# ... manually download the remaining PDFs to data/papers/ ...
+uv run palit docling convert --db-path $DB
+uv run palit download-papers register --db-path $DB
+
+# 5. Extract evidence, assigning each block to one fixed association. --panel-date is
+#    still required here: extraction uses it for gene alias resolution, nothing else.
+uv run palit extract-evidence --db-path $DB --panel-date $PANEL_DATE --disaggregated \
+  --prompt-path prompts/evidence_extraction_disaggregated_prompt.j2 \
+  --schema-path prompts/evidence_extraction_disaggregated_schema.json
+
+# 6. Aggregate per association: one LLM call each, over that association's evidence
+#    only. --max-tokens defaults to 64000, and the rest of the context window is the
+#    evidence budget.
+uv run palit assess-associations --db-path $DB
+
+# 7. Render the association-level report.
+uv run palit generate-association-report --report-id assoc_report --db-path $DB
+```
+
+Two operational notes:
+
+- **Do not run `reduce-literature` against a pre-seeded corpus.** It clears
+  `download_status` for every paper no gene selected, which silently drops papers the
+  seeding step deliberately put there.
+- **The two LLM stages shard on different keys.** `extract-evidence` shards on paper
+  `rowid`; `assess-associations` shards on `hgnc_id`, so all of a gene's associations
+  land on the same worker. Shard counts therefore need not match between the stages.
+
 ## PanelApp Publication Seeding
 
 Tournament selection keeps a minimal, non-redundant evidence set, so it routinely

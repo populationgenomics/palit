@@ -1,0 +1,364 @@
+{
+    "type": "object",
+    "properties": {
+        "genome_build": {
+            "type": "string",
+            "enum": [
+                "GRCh38",
+                "GRCh37",
+                "hg38",
+                "hg19",
+                "unknown"
+            ]
+        },
+        "gene_evaluations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "gene_symbol": {
+                        "type": "string"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Prose evidence summary for this gene."
+                    },
+                    "variants": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "variant": {
+                                    "type": "string",
+                                    "description": "Variant in standard notation."
+                                },
+                                "box_id": {
+                                    "type": "integer",
+                                    "description": "Source box ID."
+                                }
+                            },
+                            "required": [
+                                "variant",
+                                "box_id"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "Unique variants with citations."
+                    },
+                    "families": {
+                        "type": "string",
+                        "description": "Free-text family-count summary."
+                    },
+                    "disease_entities": {
+                        "type": "array",
+                        "description": "Distinct (phenotype x MoI) disease entities.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "description": {
+                                    "type": "string",
+                                    "description": "Disease name or clinical description."
+                                },
+                                "entity_ref": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "Fixed association this block's evidence belongs to, copied verbatim from the gene's FIXED DISEASE ASSOCIATIONS list ('MONDO:<id>|<inheritance>'); null when no listed association fits."
+                                },
+                                "entity_match_reasoning": {
+                                    "type": "string",
+                                    "description": "One sentence: why this evidence belongs to the referenced association, or why none of the gene's listed associations fits."
+                                },
+                                "patient_count": {
+                                    "type": "integer",
+                                    "description": "Patients for this entity."
+                                },
+                                "family_count": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "description": "Total families reported (count families, not individuals); null if NR."
+                                },
+                                "independent_family_count": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "description": "Independent families used for Criteria A/B/C; <= family_count; null iff family_count null."
+                                },
+                                "count_reduction_reasoning": {
+                                    "type": "string",
+                                    "description": "Why family_count and independent_family_count differ, or 'No reduction'."
+                                },
+                                "disease_mechanism": {
+                                    "type": "string",
+                                    "description": "Molecular mechanism, or NR."
+                                },
+                                "previously_reported_sources": {
+                                    "type": "array",
+                                    "description": "Papers that originally reported families re-counted here (prevents double-counting).",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "title": {
+                                                "type": "string",
+                                                "description": "Source paper title, or NR."
+                                            },
+                                            "family_count": {
+                                                "type": [
+                                                    "integer",
+                                                    "null"
+                                                ],
+                                                "description": "Families from this source; null if unspecified."
+                                            },
+                                            "context": {
+                                                "type": "string",
+                                                "description": "Quote identifying the shared families."
+                                            }
+                                        },
+                                        "required": [
+                                            "title",
+                                            "family_count",
+                                            "context"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "inheritance_mode": {
+                                    "type": "string",
+                                    "enum": [
+                                        "Monoallelic",
+                                        "Biallelic",
+                                        "X-linked",
+                                        "Mitochondrial",
+                                        "Other",
+                                        "NR"
+                                    ],
+                                    "description": "Mode of inheritance for this entity."
+                                },
+                                "inheritance_details": {
+                                    "type": "string",
+                                    "description": "Inheritance clarifications, or empty string."
+                                },
+                                "citations": {
+                                    "type": "array",
+                                    "description": "Box-ID citations for this entity.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "box_id": {
+                                                "type": "integer",
+                                                "description": "Source box ID."
+                                            },
+                                            "commentary": {
+                                                "type": "string",
+                                                "description": "What the citation shows."
+                                            }
+                                        },
+                                        "required": [
+                                            "box_id",
+                                            "commentary"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "evidence_weakening_factors": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "description": "Six per-entity weakening factors, one per enum value.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "factor": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "founder_or_recurrent_variant",
+                                                    "inherited_no_segregation_with_affected",
+                                                    "missense_no_variant_specific_functional",
+                                                    "population_frequency_incompatible_with_moi",
+                                                    "phenotype_non_mendelian",
+                                                    "functional_below_criterion_c_threshold"
+                                                ],
+                                                "description": "Weakening factor identifier."
+                                            },
+                                            "present": {
+                                                "type": "boolean",
+                                                "description": "Whether the factor applies."
+                                            },
+                                            "details": {
+                                                "type": "string",
+                                                "description": "Brief supporting evidence, or 'Not present'."
+                                            }
+                                        },
+                                        "required": [
+                                            "factor",
+                                            "present",
+                                            "details"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "evidence_assessments": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "description": "Five per-entity criteria (criterion_A through criterion_E).",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "result": {
+                                                "type": "boolean"
+                                            },
+                                            "rationale": {
+                                                "type": "string"
+                                            },
+                                            "confidence": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "LOW",
+                                                    "MEDIUM",
+                                                    "HIGH"
+                                                ]
+                                            },
+                                            "citations": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "box_id": {
+                                                            "type": "integer"
+                                                        },
+                                                        "commentary": {
+                                                            "type": "string"
+                                                        }
+                                                    },
+                                                    "required": [
+                                                        "box_id",
+                                                        "commentary"
+                                                    ],
+                                                    "additionalProperties": false
+                                                }
+                                            },
+                                            "name": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "criterion_A",
+                                                    "criterion_B",
+                                                    "criterion_C",
+                                                    "criterion_D",
+                                                    "criterion_E"
+                                                ],
+                                                "description": "Criterion identifier."
+                                            }
+                                        },
+                                        "required": [
+                                            "name",
+                                            "result",
+                                            "rationale",
+                                            "confidence",
+                                            "citations"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                }
+                            },
+                            "required": [
+                                "description",
+                                "entity_ref",
+                                "entity_match_reasoning",
+                                "patient_count",
+                                "family_count",
+                                "independent_family_count",
+                                "count_reduction_reasoning",
+                                "disease_mechanism",
+                                "inheritance_mode",
+                                "inheritance_details",
+                                "previously_reported_sources",
+                                "citations",
+                                "evidence_weakening_factors",
+                                "evidence_assessments"
+                            ],
+                            "additionalProperties": false
+                        }
+                    },
+                    "variants_summary": {
+                        "type": "string",
+                        "description": "Human-readable variant summary."
+                    },
+                    "population_freq": {
+                        "type": "string"
+                    },
+                    "segregation": {
+                        "type": "string"
+                    },
+                    "functional": {
+                        "type": "string"
+                    },
+                    "prior_reports": {
+                        "type": "string"
+                    },
+                    "quality_concerns": {
+                        "type": "array",
+                        "description": "Evidence-quality concerns; empty if none.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "concern": {
+                                    "type": "string",
+                                    "description": "The issue and why it matters."
+                                },
+                                "citations": {
+                                    "type": "array",
+                                    "description": "Citations to the problematic claim.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "box_id": {
+                                                "type": "integer",
+                                                "description": "Source box ID."
+                                            },
+                                            "commentary": {
+                                                "type": "string",
+                                                "description": "What the citation shows."
+                                            }
+                                        },
+                                        "required": [
+                                            "box_id",
+                                            "commentary"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                }
+                            },
+                            "required": [
+                                "concern",
+                                "citations"
+                            ],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": [
+                    "gene_symbol",
+                    "summary",
+                    "variants",
+                    "families",
+                    "disease_entities",
+                    "variants_summary",
+                    "population_freq",
+                    "segregation",
+                    "functional",
+                    "prior_reports",
+                    "quality_concerns"
+                ],
+                "additionalProperties": false
+            }
+        }
+    },
+    "required": [
+        "genome_build",
+        "gene_evaluations"
+    ],
+    "additionalProperties": false
+}

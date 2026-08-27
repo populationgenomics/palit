@@ -12,12 +12,12 @@ PANEL-SCOPED EXTRACTION: A gene is relevant only if its associated disease/pheno
 
 {{ entity_block }}
 
-For each relevant gene in this paper, provide a concise summary of key evidence, then evaluate the five PanelApp criteria independently. A gene is relevant if it has patient-level evidence (variants and phenotypes) reported in this paper and meets the extraction criteria in IMPORTANT INSTRUCTIONS below. For each criterion that evaluates to TRUE, you MUST provide a detailed rationale with direct citations from the paper.
+For each relevant gene in this paper, provide a concise summary of key evidence, then evaluate the five PanelApp criteria independently. A gene is relevant if it has patient-level evidence (variants and phenotypes) reported in this paper and meets the extraction criteria in IMPORTANT INSTRUCTIONS below. For each criterion that evaluates to TRUE, you MUST provide a one-sentence rationale with direct citations from the paper.
 
 CITATION REQUIREMENTS:
 For each criterion that evaluates to TRUE, you MUST provide specific citations using the <b id=N> tags found in the full text. For each citation:
 - Provide the box ID number (N from the <b id=N> tag)
-- Include brief commentary explaining what this specific text section demonstrates
+- Include telegraphic commentary — a few words naming what this text section shows, never a sentence
 
 Example citation format:
 {% raw %}
@@ -114,7 +114,7 @@ For each disease entity, you must explicitly assess the six weakening factors be
 5. **phenotype_non_mendelian**: This entity's phenotype is a susceptibility/risk-factor allele, modifier locus, mostly-asymptomatic biomarker, predominantly epigenetic disorder, or otherwise not a clearly Mendelian disease.
 6. **functional_below_criterion_c_threshold**: Functional evidence cited (or that could be cited) for this entity under Criterion C does not satisfy Pillar 2(a) or 2(b) below — it relies on biochemical assays, heterologous overexpression, or patient-cell deficit without rescue.
 
-For each factor: emit `{"factor": "<enum>", "present": true|false, "details": "<1-2 sentences citing specific evidence; for present=false use 'Not present' or a brief sanity-check statement>"}`.
+For each factor: emit `{"factor": "<enum>", "present": true|false, "details": "<one short clause naming the specific evidence; for present=false use 'Not present'>"}`.
 
 CRITERION A: Multiple Independent Cases with Plausible Mutations
 "There are plausible disease-causing mutations within, affecting or encompassing (excluding whole-gene/multi-gene CNVs and gene fusions) an interpretable functional region of this gene identified in multiple (3 or more) independent cases/families with the phenotype."
@@ -202,7 +202,7 @@ WEAKENING FACTORS DO NOT FAIL E: the six `evidence_weakening_factors` (founder/r
 After each evaluation, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
 
 STRUCTURED FIELD REQUIREMENTS:
-Provide ultra-concise FACTUAL information ONLY from the paper. Use telegraphic style.
+Provide ultra-concise FACTUAL information ONLY from the paper. Use telegraphic style throughout: no preamble, no restatement of the field name, no hedging, no closing summary sentence. Every field below has a length budget — treat it as a hard ceiling and spend it on facts.
 
 CRITICAL: Use "NR" (Not Reported) when information is not explicitly stated in the paper.
 NEVER infer, estimate, or make assumptions about missing data.
@@ -266,7 +266,7 @@ NEVER infer, estimate, or make assumptions about missing data.
       * family_count: How many families from this source (use null if not specified)
       * context: Quote from main text explaining which families came from this source
     - Use empty array [] when: all families are NEW to this paper, OR no families reported
-  * citations: array of box_id citations where this disease entity is described, with brief commentary about what each citation shows
+  * citations: array of box_id citations where this disease entity is described, each with telegraphic commentary (a few words, e.g. "family counts", "Case III: de novo p.Ser181Cys")
   * evidence_weakening_factors: REQUIRED per entity — exactly 6 entries (one per factor enum value) capturing weakening factors for THIS entity's evidence in this paper. See EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST above. The examples below omit this field for brevity but it must always be present.
   * evidence_assessments: REQUIRED per entity — exactly 5 entries (criterion_A through criterion_E) capturing the PanelApp diagnostic evidence assessment for THIS entity's gene–disease relationship from this paper. See the CRITERION A–E sections above for per-entity rules. The examples below omit this field for brevity but it must always be present.
   Examples (showing entity descriptors only; `evidence_weakening_factors` and `evidence_assessments` arrays are required but elided for readability — see the JSON output format at the bottom for full shape):
@@ -286,10 +286,10 @@ NEVER infer, estimate, or make assumptions about missing data.
 **Style:** Use UK English spelling, except in verbatim quotes.
 
 PROSE SUMMARY REQUIREMENTS:
-Provide a prose narrative that summarizes the gene-disease evidence from this paper. Should be detailed enough to be useful when aggregating across multiple papers later.
+Provide a prose narrative that summarizes the gene-disease evidence from this paper, in 120 words or fewer. It has to stay useful when aggregating across multiple papers later, so spend the budget on counts, mechanism, variant types and phenotype; drop scene-setting, restatement of the paper's framing, and any sentence that does not add a fact.
 
 STRUCTURE:
-1. **Protein function** (if discussed in paper): When this paper describes protein function/pathway, start with 1-2 sentences summarizing what protein the gene encodes and its biological function. Include gene name. Extract ONLY from paper content - do not use external knowledge. Omit if not discussed in paper.
+1. **Protein function** (if discussed in paper): When this paper describes protein function/pathway, start with ONE sentence summarizing what protein the gene encodes and its biological function. Include gene name. Extract ONLY from paper content - do not use external knowledge. Omit if not discussed in paper.
 
 2. **Evidence summary**: Summarize the key evidence in natural, flowing prose. Include the following information categories when available (omit any that are not present or not applicable):
    - Patient and family counts
@@ -494,7 +494,7 @@ If no major issues are found, use an empty array: []
 
 Before generating your JSON response, thoroughly think through each gene evaluation. The response schema is complex:
 - For each disease entity, its `evidence_weakening_factors` MUST contain exactly 6 entries, one per factor enum value, each with `factor`, `present`, `details`. Fill these out FIRST per entity.
-- For each disease entity, its `evidence_assessments` MUST contain exactly 5 entries (criterion_A through criterion_E), each with result, rationale, confidence, and citations. Each rationale must reference any `present:true` weakening factor for THAT entity that affects the verdict.
+- For each disease entity, its `evidence_assessments` MUST contain exactly 5 entries (criterion_A through criterion_E), each with result, rationale, confidence, and citations. Each rationale is ONE short sentence and must reference any `present:true` weakening factor for THAT entity that affects the verdict.
 Plan both arrays per entity for each gene before you begin writing the JSON output.
 
 Respond in JSON format with your evaluation:
@@ -505,7 +505,7 @@ Respond in JSON format with your evaluation:
   "gene_evaluations": [
     {
       "gene_symbol": "GENE_SYMBOL",
-      "summary": "Reports [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. [Clinical features]. [Functional evidence]. [Notable specifics].",
+      "summary": "≤120 words: Reports [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. [Clinical features]. [Functional evidence]. [Notable specifics].",
       "variants": [
         {"variant": "NM_000123.4:c.1234A>T", "box_id": 42},
         {"variant": "NM_000123.4:c.5678G>C", "box_id": 67},
@@ -525,9 +525,9 @@ Respond in JSON format with your evaluation:
           "inheritance_mode": "[one of the enum values]",
           "inheritance_details": "[additional details or empty string]",
           "previously_reported_sources": [{"title": "paper title or NR", "family_count": N_or_null, "context": "quote explaining which families"}],
-          "citations": [{"box_id": integer, "commentary": "description"}],
+          "citations": [{"box_id": integer, "commentary": "a few words"}],
           "evidence_weakening_factors": [
-            {"factor": "founder_or_recurrent_variant", "present": boolean, "details": "1-2 sentences citing specific evidence for this entity, or 'Not present' with brief sanity-check"},
+            {"factor": "founder_or_recurrent_variant", "present": boolean, "details": "one short clause naming the evidence for this entity, or 'Not present'"},
             {"factor": "inherited_no_segregation_with_affected", "present": boolean, "details": "..."},
             {"factor": "missense_no_variant_specific_functional", "present": boolean, "details": "..."},
             {"factor": "population_frequency_incompatible_with_moi", "present": boolean, "details": "..."},
@@ -535,7 +535,7 @@ Respond in JSON format with your evaluation:
             {"factor": "functional_below_criterion_c_threshold", "present": boolean, "details": "..."}
           ],
           "evidence_assessments": [
-            {"name": "criterion_A", "result": boolean, "rationale": "per-entity rationale; reference any present:true weakening factor for this entity", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "explanation"}]},
+            {"name": "criterion_A", "result": boolean, "rationale": "ONE short sentence; reference any present:true weakening factor for this entity", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "a few words"}]},
             {"name": "criterion_B", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
             {"name": "criterion_C", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
             {"name": "criterion_D", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
@@ -551,7 +551,7 @@ Respond in JSON format with your evaluation:
       "quality_concerns": [
         {
           "concern": "description of the issue and why it matters",
-          "citations": [{"box_id": integer, "commentary": "where the problematic claim appears"}]
+          "citations": [{"box_id": integer, "commentary": "a few words locating the problematic claim"}]
         }
       ]
     }

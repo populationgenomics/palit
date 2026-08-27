@@ -149,10 +149,19 @@ def test_llm_config_extras_reach_the_constructor(monkeypatch: pytest.MonkeyPatch
     assert processor.effort == "high"
 
 
-def test_non_unit_temperature_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_temperature_override_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(llm_anthropic, "load_api_key", lambda: "test-key")
-    with pytest.raises(ValueError, match="adaptive thinking"):
+    with pytest.raises(ValueError, match="temperature at the API default"):
         create_llm_processor(model="anthropic/claude-sonnet-5", temperature=0.2, max_tokens=4096)
+
+
+def test_the_flag_default_temperature_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """1.0 is the stages' own default, so it means the flag was not set."""
+    monkeypatch.setattr(llm_anthropic, "load_api_key", lambda: "test-key")
+    processor = create_llm_processor(
+        model="anthropic/claude-sonnet-5", temperature=1.0, max_tokens=4096
+    )
+    assert isinstance(processor, AnthropicProcessor)
 
 
 # --- concurrent processor ---------------------------------------------------
@@ -175,8 +184,14 @@ def test_the_request_carries_the_sanitized_grammar(monkeypatch: pytest.MonkeyPat
     request = processor._client.messages.requests[0]  # type: ignore[attr-defined]
     assert request["output_config"]["format"]["schema"] == sanitize_schema(SCHEMA).grammar
     assert request["thinking"] == {"type": "adaptive"}
-    assert request["temperature"] == 1.0
     assert request["max_tokens"] == 4096
+
+
+def test_the_request_omits_temperature(monkeypatch: pytest.MonkeyPatch) -> None:
+    processor = _processor(monkeypatch, [_message(PAYLOAD)])
+    asyncio.run(processor.process_batch(["a"], SCHEMA))
+    request = processor._client.messages.requests[0]  # type: ignore[attr-defined]
+    assert "temperature" not in request
 
 
 def test_an_api_error_fails_only_its_own_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -269,6 +284,7 @@ def test_batch_requests_carry_the_prompt_and_grammar(monkeypatch: pytest.MonkeyP
     assert params["messages"] == [{"role": "user", "content": "the prompt"}]
     assert params["output_config"]["format"]["schema"] == sanitize_schema(SCHEMA).grammar
     assert params["model"] == "claude-sonnet-5"
+    assert "temperature" not in params
 
 
 def test_a_failed_batch_request_yields_none_for_that_custom_id(

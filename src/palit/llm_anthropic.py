@@ -9,7 +9,9 @@ Two variants share schema handling and response parsing:
 * :class:`AnthropicBatchProcessor` (``anthropic-batch/<model-id>``) — one
   Message Batches submission per ``process_batch`` call, polled to completion.
 
-Both read ``ANTHROPIC_API_KEY`` from the environment or ``.env``.
+Both read ``ANTHROPIC_API_KEY`` from the environment or ``.env`` and run with
+adaptive thinking. Requests carry no ``temperature`` field, so the API default
+applies; ``--temperature`` must be left at its own default.
 """
 
 import asyncio
@@ -171,12 +173,17 @@ def _output_config(effort: Effort, grammar: dict[str, Any]) -> OutputConfigParam
     )
 
 
-def _require_sampling_temperature_one(temperature: float) -> None:
-    """Adaptive thinking pins temperature to 1; reject other values up front."""
+def _reject_temperature_override(temperature: float) -> None:
+    """Reject any ``--temperature`` the backend cannot honour.
+
+    Requests never carry a ``temperature`` field, so the API default applies.
+    1.0 is the stages' flag default and therefore means "unset"; anything else
+    would be silently ignored, so fail on it instead.
+    """
     if temperature != 1.0:
         raise ValueError(
-            f"The Anthropic backend runs with adaptive thinking, which only accepts "
-            f"--temperature 1.0 (got {temperature})."
+            f"The Anthropic backend leaves temperature at the API default, so "
+            f"--temperature must not be set (got {temperature})."
         )
 
 
@@ -224,9 +231,8 @@ class AnthropicProcessor:
         effort: Effort = DEFAULT_EFFORT,
         max_retries: int = DEFAULT_MAX_RETRIES,
     ):
-        _require_sampling_temperature_one(temperature)
+        _reject_temperature_override(temperature)
         self.model_id = model_id
-        self.temperature = temperature
         self.max_tokens = max_tokens
         self.effort = effort
         self._schemas = _SchemaCache()
@@ -253,7 +259,6 @@ class AnthropicProcessor:
             async with self._client.messages.stream(
                 model=self.model_id,
                 max_tokens=self.max_tokens,
-                temperature=self.temperature,
                 messages=[{"role": "user", "content": prompt}],
                 thinking={"type": "adaptive"},
                 output_config=_output_config(self.effort, grammar),
@@ -283,9 +288,8 @@ class AnthropicBatchProcessor:
         max_retries: int = DEFAULT_MAX_RETRIES,
         poll_interval: float = BATCH_POLL_INTERVAL_SECONDS,
     ):
-        _require_sampling_temperature_one(temperature)
+        _reject_temperature_override(temperature)
         self.model_id = model_id
-        self.temperature = temperature
         self.max_tokens = max_tokens
         self.effort = effort
         self.poll_interval = poll_interval
@@ -338,7 +342,6 @@ class AnthropicBatchProcessor:
         return MessageCreateParamsNonStreaming(
             model=self.model_id,
             max_tokens=self.max_tokens,
-            temperature=self.temperature,
             messages=[{"role": "user", "content": prompt}],
             thinking={"type": "adaptive"},
             output_config=_output_config(self.effort, grammar),

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 
 from palit.panelapp_integration import PANELAPP_MOI_TO_ENUM, TARGET_PANEL_IDS
 
@@ -21,28 +21,28 @@ RETRY_BACKOFF_SECONDS = 2.0
 
 
 def _request_with_retry(
-    client: httpx.Client,
+    client: httpx2.Client,
     url: str,
     timeout: float = 30.0,
     max_retries: int = MAX_RETRIES,
-) -> httpx.Response:
+) -> httpx2.Response:
     """Make an HTTP GET request with retry logic and exponential backoff.
 
     Only retries on transient errors (5xx server errors and connection issues).
     Client errors (4xx) are considered permanent and are not retried.
 
     Args:
-        client: httpx Client instance
+        client: httpx2 Client instance
         url: URL to fetch
         timeout: Request timeout in seconds
         max_retries: Maximum number of retry attempts
 
     Returns:
-        httpx.Response on success
+        httpx2.Response on success
 
     Raises:
-        httpx.HTTPStatusError: For client errors (4xx) or after all retries exhausted
-        httpx.RequestError: After all retries exhausted for connection errors
+        httpx2.HTTPStatusError: For client errors (4xx) or after all retries exhausted
+        httpx2.RequestError: After all retries exhausted for connection errors
     """
     last_exception: Exception | None = None
 
@@ -51,7 +51,7 @@ def _request_with_retry(
             response = client.get(url, timeout=timeout)
             response.raise_for_status()
             return response
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             # Only retry on transient errors: 429 (rate limit) and 5xx (server errors)
             # Other 4xx errors (400, 401, 403, 404, etc.) are permanent
             if e.response.status_code != 429 and e.response.status_code < 500:
@@ -66,7 +66,7 @@ def _request_with_retry(
                 time.sleep(sleep_time)
             else:
                 logger.error(f"Request to {url} failed after {max_retries + 1} attempts: {e}")
-        except httpx.RequestError as e:
+        except httpx2.RequestError as e:
             # Retry connection/timeout errors
             last_exception = e
             if attempt < max_retries:
@@ -319,7 +319,7 @@ class PanelAppClient:
         all_panels = {}
         cutoff_date = datetime.fromisoformat(self.panel_date).replace(tzinfo=UTC)
 
-        with httpx.Client(timeout=self.timeout) as client:
+        with httpx2.Client(timeout=self.timeout) as client:
             for panel_id in panel_ids:
                 # Find the correct version for this date
                 activities_url = f"{self.base_url}/panels/{panel_id}/activities/"
@@ -481,7 +481,7 @@ class PanelAppClient:
         panel_ids = []
         url: str | None = f"{PANELAPP_BASE_URL}/panels/"
 
-        with httpx.Client(timeout=self.timeout) as client:
+        with httpx2.Client(timeout=self.timeout) as client:
             while url:
                 logger.debug(f"Fetching panel list from: {url}")
                 response = _request_with_retry(client, url, timeout=30.0)
@@ -565,7 +565,7 @@ class PanelAppClient:
         """
         url = f"{self.base_url}/panels/{panel_id}/genes/HGNC:{hgnc_id}/evaluations/?include_comments=true"
 
-        with httpx.Client(timeout=self.timeout) as client:
+        with httpx2.Client(timeout=self.timeout) as client:
             try:
                 response = _request_with_retry(client, url, timeout=self.timeout)
                 data = response.json()
@@ -573,7 +573,7 @@ class PanelAppClient:
                 # Sort by created date descending (most recent first)
                 results.sort(key=lambda x: x.get("created", ""), reverse=True)
                 return results
-            except httpx.HTTPStatusError as e:
+            except httpx2.HTTPStatusError as e:
                 if e.response.status_code == 404:
                     logger.debug(f"HGNC:{hgnc_id} not found in panel {panel_id}")
                     return []
@@ -601,7 +601,7 @@ def get_current_panel_publications(
     all_pmids: set[int] = set()
     all_dois: set[str] = set()
 
-    with httpx.Client(timeout=timeout) as client:
+    with httpx2.Client(timeout=timeout) as client:
         for panel_id in panel_ids:
             panel_url = f"{PANELAPP_BASE_URL}/panels/{panel_id}/"
             response = _request_with_retry(client, panel_url, timeout=timeout)

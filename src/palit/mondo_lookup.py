@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-import httpx
+import httpx2
 import pronto
 
 from palit.panelapp_integration import MONDO_CATEGORIES
@@ -43,7 +43,7 @@ def _download_if_stale(url: str, path: Path) -> None:
     else:
         logger.info(f"Downloading {url}")
 
-    with httpx.Client(follow_redirects=True, timeout=120) as client:
+    with httpx2.Client(follow_redirects=True, timeout=120) as client:
         response = client.get(url)
         response.raise_for_status()
         path.write_bytes(response.content)

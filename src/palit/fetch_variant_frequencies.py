@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 import tenacity
 import typer
 from pydantic import Field, ValidationError
@@ -110,9 +110,9 @@ def _load_settings() -> VariantLookupSettings:
 
 
 def _is_5xx_or_transport(exc: BaseException) -> bool:
-    if isinstance(exc, httpx.TransportError):
+    if isinstance(exc, httpx2.TransportError):
         return True
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, httpx2.HTTPStatusError):
         return exc.response.status_code >= 500
     return False
 
@@ -128,7 +128,7 @@ class VariantLookupClient:
         self._endpoint = f"{settings.base_url.rstrip('/')}/v1/variant"
         self._headers = {"Authorization": f"Bearer {settings.api_key}"}
         self._semaphore = asyncio.Semaphore(max_in_flight)
-        self._http = httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
+        self._http = httpx2.AsyncClient(timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -495,7 +495,7 @@ async def _resolve_all(
             body = _build_request_body(ev)
             response = await client.lookup_one(body)
             result = _result_from_response(ev, doi, response)
-        except (httpx.HTTPError, tenacity.RetryError) as e:
+        except (httpx2.HTTPError, tenacity.RetryError) as e:
             logger.warning(
                 "Variant %r for gene %s in DOI %s failed after retries: %s: %s",
                 ev.variant_text,

@@ -30,7 +30,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 import typer
 from rich.console import Console
 
@@ -246,7 +246,7 @@ def sync_ftp(
     *,
     min_crdt: str,
     work_dir: Path,
-    client: httpx.Client,
+    client: httpx2.Client,
     today: str,
     max_files: int | None = None,
     keep_files: bool = False,

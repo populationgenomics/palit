@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
-import httpx
+import httpx2
 import plotly.graph_objects as go
 import typer
 from jinja2 import Environment, FileSystemLoader
@@ -492,7 +492,7 @@ def fetch_mendeliome_at_date(target_date: datetime) -> dict[str, str]:
 
     # Fetch all activities to find the appropriate version
     url = f"{PANELAPP_BASE_URL}/panels/{MENDELIOME_PANEL_ID}/activities/"
-    response = httpx.get(url, timeout=60.0)
+    response = httpx2.get(url, timeout=60.0)
     response.raise_for_status()
     activities: list[dict[str, Any]] = response.json()
 
@@ -534,7 +534,7 @@ def fetch_mendeliome_at_date(target_date: datetime) -> dict[str, str]:
 
     # Fetch panel genes for this version
     url = f"{PANELAPP_BASE_URL}/panels/{MENDELIOME_PANEL_ID}/?version={version}"
-    response = httpx.get(url, timeout=60.0)
+    response = httpx2.get(url, timeout=60.0)
     response.raise_for_status()
     panel = response.json()
 
@@ -565,7 +565,7 @@ def fetch_panel_genes_numeric(version: str, exclude_mito: bool = True) -> dict[s
         Dictionary mapping gene name -> confidence_level (1=RED, 2=AMBER, 3=GREEN)
     """
     url = f"{PANELAPP_BASE_URL}/panels/{MENDELIOME_PANEL_ID}/?version={version}"
-    response = httpx.get(url, timeout=60.0)
+    response = httpx2.get(url, timeout=60.0)
     response.raise_for_status()
     panel = response.json()
 
@@ -1079,7 +1079,7 @@ def analyze() -> None:
 
     # Fetch activities once (reuse from concordance checks)
     url = f"{PANELAPP_BASE_URL}/panels/{MENDELIOME_PANEL_ID}/activities/"
-    response = httpx.get(url, timeout=60.0)
+    response = httpx2.get(url, timeout=60.0)
     response.raise_for_status()
     activities: list[dict[str, Any]] = response.json()
 

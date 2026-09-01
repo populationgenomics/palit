@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
 
 from palit import ledger, pubmed_ftp
@@ -431,16 +431,16 @@ def _patch_ftp(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
     """Patch the FTP primitives; tests set `state['files']` / `state['baseline']`."""
     state: dict[str, Any] = {"baseline": RemoteFile(26, 1334), "files": []}
 
-    def fake_baseline(client: httpx.Client | None) -> RemoteFile:
+    def fake_baseline(client: httpx2.Client | None) -> RemoteFile:
         baseline: RemoteFile = state["baseline"]
         return baseline
 
-    def fake_list(client: httpx.Client | None, subdir: str) -> list[RemoteFile]:
+    def fake_list(client: httpx2.Client | None, subdir: str) -> list[RemoteFile]:
         files: list[RemoteFile] = sorted(state["files"])
         return files
 
     def fake_download(
-        client: httpx.Client | None, subdir: str, remote: RemoteFile, dest_dir: Path
+        client: httpx2.Client | None, subdir: str, remote: RemoteFile, dest_dir: Path
     ) -> Path:
         dest_dir.mkdir(parents=True, exist_ok=True)
         path: Path = dest_dir / remote.name

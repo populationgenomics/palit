@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-import httpx
+import httpx2
 import typer
 from rich.console import Console
 from rich.progress import track
@@ -148,7 +148,7 @@ def search_pubmed_by_title(title: str) -> int | None:
         # We use the ESearch endpoint directly instead of the `esearch` CLI, as the
         # latter applies some "helpful" pre-processing for stopwords etc., making most
         # title searches fail.
-        response = httpx.get(ESEARCH_URL, params=params, timeout=30.0)
+        response = httpx2.get(ESEARCH_URL, params=params, timeout=30.0)
         response.raise_for_status()
         data = response.json()
 
@@ -184,7 +184,7 @@ def search_pubmed_by_title(title: str) -> int | None:
             logger.warning(f"Invalid PMID received for title: {title}...")
             return None
 
-    except (httpx.HTTPError, json.JSONDecodeError) as e:
+    except (httpx2.HTTPError, json.JSONDecodeError) as e:
         logger.warning(f"Search failed for title: {title}... ({e})")
         return None
 
@@ -269,10 +269,10 @@ def fetch_paper_metadata_by_doi(doi: str, source_details: str) -> Paper | None:
     """
     url = f"https://api.crossref.org/works/{quote(doi, safe='')}"
     try:
-        response = httpx.get(url, timeout=30.0)
+        response = httpx2.get(url, timeout=30.0)
         response.raise_for_status()
         data = response.json()
-    except (httpx.HTTPError, json.JSONDecodeError) as e:
+    except (httpx2.HTTPError, json.JSONDecodeError) as e:
         logger.warning(f"CrossRef fetch failed for DOI {doi}: {e}")
         return None
 

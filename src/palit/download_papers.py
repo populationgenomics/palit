@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import boto3
-import httpx
+import httpx2
 import typer
 from botocore import UNSIGNED
 from botocore.config import Config
@@ -418,7 +418,7 @@ def _s3_url_to_key(s3_url: str) -> str:
 # mixes bioRxiv, medRxiv and Research Square still use the whole pool.
 _MAX_IN_FLIGHT_PER_HOST = 2
 
-# The default python-httpx User-Agent scores poorly with Cloudflare's bot
+# The default python-httpx2 User-Agent scores poorly with Cloudflare's bot
 # management. Identify the tool rather than impersonating a browser.
 _USER_AGENT = f"palit/{package_version('palit')} (open-access preprint retrieval)"
 
@@ -435,9 +435,9 @@ def _is_retryable_http(exc: BaseException) -> bool:
     429 never reaches here: it is handled in-band against ``Retry-After``, and
     exhausting that loop is terminal for the run.
     """
-    if isinstance(exc, httpx.TransportError):
+    if isinstance(exc, httpx2.TransportError):
         return True
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, httpx2.HTTPStatusError):
         return exc.response.status_code >= 500
     return False
 
@@ -453,7 +453,7 @@ class PreprintDownloader:
     """
 
     def __init__(self, timeout: float) -> None:
-        self._http = httpx.Client(
+        self._http = httpx2.Client(
             timeout=timeout,
             follow_redirects=True,
             headers={"User-Agent": _USER_AGENT},
@@ -473,7 +473,7 @@ class PreprintDownloader:
                 self._semaphores[host] = semaphore
             return semaphore
 
-    def fetch(self, url: str) -> httpx.Response:
+    def fetch(self, url: str) -> httpx2.Response:
         """GET ``url``, waiting out rate limits and retrying transient failures."""
         with self._semaphore_for(url):
             return self._fetch_with_retry(url)
@@ -485,7 +485,7 @@ class PreprintDownloader:
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    def _fetch_with_retry(self, url: str) -> httpx.Response:
+    def _fetch_with_retry(self, url: str) -> httpx2.Response:
         for attempt in range(_MAX_429_ATTEMPTS):
             response = self._http.get(url)
             if response.status_code != 429:
@@ -500,7 +500,7 @@ class PreprintDownloader:
         raise RuntimeError("unreachable: 429 loop fell through without raising")
 
 
-def _retry_after_delay(response: httpx.Response, attempt: int) -> float:
+def _retry_after_delay(response: httpx2.Response, attempt: int) -> float:
     """Seconds to wait after a 429, preferring the server's own guidance.
 
     RFC 9110 also permits an HTTP-date in ``Retry-After``; the preprint servers

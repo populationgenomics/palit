@@ -8,7 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 import typer
 from rich.console import Console
 from rich.progress import TaskID
@@ -30,7 +30,7 @@ console = Console()
 app = typer.Typer(help="Download and ingest preprints from bioRxiv, medRxiv, and Research Square")
 
 logger = logging.getLogger(__name__)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpx2").setLevel(logging.WARNING)
 
 CROSSREF_PAGE_SIZE = 1000  # Crossref allows up to 1000 results per page
 _RS_VERSION_SUFFIX = re.compile(r"/v\d+$")
@@ -51,10 +51,10 @@ class RxivServer(enum.Enum):
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential_jitter(initial=2, max=60),
-    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+    retry=retry_if_exception_type((httpx2.HTTPStatusError, httpx2.TransportError)),
     reraise=True,
 )
-def _fetch_rxiv_page(client: httpx.Client, url: str) -> dict[str, Any]:
+def _fetch_rxiv_page(client: httpx2.Client, url: str) -> dict[str, Any]:
     """Fetch a single page from the bioRxiv/medRxiv API with retries."""
     response = client.get(url, timeout=90)
     response.raise_for_status()
@@ -107,7 +107,7 @@ def fetch_rxiv_papers(
     fetched = 0
     cursor = 0
 
-    with httpx.Client() as client:
+    with httpx2.Client() as client:
         while True:
             url = f"{server.base_url}/details/{server.source}/{start_date}/{end_date}/{cursor}/json"
 
@@ -174,10 +174,10 @@ def _parse_crossref_paper(record: dict[str, Any], source_details: str) -> Paper:
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential_jitter(initial=2, max=60),
-    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+    retry=retry_if_exception_type((httpx2.HTTPStatusError, httpx2.TransportError)),
     reraise=True,
 )
-def _fetch_crossref_page(client: httpx.Client, url: str, params: dict[str, str]) -> dict[str, Any]:
+def _fetch_crossref_page(client: httpx2.Client, url: str, params: dict[str, str]) -> dict[str, Any]:
     """Fetch a single page from the Crossref API with retries."""
     response = client.get(url, params=params, timeout=90)
     response.raise_for_status()
@@ -214,7 +214,7 @@ def fetch_rs_papers(
         "cursor": "*",
     }
 
-    with httpx.Client() as client:
+    with httpx2.Client() as client:
         while True:
             data = _fetch_crossref_page(client, url, params)
             message = data["message"]

@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
+import httpx2
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 logger = logging.getLogger(__name__)
@@ -62,11 +62,11 @@ class RemoteFile:
         return f"pubmed{self.year:02d}n{self.number:04d}.xml.gz"
 
 
-def make_client() -> httpx.Client:
+def make_client() -> httpx2.Client:
     """Build an HTTP client for the NCBI FTP host with a courteous User-Agent."""
-    return httpx.Client(
+    return httpx2.Client(
         headers={"User-Agent": "palit-pubmed-ingest (https://github.com/populationgenomics)"},
-        timeout=httpx.Timeout(120.0, connect=30.0),
+        timeout=httpx2.Timeout(120.0, connect=30.0),
         follow_redirects=True,
     )
 
@@ -74,24 +74,24 @@ def make_client() -> httpx.Client:
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential_jitter(initial=2, max=60),
-    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+    retry=retry_if_exception_type((httpx2.HTTPStatusError, httpx2.TransportError)),
     reraise=True,
 )
-def _get_text(client: httpx.Client, url: str) -> str:
+def _get_text(client: httpx2.Client, url: str) -> str:
     """GET a small text resource (directory listing, README, .md5) with retries."""
     response = client.get(url)
     response.raise_for_status()
     return response.text
 
 
-def list_remote_files(client: httpx.Client, subdir: str) -> list[RemoteFile]:
+def list_remote_files(client: httpx2.Client, subdir: str) -> list[RemoteFile]:
     """List the `.xml.gz` files in an FTP subdirectory, sorted by (year, number)."""
     listing = _get_text(client, f"{FTP_BASE}/{subdir}/")
     files = {RemoteFile(int(y), int(n)) for y, n in _FILE_RE.findall(listing)}
     return sorted(files)
 
 
-def read_baseline_max(client: httpx.Client) -> RemoteFile:
+def read_baseline_max(client: httpx2.Client) -> RemoteFile:
     """Read the highest baseline file number from the baseline README.
 
     The README always describes the current annual baseline, e.g. "the complete
@@ -127,11 +127,11 @@ def _md5_file(path: Path) -> str:
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential_jitter(initial=2, max=60),
-    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError, ValueError)),
+    retry=retry_if_exception_type((httpx2.HTTPStatusError, httpx2.TransportError, ValueError)),
     reraise=True,
 )
 def download_verified(
-    client: httpx.Client, subdir: str, remote: RemoteFile, dest_dir: Path
+    client: httpx2.Client, subdir: str, remote: RemoteFile, dest_dir: Path
 ) -> Path:
     """Download a `.xml.gz` file and verify it against its `.md5` sibling.
 

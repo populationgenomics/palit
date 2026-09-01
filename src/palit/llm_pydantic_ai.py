@@ -109,7 +109,7 @@ class PydanticAIProcessor:
             )
 
             result = await agent.run(prompt)
-            usage = result.usage()
+            usage = result.usage
             logger.info(
                 "Token usage: input=%d output=%d total=%d",
                 usage.input_tokens,

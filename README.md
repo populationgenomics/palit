@@ -56,8 +56,11 @@ VARIANT_LOOKUP_API_KEY=<bearer-token>
 ## Complete Workflow
 
 ```bash
-# Configuration
-PANEL_DATE=2025-10-01
+# Configuration. PANEL_DATE selects the PanelApp snapshot the run is assessed
+# against. Date it on the day the run is set up, after the literature window has
+# closed, so that a gene a curator added during the window is already on its
+# panel when the run assesses it.
+PANEL_DATE=2025-10-20
 START_DATE=2025-10-01
 END_DATE=2025-10-15
 LEDGER=data/pubmed_ingestion_ledger.sqlite
@@ -104,9 +107,11 @@ uv run palit discover-citations discover
 uv run palit discover-citations add --gene GENE_SYMBOL PMID1 PMID2 ...
 
 # 6. Expand literature beyond citations. Tournament selection over the screened
-#    baseline, then unconditional seeding of the publications PanelApp already
-#    cites for each gene (see "PanelApp publication seeding" below).
-uv run palit expand-literature --cutoff-date $PANEL_DATE --panel-date $PANEL_DATE
+#    baseline, bounded by --cutoff-date to the literature preceding the window,
+#    then unconditional seeding of the publications PanelApp already cites for
+#    each gene in the --panel-date snapshot (see "PanelApp publication seeding"
+#    below).
+uv run palit expand-literature --cutoff-date $START_DATE --panel-date $PANEL_DATE
 
 # 7. Download expansion papers (same workflow as step 3)
 uv run palit download-papers attempt-pmc
@@ -329,8 +334,8 @@ This step is tracked as `UPDATE_BASELINE` in the pipeline tracker and also syncs
 For curating literature for a specific panel (e.g., Arthrogryposis):
 
 ```bash
-# Configuration
-PANEL_DATE=2025-10-01
+# Configuration. As above, PANEL_DATE is the day the run is set up.
+PANEL_DATE=2025-10-20
 PANEL_ID=47  # Arthrogryposis panel ID
 PANEL_NAME=arthrogryposis
 

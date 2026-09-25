@@ -7,12 +7,12 @@
     "build": "tsc --noEmit && vite build && node scripts/copy-pdfjs-assets.mjs"
   },
   "dependencies": {
-    "@ai-sdk/react": "3.0.289",
-    "@flowajs/react-viewer": "0.1.2",
+    "@ai-sdk/react": "4.0.108",
+    "@flowajs/react-viewer": "0.2.1",
     "@mantine/core": "8.3.18",
     "@mantine/hooks": "8.3.18",
     "@tabler/icons-react": "3.46.0",
-    "ai": "6.0.286",
+    "ai": "7.0.105",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "zustand": "4.5.7"

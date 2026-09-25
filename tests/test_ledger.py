@@ -51,7 +51,8 @@ def _new_run_db(tmp_path: Path, name: str = "run.sqlite") -> Path:
 
 
 def _assessment(relevant: bool) -> str:
-    return json.dumps({"relevant": relevant, "associations": []})
+    screen = {"relevant": relevant, "confidence": "HIGH", "rationale": "r", "associations": []}
+    return json.dumps({"relevant": relevant, "screen": screen, "panelapp_check": None})
 
 
 def _articleset_gz(articles: list[tuple[str, int, str]]) -> bytes:

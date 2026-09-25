@@ -438,9 +438,11 @@ class PanelValidationResult:
 
     total_panel_papers: int
     panel_papers_in_db: int
-    false_negatives: list[DetailedPaper]
     true_positives: list[DetailedPaper]
-    sensitivity_pct: float  # TP / (TP + FN) - ability to identify relevant papers
+    screen_misses: list[DetailedPaper]  # rejected by the scope screen
+    check_rejections: list[DetailedPaper]  # passed the screen, judged curated by the PanelApp check
+    sensitivity_pct: float  # share assessed relevant
+    screen_sensitivity_pct: float  # share that passed the scope screen
 
 
 @dataclass
@@ -457,7 +459,9 @@ class ComprehensiveStats:
     total_panel_papers: int
     panel_papers_in_db: int
     validation_sensitivity_pct: float
-    false_negatives_count: int
+    validation_screen_sensitivity_pct: float
+    screen_misses_count: int
+    check_rejections_count: int
     true_positives_count: int
 
     # Source breakdown
@@ -1092,9 +1096,11 @@ def load_panel_publications_validation(
             return PanelValidationResult(
                 total_panel_papers=0,
                 panel_papers_in_db=0,
-                false_negatives=[],
                 true_positives=[],
+                screen_misses=[],
+                check_rejections=[],
                 sensitivity_pct=0.0,
+                screen_sensitivity_pct=0.0,
             )
 
         # Match panel publications against our DB by both PMID and DOI
@@ -1148,8 +1154,9 @@ def load_panel_publications_validation(
         logger.info(f"Found {len(all_panel_papers)} panel papers in initial set with assessments")
 
         # Convert to DetailedPaper objects and categorize
-        false_negatives = []
-        true_positives = []
+        true_positives: list[DetailedPaper] = []
+        screen_misses: list[DetailedPaper] = []
+        check_rejections: list[DetailedPaper] = []
 
         for row in all_panel_papers:
             relevance_assessment = None
@@ -1184,29 +1191,34 @@ def load_panel_publications_validation(
                 pmid=row["pmid"],
             )
 
-            # Categorize by LLM assessment
             if relevance_assessment["relevant"]:
                 true_positives.append(detailed_paper)
+            elif relevance_assessment["screen"]["relevant"]:
+                check_rejections.append(detailed_paper)
             else:
-                false_negatives.append(detailed_paper)
+                screen_misses.append(detailed_paper)
 
-        # Calculate metrics
-        total_assessed = len(false_negatives) + len(true_positives)
-        tp_count = len(true_positives)
-        fn_count = len(false_negatives)
+        total_assessed = len(true_positives) + len(screen_misses) + len(check_rejections)
 
-        # Sensitivity = TP / (TP + FN) - ability to identify relevant papers
-        sensitivity_pct = (tp_count / total_assessed * 100) if total_assessed > 0 else 0.0
+        def pct(count: int) -> float:
+            return count / total_assessed * 100 if total_assessed > 0 else 0.0
 
-        logger.info(f"Panel validation: {tp_count} true positives, {fn_count} false negatives")
-        logger.info(f"Sensitivity: {sensitivity_pct:.1f}%")
+        sensitivity_pct = pct(len(true_positives))
+        screen_sensitivity_pct = pct(len(true_positives) + len(check_rejections))
+        logger.info(
+            f"Panel validation: {len(true_positives)} relevant, {len(screen_misses)} missed by "
+            f"the screen, {len(check_rejections)} judged curated by the PanelApp check"
+        )
+        logger.info(f"Sensitivity: {sensitivity_pct:.1f}% (screen: {screen_sensitivity_pct:.1f}%)")
 
         return PanelValidationResult(
             total_panel_papers=total_panel_refs,
             panel_papers_in_db=total_assessed,
-            false_negatives=false_negatives,
             true_positives=true_positives,
+            screen_misses=screen_misses,
+            check_rejections=check_rejections,
             sensitivity_pct=sensitivity_pct,
+            screen_sensitivity_pct=screen_sensitivity_pct,
         )
 
 
@@ -1246,8 +1258,9 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                 logger.warning(f"Failed to parse relevance assessment for DOI {row['doi']}")
                 continue
 
-            # Filter: only include if NOT relevant AND LOW confidence
-            if not relevance_assessment["relevant"] and relevance_assessment["confidence"] == "LOW":
+            # Screen rejections the screen itself was unsure about
+            screen = relevance_assessment["screen"]
+            if not screen["relevant"] and screen["confidence"] == "LOW":
                 evidence_extraction = None
                 if row["evidence_extraction_json"]:
                     try:
@@ -1601,7 +1614,9 @@ def calculate_comprehensive_statistics(
             total_panel_papers=panel_validation.total_panel_papers,
             panel_papers_in_db=panel_validation.panel_papers_in_db,
             validation_sensitivity_pct=panel_validation.sensitivity_pct,
-            false_negatives_count=len(panel_validation.false_negatives),
+            validation_screen_sensitivity_pct=panel_validation.screen_sensitivity_pct,
+            screen_misses_count=len(panel_validation.screen_misses),
+            check_rejections_count=len(panel_validation.check_rejections),
             true_positives_count=len(panel_validation.true_positives),
             # Source breakdown
             initial_papers=source_counts.get("initial", 0),
@@ -1733,6 +1748,36 @@ def prepare_aggregate_citation_links(
     return sorted(links, key=lambda link: (link.display_id, link.quote_index))
 
 
+@dataclass(frozen=True)
+class PanelAppVerdict:
+    """The relevance-time PanelApp check's verdict on one gene in one contributing paper."""
+
+    paper: DetailedPaper
+    label: str  # e.g. "new disease"
+    disease: str
+    reason: str
+
+
+def panelapp_verdicts(papers: list[DetailedPaper], hgnc_id: int) -> list[PanelAppVerdict]:
+    """The PanelApp-check verdicts for *hgnc_id* across *papers*, for display only."""
+    verdicts = []
+    for paper in papers:
+        check = (paper.relevance_assessment or {}).get("panelapp_check")
+        if check is None:
+            continue
+        for association in check["associations"]:
+            if association["hgnc_id"] == hgnc_id:
+                verdicts.append(
+                    PanelAppVerdict(
+                        paper=paper,
+                        label=association["verdict"].replace("_", " "),
+                        disease=association["disease"],
+                        reason=association["reason"],
+                    )
+                )
+    return verdicts
+
+
 def prepare_paper_citation_links(
     citations: list[dict[str, Any]], paper: DetailedPaper
 ) -> list[CitationLink]:
@@ -1857,6 +1902,7 @@ def generate_html_report(
     env.filters["format_inheritance"] = format_inheritance
     env.filters["prepare_citation_links"] = prepare_aggregate_citation_links
     env.filters["paper_citation_links"] = prepare_paper_citation_links
+    env.filters["panelapp_verdicts"] = panelapp_verdicts
     env.filters["get_variant_flag"] = get_variant_frequency_flag
     env.filters["confidence_to_color"] = panelapp_confidence_to_color
     # Double-encode: first quote produces the on-disk filename (e.g. 10.1038%2Fxyz),

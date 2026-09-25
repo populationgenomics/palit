@@ -92,14 +92,18 @@ uv run palit ledger init --ledger $LEDGER
 uv run palit ingest-preprints --ledger $LEDGER $START_DATE $END_DATE
 uv run palit ingest-pubmed --ledger $LEDGER $START_DATE $END_DATE
 
-# 2. Assess relevance of papers: one Claude request per paper, sent as Message
-#    Batches (usually done within an hour). Safe to interrupt and re-run: it
-#    re-attaches to batches still in flight. Refused papers stay unassessed and
-#    are retried in the next run.
-uv run palit assess-relevance
+# 2. Assess relevance of papers in two levels, sent as Message Batches. A scope
+#    screen of every title and abstract lists the genes of papers with human
+#    genetic evidence; a PanelApp check then compares those genes with their
+#    entries on the target panels (at PANEL_DATE) and keeps a paper only if a
+#    gene is new, has a new disease or inheritance mode, or is still amber or
+#    red. Safe to interrupt and re-run: it re-attaches to batches still in
+#    flight. Refused papers stay unassessed and are retried in the next run.
+uv run palit assess-relevance --panel-date $PANEL_DATE
 
-# 2a. (Optional) Screen the PubMed baseline with the retrospective prompt
-uv run palit assess-relevance --db-path data/pubmed_baseline_screening.sqlite --prompt-path prompts/retrospective_screening_prompt.txt
+# 2a. (Optional) Screen the PubMed baseline with the retrospective prompt. The
+#     baseline is a comprehensive repository, so the screen decides alone.
+uv run palit assess-relevance --db-path data/pubmed_baseline_screening.sqlite --prompt-path prompts/retrospective_screening_prompt.txt --screen-only
 
 # 3. Download full-text papers (automated PMC + preprints, manual fallback)
 uv run palit download-papers attempt-pmc
@@ -283,20 +287,20 @@ For historical baseline screening (2000-2025), use the **retrospective screening
 # Retrospective mode: evaluates historical evidence value, not novelty
 uv run palit assess-relevance \
   --db-path data/pubmed_baseline_screening.sqlite \
-  --panel-date $PANEL_DATE \
-  --prompt-path prompts/retrospective_screening_prompt.txt
+  --prompt-path prompts/retrospective_screening_prompt.txt \
+  --screen-only
 ```
 
 **Key difference from standard relevance assessment:**
 
-- **Standard prompt** (`relevance_assessment_prompt.txt`): Asks "Is this NEW evidence for diagnostic panels?" - optimized for recent literature
+- **Standard prompt** (`relevance_assessment_prompt.txt`): the scope screen of the monthly run, followed by the PanelApp check that asks whether the evidence is new relative to the target panels - optimized for recent literature
 - **Retrospective prompt** (`retrospective_screening_prompt.txt`): Asks "Does this provide SUBSTANTIAL evidence for gene-disease relationships?" - optimized for historical baseline screening
 
 The retrospective prompt evaluates papers in their historical context, accepting important early descriptions of gene-disease associations even if those genes are now well-established. This ensures comprehensive coverage across 25 years of literature for downstream tournament selection and analysis.
 
 ### Updating the Baseline
 
-After each fortnightly processing run completes, feed relevant papers back into the baseline screening DB so it grows as a comprehensive repository:
+After each fortnightly processing run completes, feed the papers its scope screen passed back into the baseline screening DB so it grows as a comprehensive repository. This includes papers the PanelApp check found already curated, which the monthly report leaves out:
 
 ```bash
 FORTNIGHTLY_DB=data/db_2026_february_h1.sqlite
@@ -307,7 +311,7 @@ ATTACH '$FORTNIGHTLY_DB' AS source;
 CREATE TEMP TABLE relevant_dois AS
 SELECT doi FROM source.papers
 WHERE relevance_assessment_json IS NOT NULL
-  AND json_extract(relevance_assessment_json, '$.relevant') = 1;
+  AND json_extract(relevance_assessment_json, '$.screen.relevant') = 1;
 
 INSERT OR IGNORE INTO papers
   (doi, pmid, title, abstract, authors, journal, source_date,
@@ -346,7 +350,8 @@ PANEL_NAME=arthrogryposis
 sqlite3 data/$PANEL_NAME.sqlite < schema.sql
 sqlite3 data/$PANEL_NAME.sqlite "ATTACH 'data/pubmed_baseline_screening.sqlite' AS source; INSERT INTO papers (pmid, title, abstract, authors, journal, entrez_date, source_type, source_details) SELECT pmid, title, abstract, authors, journal, entrez_date, 'initial', source_details FROM source.papers"
 
-# 2. Assess relevance scoped to the panel
+# 2. Assess relevance scoped to the panel: the screen gets the panel description,
+#    and the PanelApp check compares against this panel only
 uv run palit assess-relevance \
   --db-path data/$PANEL_NAME.sqlite \
   --panel-date $PANEL_DATE \

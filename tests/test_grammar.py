@@ -31,6 +31,7 @@ def _schema(name: str) -> dict[str, Any]:
 # (stage, output schema, tools declared alongside it)
 CONFIGURATIONS: list[tuple[str, dict[str, Any], list[ToolParam]]] = [
     ("relevance", _schema("relevance_assessment_schema.json"), []),
+    ("relevance_panelapp", _schema("relevance_panelapp_check_schema.json"), []),
     ("extraction", _schema("evidence_extraction_schema.json"), EXTRACTION_TOOLS),
     ("assess_genes", _schema("aggregate_assessment_schema.json"), []),
     ("match_panels", _schema("panel_matching_schema.json"), []),

@@ -1,0 +1,49 @@
+{
+    "type": "object",
+    "properties": {
+        "rationale": {
+            "type": "string"
+        },
+        "associations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "gene_symbol": {
+                        "type": "string"
+                    },
+                    "disease": {
+                        "type": "string"
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "enum": [
+                            "new_gene",
+                            "new_disease",
+                            "limited_evidence",
+                            "new_inheritance",
+                            "already_curated",
+                            "already_cited",
+                            "out_of_scope"
+                        ]
+                    },
+                    "reason": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "gene_symbol",
+                    "disease",
+                    "verdict",
+                    "reason"
+                ],
+                "additionalProperties": false
+            }
+        }
+    },
+    "required": [
+        "rationale",
+        "associations"
+    ],
+    "additionalProperties": false
+}

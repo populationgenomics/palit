@@ -362,6 +362,10 @@ class PanelAppClient:
 
         return all_panels
 
+    def get_all_panel_data(self) -> dict[int, dict[str, Any]]:
+        """Complete data of every panel in the snapshot, keyed by panel ID."""
+        return self._ensure_cache_loaded()
+
     def get_panel_data(self, panel_id: int) -> dict[str, Any]:
         """Get panel data from cache.
 

@@ -154,6 +154,18 @@
         </p>
         {% endif %}
 
+        {% set verdicts = gene.contributing_papers | panelapp_verdicts(gene.hgnc_id) %}
+        {% if verdicts %}
+        <div class="panelapp-check-verdicts">
+            <strong>PanelApp check at screening</strong> <em>(context only, not part of the assessment)</em>:
+            <ul>
+                {% for v in verdicts %}
+                <li>{{ paper_link(v.paper) }}: <strong>{{ v.label }}</strong> ({{ v.disease }}) - {{ v.reason }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
         {% if gene.assessment_json.quality_concerns %}
         <div class="quality-concerns">
             <h5><strong>⚠️ Quality Concerns</strong></h5>
@@ -449,15 +461,23 @@
         {% endif %}
 
         {% if paper.relevance_assessment %}
+        {% set screen = paper.relevance_assessment.screen %}
+        {% set check = paper.relevance_assessment.panelapp_check %}
         <details class="llm-relevance-assessment">
             <summary><strong>LLM Relevance Assessment</strong></summary>
             <p><strong>Relevant:</strong> {{ 'Yes' if paper.relevance_assessment.relevant else 'No' }}</p>
-            <p><strong>Confidence:</strong> {{ paper.relevance_assessment.confidence or 'Unknown' }}</p>
-            <p><strong>Rationale:</strong> {{ paper.relevance_assessment.rationale or 'No rationale provided' }}</p>
-            {% if paper.relevance_assessment.associations %}
+            <p><strong>Scope screen:</strong> {{ 'passed' if screen.relevant else 'not relevant' }} ({{ screen.confidence }} confidence). {{ screen.rationale }}</p>
+            {% if check %}
+            <p><strong>PanelApp check</strong> (snapshot {{ check.panel_date }}): {{ check.rationale }}</p>
+            <ul>
+                {% for assoc in check.associations %}
+                <li>{{ assoc.gene_symbol }} → {{ assoc.disease }}: <strong>{{ assoc.verdict | replace('_', ' ') }}</strong>. {{ assoc.reason }}</li>
+                {% endfor %}
+            </ul>
+            {% elif screen.associations %}
             <div><strong>Associations:</strong>
                 <ul>
-                    {% for assoc in paper.relevance_assessment.associations %}
+                    {% for assoc in screen.associations %}
                     <li>{{ assoc.gene_symbol }} → {{ assoc.disease }}</li>
                     {% endfor %}
                 </ul>
@@ -704,7 +724,7 @@
                 <li><strong>Unreviewed on Target Panel:</strong> {{ statistics.unreviewed_count }}</li>
                 <li><strong>Preprints with Evidence:</strong> {{ statistics.preprints_relevant }}</li>
                 {% if statistics.papers_filtered %}<li><strong>Papers Excluded (Preprint Family Gate):</strong> {{ statistics.papers_filtered }}</li>{% endif %}
-                <li><strong>Panel Publications Correctly Identified:</strong> {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% ({{ statistics.true_positives_count }}/{{ statistics.true_positives_count + statistics.false_negatives_count }})</li>
+                <li><strong>Panel Publications Correctly Identified:</strong> {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% ({{ statistics.true_positives_count }}/{{ statistics.true_positives_count + statistics.screen_misses_count + statistics.check_rejections_count }})</li>
             </ul>
 
             <details>
@@ -724,8 +744,9 @@
                         <li>Total panel publications: {{ statistics.total_panel_papers }}</li>
                         <li>Found in recent literature: {{ statistics.panel_papers_in_db }}</li>
                         <li>Correctly identified as relevant: {{ statistics.true_positives_count }}</li>
-                        <li>Missed (false negatives): {{ statistics.false_negatives_count }}</li>
-                        <li>Sensitivity: {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}%</li>
+                        <li>Missed by the scope screen: {{ statistics.screen_misses_count }}</li>
+                        <li>Judged already curated by the PanelApp check: {{ statistics.check_rejections_count }}</li>
+                        <li>Sensitivity: {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% (scope screen: {{ "%.1f"|format(statistics.validation_screen_sensitivity_pct) }}%)</li>
                     </ul>
                 </div>
 
@@ -999,15 +1020,26 @@
 
             <div class="validation-summary">
                 <p>Analysis of {{ panel_validation.panel_papers_in_db }} panel publications found in recent literature.</p>
-                <p><strong>Sensitivity: {{ "%.1f"|format(panel_validation.sensitivity_pct) }}%</strong> - {{ panel_validation.true_positives|length }} correctly identified, {{ panel_validation.false_negatives|length }} missed.</p>
+                <p><strong>Sensitivity: {{ "%.1f"|format(panel_validation.sensitivity_pct) }}%</strong> - {{ panel_validation.true_positives|length }} assessed relevant, {{ panel_validation.screen_misses|length }} missed by the scope screen, {{ panel_validation.check_rejections|length }} judged already curated by the PanelApp check (scope screen sensitivity: {{ "%.1f"|format(panel_validation.screen_sensitivity_pct) }}%).</p>
             </div>
 
-            {% if panel_validation.false_negatives %}
+            {% if panel_validation.screen_misses %}
             <details class="false-negatives">
-                <summary><strong>False Negatives ({{ panel_validation.false_negatives|length }}) - Missed Panel Publications</strong></summary>
-                <p><em>Publications mentioned in panels but assessed as NOT RELEVANT - potential missed associations</em></p>
+                <summary><strong>Missed by the Scope Screen ({{ panel_validation.screen_misses|length }})</strong></summary>
+                <p><em>Publications mentioned in panels that the scope screen assessed as not relevant: potential missed associations</em></p>
 
-                {% for paper in panel_validation.false_negatives %}
+                {% for paper in panel_validation.screen_misses %}
+                {{ paper_display(paper, include_evidence=false) }}
+                {% endfor %}
+            </details>
+            {% endif %}
+
+            {% if panel_validation.check_rejections %}
+            <details class="false-negatives">
+                <summary><strong>Judged Already Curated by the PanelApp Check ({{ panel_validation.check_rejections|length }})</strong></summary>
+                <p><em>Publications mentioned in panels that passed the scope screen, but whose genes the PanelApp check found already curated at the time of the run</em></p>
+
+                {% for paper in panel_validation.check_rejections %}
                 {{ paper_display(paper, include_evidence=false) }}
                 {% endfor %}
             </details>

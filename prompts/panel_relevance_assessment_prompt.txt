@@ -8,10 +8,7 @@ You are curating literature for the following diagnostic panel:
 
 **Task Overview**
 
-Assess whether the paper is relevant to this specific panel by determining if it:
-1. Reports gene-disease associations (germline or mosaic/somatic causing non-malignant rare disease) within the panel's phenotypic scope
-2. Provides substantial evidence (novel or established) for genes relevant to the panel's diseases
-3. Contains information that could inform clinical diagnostic decisions for conditions covered by this panel
+Assess whether the paper reports human genetic evidence for a SPECIFIC gene-disease association within the panel's phenotypic scope, whether the gene is new or already known for the disease. Whether the evidence adds to the panel's existing curation is assessed later against the panel itself, so do not judge it from your knowledge of the prior literature.
 
 **Critical Distinction: Germline vs. Somatic**
 - INCLUDE GERMLINE (inherited/constitutional) variants linked to rare genetic diseases.
@@ -66,32 +63,27 @@ Assess whether the paper is relevant to this specific panel by determining if it
 
 **Panel-Specific Inclusion Criteria**
 
-A publication is relevant to this panel if it:
-1. Reports gene-disease associations (germline or mosaic/somatic causing non-malignant rare disease) where the disease/phenotype matches the panel's scope
-   - Disease must align with panel's "Relevant disorders" and/or "Description"
-   - Gene may be known or novel, but disease must fit panel scope
-2. Provides substantial evidence (first report OR strengthening evidence) for gene-disease relationships within panel scope
-   - Evidence can be from case reports, functional studies, or mechanistic insights
-   - Both novel genes and additional evidence for established genes are relevant
-3. Describes inheritance patterns, phenotypic expansion, or genotype-phenotype correlations for conditions in the panel scope
-4. Contains human clinical data with pathogenic/likely pathogenic variants (germline or mosaic/somatic) in diseases covered by the panel
+A publication is relevant to this panel if, for at least one SPECIFIC gene and a disease within the panel's scope, it reports:
+1. New patients or families (not previously published) with pathogenic or likely pathogenic variants (germline, or mosaic/somatic causing non-malignant rare disease) and their phenotype. This applies to first-time and to already known gene-disease associations alike, including single case reports, case series and cohorts.
+2. OR functional or mechanistic evidence that tests specific human disease variants: patient-derived cells, variant knock-in models, or the structure or activity of disease variant proteins. Gene knockouts or basic biology without human disease variants do not qualify.
 
 **Panel-Specific Exclusion Criteria**
 
+The exclusion criteria override the inclusion criteria: a paper that meets an exclusion criterion is not relevant, even if it reports new patients or tests disease variants.
 Exclude publications if they:
 - Study diseases/phenotypes OUTSIDE the panel's scope (even if high-quality genetics)
 - Focus on somatic mutations exclusively in cancer contexts (tumor drivers, cancer genomics)
 - Are about germline cancer predisposition genes where cancer is the primary phenotype (e.g., BRCA1/2, Lynch, APC, TP53)
-- Focus primarily on treatment, therapies, drug response, or clinical management
-- Are methods-focused without substantial human genetic data
+- Focus primarily on treatment, therapies, drug response, or clinical management, even if they report genetically confirmed patients. The focus is treatment when the title, the stated aim or the main conclusion concerns a therapy, response to it, or clinical management, including therapies tested in cell or animal models of disease variants.
+- Are methods-focused (diagnostic methods, tests, screening, diagnostic yield) without new patients carrying pathogenic or likely pathogenic variants in named genes. Such studies that do report these patients are relevant for those patients.
 - Center on population genetics, GWAS, or risk factor analyses
-- Discuss pharmacogenomics, biomarkers, or screening as primary aim
+- Discuss pharmacogenomics or biomarkers as a primary aim
 - Only report variants of uncertain significance without pathogenic evidence
 - Target penetrance, epidemiology, natural history without genetic discoveries
 - Are review articles, meta-analyses, or guidelines
-- Focus on animal models without direct human genetic discovery
+- Focus on animal or cell models without human disease variants (see inclusion criterion 2)
 - Present multiple, unrelated gene mutations in single cases
-- Only refine genotype-phenotype without significant novel insight
+- Report modifier genes, enhancers, or secondary findings not directly causal
 - Report gene-disease associations based solely on digenic or oligogenic inheritance
 
 **Phenotype Matching Guidance**
@@ -107,19 +99,18 @@ When assessing disease/phenotype fit to panel scope:
 - **Cancer Genetics:** Exclude pure cancer predisposition genes where cancer risk is the primary feature. Include multi-system disorders where cancer is one of several features. If cancer risk is THE main issue → EXCLUDE; if it's just one feature among many → INCLUDE (if other features match panel scope).
 - **Mosaicism/Somatic:** Include post-zygotic mosaic or somatic variants causing non-malignant rare disease phenotypes (overgrowth, vascular malformations, cortical malformations, autoinflammatory conditions, etc.). Exclude if relevant only to counseling or if the disease context is cancer.
 - **Novel Associations:** Accept strong evidence from single families or multiple families, but genes must be specifically identified.
-- **Evidence Strengthening:** Include additional families, new variants, functional/mechanistic studies for genes in panel scope.
-- **Phenotypic Expansion:** Include only for new major symptoms linked to SPECIFIC genes in panel scope.
-- **Functional Studies:** Include only if there is direct human data for a specific gene-disease link in panel scope.
+- **Known Associations:** Do not use your knowledge of the prior literature to judge whether an association, variant, phenotype or inheritance pattern is already known, well established or sufficiently supported. New patients with pathogenic or likely pathogenic variants are relevant however well known the association is; do not exclude a paper as a repeat case report, a genotype-phenotype refinement or a minor phenotypic expansion.
+- **Functional Studies:** Include only when the work tests specific human disease variants (inclusion criterion 2).
 - **Candidate Genes:** Include if supported by multiple cases or convincing functional validation.
-- **Case Reports:** Accept for gene-disease associations in panel scope with compelling evidence.
+- **Case Reports:** Accept case reports of new patients with pathogenic or likely pathogenic variants in panel scope, for new and known gene-disease associations alike.
 
 **Balanced Selectivity**
 
-Prioritize papers that contribute meaningful evidence for gene-disease relationships within this panel's scope. Both novel discoveries and strengthening evidence for established genes are valuable if they fall within the panel's phenotypic boundaries. When in doubt, consider: "Would this paper help curators maintain this specific diagnostic panel?"
+Evidence builds iteratively: both strong single cases and several modest ones can be valuable. Exclude pathway-level results and diseases outside the panel's phenotypic boundaries.
 
 **Diagnostic Utility Test**
 
-Ask: "Does this paper provide evidence that could inform whether a gene should be added to, retained in, or modified within THIS specific panel?" If it only implicates pathways, gene groups, or diseases outside panel scope, it should be EXCLUDED.
+Ask: "Does this paper report evidence about a SPECIFIC gene's role in a disease within THIS panel's scope that a curator could use when rating that gene on the panel?" If it only implicates pathways, gene groups, or diseases outside panel scope, it should be EXCLUDED.
 
 **Style:** Use UK English spelling, except in verbatim quotes.
 

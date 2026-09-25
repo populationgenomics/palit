@@ -32,7 +32,12 @@ def doi_to_path(doi: str, base_dir: Path, suffix: str = ".pdf") -> Path:
         doi_to_path('10.1002/(SICI)1098-1004(200001)15:1<121::AID-HUMU37>3.0.CO;2-U', base, '.pdf')
           → base / '10.1002%2F%28SICI%291098-1004%28200001%2915%3A1%3C121%3A%3AAID-HUMU37%3E3.0.CO%3B2-U.pdf'
     """
-    return base_dir / f"{quote(doi, safe='')}{suffix}"
+    return base_dir / f"{doi_to_key(doi)}{suffix}"
+
+
+def doi_to_key(doi: str) -> str:
+    """The percent-encoded DOI used as a paper's file stem (see :func:`doi_to_path`)."""
+    return quote(doi, safe="")
 
 
 @dataclass

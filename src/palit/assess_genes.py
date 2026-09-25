@@ -9,12 +9,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import jsonschema
 import typer
+from anthropic.types import Message
+from anthropic.types.output_config_param import OutputConfigParam
 from jinja2 import Environment, FileSystemLoader
-from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.llm_legacy import LLMProcessor, create_llm_processor
+from palit.llm import (
+    MODEL,
+    AnthropicSettings,
+    BatchTransport,
+    Effort,
+    ImmediateTransport,
+    LlmRequest,
+    LlmResult,
+    ResultStatus,
+    Transport,
+    json_output_config,
+    make_client,
+    parse_json_output,
+    record_result,
+)
+from palit.llm_usage import print_stage_summary
 from palit.mondo_lookup import DisputeRecord, DisputeStatus, MondoCandidate, MondoLookup
 from palit.panelapp_client import (
     PanelAppClient,
@@ -26,6 +43,7 @@ from palit.panelapp_client import (
 )
 from palit.panelapp_integration import (
     MONDO_CATEGORIES,
+    criteria_object_to_list,
     validate_entities_criteria_complete,
     validate_independent_family_counts,
 )
@@ -34,8 +52,13 @@ from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 app = typer.Typer(help="Aggregate evidence assessment across papers for each gene")
 logger = logging.getLogger(__name__)
 
-# SQLite busy timeout in seconds. When sharding, multiple processes write to
-# the same database; the default 5 s can be too short for large batch commits.
+STAGE = "assess_genes"
+EFFORT: Effort = "medium"
+MAX_TOKENS = 64000
+# Above this share of citations not copied from the extractions, the assessment
+# is redone; below it, those citations are dropped.
+MAX_INVALID_CITATION_SHARE = 0.25
+
 DB_TIMEOUT_SECONDS = 60
 
 
@@ -254,82 +277,50 @@ def evidence_already_in_panelapp(
     return True
 
 
-def validate_box_ids_with_doi(
-    parsed_json: dict[str, Any], valid_box_ids_by_doi: dict[str, set[int]]
-) -> bool:
-    """Check all (doi, box_id) pairs in citation structures are valid.
+def _citation_lists(parsed_json: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """Every citation list of an assessment: entities, criteria, quality concerns."""
+    lists: list[list[dict[str, Any]]] = []
+    for entity in parsed_json["disease_entities"]:
+        lists.append(entity["citations"])
+        lists += [criterion["citations"] for criterion in entity["evidence_assessments"]]
+    lists += [concern["citations"] for concern in parsed_json["quality_concerns"]]
+    return lists
 
-    Args:
-        parsed_json: Parsed LLM output (after paper_id→doi replacement)
-        valid_box_ids_by_doi: Map from DOI to set of valid box IDs for that paper
 
-    Returns:
-        True if all pairs are valid, False otherwise
+def prune_invalid_citations(
+    parsed_json: dict[str, Any], quotes_by_doi: dict[str, set[str]]
+) -> tuple[int, list[tuple[str, str]]]:
+    """Remove citations whose quote isn't one of that paper's extraction quotes.
+
+    Checked after paper_id→doi replacement. Aggregate citations must copy an
+    extraction quote exactly, because the report locates quotes by exact lookup
+    in ``citation_locations``. Returns the total number of citations and the
+    removed (doi, quote) pairs.
     """
-
-    def check_citation(citation: dict[str, Any]) -> bool:
-        doi = citation.get("doi")
-        box_id = citation.get("box_id")
-        if isinstance(doi, str) and isinstance(box_id, int):
-            valid_box_ids = valid_box_ids_by_doi.get(doi)
-            if valid_box_ids is None or box_id not in valid_box_ids:
-                return False
-        return True
-
-    # disease_entities[].citations[] AND disease_entities[].evidence_assessments[].citations[]
-    for entity in parsed_json.get("disease_entities", []):
-        for citation in entity.get("citations", []):
-            if not check_citation(citation):
-                return False
-        for criterion in entity.get("evidence_assessments", []):
-            for citation in criterion.get("citations", []):
-                if not check_citation(citation):
-                    return False
-
-    # quality_concerns[].citations[]
-    for concern in parsed_json.get("quality_concerns", []):
-        for citation in concern.get("citations", []):
-            if not check_citation(citation):
-                return False
-
-    return True
+    total = 0
+    removed: list[tuple[str, str]] = []
+    for citations in _citation_lists(parsed_json):
+        total += len(citations)
+        kept = []
+        for citation in citations:
+            if citation["quote"] in quotes_by_doi.get(citation["doi"], set()):
+                kept.append(citation)
+            else:
+                removed.append((citation["doi"], citation["quote"]))
+        citations[:] = kept
+    return total, removed
 
 
-def fetch_valid_box_ids_by_doi(
-    db_path: Path, evidence_list: list[dict[str, Any]]
-) -> dict[str, set[int]]:
-    """Query database to get valid box IDs for each paper in evidence_list.
-
-    Args:
-        db_path: Path to SQLite database
-        evidence_list: List of evidence dicts containing DOIs
-
-    Returns:
-        Map from DOI to set of valid box IDs for that paper
-    """
-    dois = {evidence["doi"] for evidence in evidence_list}
-
-    if not dois:
-        return {}
-
-    valid_box_ids_by_doi: dict[str, set[int]] = {}
-
+def fetch_quotes_by_doi(db_path: Path, dois: set[str]) -> dict[str, set[str]]:
+    """Every located extraction quote of each paper."""
+    quotes: dict[str, set[str]] = {doi: set() for doi in dois}
     with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-        cursor = conn.cursor()
-
-        for doi in dois:
-            cursor.execute("SELECT bbox_mapping FROM papers WHERE doi = ?", (doi,))
-            row = cursor.fetchone()
-
-            if row and row[0]:
-                try:
-                    bbox_mapping = json.loads(row[0])
-                    valid_box_ids_by_doi[doi] = {int(box_id) for box_id in bbox_mapping.keys()}
-                except (json.JSONDecodeError, ValueError) as e:
-                    logger.warning(f"Error parsing bbox_mapping for DOI {doi}: {e}")
-                    continue
-
-    return valid_box_ids_by_doi
+        for doi, quote in conn.execute(
+            f"SELECT paper_doi, quote FROM citation_locations WHERE paper_doi IN ({','.join('?' * len(dois))})",
+            sorted(dois),
+        ):
+            quotes[doi].add(quote)
+    return quotes
 
 
 class PaperBatchProcessor:
@@ -397,90 +388,51 @@ class PaperBatchProcessor:
             logger.debug(f"Found {len(evidence_list)} papers with evidence for HGNC:{hgnc_id}")
             return evidence_list
 
-    def update_gene_assessment(
-        self,
-        hgnc_id: int,
-        assessment_data: tuple[str, dict[str, Any]],
-        paper_id_to_doi: dict[str, str],
-        filtered_papers: list[dict[str, str]] | None = None,
-        existing_panel_reviews: dict[str, Any] | None = None,
-    ) -> None:
-        """Store aggregate assessment result in gene_assessments table.
-
-        Args:
-            hgnc_id: HGNC ID of the gene
-            assessment_data: Tuple of (raw_response, parsed_json)
-            paper_id_to_doi: Mapping of AuthorYear paper IDs to DOIs used for this assessment
-            filtered_papers: Papers excluded from assessment [{doi, reason}]
-            existing_panel_reviews: PanelApp evaluations for the single target panel
-                returned by ``find_gene_panel`` at assess time. Shape:
-                ``{"panel_id": <int>, "evaluations": [<raw evaluation dicts>]}``.
-                None when the gene was not on any target panel.
-        """
-        raw_response, json_data = assessment_data
-        filtered_json = json.dumps(filtered_papers) if filtered_papers else None
-        existing_panel_reviews_json = (
-            json.dumps(existing_panel_reviews) if existing_panel_reviews is not None else None
-        )
-
+    def count_remaining(self) -> int:
+        """Genes with recent evidence that have no assessment yet."""
         with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-            cursor = conn.cursor()
-
-            try:
-                cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO gene_assessments
-                    (hgnc_id, assessment_raw, assessment_json, paper_id_mapping,
-                     filtered_papers_json, existing_panel_reviews_json)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        hgnc_id,
-                        raw_response,
-                        json.dumps(json_data),
-                        json.dumps(paper_id_to_doi),
-                        filtered_json,
-                        existing_panel_reviews_json,
-                    ),
-                )
-
-                conn.commit()
-                logger.info(f"Stored aggregate assessment for HGNC:{hgnc_id}")
-
-            except sqlite3.Error as e:
-                logger.error(f"Error storing aggregate assessment for HGNC:{hgnc_id}: {e}")
-
-    def get_aggregate_assessment_statistics(
-        self, shard_index: int, num_shards: int
-    ) -> dict[str, int]:
-        """Get statistics about aggregate assessment progress for this shard."""
-        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-            cursor = conn.cursor()
-
-            # Total unique genes in the working set (recent_evidence)
-            cursor.execute(
+            (remaining,) = conn.execute(
                 """
-                SELECT COUNT(DISTINCT hgnc_id)
-                FROM gene_mentions
+                SELECT COUNT(DISTINCT hgnc_id) FROM gene_mentions
                 WHERE source = 'recent_evidence'
-                AND hgnc_id % ? = ?
-                """,
-                (num_shards, shard_index),
-            )
-            genes_with_evidence = cursor.fetchone()[0]
+                  AND hgnc_id NOT IN (SELECT hgnc_id FROM gene_assessments)
+                """
+            ).fetchone()
+        return int(remaining)
 
-            # Already assessed genes
-            cursor.execute(
-                "SELECT COUNT(*) FROM gene_assessments WHERE hgnc_id % ? = ?",
-                (num_shards, shard_index),
-            )
-            assessed_genes = cursor.fetchone()[0]
 
-            return {
-                "genes_with_evidence": genes_with_evidence,
-                "assessed_genes": assessed_genes,
-                "remaining_to_assess": genes_with_evidence - assessed_genes,
-            }
+def store_gene_assessment(
+    conn: sqlite3.Connection,
+    hgnc_id: int,
+    message: Message,
+    assessment: dict[str, Any],
+    paper_id_to_doi: dict[str, str],
+    filtered_papers: list[dict[str, Any]] | None,
+    existing_panel_reviews: dict[str, Any] | None,
+) -> None:
+    """Store one aggregate assessment.
+
+    ``existing_panel_reviews`` holds the PanelApp evaluations for the single target
+    panel returned by ``find_gene_panel`` at assess time, shaped
+    ``{"panel_id": <int>, "evaluations": [<raw evaluation dicts>]}``; None when the
+    gene was not on any target panel.
+    """
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO gene_assessments
+            (hgnc_id, assessment_raw, assessment_json, paper_id_mapping,
+             filtered_papers_json, existing_panel_reviews_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            hgnc_id,
+            message.to_json(),
+            json.dumps(assessment),
+            json.dumps(paper_id_to_doi),
+            json.dumps(filtered_papers) if filtered_papers else None,
+            json.dumps(existing_panel_reviews) if existing_panel_reviews is not None else None,
+        ),
+    )
 
 
 def format_previous_reviews_data(existing_reviews: list[dict[str, Any]]) -> str:
@@ -663,265 +615,277 @@ class _GeneBatchItem:
     existing_reviews: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class _GenePreparation:
+    """Shared inputs for preparing gene prompts."""
+
+    db_processor: PaperBatchProcessor
+    hgnc_resolver: HgncResolver
+    panelapp_client: PanelAppClient
+    panel_data: PanelGeneData
+    mondo_lookup: MondoLookup
+    prompt_path: Path
+    panel_formatted: str
+
+
+def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
+    """The prompt and validation context for one gene, or None when it is skipped."""
+    hgnc_symbol = prep.hgnc_resolver.get_symbol(hgnc_id)
+    evidence_list = prep.db_processor.get_evidence_for_gene(hgnc_id)
+    if not evidence_list:
+        logger.warning(f"No evidence found for {hgnc_symbol}")
+        return None
+
+    evidence_list, filtered_papers = filter_preprint_evidence(evidence_list)
+    if filtered_papers:
+        filtered_dois = [fp["doi"] for fp in filtered_papers]
+        logger.info(
+            f"  Filtered {len(filtered_papers)} preprint(s) for {hgnc_symbol}: {filtered_dois}"
+        )
+    if not evidence_list:
+        logger.info(f"Skipping {hgnc_symbol} — all papers filtered by preprint family gate")
+        return None
+
+    existing_panel_id = find_gene_panel(hgnc_id, prep.panel_data.panel_ids, prep.panel_data)
+    existing_reviews: list[dict[str, Any]] = []
+    if existing_panel_id is not None:
+        existing_reviews = prep.panelapp_client.get_gene_evaluations(existing_panel_id, hgnc_id)
+        panelapp_pubs = collect_panelapp_gene_publications(
+            prep.panelapp_client.get_panel_data(existing_panel_id),
+            hgnc_id,
+            existing_reviews,
+        )
+        if evidence_already_in_panelapp(evidence_list, panelapp_pubs):
+            evidence_dois = [e["doi"] for e in evidence_list]
+            logger.info(
+                f"Skipping {hgnc_symbol} — all {len(evidence_list)} paper(s) already reviewed "
+                f"in PanelApp panel {existing_panel_id}: {evidence_dois}"
+            )
+            return None
+
+    mondo_candidates = prep.mondo_lookup.get_candidates(hgnc_symbol)
+    prompt, paper_id_to_doi = prepare_aggregate_assessment_prompt(
+        hgnc_symbol,
+        evidence_list,
+        prep.prompt_path,
+        existing_reviews,
+        prep.panel_formatted,
+        mondo_candidates,
+    )
+    return _GeneBatchItem(
+        hgnc_id=hgnc_id,
+        hgnc_symbol=hgnc_symbol,
+        prompt=prompt,
+        paper_id_to_doi=paper_id_to_doi,
+        evidence_list=evidence_list,
+        mondo_name_lookup=build_mondo_name_lookup(mondo_candidates),
+        filtered_papers=filtered_papers or None,
+        existing_panel_id=existing_panel_id,
+        existing_reviews=existing_reviews,
+    )
+
+
+def genes_to_assess(db_path: Path) -> list[int]:
+    """Genes with recent evidence and no assessment, excluding refused ones and ones in flight."""
+    with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT gm.hgnc_id FROM gene_mentions gm
+            WHERE gm.source = 'recent_evidence'
+              AND gm.hgnc_id NOT IN (SELECT hgnc_id FROM gene_assessments)
+              AND NOT EXISTS (
+                  SELECT 1 FROM llm_requests r
+                  WHERE r.stage = ? AND r.subject = CAST(gm.hgnc_id AS TEXT)
+                    AND r.status IN ('refused', 'pending')
+              )
+            ORDER BY gm.hgnc_id
+            """,
+            (STAGE,),
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def build_request(item: _GeneBatchItem, output_config: OutputConfigParam) -> LlmRequest:
+    return LlmRequest(
+        subject=str(item.hgnc_id),
+        params={
+            "model": MODEL,
+            "max_tokens": MAX_TOKENS,
+            "messages": [{"role": "user", "content": item.prompt}],
+            "output_config": output_config,
+        },
+    )
+
+
+def assessment_problems(
+    assessment: dict[str, Any], item: _GeneBatchItem, db_path: Path
+) -> list[str]:
+    """Problems that send a gene back for another attempt. Maps paper IDs to DOIs in place."""
+    try:
+        replace_paper_ids_with_dois(assessment, item.paper_id_to_doi)
+    except ValueError as e:
+        return [f"hallucinated paper ID: {e}"]
+    problems: list[str] = []
+    quotes_by_doi = fetch_quotes_by_doi(db_path, {e["doi"] for e in item.evidence_list})
+    total, removed = prune_invalid_citations(assessment, quotes_by_doi)
+    if total and len(removed) > MAX_INVALID_CITATION_SHARE * total:
+        problems.append(
+            f"{len(removed)} of {total} citation quotes not copied from the extractions"
+        )
+    elif removed:
+        logger.info(
+            "%s: dropped %d citations whose quote isn't in the paper's extraction: %s",
+            item.hgnc_symbol,
+            len(removed),
+            "; ".join(repr(quote[:60]) for _, quote in removed[:3]),
+        )
+    if unresolved := resolve_mondo_names(assessment, item.mondo_name_lookup, item.hgnc_symbol):
+        problems.append(f"unresolved MONDO disease names: {unresolved}")
+    if not validate_entities_criteria_complete(assessment["disease_entities"]):
+        problems.append("incomplete per-entity criteria")
+    if not validate_independent_family_counts(assessment["disease_entities"]):
+        problems.append("inconsistent independent_family_count")
+    return problems
+
+
+@dataclass
+class _Outcome:
+    stored: int = 0
+    refused: int = 0
+    failed: int = 0
+
+
+def handle_results(
+    results: list[LlmResult],
+    items: dict[str, _GeneBatchItem],
+    db_path: Path,
+    validator: jsonschema.protocols.Validator,
+) -> _Outcome:
+    outcome = _Outcome()
+    invalid_requests: list[str] = []
+    for result in results:
+        item = items.get(result.subject)
+        message = result.message
+        stored = False
+        if result.status == ResultStatus.REFUSED:
+            assert message is not None
+            outcome.refused += 1
+            logger.warning(
+                "Refused: HGNC:%s (%s)",
+                result.subject,
+                message.stop_details.category if message.stop_details else "no category",
+            )
+        elif result.status != ResultStatus.SUCCEEDED or message is None:
+            outcome.failed += 1
+            if result.error_type == "invalid_request_error":
+                invalid_requests.append(result.subject)
+        elif item is None:
+            logger.info(
+                "HGNC:%s no longer needs an assessment; discarding its result", result.subject
+            )
+        else:
+            try:
+                assessment = parse_json_output(message)
+                validator.validate(assessment)
+                criteria_object_to_list(assessment["disease_entities"])
+                problems = assessment_problems(assessment, item, db_path)
+            except (ValueError, jsonschema.ValidationError) as e:
+                problems = [str(e)]
+            if problems:
+                logger.warning(
+                    "Rejected assessment for %s: %s", item.hgnc_symbol, "; ".join(problems[:5])
+                )
+                outcome.failed += 1
+            else:
+                existing_panel_reviews = (
+                    {"panel_id": item.existing_panel_id, "evaluations": item.existing_reviews}
+                    if item.existing_panel_id is not None
+                    else None
+                )
+                with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
+                    record_result(conn, result)
+                    store_gene_assessment(
+                        conn,
+                        item.hgnc_id,
+                        message,
+                        assessment,
+                        item.paper_id_to_doi,
+                        item.filtered_papers,
+                        existing_panel_reviews,
+                    )
+                stored = True
+                outcome.stored += 1
+        if not stored:
+            with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
+                record_result(conn, result)
+    if invalid_requests:
+        raise RuntimeError(
+            f"{len(invalid_requests)} assess-genes requests were invalid "
+            f"(first: HGNC:{invalid_requests[0]}); see llm_requests.error_type"
+        )
+    return outcome
+
+
 async def _process_assessments(
     *,
-    llm_processor: LLMProcessor,
-    db_processor: PaperBatchProcessor,
+    transport: Transport,
     db_path: Path,
-    hgnc_resolver: HgncResolver,
-    panelapp_client: PanelAppClient,
-    panel_data: PanelGeneData,
-    mondo_lookup: MondoLookup,
+    prep: _GenePreparation,
     schema: dict[str, Any],
-    prompt_path: Path,
-    panel_formatted: str,
-    batch_size: int,
+    limit: int | None,
     max_retries: int,
-    initial_remaining: int,
-    shard_index: int,
-    num_shards: int,
 ) -> None:
-    """Run the aggregate assessment retry loop."""
-    total_processed = 0
-    genes_without_evidence: set[int] = set()
-    consecutive_failures = 0
-    retry_attempt = 0
+    validator = jsonschema.Draft202012Validator(schema)
+    output_config = json_output_config(schema, EFFORT)
+    items: dict[str, _GeneBatchItem] = {}
+    skipped: set[int] = set()
 
-    with tqdm(total=initial_remaining, desc="Processing genes") as pbar:
-        while retry_attempt < max_retries:
-            stats = db_processor.get_aggregate_assessment_statistics(shard_index, num_shards)
-            if stats["remaining_to_assess"] == 0:
-                logger.info("All genes successfully assessed!")
-                break
-
-            if retry_attempt > 0:
-                logger.info(
-                    f"Retry attempt {retry_attempt} - {stats['remaining_to_assess']} genes remaining"
-                )
-
-            logger.info("Fetching genes with evidence...")
-            with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT DISTINCT hgnc_id
-                    FROM gene_mentions
-                    WHERE source = 'recent_evidence'
-                    AND hgnc_id % ? = ?
-                    ORDER BY hgnc_id
-                    """,
-                    (num_shards, shard_index),
-                )
-                gene_hgnc_ids = [row[0] for row in cursor.fetchall()]
-
-                cursor.execute(
-                    """
-                    SELECT hgnc_id
-                    FROM gene_assessments
-                """
-                )
-                already_assessed = {row[0] for row in cursor.fetchall()}
-
-            hgnc_ids_to_assess = [g for g in gene_hgnc_ids if g not in already_assessed]
-            logger.info(f"Found {len(hgnc_ids_to_assess)} genes to assess")
-
-            if not hgnc_ids_to_assess:
-                logger.info("No genes need assessment!")
-                break
-
-            pass_processed = 0
-            failed_genes: list[int] = []
-
-            # Prepare all gene prompts, then process in batches
-            batch_items: list[_GeneBatchItem] = []
-            for hgnc_id in hgnc_ids_to_assess:
-                hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
-                logger.info(f"Preparing {hgnc_symbol} (HGNC:{hgnc_id})")
-
-                evidence_list = db_processor.get_evidence_for_gene(hgnc_id)
-
-                if not evidence_list:
-                    logger.warning(f"No evidence found for {hgnc_symbol}")
-                    genes_without_evidence.add(hgnc_id)
+    def prepared(hgnc_ids: list[int]) -> list[_GeneBatchItem]:
+        ready = []
+        for hgnc_id in hgnc_ids:
+            if hgnc_id in skipped:
+                continue
+            item = items.get(str(hgnc_id))
+            if item is None:
+                item = prepare_gene(hgnc_id, prep)
+                if item is None:
+                    skipped.add(hgnc_id)
                     continue
+                items[str(hgnc_id)] = item
+            ready.append(item)
+        return ready
 
-                evidence_list, filtered_papers = filter_preprint_evidence(evidence_list)
-                if filtered_papers:
-                    filtered_dois = [fp["doi"] for fp in filtered_papers]
-                    logger.info(
-                        f"  Filtered {len(filtered_papers)} preprint(s) for {hgnc_symbol}: "
-                        f"{filtered_dois}"
-                    )
-                if not evidence_list:
-                    logger.info(
-                        f"Skipping {hgnc_symbol} — all papers filtered by preprint family gate"
-                    )
-                    genes_without_evidence.add(hgnc_id)
-                    continue
+    resumed = await transport.resume(STAGE)
+    if resumed:
+        prepared(sorted({int(r.subject) for r in resumed}))
+        outcome = handle_results(resumed, items, db_path, validator)
+        logger.info("Collected %d results from earlier batches: %s", len(resumed), outcome)
 
-                existing_panel_id = find_gene_panel(hgnc_id, panel_data.panel_ids, panel_data)
-
-                existing_reviews: list[dict[str, Any]] = []
-                if existing_panel_id is not None:
-                    existing_reviews = panelapp_client.get_gene_evaluations(
-                        existing_panel_id, hgnc_id
-                    )
-                    logger.info(
-                        f"  Found {len(existing_reviews)} existing reviews in panel {existing_panel_id}"
-                    )
-                    panelapp_pubs = collect_panelapp_gene_publications(
-                        panelapp_client.get_panel_data(existing_panel_id),
-                        hgnc_id,
-                        existing_reviews,
-                    )
-                    if evidence_already_in_panelapp(evidence_list, panelapp_pubs):
-                        evidence_dois = [e["doi"] for e in evidence_list]
-                        logger.info(
-                            f"Skipping {hgnc_symbol} — all {len(evidence_list)} paper(s) "
-                            f"already reviewed in PanelApp panel {existing_panel_id}: "
-                            f"{evidence_dois}"
-                        )
-                        genes_without_evidence.add(hgnc_id)
-                        continue
-
-                mondo_candidates = mondo_lookup.get_candidates(hgnc_symbol)
-                mondo_name_lookup = build_mondo_name_lookup(mondo_candidates)
-                if mondo_candidates:
-                    logger.info(f"  {len(mondo_candidates)} MONDO candidates for {hgnc_symbol}")
-
-                prompt, paper_id_to_doi = prepare_aggregate_assessment_prompt(
-                    hgnc_symbol,
-                    evidence_list,
-                    prompt_path,
-                    existing_reviews,
-                    panel_formatted,
-                    mondo_candidates,
-                )
-
-                batch_items.append(
-                    _GeneBatchItem(
-                        hgnc_id=hgnc_id,
-                        hgnc_symbol=hgnc_symbol,
-                        prompt=prompt,
-                        paper_id_to_doi=paper_id_to_doi,
-                        evidence_list=evidence_list,
-                        mondo_name_lookup=mondo_name_lookup,
-                        filtered_papers=filtered_papers or None,
-                        existing_panel_id=existing_panel_id,
-                        existing_reviews=existing_reviews,
-                    )
-                )
-
-            # Process prepared genes in batches
-            for i in range(0, len(batch_items), batch_size):
-                batch = batch_items[i : i + batch_size]
-                logger.info(
-                    f"Processing batch of {len(batch)} genes "
-                    f"({i + 1}-{i + len(batch)}/{len(batch_items)})"
-                )
-
-                prompts = [item.prompt for item in batch]
-                results = await llm_processor.process_batch(prompts, schema)
-
-                for item, result in zip(batch, results, strict=True):
-                    if result is None:
-                        logger.warning(
-                            f"Failed to process aggregate assessment for {item.hgnc_symbol}"
-                        )
-                        failed_genes.append(item.hgnc_id)
-                        continue
-
-                    try:
-                        replace_paper_ids_with_dois(result.parsed_json, item.paper_id_to_doi)
-                    except ValueError:
-                        logger.warning(
-                            f"LLM hallucinated paper ID for {item.hgnc_symbol}, retrying"
-                        )
-                        failed_genes.append(item.hgnc_id)
-                        continue
-                    if not validate_box_ids_with_doi(
-                        result.parsed_json,
-                        fetch_valid_box_ids_by_doi(db_path, item.evidence_list),
-                    ):
-                        logger.warning(f"Invalid (doi, box_id) pairs for {item.hgnc_symbol}")
-                        failed_genes.append(item.hgnc_id)
-                        continue
-                    if unresolved := resolve_mondo_names(
-                        result.parsed_json, item.mondo_name_lookup, item.hgnc_symbol
-                    ):
-                        logger.warning(
-                            f"Unresolved MONDO disease names for {item.hgnc_symbol}: {unresolved}"
-                        )
-                        failed_genes.append(item.hgnc_id)
-                        continue
-                    if not validate_entities_criteria_complete(
-                        result.parsed_json.get("disease_entities", [])
-                    ):
-                        logger.warning(
-                            f"Incomplete per-entity criteria for {item.hgnc_symbol} "
-                            f"(each disease_entity must carry criterion_A through criterion_E)"
-                        )
-                        failed_genes.append(item.hgnc_id)
-                        continue
-                    if not validate_independent_family_counts(
-                        result.parsed_json.get("disease_entities", [])
-                    ):
-                        logger.warning(
-                            f"Inconsistent independent_family_count for {item.hgnc_symbol} "
-                            f"(must be null iff family_count is null, else 0 <= independent <= total)"
-                        )
-                        failed_genes.append(item.hgnc_id)
-                        continue
-                    existing_panel_reviews: dict[str, Any] | None = (
-                        {
-                            "panel_id": item.existing_panel_id,
-                            "evaluations": item.existing_reviews,
-                        }
-                        if item.existing_panel_id is not None
-                        else None
-                    )
-                    db_processor.update_gene_assessment(
-                        item.hgnc_id,
-                        (result.raw_response, result.parsed_json),
-                        item.paper_id_to_doi,
-                        filtered_papers=item.filtered_papers,
-                        existing_panel_reviews=existing_panel_reviews,
-                    )
-                    pass_processed += 1
-                    pbar.update(1)
-
-            total_processed += pass_processed
-
-            if pass_processed == 0:
-                consecutive_failures += 1
-                logger.warning(f"No progress made in retry attempt {retry_attempt}")
-                if consecutive_failures >= 2:
-                    logger.error("Multiple consecutive attempts with no progress - stopping")
-                    break
-            else:
-                consecutive_failures = 0
-
-            retry_attempt += 1
-
-    final_stats = db_processor.get_aggregate_assessment_statistics(shard_index, num_shards)
-    logger.info("Aggregate assessment complete!")
-    logger.info("Final statistics:")
-    logger.info(f"  Successfully processed: {total_processed:,}")
-    logger.info(f"  Genes without evidence: {len(genes_without_evidence):,}")
-    logger.info(f"  Still remaining: {final_stats['remaining_to_assess']:,}")
-
-    if genes_without_evidence:
-        no_evidence_list = list(genes_without_evidence)
+    for attempt in range(1, max_retries + 1):
+        hgnc_ids = [g for g in genes_to_assess(db_path) if g not in skipped]
+        if limit is not None:
+            hgnc_ids = hgnc_ids[:limit]
+        batch = prepared(hgnc_ids)
+        if not batch:
+            logger.info("No genes left to assess")
+            return
+        logger.info("Attempt %d: assessing %d genes", attempt, len(batch))
+        results = await transport.run(
+            STAGE, 1, [build_request(item, output_config) for item in batch]
+        )
+        outcome = handle_results(results, items, db_path, validator)
         logger.info(
-            f"  Genes without evidence: {no_evidence_list[:10]}..."
-            if len(no_evidence_list) > 10
-            else f"  Genes without evidence: {no_evidence_list}"
+            "Attempt %d: stored %d, refused %d, failed %d",
+            attempt,
+            outcome.stored,
+            outcome.refused,
+            outcome.failed,
         )
-
-    if final_stats["remaining_to_assess"] > 0:
-        logger.warning(
-            f"Failed to assess {final_stats['remaining_to_assess']} genes after {max_retries} attempts"
-        )
+        if outcome.stored == 0:
+            logger.error("No progress in attempt %d - stopping", attempt)
+            return
+        if limit is not None:
+            return
 
 
 @app.callback(invoke_without_command=True)
@@ -929,44 +893,6 @@ def main(
     db_path: Path = typer.Option(
         default=Path("data/db.sqlite"),
         help="Path to SQLite database",
-    ),
-    model: str = typer.Option(
-        "openai/gpt-oss-120b",
-        "--model",
-        "-m",
-        help="Model name for vLLM",
-    ),
-    temperature: float = typer.Option(
-        1.0,
-        "--temperature",
-        "-t",
-        help="Sampling temperature",
-    ),
-    max_tokens: int = typer.Option(
-        80000,
-        "--max-tokens",
-        help="Maximum tokens to generate",
-    ),
-    tensor_parallel_size: int = typer.Option(
-        1,
-        "--tensor-parallel-size",
-        help="Tensor parallelism size",
-    ),
-    max_model_len: int = typer.Option(
-        131072,
-        "--max-model-len",
-        help="Maximum model context length",
-    ),
-    llm_config: str = typer.Option(
-        "",
-        "--llm-config",
-        help="JSON dict of extra backend config (forwarded to LLM processor)",
-    ),
-    log_level: str = typer.Option(
-        "INFO",
-        "--log-level",
-        "-l",
-        help="Logging level (DEBUG, INFO, WARNING, ERROR)",
     ),
     prompt_path: Path = typer.Option(
         Path("prompts/aggregate_assessment_prompt.j2"),
@@ -980,16 +906,10 @@ def main(
         "-s",
         help="Path to response schema file",
     ),
-    batch_size: int = typer.Option(
-        1,
-        "--batch-size",
-        "-b",
-        help="Genes per LLM batch (increase for concurrent API backends like Bedrock)",
-    ),
     max_retries: int = typer.Option(
         5,
         "--max-retries",
-        help="Maximum number of retry attempts for failed genes",
+        help="Maximum number of attempts for genes whose assessment failed or was rejected",
     ),
     panel_date: str = typer.Option(
         ...,
@@ -1006,45 +926,26 @@ def main(
         "--scope-panel-id",
         help="Panel ID for panel-scoped assessment. When set, the summary must explain why the gene is relevant to this panel's scope.",
     ),
-    shard_index: int = typer.Option(
-        0,
-        "--shard-index",
-        help="Shard index (0-based) for parallel processing across multiple GPUs",
+    immediate: bool = typer.Option(
+        False,
+        "--immediate",
+        help="Send requests immediately instead of as Message Batches (for prompt development)",
     ),
-    num_shards: int = typer.Option(
-        1,
-        "--num-shards",
-        help="Total number of shards for parallel processing (values > 1 require database WAL mode)",
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        help="Assess at most this many genes, in one attempt (for prompt development)",
     ),
 ) -> None:
     """Perform aggregate assessment of genes using evidence from multiple papers."""
-    # Validate inputs
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
 
-    if not prompt_path.exists():
-        logger.error(f"Prompt template not found: {prompt_path}")
-        raise typer.Exit(1)
-
-    if not schema_path.exists():
-        logger.error(f"Schema file not found: {schema_path}")
-        raise typer.Exit(1)
-
-    # Load schema (template is loaded via Jinja2 in prepare_aggregate_assessment_prompt)
-    logger.info("Loading schema...")
     schema: dict[str, Any] = json.loads(schema_path.read_text())
-    logger.info(f"  Loaded schema from {schema_path}")
-
-    # Initialize MONDO lookup (downloads GenCC + MONDO if stale)
-    logger.info("Initializing MONDO lookup...")
     mondo_lookup = MondoLookup(cache_dir=db_path.parent)
-
-    # Load HGNC resolver for gene symbol lookup
     hgnc_resolver = HgncResolver.from_file()
-    logger.info(f"  Loaded HgncResolver with {len(hgnc_resolver._by_symbol)} genes")
 
-    # Initialize PanelApp client and fetch panel data
     logger.info(f"Fetching PanelApp gene data for {panel_date}...")
     panelapp_client = PanelAppClient(panel_date)
     panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
@@ -1052,66 +953,45 @@ def main(
         f"  Loaded {len(panel_data.gene_confidence)} genes from {len(panel_data.panel_ids)} target panels"
     )
 
-    # Build panel_formatted for template (empty string if not scoping to a panel)
+    panel_formatted = ""
     if scope_panel_id is not None:
-        logger.info(f"Fetching description for scope panel {scope_panel_id}...")
         try:
             panel_info = panelapp_client.get_panel_data(scope_panel_id)
         except ValueError as e:
             logger.error(f"Panel {scope_panel_id} not found in PanelApp data for {panel_date}")
             raise typer.Exit(1) from e
-
         panel_formatted = format_panel_for_prompt(scope_panel_id, panel_info)
         logger.info(f"  Panel-scoped mode: {panel_info.get('name', 'Unknown')}")
-    else:
-        panel_formatted = ""
 
-    # Initialize components
-    logger.info("Initializing database processor...")
     db_processor = PaperBatchProcessor(db_path)
-    logger.info(f"  Connected to database at {db_path}")
-
-    logger.info("Initializing LLM processor...")
-    llm_processor = create_llm_processor(
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        tensor_parallel_size=tensor_parallel_size,
-        max_model_len=max_model_len,
-        **(json.loads(llm_config) if llm_config else {}),
+    logger.info(f"{db_processor.count_remaining():,} genes with recent evidence and no assessment")
+    prep = _GenePreparation(
+        db_processor=db_processor,
+        hgnc_resolver=hgnc_resolver,
+        panelapp_client=panelapp_client,
+        panel_data=panel_data,
+        mondo_lookup=mondo_lookup,
+        prompt_path=prompt_path,
+        panel_formatted=panel_formatted,
     )
 
-    # Get initial statistics
-    logger.info("Fetching aggregate assessment statistics...")
-    stats = db_processor.get_aggregate_assessment_statistics(shard_index, num_shards)
-    logger.info(f"Aggregate assessment statistics (shard {shard_index}/{num_shards}):")
-    logger.info(f"  Genes with evidence: {stats['genes_with_evidence']:,}")
-    logger.info(f"  Already assessed: {stats['assessed_genes']:,}")
-    logger.info(f"  Remaining to assess: {stats['remaining_to_assess']:,}")
-
-    if stats["remaining_to_assess"] == 0:
-        logger.info("No genes remaining to assess!")
-        return
-
-    asyncio.run(
-        _process_assessments(
-            llm_processor=llm_processor,
-            db_processor=db_processor,
-            db_path=db_path,
-            hgnc_resolver=hgnc_resolver,
-            panelapp_client=panelapp_client,
-            panel_data=panel_data,
-            mondo_lookup=mondo_lookup,
-            schema=schema,
-            prompt_path=prompt_path,
-            panel_formatted=panel_formatted,
-            batch_size=batch_size,
-            max_retries=max_retries,
-            initial_remaining=stats["remaining_to_assess"],
-            shard_index=shard_index,
-            num_shards=num_shards,
+    async def run() -> None:
+        client = make_client(AnthropicSettings())
+        transport: Transport = (
+            ImmediateTransport(client) if immediate else BatchTransport(client, db_path)
         )
-    )
+        await _process_assessments(
+            transport=transport,
+            db_path=db_path,
+            prep=prep,
+            schema=schema,
+            limit=limit,
+            max_retries=max_retries,
+        )
+
+    asyncio.run(run())
+    logger.info(f"{db_processor.count_remaining():,} genes still without an assessment")
+    print_stage_summary(db_path, STAGE)
 
 
 if __name__ == "__main__":

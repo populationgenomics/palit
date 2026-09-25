@@ -3,13 +3,12 @@
 
 import json
 import logging
-import os
+import shutil
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 import markdown
 import nh3
@@ -17,7 +16,6 @@ import typer
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
-from palit.docling import parse_bbox_mapping_from_json
 from palit.hgnc import HgncResolver
 from palit.panelapp_client import (
     AllPanelsData,
@@ -38,6 +36,7 @@ from palit.panelapp_integration import (
 )
 from palit.papers import (
     build_display_ids,
+    doi_to_key,
     doi_to_path,
     is_preprint,
     replace_paper_ids_for_display,
@@ -237,12 +236,44 @@ def _moi_already_recorded_reason(
 
 
 @dataclass(frozen=True)
+class QuoteRef:
+    """Where one of a paper's quotes sits: its index in the paper's citations file."""
+
+    index: int
+    page: int | None  # first highlighted page; None when the quote wasn't located
+
+
+@dataclass(frozen=True)
 class CitationLink:
-    """A resolved link from an assessment citation to an annotated PDF page."""
+    """A resolved link from a citation to its quote in the report's PDF viewer."""
 
     display_id: str  # "PMID {pmid}" for published papers, AuthorYear for preprints
     doi: str
-    page: int
+    quote_index: int
+    page: int | None
+
+
+def load_quote_refs(cursor: sqlite3.Cursor, doi: str) -> dict[str, QuoteRef]:
+    """Index a paper's located quotes, in the order of its citations file."""
+    cursor.execute(
+        "SELECT quote, bboxes_json FROM citation_locations WHERE paper_doi = ? ORDER BY quote",
+        (doi,),
+    )
+    refs = {}
+    for index, (quote, bboxes_json) in enumerate(cursor.fetchall()):
+        bboxes = json.loads(bboxes_json)
+        refs[quote] = QuoteRef(index=index, page=bboxes[0]["page"] if bboxes else None)
+    return refs
+
+
+def citation_link(paper: "DetailedPaper", quote: str) -> CitationLink | None:
+    """The viewer link for one of *paper*'s quotes, or None if it isn't a known quote."""
+    ref = paper.quote_refs.get(quote)
+    if ref is None:
+        return None
+    return CitationLink(
+        display_id=paper.display_id, doi=paper.doi, quote_index=ref.index, page=ref.page
+    )
 
 
 @dataclass
@@ -263,7 +294,7 @@ class VariantFrequency:
     gnomad_link: str  # Direct link to gnomAD
     gnomad_not_found: bool  # True if variant not found in gnomAD
     gnomad_error: str | None  # Error message if gnomAD lookup failed
-    citations: list[CitationLink]  # Papers reporting this variant, sorted by (display_id, page)
+    citations: list[CitationLink]  # Papers reporting this variant, sorted by display_id
 
 
 @dataclass
@@ -280,7 +311,7 @@ class DetailedPaper:
     source_details: str | None
     relevance_assessment: dict[str, Any] | None
     evidence_extraction: dict[str, Any] | None
-    citation_pages: dict[int, int] | None  # box_id -> page number
+    quote_refs: dict[str, QuoteRef]  # this paper's quotes -> position in its citations file
     preprint: bool = False
     pmid: int | None = None  # For PubMed display links
     display_id: str = ""  # "PMID {pmid}" for published papers, AuthorYear for preprints
@@ -539,7 +570,7 @@ def _create_variant_frequency_from_db_row(
     """Create a VariantFrequency object from database row data.
 
     The ``gnomad`` JSON is the flat shape written by
-    ``fetch_variant_frequencies``: success rows carry ``ac`` / ``an`` /
+    extract-evidence's variant lookups: success rows carry ``ac`` / ``an`` /
     ``homozygote_count`` / ``heterozygote_count`` / ``hemizygote_count``
     / ``faf95_popmax`` / ``faf95_popmax_population`` directly; sentinel
     rows carry ``{"variant_not_found": true}`` or
@@ -594,21 +625,15 @@ def load_variant_frequencies_for_gene(
         ``variant_id`` breaks ties within each bucket. Each entry carries
         a deduplicated, ordered list of citations.
     """
-    bbox_mappings: dict[str, dict[int, int]] = {}
-    display_ids: dict[str, str] = {}
-    for paper in contributing_papers:
-        display_ids[paper.doi] = paper.display_id
-        if paper.citation_pages:
-            bbox_mappings[paper.doi] = paper.citation_pages
-
-    contributing_dois = list(display_ids.keys())
+    papers_by_doi = {paper.doi: paper for paper in contributing_papers}
+    contributing_dois = list(papers_by_doi)
     placeholders = ",".join("?" * len(contributing_dois))
     cursor.execute(
         f"""
         SELECT
             vf.variant_id,
             vf.paper_doi,
-            vf.box_id,
+            vf.quote,
             vf.normalization,
             vf.gnomad
         FROM variant_frequencies vf
@@ -650,11 +675,10 @@ def load_variant_frequencies_for_gene(
     for variant_id, normalization, gnomad, rows in parsed:
         citation_set: set[CitationLink] = set()
         for row in rows:
-            doi = row["paper_doi"]
-            page = bbox_mappings.get(doi, {}).get(row["box_id"])
-            if page is not None:
-                citation_set.add(CitationLink(display_id=display_ids[doi], doi=doi, page=page))
-        citations = sorted(citation_set, key=lambda c: (c.display_id, c.page))
+            link = citation_link(papers_by_doi[row["paper_doi"]], row["quote"])
+            if link is not None:
+                citation_set.add(link)
+        citations = sorted(citation_set, key=lambda c: (c.display_id, c.quote_index))
 
         variant_frequencies.append(
             _create_variant_frequency_from_db_row(
@@ -669,24 +693,16 @@ def load_variant_frequencies_for_gene(
 
 
 def load_variant_frequencies_for_paper(
-    cursor: sqlite3.Cursor, doi: str, display_id: str, citation_pages: dict[int, int] | None
+    cursor: sqlite3.Cursor, paper: "DetailedPaper"
 ) -> list[VariantFrequency]:
-    """Load variant frequency information for a specific paper.
-
-    Args:
-        cursor: Database cursor
-        doi: Paper DOI to load variants for
-        citation_pages: Bbox mapping for citation page lookups
-
-    Returns:
-        List of VariantFrequency objects for this paper
-    """
+    """Load variant frequency information for a specific paper."""
+    doi = paper.doi
     # Load variant frequencies from database for this paper
     cursor.execute(
         """
         SELECT
             vf.variant_id,
-            vf.box_id,
+            vf.quote,
             vf.normalization,
             vf.gnomad
         FROM variant_frequencies vf
@@ -699,7 +715,6 @@ def load_variant_frequencies_for_paper(
     variant_frequencies = []
     for row in cursor.fetchall():
         variant_id = row["variant_id"]
-        box_id = row["box_id"]
 
         try:
             normalization = json.loads(row["normalization"])
@@ -708,11 +723,8 @@ def load_variant_frequencies_for_paper(
             logger.warning(f"Failed to parse JSON for variant {variant_id} in paper {doi}: {e}")
             continue
 
-        citations: list[CitationLink] = []
-        if citation_pages and box_id in citation_pages:
-            citations.append(
-                CitationLink(display_id=display_id, doi=doi, page=citation_pages[box_id])
-            )
+        link = citation_link(paper, row["quote"])
+        citations = [link] if link is not None else []
 
         variant_frequencies.append(
             _create_variant_frequency_from_db_row(
@@ -851,7 +863,6 @@ def load_gene_assessments(
                     p.pmid,
                     p.relevance_assessment_json,
                     p.evidence_extraction_json,
-                    p.bbox_mapping,
                     gm.paper_gene_symbol
                 FROM papers p
                 JOIN gene_mentions gm ON p.doi = gm.paper_doi
@@ -891,18 +902,6 @@ def load_gene_assessments(
                     if not has_gene_evidence:
                         continue
 
-                citation_pages = None
-                if paper_row["bbox_mapping"]:
-                    try:
-                        bbox_data = parse_bbox_mapping_from_json(paper_row["bbox_mapping"])
-                        citation_pages = {
-                            box_id: info["page"] for box_id, info in bbox_data.items()
-                        }
-                    except json.JSONDecodeError as e:
-                        logger.warning(
-                            f"Failed to parse bbox mapping for DOI {paper_row['doi']}: {e}"
-                        )
-
                 doi = paper_row["doi"]
                 detailed_paper = DetailedPaper(
                     doi=doi,
@@ -915,7 +914,7 @@ def load_gene_assessments(
                     source_details=paper_row["source_details"],
                     relevance_assessment=relevance_assessment,
                     evidence_extraction=evidence_extraction,
-                    citation_pages=citation_pages,
+                    quote_refs=load_quote_refs(cursor, doi),
                     preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
                     pmid=paper_row["pmid"],
                     paper_gene_symbol=paper_row["paper_gene_symbol"],
@@ -932,9 +931,7 @@ def load_gene_assessments(
             for paper in contributing_papers:
                 if paper.doi in doi_to_display_id:
                     paper.display_id = doi_to_display_id[paper.doi]
-                paper.variant_frequencies = load_variant_frequencies_for_paper(
-                    cursor, paper.doi, paper.display_id, paper.citation_pages
-                )
+                paper.variant_frequencies = load_variant_frequencies_for_paper(cursor, paper)
 
             # Load variant frequencies for this gene
             variant_frequencies = load_variant_frequencies_for_gene(
@@ -1114,7 +1111,7 @@ def load_panel_publications_validation(
 
         _panel_cols = """p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
             p.source_date, p.source_type, p.source_details,
-            p.relevance_assessment_json, p.evidence_extraction_json, p.bbox_mapping"""
+            p.relevance_assessment_json, p.evidence_extraction_json"""
 
         # Match PMIDs
         pmids_list = list(panel_pubs.pmids)
@@ -1171,14 +1168,6 @@ def load_panel_publications_validation(
                         f"Failed to parse evidence extraction for panel DOI {row['doi']}"
                     )
 
-            citation_pages = None
-            if row["bbox_mapping"]:
-                try:
-                    bbox_data = parse_bbox_mapping_from_json(row["bbox_mapping"])
-                    citation_pages = {box_id: info["page"] for box_id, info in bbox_data.items()}
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse bbox mapping for panel DOI {row['doi']}")
-
             detailed_paper = DetailedPaper(
                 doi=row["doi"],
                 title=row["title"] or "Unknown Title",
@@ -1190,7 +1179,7 @@ def load_panel_publications_validation(
                 source_details=row["source_details"],
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=evidence_extraction,
-                citation_pages=citation_pages,
+                quote_refs=load_quote_refs(cursor, row["doi"]),
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
             )
@@ -1242,8 +1231,7 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                 p.source_type,
                 p.source_details,
                 p.relevance_assessment_json,
-                p.evidence_extraction_json,
-                p.bbox_mapping
+                p.evidence_extraction_json
             FROM papers p
             WHERE p.relevance_assessment_json IS NOT NULL
             ORDER BY p.source_date DESC, p.doi DESC
@@ -1267,16 +1255,6 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                     except json.JSONDecodeError:
                         logger.warning(f"Failed to parse evidence extraction for DOI {row['doi']}")
 
-                citation_pages = None
-                if row["bbox_mapping"]:
-                    try:
-                        bbox_data = parse_bbox_mapping_from_json(row["bbox_mapping"])
-                        citation_pages = {
-                            box_id: info["page"] for box_id, info in bbox_data.items()
-                        }
-                    except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse bbox mapping for DOI {row['doi']}")
-
                 detailed_paper = DetailedPaper(
                     doi=row["doi"],
                     title=row["title"] or "Unknown Title",
@@ -1288,7 +1266,7 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                     source_details=row["source_details"],
                     relevance_assessment=relevance_assessment,
                     evidence_extraction=evidence_extraction,
-                    citation_pages=citation_pages,
+                    quote_refs=load_quote_refs(cursor, row["doi"]),
                     preprint=is_preprint(row["journal"], row["pmid"]),
                     pmid=row["pmid"],
                 )
@@ -1349,7 +1327,7 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
                 source_details=row["source_details"],
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=None,
-                citation_pages=None,
+                quote_refs={},
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
             )
@@ -1740,38 +1718,27 @@ def get_variant_frequency_flag(variant: VariantFrequency, inheritance_mode: str)
 
 
 def prepare_aggregate_citation_links(
-    citations: list[dict], contributing_papers: list[DetailedPaper]
+    citations: list[dict[str, Any]], contributing_papers: list[DetailedPaper]
 ) -> list[CitationLink]:
-    """Prepare deduplicated citation links for aggregate assessment citations.
-
-    Aggregate citations include a doi field specifying which paper the citation comes from.
-    This function resolves box_ids to PDF page numbers via contributing papers' bbox mappings.
-
-    Args:
-        citations: List of citation dicts, each with doi and box_id fields
-        contributing_papers: List of papers that might contain these citations
-
-    Returns:
-        Deduplicated CitationLink list, sorted by paper_id then page
-    """
+    """Deduplicated viewer links for aggregate citations, each a (doi, quote) pair."""
+    papers_by_doi = {paper.doi: paper for paper in contributing_papers}
     links: set[CitationLink] = set()
-
     for citation in citations:
-        box_id = citation.get("box_id")
-        citation_doi = citation.get("doi")
+        paper = papers_by_doi.get(citation["doi"])
+        if paper is None:
+            continue
+        link = citation_link(paper, citation["quote"])
+        if link is not None:
+            links.add(link)
+    return sorted(links, key=lambda link: (link.display_id, link.quote_index))
 
-        if box_id and citation_doi:
-            for paper in contributing_papers:
-                if (
-                    paper.doi == citation_doi
-                    and paper.citation_pages
-                    and box_id in paper.citation_pages
-                ):
-                    page = paper.citation_pages[box_id]
-                    links.add(CitationLink(display_id=paper.display_id, doi=paper.doi, page=page))
-                    break
 
-    return sorted(links, key=lambda link: (link.display_id, link.page))
+def prepare_paper_citation_links(
+    citations: list[dict[str, Any]], paper: DetailedPaper
+) -> list[CitationLink]:
+    """Viewer links for one paper's own extraction citations."""
+    links = [citation_link(paper, citation["quote"]) for citation in citations]
+    return [link for link in links if link is not None]
 
 
 def build_report_config(
@@ -1816,8 +1783,6 @@ def generate_html_report(
     favorite_journal_papers: FavoriteJournalSections,
     template_dir: Path,
     panel_date: str,
-    pdf_base_dir: Path,
-    output_dir: Path,
     report_id: str,
     target_panel_ids: list[int],
     target_panel_names: dict[int, str],
@@ -1825,9 +1790,6 @@ def generate_html_report(
     panelapp_integration: bool,
 ) -> str:
     """Generate HTML report directly using Jinja2 templates."""
-
-    # Calculate relative path from output directory to PDF base directory
-    pdf_relative_path = os.path.relpath(pdf_base_dir, output_dir)
 
     # Build report config JSON for PanelApp integration
     report_config_json = (
@@ -1894,12 +1856,13 @@ def generate_html_report(
     env.filters["format_gene_with_aliases"] = format_gene_with_aliases
     env.filters["format_inheritance"] = format_inheritance
     env.filters["prepare_citation_links"] = prepare_aggregate_citation_links
+    env.filters["paper_citation_links"] = prepare_paper_citation_links
     env.filters["get_variant_flag"] = get_variant_frequency_flag
     env.filters["confidence_to_color"] = panelapp_confidence_to_color
     # Double-encode: first quote produces the on-disk filename (e.g. 10.1038%2Fxyz),
     # second quote escapes the % for use in file:/// URLs so browsers don't
     # decode %2F back to / (e.g. 10.1038%252Fxyz → opens 10.1038%2Fxyz.pdf).
-    env.filters["encode_doi"] = lambda doi: quote(quote(doi, safe=""), safe="")
+    env.filters["paper_key"] = doi_to_key
     env.filters["short_id"] = lambda display_id: display_id.removeprefix("PMID ")
     env.filters["derive_moi"] = lambda pgs: derive_aggregate_moi(pgs)[0]
     env.filters["derive_moi_details"] = lambda pgs: derive_aggregate_moi(pgs)[1]
@@ -1995,7 +1958,6 @@ def generate_html_report(
         panel_date=panel_date,
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         custom_css=custom_css,
-        pdf_base_path=pdf_relative_path,
         panelapp_integration=panelapp_integration,
         report_config_json=report_config_json,
         target_panel_names=target_panel_names,
@@ -2030,10 +1992,15 @@ def main(
         default=Path("reports"),
         help="Output directory prefix. Final path will be {prefix}/{report_id}/",
     ),
-    annotated_dir: Path = typer.Option(
-        Path("data/papers/annotated"),
-        "--annotated-dir",
-        help="Directory containing annotated PDFs",
+    papers_dir: Path = typer.Option(
+        Path("data/papers"),
+        "--papers-dir",
+        help="Directory containing the papers' PDFs",
+    ),
+    viewer_dir: Path = typer.Option(
+        Path("viewer/dist"),
+        "--viewer-dir",
+        help="Built PDF viewer page (npm --prefix viewer ci && npm --prefix viewer run build)",
     ),
     template_dir: Path = typer.Option(
         default=Path("templates"), help="Directory containing report templates"
@@ -2044,15 +2011,18 @@ def main(
         help="Enable PanelApp integration (prefill buttons, assignment support, CSRF token)",
     ),
 ) -> None:
-    """Generate a self-contained directory with report and hierarchical annotated PDFs."""
+    """Generate a self-contained report directory: the HTML, its papers, and the PDF viewer."""
 
     # Validate inputs
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
 
-    if not annotated_dir.exists():
-        logger.error(f"Annotated PDFs directory not found: {annotated_dir}")
+    if not (viewer_dir / "index.html").exists():
+        logger.error(
+            f"Viewer build not found in {viewer_dir}; run "
+            "`npm --prefix viewer ci && npm --prefix viewer run build`"
+        )
         raise typer.Exit(1)
 
     # Construct output directory from prefix and report_id
@@ -2084,8 +2054,6 @@ def main(
         favorite_journal_papers=favorite_journal_papers,
         template_dir=template_dir,
         panel_date=panel_date,
-        pdf_base_dir=Path("annotated"),  # Relative path within the package
-        output_dir=Path("."),  # Root of the package
         report_id=report_id,
         target_panel_ids=actual_panel_ids,
         target_panel_names=results.target_panel_names,
@@ -2096,79 +2064,58 @@ def main(
     index_file = output_dir / "index.html"
     index_file.write_text(html_content)
 
-    # Symlink annotated PDFs directory into report (resolved at S3 upload time)
-    annotated_link = output_dir / "annotated"
-    if annotated_link.is_symlink():
-        annotated_link.unlink()
-    os.symlink(annotated_dir.resolve(), annotated_link)
-
-    # Validate that expected annotated PDFs exist
-    missing = []
-    found = 0
     all_genes = results.novel_genes + results.known_genes
-
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        for assessment in all_genes:
-            for entity in assessment.assessment_json.get("disease_entities", []):
-                for criterion in entity.get("evidence_assessments", []):
-                    for citation in criterion.get("citations", []):
-                        path = doi_to_path(
-                            citation["doi"],
-                            annotated_dir / str(assessment.hgnc_id),
-                            ".pdf",
-                        )
-                        if path.exists():
-                            found += 1
-                        else:
-                            missing.append(str(path))
-
-            for disease_entity in assessment.assessment_json.get("disease_entities", []):
-                for citation in disease_entity.get("citations", []):
-                    path = doi_to_path(
-                        citation["doi"],
-                        annotated_dir / str(assessment.hgnc_id),
-                        ".pdf",
-                    )
-                    if path.exists():
-                        found += 1
-                    else:
-                        missing.append(str(path))
-
-            cursor.execute(
-                "SELECT DISTINCT paper_doi FROM variant_frequencies WHERE hgnc_id = ?",
-                (assessment.hgnc_id,),
-            )
-            for row in cursor.fetchall():
-                path = doi_to_path(
-                    row["paper_doi"],
-                    annotated_dir / str(assessment.hgnc_id),
-                    ".pdf",
-                )
-                if path.exists():
-                    found += 1
-                else:
-                    missing.append(str(path))
-
-            for paper in assessment.contributing_papers:
-                path = doi_to_path(paper.doi, annotated_dir / "individual", ".pdf")
-                if path.exists():
-                    found += 1
-                else:
-                    missing.append(str(path))
-
-    if missing:
-        logger.warning(f"Missing {len(missing)} annotated PDFs:")
-        for missing_path in missing[:5]:
-            logger.warning(f"  {missing_path}")
-        if len(missing) > 5:
-            logger.warning(f"  ... and {len(missing) - 5} more")
+    dois = sorted({paper.doi for gene in all_genes for paper in gene.contributing_papers})
+    write_viewer_package(output_dir, db_path, dois, papers_dir, viewer_dir)
 
     logger.info("Package created successfully!")
     logger.info(f"   Output: {output_dir}")
-    logger.info(f"   Contents: 1 HTML report + {found} annotated PDFs (symlinked)")
+
+
+def write_viewer_package(
+    output_dir: Path, db_path: Path, dois: list[str], papers_dir: Path, viewer_dir: Path
+) -> None:
+    """Copy the viewer page and write each paper's PDF link and citations file.
+
+    PDFs are symlinked (``aws s3 sync`` uploads the target); each
+    ``citations/<key>.json`` lists the paper's quotes in the order
+    :func:`load_quote_refs` numbers them.
+    """
+    viewer_out = output_dir / "viewer"
+    if viewer_out.exists():
+        shutil.rmtree(viewer_out)
+    shutil.copytree(viewer_dir, viewer_out)
+
+    papers_out = output_dir / "papers"
+    citations_out = output_dir / "citations"
+    papers_out.mkdir(exist_ok=True)
+    citations_out.mkdir(exist_ok=True)
+
+    missing: list[str] = []
+    with sqlite3.connect(db_path) as conn:
+        for doi in dois:
+            pdf = doi_to_path(doi, papers_dir, ".pdf")
+            if not pdf.exists():
+                missing.append(doi)
+                continue
+            link = doi_to_path(doi, papers_out, ".pdf")
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(pdf.resolve())
+            (title,) = conn.execute("SELECT title FROM papers WHERE doi = ?", (doi,)).fetchone()
+            quotes = [
+                {"quote": quote_text, "bboxes": json.loads(bboxes_json)}
+                for quote_text, bboxes_json in conn.execute(
+                    "SELECT quote, bboxes_json FROM citation_locations WHERE paper_doi = ? ORDER BY quote",
+                    (doi,),
+                )
+            ]
+            doi_to_path(doi, citations_out, ".json").write_text(
+                json.dumps({"doi": doi, "title": title, "quotes": quotes})
+            )
+    logger.info(f"   {len(dois) - len(missing)} papers linked with citations and highlights")
+    if missing:
+        logger.warning(f"Missing PDFs for {len(missing)} papers, e.g. {missing[:5]}")
 
 
 if __name__ == "__main__":

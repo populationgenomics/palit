@@ -24,7 +24,7 @@ If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, r
 You must output a `disease_entities` array, with each distinct (phenotype × MoI) entity receiving its own entry with a separate family count.
 
 **EVALUATING CRITERIA PER DISEASE ENTITY:**
-Each entry in `disease_entities` is an independent gene–disease association and carries its OWN `evidence_assessments` array (5 entries: criterion_A through criterion_E) AND its OWN `evidence_weakening_factors` array (6 entries). You evaluate all five criteria per entity using only that entity's own evidence and gene–disease relationship; the gene-level rating is then aggregated by the downstream system as: GREEN if and only if at least one entry satisfies `(A or B or C) AND D AND E` on its own.
+Each entry in `disease_entities` is an independent gene–disease association and carries its OWN `evidence_assessments` (an object with the five keys criterion_A through criterion_E) AND its OWN `evidence_weakening_factors` array (6 entries). You evaluate all five criteria per entity using only that entity's own evidence and gene–disease relationship; the gene-level rating is then aggregated by the downstream system as: GREEN if and only if at least one entry satisfies `(A or B or C) AND D AND E` on its own.
 
 Critically, you must NOT stitch criteria across entries. Setting entry X's criterion_A to TRUE on the basis of X's families and separately setting entry Y's criterion_E to TRUE on the basis of Y's lack of contradictions does NOT together produce GREEN — each entity's GREEN-capability is evaluated independently. If no single entity is GREEN-capable, the gene is not GREEN, regardless of how the booleans look in aggregate.
 
@@ -70,14 +70,15 @@ IMPORTANT: This is a <List of Evidence Extractions> -> <Single Evidence Evaluati
 
 CITATION REQUIREMENTS:
 For each criterion that evaluates to TRUE, you MUST provide specific citations from the source papers. For each citation:
-- Provide the paper_id and box ID number (from the original paper's <b id=N> tags)
-- Include brief commentary explaining what this specific text section demonstrates
+- `paper_id`: the paper's ID
+- `quote`: a quote copied exactly, character for character, from that paper's citations in the evidence below (any `quote` field in that paper's entry). Do not write new quotes, shorten them, or merge two. Quotes are highlighted in the paper's PDF by exact lookup, so an altered quote cannot be shown.
+- `commentary`: brief statement of what this passage shows
 
 Example citation format:
 {% raw %}
 "citations": [
-  {"paper_id": "Smith2024", "box_id": 42, "commentary": "Reports 5 families with pathogenic variants"},
-  {"paper_id": "Jones2023", "box_id": 18, "commentary": "Confirms segregation analysis with LOD score 3.2"}
+  {"paper_id": "Smith2024", "quote": "Whole-exome sequencing identified heterozygous variants in five unrelated families.", "commentary": "5 families with variants"},
+  {"paper_id": "Jones2023", "quote": "Linkage analysis yielded a maximum LOD score of 3.2 at marker D2S123.", "commentary": "LOD 3.2"}
 ]
 {% endraw %}
 
@@ -301,17 +302,17 @@ The following candidates carry an expert curation panel's `[DISPUTED]` or `[REFU
       - Compound heterozygous mosaic, homozygous mosaic, or constitutive heterozygous combined with post-zygotic LOH on the second allele → "Biallelic"
       - Use "Other" ONLY when the contributing papers themselves leave zygosity genuinely ambiguous (e.g., describe a mosaic finding without indicating whether the partner allele also carries a pathogenic variant). A paper's labelling conventions are signals: a paper that explicitly tags biallelic mosaic cases (e.g., "homozygous mosaic", "Mosaic AR") but uses a bare label such as "Mosaic" for a given case is reporting monoallelic mosaicism — classify accordingly rather than defaulting to "Other".
   * inheritance_details: clarifications for this disease entity if needed (e.g., "reduced penetrance", "imprinting", "variable expressivity", "post-zygotic mosaic") or empty string ""
-  * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions, mechanisms, AND inheritance modes — citations from a monoallelic-only paper must not land in a biallelic entity for the same phenotype, and vice versa. Each citation must include paper_id, box_id, and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
+  * citations: array of citations from papers that describe this disease entity. When aggregating across papers, collect citations from each paper's disease_entities by matching similar disease descriptions, mechanisms, AND inheritance modes — citations from a monoallelic-only paper must not land in a biallelic entity for the same phenotype, and vice versa. Each citation must include paper_id, quote (copied exactly from that paper's citations), and commentary explaining what the citation shows (e.g., "clinical features", "family counts", "phenotype description").
   * evidence_weakening_factors: REQUIRED per entity — exactly 6 entries (one per factor enum value) capturing weakening factors for THIS entity's evidence. See EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST above for factor semantics; the examples below omit this field for brevity but it must always be present.
-  * evidence_assessments: REQUIRED per entity — exactly 5 entries (criterion_A through criterion_E) capturing the PanelApp diagnostic evidence assessment for THIS entity's gene–disease relationship. See the CRITERION A–E sections above for per-entity rules. The examples below omit this field for brevity but it must always be present. The downstream system aggregates: GREEN iff at least one entity satisfies `(A or B or C) AND D AND E` on its own.
+  * evidence_assessments: REQUIRED per entity — an object with all five keys criterion_A through criterion_E, capturing the PanelApp diagnostic evidence assessment for THIS entity's gene–disease relationship. See the CRITERION A–E sections above for per-entity rules. The examples below omit this field for brevity but it must always be present. The downstream system aggregates: GREEN iff at least one entity satisfies `(A or B or C) AND D AND E` on its own.
   Examples (showing entity descriptors only; `evidence_weakening_factors` and `evidence_assessments` arrays are required but elided for readability — see the JSON OUTPUT FORMAT below for full shape):
 {% raw %}
-  - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 15, "family_count": 8, "independent_family_count": 8, "count_reduction_reasoning": "No reduction (8 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Smith2024", "box_id": 42, "commentary": "clinical features and patient counts"}, {"paper_id": "Jones2023", "box_id": 18, "commentary": "family counts"}]}]
-  - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 12, "family_count": null, "independent_family_count": null, "count_reduction_reasoning": "Not reported", "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"paper_id": "Lee2022", "box_id": 23, "commentary": "phenotype description"}]}]
-  - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 8, "family_count": 5, "independent_family_count": 5, "count_reduction_reasoning": "No reduction (5 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Kim2024", "box_id": 34, "commentary": "ALS phenotype and counts"}, {"paper_id": "Park2023", "box_id": 56, "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 10, "family_count": 3, "independent_family_count": 3, "count_reduction_reasoning": "No reduction (3 families)", "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Wang2022", "box_id": 78, "commentary": "dental phenotype and family data"}]}]
-  - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 6, "family_count": 6, "independent_family_count": 6, "count_reduction_reasoning": "No reduction (6 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Chen2024", "box_id": 78, "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Li2023", "box_id": 18, "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
-  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 18, "family_count": 12, "independent_family_count": 12, "count_reduction_reasoning": "No reduction (12 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Park2024", "box_id": 31, "commentary": "dominant families with adult-onset weakness"}]}, {"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 5, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "compound-het null alleles, distinct variants → No reduction (4 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Lee2024", "box_id": 49, "commentary": "recessive families, compound heterozygous null alleles"}]}]
-  - Candidate flagged Disputed (mirror the marker in dispute_status; criterion-gating then applies): [{"description": "congenital heart disease (atrioventricular septal defect, tricuspid atresia, tetralogy of Fallot)", "mondo_disease_name": "congenital heart disease", "dispute_status": "Disputed", "patient_count": 13, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "variable penetrance", "citations": [{"paper_id": "Ferese2018", "box_id": 71, "commentary": "three families with NFATC1 missense variants and AVSD"}]}]
+  - Single disease with both counts: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 15, "family_count": 8, "independent_family_count": 8, "count_reduction_reasoning": "No reduction (8 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Smith2024", "quote": "<quote copied from that paper>", "commentary": "clinical features and patient counts"}, {"paper_id": "Jones2023", "quote": "<quote copied from that paper>", "commentary": "family counts"}]}]
+  - Single disease, family count not reported: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 12, "family_count": null, "independent_family_count": null, "count_reduction_reasoning": "Not reported", "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "citations": [{"paper_id": "Lee2022", "quote": "<quote copied from that paper>", "commentary": "phenotype description"}]}]
+  - Multiple diseases: [{"description": "amyotrophic lateral sclerosis, adult-onset progressive", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 8, "family_count": 5, "independent_family_count": 5, "count_reduction_reasoning": "No reduction (5 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Kim2024", "quote": "<quote copied from that paper>", "commentary": "ALS phenotype and counts"}, {"paper_id": "Park2023", "quote": "<quote copied from that paper>", "commentary": "additional ALS families"}]}, {"description": "isolated dental root anomalies, childhood presentation", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 10, "family_count": 3, "independent_family_count": 3, "count_reduction_reasoning": "No reduction (3 families)", "disease_mechanism": "NR", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Wang2022", "quote": "<quote copied from that paper>", "commentary": "dental phenotype and family data"}]}]
+  - Multiple mechanisms (BAIAP2 example): [{"description": "developmental and epileptic encephalopathy, infantile/early-childhood onset", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 6, "family_count": 6, "independent_family_count": 6, "count_reduction_reasoning": "No reduction (6 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Chen2024", "quote": "<quote copied from that paper>", "commentary": "DEE phenotype and GoF mechanism"}]}, {"description": "lissencephaly with posterior>anterior gradient, severe developmental delay", "mondo_disease_name": "Neurodevelopmental disorder", "dispute_status": "None", "patient_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Li2023", "quote": "<quote copied from that paper>", "commentary": "lissencephaly phenotype and LoF mechanism"}]}]
+  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 18, "family_count": 12, "independent_family_count": 12, "count_reduction_reasoning": "No reduction (12 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "citations": [{"paper_id": "Park2024", "quote": "<quote copied from that paper>", "commentary": "dominant families with adult-onset weakness"}]}, {"description": "ACTN2-related skeletal myopathy, adult-onset limb-girdle weakness", "mondo_disease_name": "Syndromic disease", "dispute_status": "None", "patient_count": 5, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "compound-het null alleles, distinct variants → No reduction (4 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "citations": [{"paper_id": "Lee2024", "quote": "<quote copied from that paper>", "commentary": "recessive families, compound heterozygous null alleles"}]}]
+  - Candidate flagged Disputed (mirror the marker in dispute_status; criterion-gating then applies): [{"description": "congenital heart disease (atrioventricular septal defect, tricuspid atresia, tetralogy of Fallot)", "mondo_disease_name": "congenital heart disease", "dispute_status": "Disputed", "patient_count": 13, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "variable penetrance", "citations": [{"paper_id": "Ferese2018", "quote": "<quote copied from that paper>", "commentary": "three families with NFATC1 missense variants and AVSD"}]}]
 {% endraw %}
 - variants: list all variants reported across papers WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
 - population_freq: ONLY if papers report gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
@@ -325,6 +326,13 @@ CAUSAL & MECHANISTIC LANGUAGE — calibrate to evidence strength (applies to `su
 - Reserve "cause(s)/causing" and unqualified mechanism labels ("loss-of-function", "gain-of-function", "haploinsufficiency") for entities where causation is well-supported: a proven-null variant in an established loss-of-function gene, segregation across informative meioses, OR robust variant-specific functional validation (ideally with rescue or in-vivo corroboration).
 - When support is weaker — missense (or other non-null) variants resting on in-vitro reporter/biochemical assays, or without segregation — hedge: "associated with", "identified in", "candidate", "in-vitro evidence of reduced/impaired [function]", "consistent with a loss-of-function effect", or "predicted loss-of-function". Do not state the disease-level mechanism as established.
 - Keep the variant-level functional readout ("the variants reduced transactivation in vitro") distinct from the disease-level mechanism claim ("haploinsufficiency causes the phenotype"). The assays show the former; the latter must be earned.
+
+WRITING STYLE (applies to `summary`, every `rationale`, `details`, `commentary`, and `concern`):
+- State facts from the papers: counts, variants, zygosity, segregation, phenotype, experiments and their readouts. Do not grade the evidence in prose.
+- No value judgments: no evaluative adjectives or adverbs such as "convincing", "compelling", "robust", "strong", "weak", "solid", "clear(ly)", "well-established", "definitive", "substantial", "significant" (except statistical significance with its value), "notable", "important", "key", "extensive", "comprehensive", "limited", "sufficient", "confirming". Write "wild-type mRNA rescued the zebrafish phenotype; p.G244E did not" rather than "convincing functional evidence".
+- Evidence gaps are stated as facts ("No segregation data.", "Parental samples not tested.", "Variants present in gnomAD v4."), not as judgments.
+- In `summary`, do not use PanelApp criterion vocabulary ("Criterion A", "diagnostic-grade", "meets the bar", "upgrade") and do not state a rating; the report shows the criteria and the computed rating separately.
+- Keep it short. Do not restate what the structured fields already carry.
 
 PROSE SUMMARY REQUIREMENTS:
 
@@ -367,32 +375,13 @@ EXAMPLE — multi-entity using bold labels (for 3+ entities or long descriptions
 {# CASE 1: General + Novel #}
 Provide a prose narrative that synthesizes the gene-disease evidence across all contributing papers.
 
-SINGLE-ENTITY: BRIEF flowing prose (2-3 sentences by default; longer when evidence complexity warrants). Optional protein-function lead-in (1-2 sentences) when contributing papers describe what the protein encodes and its biological function — synthesize ONLY from paper content.
+SUMMARY FORMAT — one short paragraph per association (disease entity), in independent_family_count-descending order, at most ~60 words each:
+<Association label>: <PaperID> reports <N> individuals from <M> families with <zygosity> <variant type> variants and <key phenotype>. [At most one sentence on functional or animal-model experiments and their readouts.] [Evidence gaps as facts, e.g. "No segregation data."]
+Use one sentence per paper when several papers contribute. Omit the association label when there is only one association. Omit protein-function background.
 
-Include the following information categories when available (omit any that are not present or not applicable):
-- Paper references and patient/family counts
-- Inheritance pattern: monoallelic, biallelic, X-linked, de novo, mosaic/somatic, etc.
-- Disease mechanism: gain-of-function, loss-of-function, loss-of-function (haploinsufficiency), dominant-negative, etc.
-- Variant types: missense, nonsense, frameshift, splice-site, deletion, etc.
-- Core phenotype and clinical features
-- Functional evidence (if strong)
-- Notable specifics (founder variants, population findings, prior reports, etc.)
-
-GENERAL TEMPLATE (flexible — adapt as needed for natural prose):
-<paper_id(s)> report <N> individuals from <N> families with <inheritance> <mechanism> <variant-types> variants presenting with <phenotype>. <Clinical details>. <Functional evidence>. <Notable specifics>.
-
-When `disease_mechanism` is "NR", simply omit it.
-
-EXAMPLES — single-entity:
-
-✓ Single mechanism, single variant type:
-  "Smith2024 reports 6 individuals from 6 families with heterozygous de novo gain-of-function missense variants presenting with developmental and epileptic encephalopathy. Functional assays demonstrate constitutive activation."
-
-✓ Single mechanism, multiple variant types:
-  "Jones2024 reports 27 individuals from 24 families with biallelic loss-of-function nonsense, frameshift, and splice-site variants causing Stargardt disease type 1, an autosomal recessive progressive macular dystrophy with childhood- or early adulthood-onset central vision loss."
-
-✓ Protein-function lead-in:
-  "BAIAP2 encodes a brain-specific angiogenesis inhibitor binding protein. Wang2024 reports 3 individuals from 1 family with a heterozygous missense variant (c.349G>T, p.Asp117Tyr) presenting with premature ovarian insufficiency. Mouse knock-in model recapitulates age-dependent subfertility and follicle depletion."
+EXAMPLES:
+  "Monoallelic association: Chen2022 reports three de novo heterozygous missense variants in three individuals with heterotaxy; variant-specific zebrafish rescue experiments for two of the variants."
+  "Association with male infertility: Wu2023 and Li2026 report 3 individuals with two truncating variants and one missense variant. The missense variant has gnomAD v4 AC 212. No segregation data. Mouse knockout shows age-dependent spermatogenic defects."
 
 MULTI-ENTITY: Apply PER-ENTITY ORGANIZATION (above). The protein-function lead-in remains optional and, when used, comes before the per-entity paragraphs. Distinct mechanisms naturally fall into separate entities (per the LUMPING/SPLITTING rules above), so the per-entity structure carries the genotype-phenotype mapping — do not also try to "organize by mechanism" within a single paragraph.
 
@@ -407,38 +396,15 @@ This gene has existing PanelApp Australia reviews (shown below). Your summary mu
 
 {{ previous_reviews_section }}
 
-OUTPUT FORMAT — the summary field MUST use exactly these three bold markdown headers, for both single-entity and multi-entity genes:
+The summary covers only what the new papers add. Do not recap the prior reviews and do not write an overall assessment; the curator reads the prior reviews and the criteria separately. If the new papers add nothing substantive, write "No new families or functional data in the new papers."
 
-**New evidence**: <what the new papers add — families, variants, phenotypes, functional data>
-
-**Prior reviews**: <what was already established in the PanelApp reviews above; if reviews are sparse, state the rating and panel concisely>
-
-**Assessment**: <how new + existing evidence together support the classification; include phenotypic expansion or inheritance changes if applicable>
-
-WHEN MULTI-ENTITY: Apply PER-ENTITY ORGANIZATION (above) INSIDE the **New evidence** and **Assessment** sections — one short paragraph per entity within each, in independent_family_count-descending order. **Prior reviews** stays a single gene-level block because PanelApp's prior reviewer commentary is not stored per-entity; summarise it as it actually exists, even when the new evidence covers entities the prior reviews never mentioned.
+SUMMARY FORMAT — one short paragraph per association (disease entity), in independent_family_count-descending order, at most ~60 words each:
+<Association label>: <PaperID> reports <N> individuals from <M> families with <zygosity> <variant type> variants and <key phenotype>. [At most one sentence on functional or animal-model experiments and their readouts.] [Evidence gaps as facts, e.g. "No segregation data."]
+Use one sentence per paper when several papers contribute. Omit the association label when there is only one association. Omit protein-function background.
 
 EXAMPLES:
-
-✓ Single-entity:
-  "**New evidence**: Kim2024 reports 4 families with biallelic variants causing childhood-onset ataxia, with zebrafish rescue experiments.
-
-  **Prior reviews**: Rated AMBER on the PanelApp Australia Mendeliome panel with no detailed reviewer commentary.
-
-  **Assessment**: The new evidence meets Criterion A (4 independent families) and Criterion C (functional validation), supporting an upgrade to diagnostic-grade."
-
-✓ Multi-entity (scaffold preserved; per-entity inside New evidence and Assessment):
-  "**New evidence**: Park2024 adds 14 families with adult-onset dominant skeletal myopathy carrying loss-of-function variants. Lee2024 reports the recessive form in 5 families (7 patients), all carrying the homozygous missense p.Arg506Gly. No new cardiomyopathy or MsCD families.
-
-  **Prior reviews**: 2021 PanelApp Australia review classified ACTN2 GREEN for dilated cardiomyopathy based on 14 families with iPSC-CM functional validation. Skeletal phenotypes were not addressed in prior reviewer commentary.
-
-  **Assessment**: Cardiomyopathy remains diagnostic-grade; combined with the new evidence the total still exceeds 30 families. The adult-onset dominant skeletal myopathy is newly diagnostic-grade with Park2024's 14 families. The adult-onset recessive myopathy rests on one shared origin (homozygous p.Arg506Gly in all 5 families, no haplotype/distinct-ancestry evidence) → independent_family_count 1, so AMBER despite 5 families."
-
-✓ No substantive new evidence (single-entity behaviour):
-  "**New evidence**: No new families or functional data beyond what was previously reviewed.
-
-  **Prior reviews**: Rated GREEN on PanelApp Australia (April 2022) based on 5 families with recessive loss-of-function alleles.
-
-  **Assessment**: The existing evidence remains sufficient for diagnostic-grade status."
+  "Monoallelic association: Chen2022 reports three de novo heterozygous missense variants in three individuals with heterotaxy; variant-specific zebrafish rescue experiments for two of the variants."
+  "Association with male infertility: Wu2023 and Li2026 report 3 individuals with two truncating variants and one missense variant. The missense variant has gnomAD v4 AC 212. No segregation data. Mouse knockout shows age-dependent spermatogenic defects."
 
 {% elif not has_previous_reviews and panel_formatted %}
 {# CASE 3: Panel-scoped + Novel #}
@@ -577,7 +543,7 @@ If no significant concerns, use an empty array: []
 
 Before generating your JSON response, thoroughly think through the evidence assessments. The response schema is complex:
 - For each disease entity, its `evidence_weakening_factors` MUST contain exactly 6 entries, one per factor enum value, each with `factor`, `present`, `details`. Fill these out FIRST for each entity.
-- For each disease entity, its `evidence_assessments` MUST contain exactly 5 entries (criterion_A through criterion_E), each with result, rationale, confidence, and citations. Each rationale must reference any `present:true` weakening factor for THAT entity that affects the verdict.
+- For each disease entity, its `evidence_assessments` MUST contain all five criteria (criterion_A through criterion_E), each with result, rationale, confidence, and citations, including criteria that evaluate to false. (The evidence below lists each paper's criteria as an array with a `name` field; your answer uses the object form.) Each rationale must reference any `present:true` weakening factor for THAT entity that affects the verdict.
 Plan both arrays per entity before you begin writing the JSON output.
 
 Respond in JSON format with your aggregate evaluation:
@@ -588,11 +554,11 @@ Respond in JSON format with your aggregate evaluation:
   "summary": "{% if has_previous_reviews and panel_formatted -%}
 **New evidence**: <new families/variants/phenotypes/functional data; for multi-entity, one paragraph per entity per PER-ENTITY ORGANIZATION above>\n\n**Prior reviews**: <prior PanelApp Australia ratings, panels, and key claims — single gene-level block>\n\n**Panel relevance**: <why this gene fits the target panel's scope — single gene-level block>\n\n**Assessment**: <how new + existing evidence support the classification; for multi-entity, one paragraph per entity per PER-ENTITY ORGANIZATION above>
 {%- elif has_previous_reviews -%}
-**New evidence**: <new families/variants/phenotypes/functional data; for multi-entity, one paragraph per entity per PER-ENTITY ORGANIZATION above>\n\n**Prior reviews**: <prior PanelApp Australia ratings, panels, and key claims — single gene-level block>\n\n**Assessment**: <how new + existing evidence support the classification; for multi-entity, one paragraph per entity per PER-ENTITY ORGANIZATION above>
+<one paragraph per association, ≤60 words each, per SUMMARY FORMAT: what the new papers add only>
 {%- elif panel_formatted -%}
 <single-entity: paper_id(s) report N individuals from N families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Panel relevance>. <Notable specifics>. | multi-entity: per-entity paragraphs per PER-ENTITY ORGANIZATION above, with panel relevance in the lead-in or in entity paragraphs as appropriate>
 {%- else -%}
-<single-entity: paper_id(s) report N individuals from N families with <inheritance> variants presenting with <phenotype>. <Clinical features>. <Functional evidence>. <Notable specifics>. | multi-entity: per-entity paragraphs per PER-ENTITY ORGANIZATION above>
+<one paragraph per association, ≤60 words each, per SUMMARY FORMAT>
 {%- endif %}",
 {% raw %}
   "families": "N families reported (N independent) aggregated across all papers",
@@ -613,7 +579,7 @@ Respond in JSON format with your aggregate evaluation:
       "disease_mechanism": "mechanism or NR",
       "inheritance_mode": "<one of the enum values>",
       "inheritance_details": "<additional details or empty string>",
-      "citations": [{"paper_id": "Author2024", "box_id": box_id, "commentary": "description"}],
+      "citations": [{"paper_id": "Author2024", "quote": "<quote copied from that paper>", "commentary": "description"}],
       "evidence_weakening_factors": [
         {"factor": "founder_or_recurrent_variant", "present": boolean, "details": "1-2 sentences citing specific evidence for this entity, or 'Not present' with brief sanity-check"},
         {"factor": "inherited_no_segregation_with_affected", "present": boolean, "details": "..."},
@@ -622,20 +588,20 @@ Respond in JSON format with your aggregate evaluation:
         {"factor": "phenotype_non_mendelian", "present": boolean, "details": "..."},
         {"factor": "functional_below_criterion_c_threshold", "present": boolean, "details": "..."}
       ],
-      "evidence_assessments": [
-        {"name": "criterion_A", "result": boolean, "rationale": "per-entity rationale; reference any present:true weakening factor for this entity", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "explanation"}]},
-        {"name": "criterion_B", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
-        {"name": "criterion_C", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
-        {"name": "criterion_D", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
-        {"name": "criterion_E", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []}
-      ]
+      "evidence_assessments": {
+        "criterion_A": {"result": boolean, "rationale": "per-entity rationale; reference any present:true weakening factor for this entity", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"paper_id": "AuthorYear", "quote": "<quote copied from that paper>", "commentary": "explanation"}]},
+        "criterion_B": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
+        "criterion_C": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
+        "criterion_D": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
+        "criterion_E": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []}
+      }
     }
   ],
   "quality_concerns": [
     {
       "concern": "description of the issue, referencing specific paper IDs",
       "paper_ids": ["AuthorYear"],
-      "citations": [{"paper_id": "AuthorYear", "box_id": integer, "commentary": "where the problematic claim appears"}]
+      "citations": [{"paper_id": "AuthorYear", "quote": "<quote copied from that paper>", "commentary": "where the problematic claim appears"}]
     }
   ]
 }

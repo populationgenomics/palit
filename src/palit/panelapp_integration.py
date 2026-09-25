@@ -44,6 +44,21 @@ def validate_criteria_complete(criteria: list[dict[str, Any]]) -> bool:
     return names == set(PANELAPP_CRITERIA)
 
 
+def criteria_object_to_list(entities: list[dict[str, Any]]) -> None:
+    """Rewrite each entity's model-facing criteria object as the stored criteria list.
+
+    The model answers with ``evidence_assessments`` as an object keyed
+    ``criterion_A`` .. ``criterion_E``, so the output grammar enforces all five;
+    everything downstream stores and reads a list of ``{"name": ..., ...}``
+    entries in that order. Mutates *entities* in place.
+    """
+    for entity in entities:
+        by_name: dict[str, dict[str, Any]] = entity["evidence_assessments"]
+        entity["evidence_assessments"] = [
+            {"name": name, **by_name[name]} for name in PANELAPP_CRITERIA
+        ]
+
+
 def validate_entities_criteria_complete(entities: list[dict[str, Any]]) -> bool:
     """Check that every disease entity has a complete 5-criterion evidence_assessments array.
 

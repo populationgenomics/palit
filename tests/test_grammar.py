@@ -18,6 +18,8 @@ import pytest
 from anthropic.types import ToolParam
 
 from palit.llm import MODEL, AnthropicSettings, json_output_config, make_client
+from palit.lookup_tools import TOOLS as EXTRACTION_TOOLS
+from palit.scan_mechanisms import MechanismScanResult
 
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
 
@@ -29,11 +31,11 @@ def _schema(name: str) -> dict[str, Any]:
 # (stage, output schema, tools declared alongside it)
 CONFIGURATIONS: list[tuple[str, dict[str, Any], list[ToolParam]]] = [
     ("relevance", _schema("relevance_assessment_schema.json"), []),
-    ("relevance_16p11_2", _schema("relevance_assessment_16p11_2_schema.json"), []),
-    ("extraction", _schema("evidence_extraction_schema.json"), []),
+    ("extraction", _schema("evidence_extraction_schema.json"), EXTRACTION_TOOLS),
     ("assess_genes", _schema("aggregate_assessment_schema.json"), []),
     ("match_panels", _schema("panel_matching_schema.json"), []),
     ("tournament", _schema("tournament_selection_schema.json"), []),
+    ("scan_mechanisms", MechanismScanResult.model_json_schema(), []),
 ]
 
 

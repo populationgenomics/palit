@@ -1,10 +1,9 @@
 -- Gene-Panel Centric Literature Assessment Database Schema
 -- Creates fresh database with complete schema for gene-panel workflow
 
--- Enable Write-Ahead Logging (WAL) mode for concurrent access
--- WAL allows multiple processes to read/write simultaneously without lock contention.
--- Enables parallel GPU processing with assess_relevance.py using --shard-index.
--- This setting persists in the database file.
+-- Enable Write-Ahead Logging (WAL) mode: readers (e.g. report generation or ad-hoc
+-- queries) don't block a running stage's writes. This setting persists in the
+-- database file.
 PRAGMA journal_mode=WAL;
 
 -- Core papers table
@@ -35,11 +34,8 @@ CREATE TABLE papers (
     -- Relevance assessment of title and abstract
     relevance_assessment_raw JSON,  -- The Claude message the assessment came from
     relevance_assessment_json JSON,  -- The parsed assessment object
-    evidence_extraction_raw TEXT,  -- Includes LLM reasoning content
-    evidence_extraction_json JSON,
-
-    -- PDF citation linking
-    bbox_mapping JSON
+    evidence_extraction_raw TEXT,  -- The final Claude message of the extraction conversation
+    evidence_extraction_json JSON
 );
 
 -- Normalized gene-paper relationships (automatically maintained from evidence extraction)
@@ -109,17 +105,16 @@ CREATE TABLE gene_assessments (
 CREATE INDEX idx_gene_assessments_unmatched ON gene_assessments(matched_panels_json)
     WHERE matched_panels_json IS NULL;
 
--- Variant frequency information from gnomAD.
--- Populated by `palit fetch-variant-frequencies` from the variant-lookup
--- service. The JSON shapes mirror the service's response — see
--- README.md § "External services" and ARCHITECTURE.md in the
--- variant-lookup repo for the full contract.
+-- Variant frequency information from gnomAD v4.1, one row per extracted variant.
+-- Filled by extract-evidence from its lookup_variants tool results (variant-lookup
+-- service). The JSON shapes mirror the service's response; see README.md
+-- § "External services" and ARCHITECTURE.md in the variant-lookup repo.
 CREATE TABLE variant_frequencies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     variant_id TEXT NOT NULL,  -- Pseudo-VCF (chr-pos-ref-alt) on success; original variant text on normalization failure
     hgnc_id INTEGER NOT NULL,  -- For report generation and indexing
     paper_doi TEXT NOT NULL,
-    box_id INTEGER NOT NULL,  -- For PDF citation linking
+    quote TEXT NOT NULL,  -- The extraction's quote for this variant; see citation_locations
     -- Success: {hgvs_c, hgvs_p, original_text, total_normalizations, selected_for_max_ac}.
     -- Service-side failure (no normalized variant returned):
     --   {original_text, error_code, error_message, upstream}.
@@ -132,7 +127,7 @@ CREATE TABLE variant_frequencies (
     gnomad JSON NOT NULL,
 
     FOREIGN KEY (paper_doi) REFERENCES papers(doi),
-    UNIQUE(variant_id, paper_doi, box_id)  -- Allow same variant in paper if different box_id
+    UNIQUE(variant_id, paper_doi, hgnc_id)
 );
 
 CREATE INDEX idx_variant_frequencies_variant_id ON variant_frequencies(variant_id);
@@ -165,6 +160,7 @@ CREATE TABLE llm_requests (
     model TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('pending', 'succeeded', 'refused', 'errored', 'expired', 'canceled')),
     stop_reason TEXT,
+    refusal_category TEXT,                -- stop_details.category of a refusal, e.g. 'bio'
     error_type TEXT,                      -- e.g. 'invalid_request_error', 'overloaded_error'
     service_tier TEXT,                    -- 'batch' or 'standard'
     input_tokens INTEGER,                 -- uncached input
@@ -195,4 +191,15 @@ CREATE TABLE uploaded_files (
     sha256 TEXT NOT NULL,                 -- re-upload when the local PDF changes
     uploaded_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
+);
+
+-- Where each extraction quote sits in its paper's PDF, resolved by anchorite at
+-- extraction time. The report's PDF viewer draws these boxes.
+CREATE TABLE citation_locations (
+    paper_doi TEXT NOT NULL REFERENCES papers(doi),
+    quote TEXT NOT NULL,
+    -- [{"page": 1-based, "top", "left", "bottom", "right"}], 0-1000 page
+    -- coordinates, one box per visual line; [] when the quote can't be placed
+    bboxes_json JSON NOT NULL,
+    PRIMARY KEY (paper_doi, quote)
 );

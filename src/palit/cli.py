@@ -9,15 +9,12 @@ from rich.logging import RichHandler
 # Always-available commands (no optional dependencies)
 from palit import (
     analyze_concordance,
-    annotate_pdfs,
     assess_genes,
     assess_relevance,
     discover_citations,
-    docling,
     download_papers,
     expand_literature,
     extract_evidence,
-    fetch_variant_frequencies,
     generate_report,
     ingest_preprints,
     ingest_pubmed,
@@ -57,11 +54,8 @@ app.add_typer(ingest_preprints.app, name="ingest-preprints")
 app.add_typer(ledger.app, name="ledger")
 app.add_typer(llm_usage.app, name="llm")
 app.add_typer(discover_citations.app, name="discover-citations")
-app.add_typer(fetch_variant_frequencies.app, name="fetch-variant-frequencies")
-app.add_typer(annotate_pdfs.app, name="annotate-pdfs")
 app.add_typer(analyze_concordance.app, name="analyze-concordance")
 app.add_typer(download_papers.app, name="download-papers")
-app.add_typer(docling.app, name="docling")
 app.add_typer(generate_report.app, name="generate-report")
 app.add_typer(scan_mechanisms.app, name="scan-mechanisms")
 app.add_typer(assess_relevance.app, name="assess-relevance")
@@ -71,7 +65,7 @@ app.add_typer(match_panels.app, name="match-panels")
 app.add_typer(expand_literature.app, name="expand-literature")
 app.add_typer(reduce_literature.app, name="reduce-literature")
 
-# Conditionally register ML-only commands (require torch, transformers, vLLM)
+# Conditionally register ML-only commands (require torch and transformers from the ml extra)
 try:
     from palit import screen_pubmed
     from palit.screening_classifier import cli as screening_cli

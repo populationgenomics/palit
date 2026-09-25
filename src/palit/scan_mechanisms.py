@@ -4,20 +4,26 @@
 import asyncio
 import json
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-import boto3
 import jinja2
 import typer
-from botocore.config import Config
-from pydantic import BaseModel, Field
-from pydantic_ai import Agent
-from pydantic_ai.models.bedrock import BedrockConverseModel, BedrockModelSettings
-from pydantic_ai.providers.bedrock import BedrockModelProfile, BedrockProvider
+from anthropic import AsyncAnthropic
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from palit.llm import (
+    MODEL,
+    AnthropicSettings,
+    Effort,
+    ImmediateTransport,
+    LlmRequest,
+    ResultStatus,
+    json_output_config,
+    make_client,
+    parse_json_output,
+)
 from palit.panelapp_client import PanelAppClient
 from palit.panelapp_integration import INCIDENTALOME_PANEL_ID, MENDELIOME_PANEL_ID
 from palit.progress import LoggingProgress as Progress
@@ -27,6 +33,9 @@ logger = logging.getLogger(__name__)
 app = typer.Typer(help="Scan PanelApp reviews for mechanism-of-disease mentions.")
 
 SCAN_PANEL_IDS = [MENDELIOME_PANEL_ID, INCIDENTALOME_PANEL_ID]
+STAGE = "scan_mechanisms"
+EFFORT: Effort = "high"
+MAX_TOKENS = 16000
 PROMPT_TEMPLATE_PATH = Path(__file__).parents[2] / "prompts" / "mechanism_scan.j2"
 
 
@@ -49,6 +58,8 @@ class TextSource(Protocol):
 
 
 class MechanismScanResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     gain_of_function: bool = Field(
         description=(
             "Whether the text asserts gain-of-function as a mechanism of disease for this gene"
@@ -239,103 +250,65 @@ def _load_prompt_template() -> jinja2.Template:
     return jinja2.Template(template_text)
 
 
-def _create_agent(model_id: str, concurrency: int) -> Agent[None, MechanismScanResult]:
-    session = boto3.Session()
-    bedrock_client = session.client(
-        "bedrock-runtime",
-        config=Config(max_pool_connections=concurrency, read_timeout=300, connect_timeout=60),
-    )
-    model = BedrockConverseModel(
-        model_id,
-        provider=BedrockProvider(bedrock_client=bedrock_client),
-        profile=BedrockModelProfile(
-            bedrock_supports_tool_choice=False,
-            bedrock_send_back_thinking_parts=True,
-        ),
-    )
-    return Agent(
-        model,
-        output_type=MechanismScanResult,
-        retries=3,
-        instructions="Always return your response by calling the final_result tool.",
-        model_settings=BedrockModelSettings(
-            max_tokens=16_000,
-            bedrock_additional_model_requests_fields={
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": "high"},
-            },
-        ),
-    )
-
-
-async def _scan_gene(
-    agent: Agent[None, MechanismScanResult],
-    template: jinja2.Template,
-    gene: GeneText,
-    raw_dir: Path,
-) -> MechanismScanResult:
-    prompt = template.render(gene_symbol=gene.gene_symbol, review_text=gene.text)
-    t0 = time.monotonic()
-    result = await agent.run(prompt)
-    elapsed = time.monotonic() - t0
-    logger.info(
-        "%s: GoF=%s DN=%s (%.1fs)",
-        gene.gene_symbol,
-        result.output.gain_of_function,
-        result.output.dominant_negative,
-        elapsed,
-    )
-    # Store raw LLM conversation
-    raw_path = raw_dir / f"{gene.hgnc_id}.json"
-    raw_path.write_bytes(result.all_messages_json())
-    return result.output
-
-
 async def scan_all(
     gene_texts: list[GeneText],
-    agent: Agent[None, MechanismScanResult],
+    client: AsyncAnthropic,
     output_dir: Path,
     concurrency: int,
 ) -> None:
     template = _load_prompt_template()
     raw_dir = output_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
+    output_config = json_output_config(MechanismScanResult.model_json_schema(), EFFORT)
+    by_id = {str(gene.hgnc_id): gene for gene in gene_texts}
+    requests = [
+        LlmRequest(
+            subject=str(gene.hgnc_id),
+            params={
+                "model": MODEL,
+                "max_tokens": MAX_TOKENS,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": template.render(
+                            gene_symbol=gene.gene_symbol, review_text=gene.text
+                        ),
+                    }
+                ],
+                "output_config": output_config,
+            },
+        )
+        for gene in gene_texts
+    ]
+    results = await ImmediateTransport(client, workers=concurrency).run(STAGE, 1, requests)
 
     gof_genes: list[str] = []
     dn_genes: list[str] = []
     failures: list[GeneFailure] = []
-    semaphore = asyncio.Semaphore(concurrency)
+    for result in results:
+        gene = by_id[result.subject]
+        if result.status != ResultStatus.SUCCEEDED or result.message is None:
+            failures.append(GeneFailure(gene_symbol=gene.gene_symbol, error=result.status.value))
+            continue
+        try:
+            scan = MechanismScanResult.model_validate(parse_json_output(result.message))
+        except (ValueError, ValidationError) as e:
+            failures.append(GeneFailure(gene_symbol=gene.gene_symbol, error=str(e)))
+            continue
+        (raw_dir / f"{gene.hgnc_id}.json").write_text(result.message.to_json())
+        logger.info(
+            "%s: GoF=%s DN=%s", gene.gene_symbol, scan.gain_of_function, scan.dominant_negative
+        )
+        if scan.gain_of_function:
+            gof_genes.append(gene.gene_symbol)
+        if scan.dominant_negative:
+            dn_genes.append(gene.gene_symbol)
 
-    with Progress() as progress:
-        task = progress.add_task("Scanning genes", total=len(gene_texts))
-
-        async def process(gene: GeneText) -> None:
-            async with semaphore:
-                try:
-                    result = await _scan_gene(agent, template, gene, raw_dir)
-                    if result.gain_of_function:
-                        gof_genes.append(gene.gene_symbol)
-                    if result.dominant_negative:
-                        dn_genes.append(gene.gene_symbol)
-                except Exception:
-                    logger.exception("Failed to scan %s (HGNC:%d)", gene.gene_symbol, gene.hgnc_id)
-                    failures.append(
-                        GeneFailure(gene_symbol=gene.gene_symbol, error=str(gene.hgnc_id))
-                    )
-                finally:
-                    progress.update(task, advance=1)
-
-        async with asyncio.TaskGroup() as tg:
-            for gene in gene_texts:
-                tg.create_task(process(gene))
-
-    # Write output files
     gof_path = output_dir / "gain_of_function.txt"
     dn_path = output_dir / "dominant_negative.txt"
     gof_path.write_text("\n".join(sorted(gof_genes)) + "\n" if gof_genes else "")
     dn_path.write_text("\n".join(sorted(dn_genes)) + "\n" if dn_genes else "")
 
-    # Summary
     logger.info(
         "Scan complete: %d genes scanned, %d gain-of-function, %d dominant-negative, %d errors",
         len(gene_texts),
@@ -346,7 +319,7 @@ async def scan_all(
     if failures:
         logger.error("Failed genes:")
         for f in sorted(failures, key=lambda x: x.gene_symbol):
-            logger.error("  %s (HGNC:%s)", f.gene_symbol, f.error)
+            logger.error("  %s: %s", f.gene_symbol, f.error)
 
 
 # ---------------------------------------------------------------------------
@@ -373,9 +346,6 @@ def scan(
     ),
     output_dir: Path | None = typer.Option(
         None, "--output-dir", help="Output directory (default: data/mechanism_scan/{source})"
-    ),
-    model_id: str = typer.Option(
-        "au.anthropic.claude-opus-4-6-v1", "--model-id", help="Bedrock model ID"
     ),
     concurrency: int = typer.Option(30, "--concurrency", help="Max parallel LLM calls"),
     no_cache: bool = typer.Option(
@@ -409,5 +379,7 @@ def scan(
 
     logger.info("Scanning %d genes for mechanism-of-disease mentions", len(gene_texts))
 
-    agent = _create_agent(model_id, concurrency)
-    asyncio.run(scan_all(gene_texts, agent, output_dir, concurrency))
+    async def run() -> None:
+        await scan_all(gene_texts, make_client(AnthropicSettings()), output_dir, concurrency)
+
+    asyncio.run(run())

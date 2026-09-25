@@ -175,16 +175,19 @@ def record_result(conn: sqlite3.Connection, result: LlmResult) -> None:
     """
     usage = result.message.usage if result.message is not None else None
     cache_creation = usage.cache_creation if usage is not None else None
+    stop_details = result.message.stop_details if result.message is not None else None
+    refusal_category = stop_details.category if stop_details is not None else None
     conn.execute(
         """
         INSERT INTO llm_requests (
-            custom_id, batch_id, stage, subject, round, model, status, stop_reason, error_type,
-            service_tier, input_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
-            cache_read_tokens, output_tokens, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            custom_id, batch_id, stage, subject, round, model, status, stop_reason,
+            refusal_category, error_type, service_tier, input_tokens, cache_write_5m_tokens,
+            cache_write_1h_tokens, cache_read_tokens, output_tokens, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (custom_id) DO UPDATE SET
             status = excluded.status,
             stop_reason = excluded.stop_reason,
+            refusal_category = excluded.refusal_category,
             error_type = excluded.error_type,
             service_tier = excluded.service_tier,
             input_tokens = excluded.input_tokens,
@@ -203,6 +206,7 @@ def record_result(conn: sqlite3.Connection, result: LlmResult) -> None:
             result.model,
             result.status.value,
             result.message.stop_reason if result.message is not None else None,
+            refusal_category,
             result.error_type,
             usage.service_tier if usage is not None else None,
             usage.input_tokens if usage is not None else None,

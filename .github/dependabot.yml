@@ -11,9 +11,9 @@
 #   local, CI, and Dependabot resolution share the same cutoff. Without it
 #   Dependabot would open PRs for versions CI then rejects because they are too
 #   fresh.
-# - One uv entry is enough: palit is a single uv project at the repo root, and
-#   Dependabot resolves the whole uv.lock — every extra (`ml`, `docling-macos`)
-#   and the `dev` dependency-group included.
+# - One uv entry covers the Python side: palit is a single uv project at the
+#   repo root, and Dependabot resolves the whole uv.lock, including the `ml`
+#   extra and the `dev` dependency-group. The npm entry covers viewer/.
 # - Review requests come from .github/CODEOWNERS. Dependabot's `reviewers:`
 #   option was retired by GitHub in 2025 (it is now silently ignored), so the
 #   code owner is what gets a review request on each PR.
@@ -44,12 +44,23 @@ updates:
         update-types:
           - "minor"
           - "patch"
-    # transformers 5.9.x hardcodes torch.float64 in RT-DETR v2, crashing
-    # docling's layout model on Apple Silicon MPS (docling#3483). The cap also
-    # lives in pyproject's [tool.uv] constraint-dependencies; this entry stops
-    # Dependabot from opening a range-widening PR that bumps past it once those
-    # versions age past the cooldown. Remove both once docling PR #2721 (MPS
-    # float16 support) ships.
-    ignore:
-      - dependency-name: "transformers"
-        versions: [">=5.9.0"]
+
+  # The report's PDF viewer page (viewer/). Its in-repo .npmrc sets the same
+  # 7-day min-release-age, so the cooldown keeps Dependabot from proposing
+  # versions the install would reject.
+  - package-ecosystem: "npm"
+    directory: "/viewer"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    cooldown:
+      default-days: 7
+    groups:
+      viewer-non-major:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

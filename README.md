@@ -7,14 +7,14 @@ LLM-based literature assessment system for rare disease gene curation. Automatic
 ### Installation
 
 ```bash
-# Basic installation (data ingestion, reporting, variant analysis)
+# Installation (all pipeline stages; LLM calls go to the Claude API)
 uv sync
 
-# With ML dependencies (required for LLM inference and screening classifier)
+# With ML dependencies (only for the PubMed baseline screening classifier)
 uv sync --extra ml
 
-# With macOS-specific Docling acceleration (optional)
-uv sync --extra docling-macos
+# The report's PDF viewer page (Node.js 24+; rebuild after viewer/ changes)
+npm --prefix viewer ci && npm --prefix viewer run build
 ```
 
 Install the [NCBI EDirect tools](https://www.ncbi.nlm.nih.gov/books/NBK565821/):
@@ -50,13 +50,13 @@ ant auth login --profile palit
 
 Palit uses the profile named by `PALIT_ANTHROPIC_PROFILE` (default `palit`). It deliberately ignores `ANTHROPIC_PROFILE` and `ANTHROPIC_API_KEY`, which Claude Code sessions may export for their own workspace. The SDK refreshes the access token itself. The refresh token eventually expires, so when a previously working profile starts failing authentication, run `ant auth login --profile palit` again. Run one palit process per profile: the SDK serialises token refreshes within a process only.
 
-`uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, tokens, and USD cost per stage for a run database. `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API (it needs the profile above).
+`uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, tokens, and USD cost per stage for a run database. Every stage prints the same summary for itself when it finishes, listing each refused paper or gene; `uv run palit llm refusals --db-path data/db.sqlite` lists all refusals with their safety-classifier category (refused subjects are not resubmitted within a run). `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API (it needs the profile above).
 
 ### External Services
 
 #### Variant Frequency Lookup
 
-Step 11 (`palit fetch-variant-frequencies`) requires a running [variant-lookup](https://github.com/populationgenomics/variant-lookup) service. Copy `.env.example` to `.env` and set both:
+Evidence extraction (`palit extract-evidence`) requires a running [variant-lookup](https://github.com/populationgenomics/variant-lookup) service. Copy `.env.example` to `.env` and set both:
 
 ```
 VARIANT_LOOKUP_BASE_URL=https://<host>:<port>
@@ -106,14 +106,13 @@ uv run palit download-papers attempt-pmc
 uv run palit download-papers download-preprints
 uv run palit download-papers open-browser
 # ... manually download PDFs to data/papers/ ...
-uv run palit docling convert
 uv run palit download-papers register
 
-# 4. Extract evidence from full-text papers
-uv run palit extract-evidence --panel-date $PANEL_DATE
-
-# 4a. (Optional) Parallel extraction across multiple GPUs
-for i in 0 1; do sbatch -p GPU-H100 --gpus=1 -t 24:00:00 -J "extract-evidence-shard-$i" -o "extract_evidence_shard_$i.log" --wrap="uv run palit extract-evidence --panel-date $PANEL_DATE --shard-index $i --num-shards 2"; done
+# 4. Extract evidence from the PDFs: Claude reads each PDF, looks up its genes
+#    (HGNC) and variants (gnomAD v4.1, via the variant-lookup service; requires
+#    VARIANT_LOOKUP_* env vars, see Setup) in one round, and cites verbatim
+#    quotes. Two batch rounds; safe to interrupt and re-run.
+uv run palit extract-evidence
 
 # 5. Discover papers referenced in evidence (citation-based expansion)
 uv run palit discover-citations discover
@@ -133,32 +132,23 @@ uv run palit download-papers attempt-pmc
 uv run palit download-papers download-preprints
 uv run palit download-papers open-browser --expansion-only
 # ... manually download PDFs to data/papers/ ...
-uv run palit docling convert
 uv run palit download-papers register
 
 # 8. Extract evidence from expansion papers
-uv run palit extract-evidence --panel-date $PANEL_DATE
+uv run palit extract-evidence
 
 # 9. Aggregate evidence across papers per gene (panel-agnostic)
 uv run palit assess-genes --panel-date $PANEL_DATE
 
-# 9a. (Optional) Parallel gene assessment across multiple GPUs
-for i in 0 1; do sbatch -p GPU-H100 --gpus=1 -t 24:00:00 -J "assess-genes-shard-$i" -o "assess_genes_shard_$i.log" --wrap="uv run palit assess-genes --panel-date $PANEL_DATE --shard-index $i --num-shards 2"; done
-
 # 10. Match genes to appropriate panels based on phenotype descriptions
 uv run palit match-panels --panel-date $PANEL_DATE
 
-# 11. Look up variant frequencies from gnomAD via the variant-lookup
-#     service (requires VARIANT_LOOKUP_* env vars — see Setup).
-uv run palit fetch-variant-frequencies
-
-# 12. Create annotated PDFs with highlighted citations
-uv run palit annotate-pdfs
-
-# 13. Generate assessment report package with panel recommendations
+# 11. Generate the report package: index.html, the PDF viewer page, and each
+#     cited paper's PDF (symlinked) with its quote highlights (citations/*.json).
+#     `aws s3 sync` uploads the symlink targets.
 uv run palit generate-report --report-id report_mendeliome --panel-date $PANEL_DATE
 
-# 14. Fold this run's dispositions back into the ledger so future runs skip the
+# 12. Fold this run's dispositions back into the ledger so future runs skip the
 #     papers settled here and resume any relevant-not-downloaded ones. Covers
 #     expansion/discovered-citation papers too (keyed by DOI). Separate from, and
 #     run alongside, the baseline-screening update below.
@@ -364,8 +354,7 @@ uv run palit assess-relevance \
   --prompt-path prompts/panel_relevance_assessment_prompt.txt
 
 # 3. (Optional) Reduce literature for well-researched genes
-# The aggregation step has a practical limit of ~30-40 papers per gene due to
-# context window constraints. For panels with well-researched genes (e.g., POLG
+# Genes with hundreds of papers make the aggregation prompt long and slow. For panels with well-researched genes (e.g., POLG
 # with 200+ papers), use tournament selection to keep only the most informative:
 uv run palit reduce-literature --db-path data/$PANEL_NAME.sqlite
 
@@ -374,7 +363,6 @@ uv run palit download-papers attempt-pmc --db-path data/$PANEL_NAME.sqlite
 uv run palit download-papers download-preprints --db-path data/$PANEL_NAME.sqlite
 uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite
 # ... manually download PDFs ...
-uv run palit docling convert --db-path data/$PANEL_NAME.sqlite
 uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 
 # 5. Extract evidence and assess genes (panel-scoped)
@@ -382,11 +370,9 @@ uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PA
 uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID --scope-panel-id $PANEL_ID
 
 # 6. Generate report package with panel-scoped novelty detection
-uv run palit annotate-pdfs --db-path data/$PANEL_NAME.sqlite --output-dir data/annotated_$PANEL_NAME
 uv run palit generate-report \
   --report-id panel_$PANEL_NAME \
   --db-path data/$PANEL_NAME.sqlite \
   --panel-date $PANEL_DATE \
-  --target-panel-ids $PANEL_ID \
-  --annotated-dir data/annotated_$PANEL_NAME
+  --target-panel-ids $PANEL_ID
 ```

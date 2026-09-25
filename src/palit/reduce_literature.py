@@ -9,15 +9,17 @@ from pathlib import Path
 from typing import Any
 
 import typer
-from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.llm_legacy import LLMProcessor, create_llm_processor
+from palit.llm import AnthropicSettings, BatchTransport, ImmediateTransport, Transport, make_client
+from palit.llm_usage import print_stage_summary
 from palit.papers import Paper, deserialize_source_metadata
-from palit.tournament import TournamentOutcome, run_tournament_selection
+from palit.tournament import TournamentEntry, TournamentOutcome, record_abandoned, run_tournaments
 
 app = typer.Typer(help="Reduce literature using tournament selection to minimize manual downloads")
 logger = logging.getLogger(__name__)
+
+STAGE = "reduce_literature"
 
 
 def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
@@ -174,7 +176,7 @@ def _record_reduction_completion(db_path: Path, hgnc_id: int, outcome: Tournamen
 
 async def _process_reduction(
     *,
-    llm_processor: LLMProcessor,
+    transport: Transport,
     hgnc_resolver: HgncResolver,
     genes_with_counts: list[tuple[int, int]],
     db_path: Path,
@@ -183,10 +185,10 @@ async def _process_reduction(
     paper_limit: int,
     max_papers: int,
     papers_per_round: int,
-    max_concurrent_batches: int,
     max_retries: int,
 ) -> None:
     """Run the literature reduction loop."""
+    record_abandoned(db_path, await transport.resume(STAGE))
     # Phase 1a: Collect DOIs for genes that don't need reduction (≤max_papers)
     all_selected_dois: set[str] = set()
     with sqlite3.connect(db_path) as conn:
@@ -211,34 +213,39 @@ async def _process_reduction(
         )
 
     # Phase 1b: Run tournament selection for genes with many papers
-    for hgnc_id, paper_count in tqdm(genes_with_counts, desc="Reducing literature"):
-        hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
+    entries = []
+    for hgnc_id, _ in genes_with_counts:
         papers = get_papers_for_gene(db_path, hgnc_id, paper_limit)
-
         if not papers:
-            logger.warning(f"No papers found for {hgnc_symbol} (HGNC:{hgnc_id})")
+            logger.warning(
+                f"No papers found for {hgnc_resolver.get_symbol(hgnc_id)} (HGNC:{hgnc_id})"
+            )
             continue
-
-        tournament_outcome = await run_tournament_selection(
-            gene_symbol=hgnc_symbol,
-            papers=papers,
-            llm_processor=llm_processor,
-            prompt_template=template,
-            schema=schema,
-            max_papers=max_papers,
-            papers_per_round=papers_per_round,
-            max_concurrent_batches=max_concurrent_batches,
-            max_retries=max_retries,
+        entries.append(
+            TournamentEntry(
+                key=str(hgnc_id), gene_symbol=hgnc_resolver.get_symbol(hgnc_id), papers=papers
+            )
         )
-
-        selected_dois = {p.doi for p in tournament_outcome.selected_papers}
+    outcomes = await run_tournaments(
+        entries,
+        transport=transport,
+        db_path=db_path,
+        stage=STAGE,
+        prompt_template=template,
+        schema=schema,
+        max_papers=max_papers,
+        papers_per_round=papers_per_round,
+        max_retries=max_retries,
+    )
+    paper_counts = dict(genes_with_counts)
+    for entry in entries:
+        outcome = outcomes[entry.key]
+        selected_dois = {p.doi for p in outcome.selected_papers}
         all_selected_dois.update(selected_dois)
-
         logger.info(
-            f"{hgnc_symbol} (HGNC:{hgnc_id}): {paper_count} -> {len(selected_dois)} selected"
+            f"{entry.gene_symbol} (HGNC:{entry.key}): {paper_counts[int(entry.key)]} -> {len(selected_dois)} selected"
         )
-
-        _record_reduction_completion(db_path, hgnc_id, tournament_outcome)
+        _record_reduction_completion(db_path, int(entry.key), outcome)
 
     # Phase 2: Clear download_status for papers not selected by ANY gene
     logger.info("Clearing download_status for unselected papers...")
@@ -268,53 +275,15 @@ def main(
         "--papers-per-round",
         help="Papers to show LLM in each tournament round",
     ),
-    max_concurrent_batches: int = typer.Option(
-        100,
-        "--max-concurrent-batches",
-        help="Maximum number of batches to process concurrently",
-    ),
     max_retries: int = typer.Option(
         5,
         "--max-retries",
         help="Maximum number of retries for failed batches",
     ),
-    model: str = typer.Option(
-        "openai/gpt-oss-120b",
-        "--model",
-        "-m",
-        help="Model name for vLLM",
-    ),
-    temperature: float = typer.Option(
-        1.0,
-        "--temperature",
-        "-t",
-        help="Sampling temperature",
-    ),
-    max_tokens: int = typer.Option(
-        6000,
-        "--max-tokens",
-        help="Maximum tokens to generate",
-    ),
-    tensor_parallel_size: int = typer.Option(
-        1,
-        "--tensor-parallel-size",
-        help="Tensor parallelism size",
-    ),
-    max_model_len: int = typer.Option(
-        35000,
-        "--max-model-len",
-        help="Maximum model context length",
-    ),
-    llm_config: str = typer.Option(
-        "",
-        "--llm-config",
-        help="JSON dict of extra backend config (forwarded to LLM processor)",
-    ),
-    log_level: str = typer.Option(
-        "INFO",
-        "--log-level",
-        "-l",
-        help="Logging level",
+    immediate: bool = typer.Option(
+        False,
+        "--immediate",
+        help="Send requests immediately instead of as Message Batches (for prompt development)",
     ),
     paper_limit: int = typer.Option(
         10000,
@@ -398,21 +367,13 @@ def main(
             logger.info(f"  ... and {len(genes_with_counts) - 20} more genes")
         return
 
-    # Initialize LLM processor
-    logger.info("Initializing LLM processor...")
-    llm_processor = create_llm_processor(
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        tensor_parallel_size=tensor_parallel_size,
-        max_model_len=max_model_len,
-        reasoning_effort="medium",
-        **(json.loads(llm_config) if llm_config else {}),
-    )
-
-    asyncio.run(
-        _process_reduction(
-            llm_processor=llm_processor,
+    async def run() -> None:
+        client = make_client(AnthropicSettings())
+        transport: Transport = (
+            ImmediateTransport(client) if immediate else BatchTransport(client, db_path)
+        )
+        await _process_reduction(
+            transport=transport,
             hgnc_resolver=hgnc_resolver,
             genes_with_counts=genes_with_counts,
             db_path=db_path,
@@ -421,10 +382,11 @@ def main(
             paper_limit=paper_limit,
             max_papers=max_papers,
             papers_per_round=papers_per_round,
-            max_concurrent_batches=max_concurrent_batches,
             max_retries=max_retries,
         )
-    )
+
+    asyncio.run(run())
+    print_stage_summary(db_path, STAGE)
 
 
 if __name__ == "__main__":

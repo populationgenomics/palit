@@ -42,9 +42,11 @@ class HgncEntry:
 
     hgnc_id: int  # Integer ID (e.g. 8607), "HGNC:" prefix stripped
     symbol: str  # Current approved symbol (e.g. "PRKN")
+    name: str  # Approved name (e.g. "parkin RBR E3 ubiquitin protein ligase")
     prev_symbols: tuple[str, ...]
     alias_symbols: tuple[str, ...]
     locus_group: str
+    location: str | None  # HGNC cytogenetic location (e.g. "Xp22.33 and Yp11.2" for PAR genes)
     chromosome: str | None  # Parsed from HGNC `location` (e.g. "17q21.31" → "17")
 
 
@@ -87,15 +89,17 @@ class HgncResolver:
             prev_symbols = tuple(doc.get("prev_symbol", []))
             alias_symbols = tuple(doc.get("alias_symbol", []))
             locus_group: str = doc.get("locus_group", "")
-            chromosome = _parse_chromosome(doc.get("location"))
+            location: str | None = doc.get("location")
 
             entry = HgncEntry(
                 hgnc_id=hgnc_id,
                 symbol=symbol,
+                name=doc["name"],
                 prev_symbols=prev_symbols,
                 alias_symbols=alias_symbols,
                 locus_group=locus_group,
-                chromosome=chromosome,
+                location=location,
+                chromosome=_parse_chromosome(location),
             )
 
             by_symbol[symbol.upper()] = entry

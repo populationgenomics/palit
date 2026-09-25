@@ -31,6 +31,7 @@ from palit.llm import (
     parse_json_output,
     record_result,
 )
+from palit.llm_usage import print_stage_summary
 from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
 
 app = typer.Typer(help="Assess paper relevance from title and abstract")
@@ -352,6 +353,7 @@ def main(
 
     asyncio.run(run())
     logger.info(f"{count_remaining(db_path):,} papers still without a relevance assessment")
+    print_stage_summary(db_path, STAGE)
 
 
 if __name__ == "__main__":

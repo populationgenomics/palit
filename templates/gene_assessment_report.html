@@ -48,6 +48,11 @@
     {% if info %}<span class="{{ prefix }}-badge {{ prefix }}-{{ info.css }}" data-title="{{ info.label }}">{{ info.text }}</span>{% endif %}
     {%- endmacro %}
 
+    {# Link to a quote in the report's PDF viewer #}
+    {% macro cite(link) -%}
+    <a href="viewer/index.html?paper={{ link.doi | paper_key | urlencode }}&amp;q={{ link.quote_index }}" target="_blank">[{{ link.display_id | short_id }}{% if link.page %}:p{{ link.page }}{% endif %}]</a>
+    {%- endmacro %}
+
     {# Macro for rendering prefill button (inline in header) #}
     {# Form is created dynamically by JS to avoid thousands of hidden inputs slowing down page load #}
     {% macro prefill_button(gene, form_type) %}
@@ -78,7 +83,7 @@
     {% endmacro %}
 
     {# Macro for rendering disease entity breakdown table - reusable across contexts #}
-    {% macro disease_entity_table(disease_entities, hgnc_id, pdf_base_path="", contributing_papers=none) %}
+    {% macro disease_entity_table(disease_entities, hgnc_id, contributing_papers=none) %}
     {% if disease_entities %}
         <table class="disease-entity-table">
             <thead>
@@ -103,7 +108,7 @@
                     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
                     <td>{{ entity.patient_count }}</td>
                     <td{% if entity.independent_family_count is not none and entity.independent_family_count == max_independent and max_independent > 0 %} class="disease-entity-max-family-count"{% endif %}{% if entity.count_reduction_reasoning %} data-title="{{ entity.count_reduction_reasoning }}"{% endif %}>{% if entity.family_count is none %}NR{% elif entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %}{{ entity.family_count }} → {{ entity.independent_family_count }}{% else %}{{ entity.family_count }}{% endif %}</td>
-                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for link in citation_links %}<a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id | short_id }}:p{{ link.page }}]</a> {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
+                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for link in citation_links %}{{ cite(link) }} {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
@@ -112,7 +117,7 @@
     {% endmacro %}
 
     {# Macro for rendering evidence summary section #}
-    {% macro evidence_summary(gene, pdf_base_path="") %}
+    {% macro evidence_summary(gene) %}
     <div class="evidence-summary-expanded">
         <h5><strong>Summary</strong></h5>
         <div class="summary-content">{{ gene.assessment_json.summary | markdown_to_html }}</div>
@@ -136,7 +141,7 @@
             {% endif %}
         </ul>
 
-        {{ disease_entity_table(gene.assessment_json.disease_entities, gene.hgnc_id, pdf_base_path, gene.contributing_papers) }}
+        {{ disease_entity_table(gene.assessment_json.disease_entities, gene.hgnc_id, gene.contributing_papers) }}
 
         {% if gene.moi_comparison %}
         <p class="moi-transition-note {% if not gene.moi_comparison.highlighted %}moi-not-highlighted{% endif %}">
@@ -159,7 +164,7 @@
                     {% if concern.citations %}
                     {% set citation_links = concern.citations | prepare_citation_links(gene.contributing_papers) %}
                     {% for link in citation_links %}
-                    <a href="{{ pdf_base_path }}/{{ gene.hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id | short_id }}:p{{ link.page }}]</a>
+                    {{ cite(link) }}
                     {% endfor %}
                     {% endif %}
                 </li>
@@ -171,7 +176,7 @@
     {% endmacro %}
 
     {# Macro for rendering criteria assessment grid for a SINGLE disease entity (per-entity criteria). #}
-    {% macro criteria_grid(entity, hgnc_id, pdf_base_path, contributing_papers=none, citation_pages=none, doi=none, display_id=none) %}
+    {% macro criteria_grid(entity, hgnc_id, contributing_papers=none, paper=none) %}
     {% if entity.family_count is not none %}
     <p class="entity-count-summary"><strong>Families:</strong> {{ entity.family_count }} reported{% if entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %} → {{ entity.independent_family_count }} independent{% endif %} <span class="count-note">(A/B/C use the independent count){% if entity.count_reduction_reasoning %} — {{ entity.count_reduction_reasoning }}{% endif %}</span></p>
     {% endif %}
@@ -199,18 +204,15 @@
                             {{ citation.commentary }}
                             {% set citation_links = [citation] | prepare_citation_links(contributing_papers) %}
                             {% for link in citation_links %}
-                            <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ link.doi | encode_doi }}.pdf#page={{ link.page }}" target="_blank">[{{ link.display_id | short_id }}:p{{ link.page }}]</a>
+                            {{ cite(link) }}
                             {% endfor %}
                         </li>
                         {% endfor %}
-                    {% elif citation_pages and doi %}
-                        {# Individual mode: use citation.box_id and paper.citation_pages #}
+                    {% elif paper %}
                         {% for citation in crit.citations %}
                         <li>
                             {{ citation.commentary }}
-                            {% if citation.box_id and citation.box_id in citation_pages %}
-                            <a href="{{ pdf_base_path }}/individual/{{ doi | encode_doi }}.pdf#page={{ citation_pages[citation.box_id] }}" target="_blank">[{{ display_id | short_id }}:p{{ citation_pages[citation.box_id] }}]</a>
-                            {% endif %}
+                            {% for link in [citation] | paper_citation_links(paper) %}{{ cite(link) }}{% endfor %}
                         </li>
                         {% endfor %}
                     {% endif %}
@@ -267,15 +269,15 @@
     {% endmacro %}
 
     {# Macro for rendering gene article body - everything below the header #}
-    {% macro gene_article_body(gene, pdf_base_path) %}
-        {{ evidence_summary(gene, pdf_base_path) }}
+    {% macro gene_article_body(gene) %}
+        {{ evidence_summary(gene) }}
 
         {{ panel_recommendations(gene) }}
 
         {% if gene.variant_frequencies %}
         <div class="variant-frequency-section">
             <h5><strong>gnomAD v4 frequencies</strong></h5>
-            {{ variant_frequency_table(gene.variant_frequencies, gene.new_moi, gene.hgnc_id, pdf_base_path, include_faf=true) }}
+            {{ variant_frequency_table(gene.variant_frequencies, gene.new_moi, gene.hgnc_id, include_faf=true) }}
         </div>
         {% endif %}
 
@@ -288,7 +290,7 @@
                     {{ badge(entity | format_dispute_badge, "dispute") }}
                 </h5>
                 <div class="per-entity-criteria-body">
-                    {{ criteria_grid(entity, gene.hgnc_id, pdf_base_path, contributing_papers=gene.contributing_papers) }}
+                    {{ criteria_grid(entity, gene.hgnc_id, contributing_papers=gene.contributing_papers) }}
                 </div>
             </section>
             {% endfor %}
@@ -301,7 +303,7 @@
             {% if published_papers %}
             <div class="contributing-published">
                 {% for paper in published_papers %}
-                {{ paper_display(paper, include_evidence=true, gene=gene, pdf_base_path=pdf_base_path) }}
+                {{ paper_display(paper, include_evidence=true, gene=gene) }}
                 {% endfor %}
             </div>
             {% endif %}
@@ -309,7 +311,7 @@
             <div class="contributing-preprints">
                 <h5><strong>Preprints ({{ preprint_papers|length }})</strong></h5>
                 {% for paper in preprint_papers %}
-                {{ paper_display(paper, include_evidence=true, gene=gene, pdf_base_path=pdf_base_path) }}
+                {{ paper_display(paper, include_evidence=true, gene=gene) }}
                 {% endfor %}
             </div>
             {% endif %}
@@ -317,7 +319,7 @@
     {% endmacro %}
 
     {# Macro for rendering variant frequency tables - reduces duplication #}
-    {% macro variant_frequency_table(variants, inheritance_mode, hgnc_id, pdf_base_path, include_faf=true) %}
+    {% macro variant_frequency_table(variants, inheritance_mode, hgnc_id, include_faf=true) %}
     <table class="variant-frequency-table">
         <thead>
             <tr>
@@ -404,7 +406,7 @@
                 <td>
                     <a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>
                     {% for citation in variant.citations %}
-                        | <a href="{{ pdf_base_path }}/{{ hgnc_id }}/{{ citation.doi | encode_doi }}.pdf#page={{ citation.page }}" target="_blank">[{{ citation.display_id | short_id }}:p{{ citation.page }}]</a>
+                        | {{ cite(citation) }}
                     {% endfor %}
                 </td>
             </tr>
@@ -414,7 +416,7 @@
     {% endmacro %}
 
     {# Unified macro for displaying papers - used across all sections #}
-    {% macro paper_display(paper, include_evidence=false, gene=none, pdf_base_path="") %}
+    {% macro paper_display(paper, include_evidence=false, gene=none) %}
     <article class="detailed-paper{% if paper.preprint %} paper-preprint{% endif %}{% if paper.filtered_reason %} paper-filtered{% endif %}">
         <header class="paper-header">
             <h6>
@@ -475,11 +477,7 @@
 
                     <h5><strong>Evidence Details</strong></h5>
                     <ul>
-                        <li><strong>Families:</strong> {{ gene_eval.families }}</li>
                         <li><strong>Mode of inheritance:</strong> {{ gene_eval.disease_entities | derive_moi | format_inheritance(gene_eval.disease_entities | derive_moi_details) }}</li>
-                        <li><strong>Variants:</strong> {{ gene_eval.variants_summary }}</li>
-                        <li><strong>Population Frequency:</strong> {{ gene_eval.population_freq }}</li>
-                        <li><strong>Functional:</strong> {{ gene_eval.functional }}</li>
                     </ul>
 
                     {{ disease_entity_table(gene_eval.disease_entities, gene.hgnc_id) }}
@@ -491,13 +489,7 @@
                             {% for concern in gene_eval.quality_concerns %}
                             <li>
                                 {{ concern.concern }}
-                                {% if concern.citations and paper.citation_pages %}
-                                {% for citation in concern.citations %}
-                                {% if citation.box_id and citation.box_id in paper.citation_pages %}
-                                <a href="{{ pdf_base_path }}/individual/{{ paper.doi | encode_doi }}.pdf#page={{ paper.citation_pages[citation.box_id] }}" target="_blank">[{{ paper.display_id | short_id }}:p{{ paper.citation_pages[citation.box_id] }}]</a>
-                                {% endif %}
-                                {% endfor %}
-                                {% endif %}
+                                {% for link in concern.citations | paper_citation_links(paper) %}{{ cite(link) }} {% endfor %}
                             </li>
                             {% endfor %}
                         </ul>
@@ -509,7 +501,7 @@
                 <section class="per-entity-criteria-section">
                     <h6 class="per-entity-criteria-heading">{{ entity.description }}</h6>
                     <div class="per-entity-criteria-body">
-                        {{ criteria_grid(entity, gene.hgnc_id, pdf_base_path, citation_pages=paper.citation_pages, doi=paper.doi, display_id=paper.display_id) }}
+                        {{ criteria_grid(entity, gene.hgnc_id, paper=paper) }}
                     </div>
                 </section>
                 {% endfor %}
@@ -517,7 +509,7 @@
                 <div class="variant-frequency-section">
                     <h6><strong>gnomAD v4 frequencies</strong></h6>
                     {% if paper.variant_frequencies %}
-                    {{ variant_frequency_table(paper.variant_frequencies, gene.new_moi, gene.hgnc_id, pdf_base_path, include_faf=false) }}
+                    {{ variant_frequency_table(paper.variant_frequencies, gene.new_moi, gene.hgnc_id, include_faf=false) }}
                     {% else %}
                     <p><em>No variants with frequency data extracted from this paper.</em></p>
                     {% endif %}
@@ -844,7 +836,7 @@
                     {{ assignment_slot(gene) }}
                 </h3>
 
-                {{ gene_article_body(gene, pdf_base_path) }}
+                {{ gene_article_body(gene) }}
             </article>
             {% endfor %}
         </section>
@@ -870,7 +862,7 @@
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
-                {{ gene_article_body(gene, pdf_base_path) }}
+                {{ gene_article_body(gene) }}
             </article>
             {% endfor %}
             {% endif %}
@@ -890,7 +882,7 @@
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
-                {{ gene_article_body(gene, pdf_base_path) }}
+                {{ gene_article_body(gene) }}
             </article>
             {% endfor %}
             {% endif %}
@@ -910,7 +902,7 @@
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
-                {{ gene_article_body(gene, pdf_base_path) }}
+                {{ gene_article_body(gene) }}
             </article>
             {% endfor %}
             {% endif %}
@@ -936,7 +928,7 @@
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
-                {{ gene_article_body(gene, pdf_base_path) }}
+                {{ gene_article_body(gene) }}
             </article>
             {% endfor %}
             {% endif %}
@@ -961,7 +953,7 @@
                 <p class="unreviewed-note">
                     No reviews on {{ target_panel_names.get(panel_id, "Panel " ~ panel_id) }} panel
                 </p>
-                {{ gene_article_body(gene, pdf_base_path) }}
+                {{ gene_article_body(gene) }}
             </article>
             {% endfor %}
             {% endif %}
@@ -981,7 +973,7 @@
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
-                {{ gene_article_body(gene, pdf_base_path) }}
+                {{ gene_article_body(gene) }}
             </article>
             {% endfor %}
             {% endif %}
@@ -996,7 +988,7 @@
             <p><em>Papers from recent literature that weren't downloaded (missed or paywalled)</em></p>
 
             {% for paper in manual_download_papers %}
-            {{ paper_display(paper, include_evidence=false, pdf_base_path=pdf_base_path) }}
+            {{ paper_display(paper, include_evidence=false) }}
             {% endfor %}
         </section>
         {% endif %}
@@ -1016,7 +1008,7 @@
                 <p><em>Publications mentioned in panels but assessed as NOT RELEVANT - potential missed associations</em></p>
 
                 {% for paper in panel_validation.false_negatives %}
-                {{ paper_display(paper, include_evidence=false, pdf_base_path=pdf_base_path) }}
+                {{ paper_display(paper, include_evidence=false) }}
                 {% endfor %}
             </details>
             {% endif %}
@@ -1027,7 +1019,7 @@
                 <p><em>Publications mentioned in panels and correctly assessed as RELEVANT</em></p>
 
                 {% for paper in panel_validation.true_positives %}
-                {{ paper_display(paper, include_evidence=false, pdf_base_path=pdf_base_path) }}
+                {{ paper_display(paper, include_evidence=false) }}
                 {% endfor %}
             </details>
             {% endif %}
@@ -1039,7 +1031,7 @@
             <p><em>Papers marked as not relevant but with low confidence - may warrant manual review</em></p>
 
             {% for paper in low_confidence_papers %}
-            {{ paper_display(paper, include_evidence=false, pdf_base_path=pdf_base_path) }}
+            {{ paper_display(paper, include_evidence=false) }}
             {% endfor %}
         </section>
         {% endif %}

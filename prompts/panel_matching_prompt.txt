@@ -6,10 +6,6 @@ Each panel entry shows the panel ID (in the id attribute) followed by the panel 
 AVAILABLE PANELS:
 {panel_list}
 
-GENE CONTEXT:
-Summary: {summary}
-Disease: {disease_description}
-
 TASK:
 Match the gene's summary and phenotypes to appropriate diagnostic panels.
 
@@ -68,3 +64,7 @@ Respond in JSON format:
     {{"panel_name": "Hydrocephalus_Ventriculomegaly", "rationale": "Hydrocephalus matches hydrocephalus"}}
   ]
 }}
+
+GENE CONTEXT:
+Summary: {summary}
+Disease: {disease_description}

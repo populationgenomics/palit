@@ -11,16 +11,24 @@ PANEL-SCOPED EXTRACTION: A gene is relevant only if its associated disease/pheno
 {% endif %}
 For each relevant gene in this paper, provide a concise summary of key evidence, then evaluate the five PanelApp criteria independently. A gene is relevant if it has patient-level evidence (variants and phenotypes) reported in this paper and meets the extraction criteria in IMPORTANT INSTRUCTIONS below. For each criterion that evaluates to TRUE, you MUST provide a detailed rationale with direct citations from the paper.
 
+The paper is attached as a PDF. You can see every page, including figures, pedigrees, and tables.
+
+WORKFLOW (one lookup round):
+1. Read the whole paper. Collect every gene you will evaluate and every variant you will list in any gene's `variants` array.
+2. In a single turn, call `lookup_genes` once with all of those gene symbols and, if there is at least one variant, `lookup_variants` once with all of the variants. Do not write the JSON answer before you have the results. If no gene in the paper has patient-level evidence, answer directly without lookups.
+3. After the results arrive, write the final JSON answer. There is no second lookup round.
+
 CITATION REQUIREMENTS:
-For each criterion that evaluates to TRUE, you MUST provide specific citations using the <b id=N> tags found in the full text. For each citation:
-- Provide the box ID number (N from the <b id=N> tag)
-- Include brief commentary explaining what this specific text section demonstrates
+For each criterion that evaluates to TRUE, you MUST provide specific citations. Each citation has:
+- `quote`: text copied VERBATIM from the PDF — contiguous, at least 30 characters, usually one full sentence. No ellipses, no paraphrase, no merging of separate passages, no added words. Keep the paper's own spelling, symbols, and capitalisation. For a table, quote one complete row as it reads left to right. Software highlights the quote in the PDF by matching it character by character, so an inexact quote cannot be shown to the curator.
+- `commentary`: brief statement of what this passage shows.
+For evidence visible only in a figure (pedigree, image, gel, raster table), quote the figure caption starting with its label (e.g., "Figure 2. Pedigrees of families 1–4 ...").
 
 Example citation format:
 {% raw %}
 "citations": [
-  {"box_id": 42, "commentary": "Reports 5 families with pathogenic variants"},
-  {"box_id": 67, "commentary": "Confirms segregation analysis with LOD score 3.2"}
+  {"quote": "Whole-exome sequencing identified heterozygous variants in five unrelated families.", "commentary": "5 families with variants"},
+  {"quote": "Linkage analysis yielded a maximum LOD score of 3.2 at marker D2S123.", "commentary": "LOD 3.2"}
 ]
 {% endraw %}
 
@@ -36,7 +44,7 @@ A reported variant counts toward Criterion A/B/C only if it QUALIFIES under all 
         (ii) Variant-specific functional validation — an assay tests the actual reported variant (not just gene knockdown) and demonstrates a mechanistic deficit.
         (iii) Recurrence as the same variant in affected individuals from demonstrably distinct populations or independent ancestries.
 
-(2) No contradictory population evidence — population allele frequency must be plausible for the reported MoI:
+(2) No contradictory population evidence — population allele frequency must be plausible for the reported MoI. Use the gnomAD v4.1 counts returned by `lookup_variants` (AC/AN, homozygote, heterozygote, and hemizygote counts, FAF95 popmax) together with any frequencies the paper reports; a variant not found in gnomAD v4.1 has no contradictory population evidence. When a protein-level variant back-translates to several DNA changes, judge by the highest-count candidate unless the paper specifies the DNA change:
     - Autosomal dominant (Monoallelic): gnomAD allele frequency ≤ 0.0001 (1 in 10,000)
     - Autosomal recessive (Biallelic): gnomAD homozygous count consistent with reported disease prevalence
     - X-linked: hemizygous count in males consistent with rare disease
@@ -86,7 +94,7 @@ When reporting family/patient counts, only count those that share the SAME disea
 
 PER-ENTITY EVALUATION:
 
-Each entry in the gene's `disease_entities` array is an independent gene–disease association and carries its OWN `evidence_assessments` (5 entries: criterion_A through criterion_E) AND its OWN `evidence_weakening_factors` (6 entries). Evaluate all five criteria per entity using only that entity's own evidence in this paper. Downstream aggregation across papers will compute the gene-level GREEN as: at least one entity satisfies `(A or B or C) AND D AND E` on its own. Therefore, never stitch criteria across entities — entry X passing A and entry Y passing E does not together justify GREEN.
+Each entry in the gene's `disease_entities` array is an independent gene–disease association and carries its OWN `evidence_assessments` (an object with the five keys criterion_A through criterion_E) AND its OWN `evidence_weakening_factors` (6 entries). Evaluate all five criteria per entity using only that entity's own evidence in this paper. Downstream aggregation across papers will compute the gene-level GREEN as: at least one entity satisfies `(A or B or C) AND D AND E` on its own. Therefore, never stitch criteria across entities — entry X passing A and entry Y passing E does not together justify GREEN.
 
 EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST (PER ENTITY):
 
@@ -95,7 +103,7 @@ For each disease entity, you must explicitly assess the six weakening factors be
 1. **founder_or_recurrent_variant**: The same variant recurs across counted families without evidence of independent origins (see TOTAL vs INDEPENDENT FAMILY COUNT). A confidence caveat: where it reflects a shared ancestral origin it is already captured in `independent_family_count`, and it never, on its own, fails Criterion E.
 2. **inherited_no_segregation_with_affected**: Variants are inherited from carrier parents who are unaffected, of unknown affected status, or where segregation with affected status is not documented across informative meioses.
 3. **missense_no_variant_specific_functional**: A missense-dominated cohort for this entity without variant-specific functional validation (assays must test the actual reported variants, not just gene knockdown).
-4. **population_frequency_incompatible_with_moi**: One or more reported variants for this entity exceed plausible population-frequency thresholds for the assumed MoI based on what the paper reports (do not infer thresholds for variants whose frequencies are not reported in the paper).
+4. **population_frequency_incompatible_with_moi**: One or more reported variants for this entity exceed plausible population-frequency thresholds for the assumed MoI, based on the gnomAD v4.1 lookup results and any frequencies the paper reports. In `details`, give the variant and its counts (e.g., "c.123A>G: gnomAD v4.1 AC 212/1,614,046, 3 homozygotes").
 5. **phenotype_non_mendelian**: This entity's phenotype is a susceptibility/risk-factor allele, modifier locus, mostly-asymptomatic biomarker, predominantly epigenetic disorder, or otherwise not a clearly Mendelian disease.
 6. **functional_below_criterion_c_threshold**: Functional evidence cited (or that could be cited) for this entity under Criterion C does not satisfy Pillar 2(a) or 2(b) below — it relies on biochemical assays, heterologous overexpression, or patient-cell deficit without rescue.
 
@@ -184,15 +192,12 @@ Note: E is about gene-disease *validity* for this entity (is there convincing co
 
 WEAKENING FACTORS DO NOT FAIL E: the six `evidence_weakening_factors` (founder/recurrent variant, inherited-without-segregation, missense-without-functional, population-frequency, non-Mendelian, sub-Pillar-2 functional) are confidence caveats — already reflected in `independent_family_count`, the criterion rationales, and the checklist. They are NOT, individually or aggregated, grounds to set `criterion_E` false; do not synthesise them into a "contradictory evidence" finding. A recurrent/founder allele, inherited variants lacking segregation, or a single high-frequency outlier never fail E. With a strong `independent_family_count`, set E false only for a compelling, reproduced contradiction.
 
-After each evaluation, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
-
 STRUCTURED FIELD REQUIREMENTS:
-Provide ultra-concise FACTUAL information ONLY from the paper. Use telegraphic style.
+Provide ultra-concise FACTUAL information ONLY from the paper (and, for population frequencies, from the `lookup_variants` results). Use telegraphic style.
 
 CRITICAL: Use "NR" (Not Reported) when information is not explicitly stated in the paper.
 NEVER infer, estimate, or make assumptions about missing data.
 
-- families: total families reported, and how many independent (e.g., "4 families reported (4 independent)" or "NR")
 - disease_entities: array of distinct disease entities with their patient and family counts. Each entry must include:
   * description: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the paper.
   * mondo_id: Disease category classification. Select EXACTLY ONE from:
@@ -208,7 +213,7 @@ NEVER infer, estimate, or make assumptions about missing data.
   * count_reduction_reasoning: the two counts plus the reason for any collapse, or "No reduction (N families)".
   * disease_mechanism: molecular mechanism by which variants cause disease, extracted from paper. Use free text to describe mechanism as stated in paper. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in paper. Extract ONLY from paper content.
   * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Each entity carries a single MoI — combination modes are not permitted. Decide in this order:
-    1. LOCATION FIRST. If the gene lies on the X chromosome (outside the pseudoautosomal regions), inheritance_mode is "X-linked" for EVERY entity of that gene, regardless of the proband's zygosity: hemizygous males, heterozygous females (X-linked dominant or skewed X-inactivation), de novo, or inherited. A single heterozygous or de novo allele in an X-linked gene is "X-linked", NOT "Monoallelic". "Monoallelic" and "Biallelic" are AUTOSOMAL-ONLY labels — never apply them to an X-chromosome gene, never record "Monoallelic"/"Biallelic" while relegating "X-linked" to inheritance_details, and never split an X-linked gene into separate "Monoallelic" and "X-linked" entities. If the paper calls an X-linked gene's variant "heterozygous", "de novo", or "monoallelic", still classify the entity "X-linked". (Pseudoautosomal genes such as SHOX inherit autosomally — treat them as autosomal.)
+    1. LOCATION FIRST. Use the `location` returned by `lookup_genes`. If the gene lies on the X chromosome (outside the pseudoautosomal regions; a pseudoautosomal gene's location lists both an X and a Y band), inheritance_mode is "X-linked" for EVERY entity of that gene, regardless of the proband's zygosity: hemizygous males, heterozygous females (X-linked dominant or skewed X-inactivation), de novo, or inherited. A single heterozygous or de novo allele in an X-linked gene is "X-linked", NOT "Monoallelic". "Monoallelic" and "Biallelic" are AUTOSOMAL-ONLY labels — never apply them to an X-chromosome gene, never record "Monoallelic"/"Biallelic" while relegating "X-linked" to inheritance_details, and never split an X-linked gene into separate "Monoallelic" and "X-linked" entities. If the paper calls an X-linked gene's variant "heterozygous", "de novo", or "monoallelic", still classify the entity "X-linked". (Pseudoautosomal genes such as SHOX inherit autosomally — treat them as autosomal.)
     2. AUTOSOMAL → USE ZYGOSITY. For autosomal genes, determine Monoallelic vs Biallelic from zygosity evidence in the paper (e.g., "heterozygous", "de novo" → Monoallelic; "homozygous", "compound heterozygous" → Biallelic), NOT from variant type. Loss-of-function variants (nonsense, frameshift, splice-site) can cause EITHER monoallelic (haploinsufficiency) OR biallelic (recessive) disease. When the same phenotype has evidence for BOTH monoallelic and biallelic inheritance, create TWO disease entities (see STEP 1 above).
     MOSAIC/SOMATIC VARIANTS: Mosaicism describes the cellular distribution of a variant, not its zygosity — both monoallelic and biallelic mosaic states exist (e.g., a constitutive heterozygous variant combined with post-zygotic loss-of-heterozygosity on the second allele yields a biallelic mosaic state, though this is uncommon outside cancer). The location-first rule still governs: a mosaic variant in an X-linked gene is "X-linked". For autosomal genes, classify by the zygosity actually reported in the paper, and capture the mosaic context in `inheritance_details` (e.g., "mosaic", "mosaic de novo", "post-zygotic somatic", "gonosomal"):
       - Single mosaic variant in the gene with no second pathogenic variant reported on the partner allele → "Monoallelic"
@@ -256,47 +261,35 @@ NEVER infer, estimate, or make assumptions about missing data.
       * family_count: How many families from this source (use null if not specified)
       * context: Quote from main text explaining which families came from this source
     - Use empty array [] when: all families are NEW to this paper, OR no families reported
-  * citations: array of box_id citations where this disease entity is described, with brief commentary about what each citation shows
+  * citations: array of citations (quote, commentary) where this disease entity is described
   * evidence_weakening_factors: REQUIRED per entity — exactly 6 entries (one per factor enum value) capturing weakening factors for THIS entity's evidence in this paper. See EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST above. The examples below omit this field for brevity but it must always be present.
-  * evidence_assessments: REQUIRED per entity — exactly 5 entries (criterion_A through criterion_E) capturing the PanelApp diagnostic evidence assessment for THIS entity's gene–disease relationship from this paper. See the CRITERION A–E sections above for per-entity rules. The examples below omit this field for brevity but it must always be present.
-  Examples (showing entity descriptors only; `evidence_weakening_factors` and `evidence_assessments` arrays are required but elided for readability — see the JSON output format at the bottom for full shape):
+  * evidence_assessments: REQUIRED per entity — an object with all five keys criterion_A through criterion_E, capturing the PanelApp diagnostic evidence assessment for THIS entity's gene–disease relationship from this paper. See the CRITERION A–E sections above for per-entity rules. The examples below omit this field for brevity but it must always be present.
+  Examples (showing entity descriptors only; `evidence_weakening_factors` and `evidence_assessments` are required but elided for readability — see the JSON output format at the bottom for full shape):
 {% raw %}
-  - All novel families: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "[appropriate category]", "patient_count": 7, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 42, "commentary": "clinical features and patient counts"}, {"box_id": 58, "commentary": "family counts"}]}]
-  - Mixed novel + previously reported: [{"description": "Beckwith-Wiedemann syndrome with multi-locus imprinting disturbance", "mondo_id": "[appropriate category]", "patient_count": 10, "family_count": 10, "independent_family_count": 10, "count_reduction_reasoning": "No reduction (10 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "imprinting", "previously_reported_sources": [{"title": "Novel genetic variants of KHDC3L and other members of the subcortical maternal complex", "family_count": 1, "context": "including the 1 family previously described [ref 27]"}], "citations": [{"box_id": 65, "commentary": "mentions 10 total families including 1 previously reported"}]}]
-  - No families reported: [{"description": "epilepsy (functional study only)", "mondo_id": "[appropriate category]", "patient_count": 0, "family_count": null, "independent_family_count": null, "count_reduction_reasoning": "Not reported", "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"box_id": 23, "commentary": "functional validation without patient data"}]}]
-  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "Gardos channelopathy (hereditary hemolytic anemia)", "mondo_id": "[appropriate category]", "patient_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "de novo", "previously_reported_sources": [], "citations": [{"box_id": 27, "commentary": "Case III: heterozygous de novo p.Ser181Cys"}]}, {"description": "Gardos channelopathy (hereditary hemolytic anemia)", "mondo_id": "[appropriate category]", "patient_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "consanguineous", "previously_reported_sources": [], "citations": [{"box_id": 19, "commentary": "Case I: homozygous p.Gly2Asp"}]}]
+  - All novel families: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "[appropriate category]", "patient_count": 7, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "clinical features and patient counts"}, {"quote": "<verbatim passage>", "commentary": "family counts"}]}]
+  - Mixed novel + previously reported: [{"description": "Beckwith-Wiedemann syndrome with multi-locus imprinting disturbance", "mondo_id": "[appropriate category]", "patient_count": 10, "family_count": 10, "independent_family_count": 10, "count_reduction_reasoning": "No reduction (10 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "imprinting", "previously_reported_sources": [{"title": "Novel genetic variants of KHDC3L and other members of the subcortical maternal complex", "family_count": 1, "context": "including the 1 family previously described [ref 27]"}], "citations": [{"quote": "<verbatim passage>", "commentary": "mentions 10 total families including 1 previously reported"}]}]
+  - No families reported: [{"description": "epilepsy (functional study only)", "mondo_id": "[appropriate category]", "patient_count": 0, "family_count": null, "independent_family_count": null, "count_reduction_reasoning": "Not reported", "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "functional validation without patient data"}]}]
+  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "Gardos channelopathy (hereditary hemolytic anemia)", "mondo_id": "[appropriate category]", "patient_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "de novo", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "Case III: heterozygous de novo p.Ser181Cys"}]}, {"description": "Gardos channelopathy (hereditary hemolytic anemia)", "mondo_id": "[appropriate category]", "patient_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "consanguineous", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "Case I: homozygous p.Gly2Asp"}]}]
 {% endraw %}
-- variants_summary: list variants WITH protein change if given (e.g., "p.R34C (missense)" or "NR")
-- population_freq: ONLY if paper reports gnomAD/ExAC data (e.g., "gnomAD: 0.00001" or "NR")
-- segregation: ONLY if explicitly analyzed (e.g., "LOD 3.2" or "de novo confirmed" or "NR")
-- functional: ONLY specific experiments done (e.g., "zebrafish model" or "NR")
-- prior_reports: ONLY if paper explicitly discusses prior cases (e.g., "3 prior families" or "NR")
 
 **Style:** Use UK English spelling, except in verbatim quotes.
 
+WRITING STYLE (applies to `summary`, every `rationale`, `details`, `commentary`, and `concern`):
+- State facts from the paper: counts, variants, zygosity, segregation, phenotype, experiments and their readouts. Do not grade the evidence in prose.
+- No value judgments: no evaluative adjectives or adverbs such as "convincing", "compelling", "robust", "strong", "weak", "solid", "clear(ly)", "well-established", "definitive", "substantial", "significant" (except statistical significance with its value), "notable", "important", "key", "extensive", "comprehensive", "limited", "elegant". Write "rescue with wild-type cDNA restored ciliary length" rather than "convincing functional evidence".
+- Evidence gaps and problems are stated as facts where the schema asks for them (`evidence_weakening_factors`, `quality_concerns`, criterion rationales): say what is missing or contradictory ("parental samples not tested"), not how weak it is.
+- Keep it short. Telegraphic sentences are fine. Do not restate information that another field already carries.
+- Do not use PanelApp criterion vocabulary ("Criterion A", "diagnostic-grade", "meets the functional bar") in `summary`; that belongs in `evidence_assessments`.
+
 PROSE SUMMARY REQUIREMENTS:
-Provide a prose narrative that summarizes the gene-disease evidence from this paper. Should be detailed enough to be useful when aggregating across multiple papers later.
+Provide a short prose summary (at most ~60 words per gene) of the gene–disease evidence in this paper, for curators and for aggregation across papers. Target pattern: "Reports N individuals from M families with <zygosity> <variant type> variants and <key phenotype>." followed by at most one sentence on functional or animal-model experiments and their readouts. Example: "Reports three individuals from two consanguineous families with homozygous truncating variants and congenital hypopituitarism with growth-hormone deficiency. Patient fibroblasts show protein mislocalisation and increased cell death." 
 
-STRUCTURE:
-1. **Protein function** (if discussed in paper): When this paper describes protein function/pathway, start with 1-2 sentences summarizing what protein the gene encodes and its biological function. Include gene name. Extract ONLY from paper content - do not use external knowledge. Omit if not discussed in paper.
+Omit protein-function background, study design narrative, and anything the structured fields already carry.
 
-2. **Evidence summary**: Summarize the key evidence in natural, flowing prose. Include the following information categories when available (omit any that are not present or not applicable):
-   - Patient and family counts
-   - Inheritance pattern: monoallelic, biallelic, X-linked, de novo, mosaic/somatic, etc.
-   - Disease mechanism: gain-of-function, loss-of-function, loss-of-function (haploinsufficiency), dominant-negative, etc.
-   - Variant types: missense, nonsense, frameshift, splice-site, deletion, etc.
-   - Core phenotype and clinical features
-   - Functional evidence (if strong)
-   - Notable specifics (founder variants, population findings, prior reports, etc.)
-
-   GENERAL TEMPLATE (flexible - adapt as needed for natural prose):
-   Reports [N] individuals from [N] families with [inheritance] [mechanism] [variant-types] variants presenting with [phenotype]. [Clinical details]. [Functional evidence]. [Notable specifics].
-
-   CALIBRATE CAUSAL LANGUAGE TO EVIDENCE: use "associated with" / "identified in" and "in-vitro evidence of reduced/impaired [function]" for missense (or other non-null) variants supported only by cell-based or biochemical assays, or lacking segregation. Reserve "causes" and unqualified mechanism labels ("loss-of-function", "gain-of-function", "haploinsufficiency") for proven-null variants in an established loss-of-function gene, variants segregating across informative meioses, or robust variant-specific functional validation. Keep the variant-level readout ("the variants reduced transactivation in vitro") distinct from the disease-level mechanism claim ("haploinsufficiency causes the phenotype").
+CALIBRATE CAUSAL LANGUAGE TO EVIDENCE: use "associated with" / "identified in" and "in-vitro evidence of reduced/impaired [function]" for missense (or other non-null) variants supported only by cell-based or biochemical assays, or lacking segregation. Reserve "causes" and unqualified mechanism labels ("loss-of-function", "gain-of-function", "haploinsufficiency") for proven-null variants in an established loss-of-function gene, variants segregating across informative meioses, or robust variant-specific functional validation. Keep the variant-level readout ("the variants reduced transactivation in vitro") distinct from the disease-level mechanism claim ("haploinsufficiency causes the phenotype").
 
    When disease_mechanism is "NR", simply omit it and include other available information. When multiple distinct mechanisms exist, organize by mechanism to clarify the genotype-phenotype relationship.
 
-Use paragraph breaks for readability (e.g., break after protein function section).
 
 VARIANT EXTRACTION REQUIREMENTS:
 For each gene, extract variants following these strict guidelines:
@@ -310,9 +303,9 @@ For each gene, extract variants following these strict guidelines:
    - Output variants as "NM_XXXXXX.X:c.123A>G" not just "c.123A>G"
    - Use "NR" for transcript if none is specified for the gene
 
-2. VARIANTS ARRAY (for automated processing): Extract UNIQUE variants with citations
+2. VARIANTS ARRAY (for automated processing): Extract UNIQUE variants with citations. Each `quote` is the full sentence or complete table row in which the notation appears, not the bare notation, so that it can be located in the PDF.
 
-   Structure: {% raw %}[{"variant": "NM_000123.4:c.1234A>T", "box_id": 42}, {"variant": "NM_000123.4:c.5678G>C", "box_id": 67}]{% endraw %}
+   Structure: {% raw %}[{"variant": "NM_000123.4:c.1234A>T", "quote": "<verbatim passage containing the variant>"}, {"variant": "NM_000123.4:c.5678G>C", "quote": "<verbatim passage containing the variant>"}]{% endraw %}
 
    **FORMAT RULES - CRITICAL**:
    - Each variant MUST be a SINGLE notation type (never combine coding + protein in one string)
@@ -325,15 +318,15 @@ For each gene, extract variants following these strict guidelines:
    - Use the most complete coding notation available (with RefSeq if present)
    - OMIT redundant protein notations when coding notation exists
    - Example: If paper shows "c.91G>T" and "p.Glu31*" for same variant:
-     * Extract ONLY: {% raw %}[{"variant": "c.91G>T", "box_id": 42}]{% endraw %}
+     * Extract ONLY: {% raw %}[{"variant": "c.91G>T", "quote": "<verbatim passage containing the variant>"}]{% endraw %}
      * DO NOT extract both or combine them
 
    **CRITICAL DEDUPLICATION**: Each unique variant appears EXACTLY ONCE
    - If the same variant appears multiple times (even with formatting differences), extract it ONCE
-   - Use the box_id where the MOST COMPLETE coding notation appears
+   - Quote the passage where the MOST COMPLETE coding notation appears
    - Only include variants clearly associated with the gene being evaluated
    - Example: If paper mentions "c.374G>C" in 3 places and "NM_000123.1:c.374G>C" in 1 place:
-     * CORRECT: {% raw %}[{"variant": "NM_000123.1:c.374G>C", "box_id": 42}]{% endraw %}
+     * CORRECT: {% raw %}[{"variant": "NM_000123.1:c.374G>C", "quote": "<verbatim passage containing the variant>"}]{% endraw %}
      * WRONG: Multiple entries for the same variant
 
    ACCEPTED NOTATIONS (extract ONLY these standardized formats, ONE per variant):
@@ -363,12 +356,7 @@ For each gene, extract variants following these strict guidelines:
    - Different transcript versions: "NM_000123.1:c.123A>T" ≠ "NM_000123.2:c.123A>T"
    - Different positions: "c.123A>T" ≠ "c.124A>T"
 
-3. SUMMARY VARIANTS (variants_summary field): Human-readable summary
-   - Include variant type if clearly stated: "c.1234A>T (missense); p.R34C (nonsense)"
-   - Use "NR" if no variants with standard notation found
-   - Brief telegraphic style
-
-4. GENOME BUILD: Extract if explicitly mentioned (GRCh38, GRCh37, hg38, hg19, or "unknown")
+3. GENOME BUILD: Extract if explicitly mentioned (GRCh38, GRCh37, hg38, hg19, or "unknown")
 
 IMPORTANT INSTRUCTIONS:
 - Focus on variants causing rare genetic diseases — including both germline variants and
@@ -394,8 +382,6 @@ IMPORTANT INSTRUCTIONS:
     from the gene-specific evidence and do not include CNV families in counts
   * If a gene has ONLY large-CNV evidence in this paper (no gene-specific variants), do not
     create a gene evaluation for it
-  * The top-level "families" field should also reflect only gene-specific variant families,
-    consistent with family_count in disease_entities
 - GENE FUSION EXCLUSION: PanelApp gene curation is based on sequence-level variants that
   specifically disrupt individual genes, not on gene fusions — chimeric genes or fusion
   transcripts formed by joining two genes via a translocation or other structural rearrangement.
@@ -410,8 +396,6 @@ IMPORTANT INSTRUCTIONS:
     distinguish this from gene-specific evidence and do not include fusion families in counts.
   * If a gene has ONLY gene-fusion evidence in this paper (no gene-specific sequence-level
     variants), do not create a gene evaluation for it.
-  * The top-level "families" field should also reflect only gene-specific sequence-level
-    variant families.
 - DIGENIC/OLIGOGENIC EXCLUSION: Digenic and oligogenic inheritance are out of scope.
   * Do NOT count families whose disease causation requires variants in multiple different genes
     toward family_count or patient_count. Base Criteria A-E on monogenic families only.
@@ -421,12 +405,12 @@ IMPORTANT INSTRUCTIONS:
     evaluation for it.
   * Biallelic (two alleles in the same gene) remains in scope.
 - INDEPENDENT FAMILIES: Criteria A/B/C count `independent_family_count`, not `family_count` — see TOTAL vs INDEPENDENT FAMILY COUNT for how shared-origin families collapse.
-- FOUNDER / RECURRENT VARIANT TERMINOLOGY: Do not describe a variant as a "founder allele", "founder variant", or as showing a "founder effect" unless one of the following holds: (a) the paper itself uses that term about the specific variant, (b) the paper documents shared haplotype evidence linking carriers, or (c) the paper cites prior work establishing founder status. Elevated allele frequency in a specific ancestry alone is consistent with founder effect but does not establish it — alternative explanations include drift, recurrent mutation at hotspots (e.g., CpG sites), and simple polymorphism. Describe the observation in the paper's own terms (e.g., "present at higher frequency in X population", "carrier frequency 1:N suggesting a founder effect") rather than escalating to "founder allele". This applies wherever variants are described — `summary`, `prior_reports`, `quality_concerns`, and citation commentary alike. (The structured `evidence_weakening_factors.founder_or_recurrent_variant` factor concerns counting/independence and is governed by the TOTAL vs INDEPENDENT FAMILY COUNT rule, not by this terminology rule.)
+- FOUNDER / RECURRENT VARIANT TERMINOLOGY: Do not describe a variant as a "founder allele", "founder variant", or as showing a "founder effect" unless one of the following holds: (a) the paper itself uses that term about the specific variant, (b) the paper documents shared haplotype evidence linking carriers, or (c) the paper cites prior work establishing founder status. Elevated allele frequency in a specific ancestry alone is consistent with founder effect but does not establish it — alternative explanations include drift, recurrent mutation at hotspots (e.g., CpG sites), and simple polymorphism. Describe the observation in the paper's own terms (e.g., "present at higher frequency in X population", "carrier frequency 1:N suggesting a founder effect") rather than escalating to "founder allele". This applies wherever variants are described — `summary`, `quality_concerns`, and citation commentary alike. (The structured `evidence_weakening_factors.founder_or_recurrent_variant` factor concerns counting/independence and is governed by the TOTAL vs INDEPENDENT FAMILY COUNT rule, not by this terminology rule.)
 - PHENOTYPE REQUIREMENTS: Detailed individual patient descriptions required, not summaries
 - Count families as primary units, mention patient numbers as supplementary
 - VARIANT QUALIFICATION: All Criterion A/B/C family counts use only families whose variants pass the QUALIFYING VARIANT GATE. Predicted/proven null variants in haploinsufficient genes qualify directly under gate clause (1)(b); other variant types must meet (1)(c)(i)–(iii).
 - CRITERION C BAR: Use the two-pillar rule; biochemical or heterologous-overexpression evidence alone does not satisfy Pillar 2.
-- GENE SYMBOL REQUIREMENTS: Every gene_symbol in gene_evaluations must be a valid HGNC gene
+- GENE SYMBOL REQUIREMENTS: Use the approved symbol returned by `lookup_genes`. Every gene_symbol in gene_evaluations must be a valid HGNC gene
   symbol. Do NOT include placeholder entries, marker entries, notes, or dummy gene symbols
   (e.g., "PLACEHOLDER", "PLACEHOLDER_REMOVE", "GENE_NOTE"). If a gene does not meet the
   extraction criteria above, omit it entirely — do not create an empty entry for it.
@@ -480,9 +464,9 @@ For citations: Point to where the problematic claim or contradiction appears.
 
 If no major issues are found, use an empty array: []
 
-Before generating your JSON response, thoroughly think through each gene evaluation. The response schema is complex:
+The response schema is complex:
 - For each disease entity, its `evidence_weakening_factors` MUST contain exactly 6 entries, one per factor enum value, each with `factor`, `present`, `details`. Fill these out FIRST per entity.
-- For each disease entity, its `evidence_assessments` MUST contain exactly 5 entries (criterion_A through criterion_E), each with result, rationale, confidence, and citations. Each rationale must reference any `present:true` weakening factor for THAT entity that affects the verdict.
+- For each disease entity, its `evidence_assessments` MUST contain all five criteria (criterion_A through criterion_E), each with result, rationale, confidence, and citations, including criteria that evaluate to false. Each rationale must reference any `present:true` weakening factor for THAT entity that affects the verdict.
 Plan both arrays per entity for each gene before you begin writing the JSON output.
 
 Respond in JSON format with your evaluation:
@@ -495,11 +479,10 @@ Respond in JSON format with your evaluation:
       "gene_symbol": "GENE_SYMBOL",
       "summary": "Reports [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. [Clinical features]. [Functional evidence]. [Notable specifics].",
       "variants": [
-        {"variant": "NM_000123.4:c.1234A>T", "box_id": 42},
-        {"variant": "NM_000123.4:c.5678G>C", "box_id": 67},
-        {"variant": "rs123456", "box_id": 89}
+        {"variant": "NM_000123.4:c.1234A>T", "quote": "<verbatim passage containing the variant>"},
+        {"variant": "NM_000123.4:c.5678G>C", "quote": "<verbatim passage containing the variant>"},
+        {"variant": "rs123456", "quote": "<verbatim passage containing the variant>"}
       ],
-      "families": "N families reported (N independent) or NR if not stated",
       "disease_entities": [
         {
           "description": "disease name or clinical features with modifiers",
@@ -512,7 +495,7 @@ Respond in JSON format with your evaluation:
           "inheritance_mode": "[one of the enum values]",
           "inheritance_details": "[additional details or empty string]",
           "previously_reported_sources": [{"title": "paper title or NR", "family_count": N_or_null, "context": "quote explaining which families"}],
-          "citations": [{"box_id": integer, "commentary": "description"}],
+          "citations": [{"quote": "<verbatim passage>", "commentary": "description"}],
           "evidence_weakening_factors": [
             {"factor": "founder_or_recurrent_variant", "present": boolean, "details": "1-2 sentences citing specific evidence for this entity, or 'Not present' with brief sanity-check"},
             {"factor": "inherited_no_segregation_with_affected", "present": boolean, "details": "..."},
@@ -521,38 +504,22 @@ Respond in JSON format with your evaluation:
             {"factor": "phenotype_non_mendelian", "present": boolean, "details": "..."},
             {"factor": "functional_below_criterion_c_threshold", "present": boolean, "details": "..."}
           ],
-          "evidence_assessments": [
-            {"name": "criterion_A", "result": boolean, "rationale": "per-entity rationale; reference any present:true weakening factor for this entity", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"box_id": integer, "commentary": "explanation"}]},
-            {"name": "criterion_B", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
-            {"name": "criterion_C", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
-            {"name": "criterion_D", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
-            {"name": "criterion_E", "result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []}
-          ]
+          "evidence_assessments": {
+            "criterion_A": {"result": boolean, "rationale": "per-entity rationale; reference any present:true weakening factor for this entity", "confidence": "HIGH|MEDIUM|LOW", "citations": [{"quote": "<verbatim passage>", "commentary": "explanation"}]},
+            "criterion_B": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
+            "criterion_C": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
+            "criterion_D": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
+            "criterion_E": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []}
+          }
         }
       ],
-      "variants_summary": "variant1 (type); variant2 (type) or NR",
-      "population_freq": "gnomAD: specific frequencies or NR",
-      "segregation": "LOD score / de novo status / meioses or NR",
-      "functional": "specific experiments or NR",
-      "prior_reports": "first report / N prior families or NR",
       "quality_concerns": [
         {
           "concern": "description of the issue and why it matters",
-          "citations": [{"box_id": integer, "commentary": "where the problematic claim appears"}]
+          "citations": [{"quote": "<verbatim passage>", "commentary": "where the problematic claim appears"}]
         }
       ]
     }
   ]
 }
 {% endraw %}
-
-PAPER TO EVALUATE:
-
-Title: {{ title }}
-
-Date: {{ date }}
-
-Abstract: {{ abstract }}
-
-Full Text:
-{{ full_text }}

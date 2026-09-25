@@ -55,6 +55,78 @@ def summarise_usage(db_path: Path) -> list[StageUsage]:
     return sorted(rows.values(), key=lambda u: (u.stage, u.model, u.service_tier))
 
 
+@dataclass(frozen=True)
+class Refusal:
+    stage: str
+    subject: str
+    round: int
+    category: str | None
+    title: str | None  # paper title when the subject is a DOI
+
+
+def list_refusals(db_path: Path, stage: str | None = None) -> list[Refusal]:
+    """Refused requests, oldest first; optionally for one stage only."""
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT r.stage, r.subject, r.round, r.refusal_category, p.title
+            FROM llm_requests r LEFT JOIN papers p ON p.doi = r.subject
+            WHERE r.status = 'refused' AND (? IS NULL OR r.stage = ?)
+            ORDER BY r.completed_at
+            """,
+            (stage, stage),
+        ).fetchall()
+    return [Refusal(*row) for row in rows]
+
+
+def _refusal_table(refusals: list[Refusal], title: str) -> Table:
+    table = Table(title=title)
+    for column in ("stage", "subject", "round", "category", "title"):
+        table.add_column(column)
+    for r in refusals:
+        table.add_row(r.stage, r.subject, str(r.round), r.category or "-", (r.title or "")[:80])
+    return table
+
+
+def print_stage_summary(db_path: Path, stage: str) -> None:
+    """Outcome counts, cost, and every refusal of *stage* in this run database."""
+    usages = [u for u in summarise_usage(db_path) if u.stage == stage]
+    requests = sum(u.requests for u in usages)
+    refused = sum(u.refused for u in usages)
+    errored = sum(u.errored for u in usages)
+    pending = sum(u.pending for u in usages)
+    cost = sum(u.cost for u in usages)
+    console = Console()
+    console.print(
+        f"[bold]{stage}[/bold]: {requests:,} requests, {requests - refused - errored - pending:,} "
+        f"answered, [bold]{refused:,} refused[/bold], {errored:,} errored, {pending:,} pending; "
+        f"${cost:,.2f}"
+    )
+    refusals = list_refusals(db_path, stage)
+    if refusals:
+        console.print(
+            _refusal_table(refusals, f"{stage}: refused requests (not resubmitted in this run)")
+        )
+
+
+@app.command("refusals")
+def refusals(
+    db_path: Path = typer.Option(Path("data/db.sqlite"), "--db-path", help="Run database"),
+    stage: str | None = typer.Option(None, "--stage", help="Only this stage"),
+) -> None:
+    """List refused requests with their safety-classifier category."""
+    found = list_refusals(db_path, stage)
+    by_category: dict[str, int] = {}
+    for r in found:
+        by_category[r.category or "-"] = by_category.get(r.category or "-", 0) + 1
+    console = Console()
+    console.print(_refusal_table(found, f"Refused requests in {db_path}"))
+    console.print(
+        f"{len(found)} refusals; by category: "
+        + (", ".join(f"{k} {v}" for k, v in sorted(by_category.items())) or "none")
+    )
+
+
 @app.command("costs")
 def costs(
     db_path: Path = typer.Option(Path("data/db.sqlite"), "--db-path", help="Run database"),

@@ -98,16 +98,6 @@ def read_dois_from_db(
     return dois
 
 
-def check_existing_files(doi: str, download_dir: Path) -> list[str]:
-    """Check which file types exist for a DOI."""
-    existing = []
-    if doi_to_path(doi, download_dir, ".pdf").exists():
-        existing.append("pdf")
-    if doi_to_path(doi, download_dir, ".json").exists():
-        existing.append("json")
-    return existing
-
-
 def get_green_hgnc_ids_from_panel(panel_date: str) -> list[int]:
     """Get HGNC IDs of genes with GREEN (3) confidence rating from target panels.
 
@@ -197,8 +187,7 @@ def open_browser(
     existing_pdfs = 0
 
     for doi in dois:
-        existing = check_existing_files(doi, target_dir)
-        if "pdf" not in existing:
+        if not doi_to_path(doi, target_dir, ".pdf").exists():
             dois_needing_download.append(doi)
         else:
             existing_pdfs += 1
@@ -236,21 +225,20 @@ def open_browser(
     )
     console.print("\n[yellow]Next steps:[/yellow]")
     console.print("  1. Download PDFs manually to data/papers/")
-    console.print("  2. Convert PDFs: [dim]uv run palit docling convert[/dim]")
-    console.print("  3. Register papers: [dim]uv run palit download-papers register[/dim]")
+    console.print("  2. Register papers: [dim]uv run palit download-papers register[/dim]")
 
 
 @app.command("register")
 def register_papers(
     papers_dir: Path = typer.Option(
-        default=Path("data/papers"), help="Directory containing converted JSON files"
+        default=Path("data/papers"), help="Directory containing the downloaded PDFs"
     ),
     db_path: Path = typer.Option(
         default=Path("data/db.sqlite"),
         help="Database path",
     ),
 ) -> None:
-    """Register converted papers by updating download_status for DOIs with JSON files."""
+    """Mark scheduled papers as downloaded once their PDF is in the papers directory."""
 
     if not papers_dir.exists():
         console.print(f"[red]Papers directory not found: {papers_dir}[/red]")
@@ -272,14 +260,12 @@ def register_papers(
             return
 
         registered_count = 0
-        missing_json = 0
+        missing_pdf = 0
 
         for row in candidates:
             doi = row["doi"]
-            json_path = doi_to_path(doi, papers_dir, ".json")
-
-            if not json_path.exists():
-                missing_json += 1
+            if not doi_to_path(doi, papers_dir, ".pdf").exists():
+                missing_pdf += 1
                 continue
 
             cursor.execute(
@@ -293,7 +279,7 @@ def register_papers(
 
     console.print("\n[bold]Registration Summary:[/bold]")
     console.print(f"  Registered papers: {registered_count}")
-    console.print(f"  Still missing JSON: {missing_json}")
+    console.print(f"  Still missing PDF: {missing_pdf}")
 
     if registered_count > 0:
         console.print(

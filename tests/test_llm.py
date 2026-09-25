@@ -19,6 +19,7 @@ from palit.llm import (
     record_result,
     request_cost,
 )
+from palit.llm_usage import list_refusals
 
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
 
@@ -35,7 +36,13 @@ def _request(subject: str, text: str = "x") -> LlmRequest:
 
 
 def _message(stop_reason: str, text: str = "{}") -> dict[str, Any]:
+    stop_details = (
+        {"type": "refusal", "category": "bio", "explanation": None}
+        if stop_reason == "refusal"
+        else None
+    )
     return {
+        "stop_details": stop_details,
         "id": "msg_1",
         "type": "message",
         "role": "assistant",
@@ -195,3 +202,14 @@ def test_resume_returns_only_unrecorded_results(db_path: Path) -> None:
     resumed = asyncio.run(transport.resume("extraction"))
     assert [r.subject for r in resumed] == ["doi-b"]
     assert asyncio.run(transport.resume("relevance")) == []
+
+
+def test_refusal_category_is_recorded_and_listed(db_path: Path) -> None:
+    batches = FakeBatches({"b": {"type": "succeeded", "message": _message("refusal")}})
+    results = asyncio.run(
+        _transport(db_path, batches).run("relevance", 1, [_request("doi-b", "b")])
+    )
+    with sqlite3.connect(db_path) as conn:
+        record_result(conn, results[0])
+    [refusal] = list_refusals(db_path, "relevance")
+    assert (refusal.subject, refusal.category) == ("doi-b", "bio")

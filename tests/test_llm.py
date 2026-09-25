@@ -7,11 +7,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import anthropic
+import httpx2
 import pytest
+import tenacity
+from anthropic.types import Message
 from anthropic.types.messages import MessageBatchIndividualResponse
 
 from palit.llm import (
+    MID_STREAM_ATTEMPTS,
     BatchTransport,
+    ImmediateTransport,
     LlmRequest,
     ResultStatus,
     chunk_for_batches,
@@ -213,3 +219,67 @@ def test_refusal_category_is_recorded_and_listed(db_path: Path) -> None:
         record_result(conn, results[0])
     [refusal] = list_refusals(db_path, "relevance")
     assert (refusal.subject, refusal.category) == ("doi-b", "bio")
+
+
+def _stream_error(status: int, error_type: str) -> anthropic.APIStatusError:
+    """What the SDK raises for an error: a failed response, or an event inside a stream (200)."""
+    response = httpx2.Response(status, request=httpx2.Request("POST", "https://api.anthropic.com"))
+    body = {"type": "error", "error": {"type": error_type, "message": "x"}}
+    return anthropic.APIStatusError(str(body), response=response, body=body)
+
+
+class FakeStreams:
+    """``client.messages.stream`` that raises the queued errors before answering."""
+
+    def __init__(self, errors: list[Exception]) -> None:
+        self._errors = errors
+        self.calls = 0
+
+    def stream(self, **params: Any) -> "FakeStreams":
+        self.calls += 1
+        return self
+
+    async def __aenter__(self) -> "FakeStreams":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def get_final_message(self) -> Message:
+        if self._errors:
+            raise self._errors.pop(0)
+        return Message.model_validate(_message("end_turn"))
+
+
+def _immediate(streams: FakeStreams) -> ImmediateTransport:
+    client = SimpleNamespace(messages=streams)
+    return ImmediateTransport(client, mid_stream_wait=tenacity.wait_none())  # type: ignore[arg-type]
+
+
+def test_immediate_retries_error_events_inside_the_stream() -> None:
+    streams = FakeStreams([_stream_error(200, "api_error"), _stream_error(200, "overloaded_error")])
+    [result] = asyncio.run(_immediate(streams).run("test", 1, [_request("a")]))
+    assert result.status == ResultStatus.SUCCEEDED
+    assert streams.calls == 3
+
+
+def test_immediate_reports_persistent_stream_errors_as_errored() -> None:
+    streams = FakeStreams([_stream_error(200, "api_error") for _ in range(MID_STREAM_ATTEMPTS)])
+    [result] = asyncio.run(_immediate(streams).run("test", 1, [_request("a")]))
+    assert result.status == ResultStatus.ERRORED
+    assert result.error_type == "APIStatusError"
+    assert streams.calls == MID_STREAM_ATTEMPTS
+
+
+def test_immediate_reports_overloaded_responses_as_errored() -> None:
+    response = httpx2.Response(529, request=httpx2.Request("POST", "https://api.anthropic.com"))
+    streams = FakeStreams([anthropic.OverloadedError("overloaded", response=response, body=None)])
+    [result] = asyncio.run(_immediate(streams).run("test", 1, [_request("a")]))
+    assert result.status == ResultStatus.ERRORED
+    assert streams.calls == 1  # the SDK already retried failed responses
+
+
+def test_immediate_raises_invalid_request_errors_inside_the_stream() -> None:
+    streams = FakeStreams([_stream_error(200, "invalid_request_error")])
+    with pytest.raises(anthropic.APIStatusError):
+        asyncio.run(_immediate(streams).run("test", 1, [_request("a")]))

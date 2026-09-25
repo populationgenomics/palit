@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import anthropic
+import tenacity
 from anthropic import AsyncAnthropic, transform_schema
 from anthropic.types import Message, TextBlockParam
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
@@ -49,6 +50,19 @@ _BATCH_BYTES_BUDGET = int(MAX_BATCH_BYTES * 0.95)
 
 DEFAULT_POLL_SECONDS = 60.0
 DEFAULT_IMMEDIATE_WORKERS = 50
+
+# Transient failures the SDK has already retried max_retries times when it raises them.
+_TRANSIENT_ERRORS = (
+    anthropic.RateLimitError,
+    anthropic.OverloadedError,
+    anthropic.ServiceUnavailableError,
+    anthropic.InternalServerError,
+    anthropic.APIConnectionError,
+)
+# An error event inside a started stream carries the stream's 200 status, so
+# the SDK raises a plain APIStatusError and does not retry it.
+_MID_STREAM_TRANSIENT_TYPES = frozenset({"api_error", "overloaded_error"})
+MID_STREAM_ATTEMPTS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -418,17 +432,37 @@ def _result_from_batch(
     )
 
 
+def is_mid_stream_transient(error: BaseException) -> bool:
+    """Whether *error* is a server-side error event inside a started stream."""
+    if not isinstance(error, anthropic.APIStatusError) or error.status_code != 200:
+        return False
+    match error.body:
+        case {"error": {"type": str(error_type)}}:
+            return error_type in _MID_STREAM_TRANSIENT_TYPES
+        case _:
+            return False
+
+
 class ImmediateTransport:
     """Concurrent streaming Messages calls through a fixed worker pool.
 
     Nothing is persisted until the stage records a result, so there is nothing
-    to resume. Invalid requests raise; retryable failures that outlast the SDK's
-    own retries come back as ERRORED results.
+    to resume. Invalid requests raise; transient failures come back as ERRORED
+    results once retries are spent: the SDK's own retries for failed responses,
+    and MID_STREAM_ATTEMPTS attempts for error events inside a started stream.
     """
 
-    def __init__(self, client: AsyncAnthropic, workers: int = DEFAULT_IMMEDIATE_WORKERS) -> None:
+    def __init__(
+        self,
+        client: AsyncAnthropic,
+        workers: int = DEFAULT_IMMEDIATE_WORKERS,
+        mid_stream_wait: tenacity.wait.wait_base = tenacity.wait_exponential_jitter(
+            initial=2, max=60
+        ),
+    ) -> None:
         self._client = client
         self._workers = workers
+        self._mid_stream_wait = mid_stream_wait
 
     async def run(
         self, stage: str, round_no: int, requests: Sequence[LlmRequest]
@@ -453,33 +487,13 @@ class ImmediateTransport:
         custom_id = _new_custom_id(stage, round_no)
         model = request.params["model"]
         try:
-            # stream() takes the same keyword arguments minus ``stream`` itself, which
-            # the non-streaming params type declares but stages never set.
-            params: dict[str, Any] = dict(request.params)
-            async with self._client.messages.stream(**params) as stream:
-                message = await stream.get_final_message()
-        except (
-            anthropic.RateLimitError,
-            anthropic.InternalServerError,
-            anthropic.APIConnectionError,
-        ) as e:
-            logger.warning(
-                "%s: request for %s failed after retries: %s",
-                stage,
-                request.subject,
-                type(e).__name__,
-            )
-            return LlmResult(
-                custom_id=custom_id,
-                batch_id=None,
-                stage=stage,
-                subject=request.subject,
-                round=round_no,
-                model=model,
-                status=ResultStatus.ERRORED,
-                message=None,
-                error_type=type(e).__name__,
-            )
+            message = await self._stream(request)
+        except anthropic.APIStatusError as e:
+            if not (isinstance(e, _TRANSIENT_ERRORS) or is_mid_stream_transient(e)):
+                raise
+            return self._errored(custom_id, stage, round_no, request, e)
+        except anthropic.APIConnectionError as e:
+            return self._errored(custom_id, stage, round_no, request, e)
         return LlmResult(
             custom_id=custom_id,
             batch_id=None,
@@ -490,6 +504,48 @@ class ImmediateTransport:
             status=_status_for(message),
             message=message,
             error_type=None,
+        )
+
+    async def _stream(self, request: LlmRequest) -> Message:
+        # stream() takes the same keyword arguments minus ``stream`` itself, which
+        # the non-streaming params type declares but stages never set.
+        params: dict[str, Any] = dict(request.params)
+        async for attempt in tenacity.AsyncRetrying(
+            retry=tenacity.retry_if_exception(is_mid_stream_transient),
+            wait=self._mid_stream_wait,
+            stop=tenacity.stop_after_attempt(MID_STREAM_ATTEMPTS),
+            before_sleep=lambda state: logger.warning(
+                "request for %s: error inside the stream, retrying (attempt %d)",
+                request.subject,
+                state.attempt_number,
+            ),
+            reraise=True,
+        ):
+            with attempt:
+                async with self._client.messages.stream(**params) as stream:
+                    return await stream.get_final_message()
+        raise AssertionError("tenacity returns or re-raises")
+
+    @staticmethod
+    def _errored(
+        custom_id: str, stage: str, round_no: int, request: LlmRequest, error: Exception
+    ) -> LlmResult:
+        logger.warning(
+            "%s: request for %s failed after retries: %s",
+            stage,
+            request.subject,
+            type(error).__name__,
+        )
+        return LlmResult(
+            custom_id=custom_id,
+            batch_id=None,
+            stage=stage,
+            subject=request.subject,
+            round=round_no,
+            model=request.params["model"],
+            status=ResultStatus.ERRORED,
+            message=None,
+            error_type=type(error).__name__,
         )
 
 

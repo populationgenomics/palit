@@ -96,6 +96,20 @@ wheels = [
 ]
 
 [[package]]
+name = "anchorite"
+version = "0.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "fsspec" },
+    { name = "pypdfium2" },
+    { name = "seq-smith" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/75/64/77d43489f5fb3f9c10ba9a0dd6ea1e9c46713bdd7e24c33cac1d3a1955dc/anchorite-0.5.1.tar.gz", hash = "sha256:50e12ba4a96f7a116b9f54afbe5ecd90f9ecbc275aa78a0a1576390b9735d6d6", size = 4326525, upload-time = "2026-06-02T06:44:29.565Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/e7/7e1ea5a13a7b38fefb65ff7b0069da836f83a0d00149ff5139e0377bb23f/anchorite-0.5.1-py3-none-any.whl", hash = "sha256:af2ae20b77361c6e912d1c2adaf0b2cf8ea7d8f7a3183e97212957265e79109f", size = 61234, upload-time = "2026-06-02T06:44:27.686Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -118,13 +132,13 @@ name = "anthropic"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "docstring-parser", marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "httpx2", marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "jiter", marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "pydantic", marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "sniffio", marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "typing-extensions", marker = "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "anyio" },
+    { name = "docstring-parser" },
+    { name = "httpx2" },
+    { name = "jiter" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/25/aa/4978e58035bd6c638c7b483450a68b7ef2d732ab78885e27bb9db0cff1a2/anthropic-1.0.0.tar.gz", hash = "sha256:42be3c97604af7252c5898413aee076ace6c46e9bca0d0d90ceb77c7d3719027", size = 1077769, upload-time = "2026-08-20T19:59:00.565Z" }
 wheels = [
@@ -2773,6 +2787,8 @@ name = "palit"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anchorite" },
+    { name = "anthropic" },
     { name = "boto3" },
     { name = "cryptography" },
     { name = "defusedxml" },
@@ -2822,6 +2838,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anchorite", specifier = ">=0.5.1" },
+    { name = "anthropic", specifier = ">=1.0.0" },
     { name = "boto3", specifier = ">=1.43.24" },
     { name = "cryptography" },
     { name = "defusedxml" },
@@ -3980,6 +3998,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4f/87/46c0406d8b5ddd026f73adaf5ab75ce144219c41a4830b52df4b9ab55f7f/sentry_sdk-2.57.0.tar.gz", hash = "sha256:4be8d1e71c32fb27f79c577a337ac8912137bba4bcbc64a4ec1da4d6d8dc5199", size = 435288, upload-time = "2026-03-31T09:39:29.264Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c9/64/982e07b93219cb52e1cca5d272cb579e2f3eb001956c9e7a9a6d106c9473/sentry_sdk-2.57.0-py2.py3-none-any.whl", hash = "sha256:812c8bf5ff3d2f0e89c82f5ce80ab3a6423e102729c4706af7413fd1eb480585", size = 456489, upload-time = "2026-03-31T09:39:27.524Z" },
+]
+
+[[package]]
+name = "seq-smith"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1b/01/5226b44550490e8fd77f60ac72df3ad32cead1757dece33e9b5b0619a0ab/seq_smith-0.6.0.tar.gz", hash = "sha256:820d941cb81c324d7ca8408aacebbc5f832023617954b25110853a82271f7563", size = 141595, upload-time = "2026-05-12T22:56:36.841Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/b9/d212c97d24e0e11e176fd4303b2a64d1ede0b56c2aa75e159a04eeaf75b1/seq_smith-0.6.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:9bc96dfc6706ec0935e6b757addc460a0ebd5dab963ca9c00de712e31985437e", size = 422016, upload-time = "2026-05-12T22:56:29.201Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/74/e928c2a239b9f63efed92f00d1cec1677f48b40f1f0e419095121750c7a7/seq_smith-0.6.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:4359a457898f8f95adc017ec00fa6a188711514b68aaba99f3246acb36ed39d8", size = 411437, upload-time = "2026-05-12T22:56:30.839Z" },
+    { url = "https://files.pythonhosted.org/packages/99/8a/28d0afca9b9691b08c377b3a826f85eac340b5483f547eb0594dcb35f521/seq_smith-0.6.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:01c1f99fe164c856451633456337c0747ee358945b400babb0588d55b991bb4c", size = 458608, upload-time = "2026-05-12T22:56:32.191Z" },
+    { url = "https://files.pythonhosted.org/packages/33/5d/200f071fc5eb40f9d33fd38124417601043051af4f4cc0f642881d185448/seq_smith-0.6.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:69a6a578a044b187de02e31f90d91c90a29eed9b421ac56f0c6d01fe88a73007", size = 473464, upload-time = "2026-05-12T22:56:34.071Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/74/05ef8f2fe2e1551575b844534b3dca53a9f4f00a9154bb727033cd3c68c9/seq_smith-0.6.0-cp313-cp313-win_amd64.whl", hash = "sha256:66b0a65c73217d374bf5b339b5cc5cfc146edac1c287deec4300be0575bb5b06", size = 287407, upload-time = "2026-05-12T22:56:35.632Z" },
 ]
 
 [[package]]

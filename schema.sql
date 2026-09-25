@@ -138,3 +138,61 @@ CREATE TABLE variant_frequencies (
 CREATE INDEX idx_variant_frequencies_variant_id ON variant_frequencies(variant_id);
 CREATE INDEX idx_variant_frequencies_hgnc_id ON variant_frequencies(hgnc_id);
 CREATE INDEX idx_variant_frequencies_paper_doi ON variant_frequencies(paper_doi);
+
+-- Claude API bookkeeping (see src/palit/llm.py).
+-- One row per submitted Message Batch. A batch is collected once every request
+-- in it has been recorded; stages re-attach to uncollected batches on start.
+CREATE TABLE llm_batches (
+    batch_id TEXT PRIMARY KEY,            -- msgbatch_...
+    stage TEXT NOT NULL,                  -- e.g. 'relevance', 'extraction', 'assess_genes'
+    round INTEGER NOT NULL,               -- 1 for single-shot stages
+    model TEXT NOT NULL,
+    submitted_at TEXT NOT NULL,
+    ended_at TEXT,                        -- processing_status reached 'ended'
+    collected_at TEXT                     -- every request recorded
+);
+
+CREATE INDEX idx_llm_batches_uncollected ON llm_batches(stage) WHERE collected_at IS NULL;
+
+-- One row per Messages request, batched or immediate. Also the per-stage usage
+-- record: the Console usage report cannot split palit's traffic by stage.
+CREATE TABLE llm_requests (
+    custom_id TEXT PRIMARY KEY,           -- '<stage>-<round>-<random>'
+    batch_id TEXT REFERENCES llm_batches(batch_id),  -- NULL for immediate requests
+    stage TEXT NOT NULL,
+    subject TEXT NOT NULL,                -- DOI, or HGNC ID as text
+    round INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'succeeded', 'refused', 'errored', 'expired', 'canceled')),
+    stop_reason TEXT,
+    error_type TEXT,                      -- e.g. 'invalid_request_error', 'overloaded_error'
+    service_tier TEXT,                    -- 'batch' or 'standard'
+    input_tokens INTEGER,                 -- uncached input
+    cache_write_5m_tokens INTEGER,
+    cache_write_1h_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    output_tokens INTEGER,                -- includes thinking
+    completed_at TEXT
+);
+
+CREATE INDEX idx_llm_requests_batch ON llm_requests(batch_id);
+CREATE INDEX idx_llm_requests_stage_subject ON llm_requests(stage, subject);
+
+-- Input messages of a multi-round conversation, stored byte-for-byte: Opus 5.5
+-- rejects a replayed thinking block whose preceding history was edited.
+CREATE TABLE llm_conversations (
+    stage TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    round INTEGER NOT NULL,               -- the round these messages are the input to
+    messages_json TEXT NOT NULL,
+    PRIMARY KEY (stage, subject, round)
+);
+
+-- Files API uploads, so each PDF is uploaded once per content version.
+CREATE TABLE uploaded_files (
+    doi TEXT PRIMARY KEY REFERENCES papers(doi),
+    file_id TEXT NOT NULL,
+    sha256 TEXT NOT NULL,                 -- re-upload when the local PDF changes
+    uploaded_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);

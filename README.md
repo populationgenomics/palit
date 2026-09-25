@@ -40,6 +40,18 @@ The system uses multiple databases:
 
 Both main and screening workflows use the same schema for consistency, allowing the same tools (e.g., `assess-relevance`) to work on both databases.
 
+### Claude API
+
+LLM stages call the Claude API through the Anthropic SDK, authenticated with an `ant` OAuth profile instead of an API key. Log in once per profile (`brew install anthropics/tap/ant` first if needed):
+
+```bash
+ant auth login --profile palit
+```
+
+Palit uses the profile named by `PALIT_ANTHROPIC_PROFILE` (default `palit`). It deliberately ignores `ANTHROPIC_PROFILE` and `ANTHROPIC_API_KEY`, which Claude Code sessions may export for their own workspace. The SDK refreshes the access token itself. The refresh token eventually expires, so when a previously working profile starts failing authentication, run `ant auth login --profile palit` again. Run one palit process per profile: the SDK serialises token refreshes within a process only.
+
+`uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, tokens, and USD cost per stage for a run database. `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API (it needs the profile above).
+
 ### External Services
 
 #### Variant Frequency Lookup

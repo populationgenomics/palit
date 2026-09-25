@@ -12,7 +12,7 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.llm import LLMProcessor, create_llm_processor
+from palit.llm_legacy import LLMProcessor, create_llm_processor
 from palit.papers import Paper, deserialize_source_metadata
 from palit.tournament import TournamentOutcome, run_tournament_selection
 

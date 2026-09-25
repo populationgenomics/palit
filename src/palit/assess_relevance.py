@@ -12,7 +12,7 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.llm import LLMProcessor, PromptResult, create_llm_processor
+from palit.llm_legacy import LLMProcessor, PromptResult, create_llm_processor
 from palit.panelapp_client import (
     PanelAppClient,
     format_panel_for_prompt,

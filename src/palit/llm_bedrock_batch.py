@@ -19,7 +19,7 @@ from typing import Any
 import boto3
 import jsonschema
 
-from palit.llm import PromptResult
+from palit.llm_legacy import PromptResult
 from palit.llm_pydantic_ai import PydanticAIProcessor
 
 logger = logging.getLogger(__name__)

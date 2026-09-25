@@ -18,7 +18,7 @@ from vllm.inputs import TokensPrompt
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import StructuredOutputsParams
 
-from palit.llm import PromptResult
+from palit.llm_legacy import PromptResult
 
 logger = logging.getLogger(__name__)
 

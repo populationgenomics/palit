@@ -11,7 +11,7 @@ from typing import Any
 import typer
 from tqdm import tqdm
 
-from palit.llm import LLMProcessor, create_llm_processor
+from palit.llm_legacy import LLMProcessor, create_llm_processor
 from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
 
 app = typer.Typer(help="Match genes to diagnostic panels based on phenotype descriptions")

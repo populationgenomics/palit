@@ -19,7 +19,7 @@ from pydantic_ai.output import NativeOutput, StructuredDict, ToolOutput
 from pydantic_ai.providers.bedrock import BedrockModelProfile, BedrockProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from palit.llm import PromptResult
+from palit.llm_legacy import PromptResult
 
 logger = logging.getLogger(__name__)
 

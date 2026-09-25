@@ -12,7 +12,7 @@ import typer
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.llm import LLMProcessor, create_llm_processor
+from palit.llm_legacy import LLMProcessor, create_llm_processor
 from palit.panelapp_client import PanelAppClient
 from palit.panelapp_publications import seed_panelapp_publications
 from palit.papers import Paper, deserialize_source_metadata, serialize_source_metadata

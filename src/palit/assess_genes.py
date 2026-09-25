@@ -14,7 +14,7 @@ from jinja2 import Environment, FileSystemLoader
 from tqdm import tqdm
 
 from palit.hgnc import HgncResolver
-from palit.llm import LLMProcessor, create_llm_processor
+from palit.llm_legacy import LLMProcessor, create_llm_processor
 from palit.mondo_lookup import DisputeRecord, DisputeStatus, MondoCandidate, MondoLookup
 from palit.panelapp_client import (
     PanelAppClient,

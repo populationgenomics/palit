@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from palit.llm import LLMProcessor
+from palit.llm_legacy import LLMProcessor
 from palit.papers import Paper
 
 logger = logging.getLogger(__name__)

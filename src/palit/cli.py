@@ -22,6 +22,7 @@ from palit import (
     ingest_preprints,
     ingest_pubmed,
     ledger,
+    llm_usage,
     match_panels,
     reduce_literature,
     scan_mechanisms,
@@ -54,6 +55,7 @@ def main(
 app.add_typer(ingest_pubmed.app, name="ingest-pubmed")
 app.add_typer(ingest_preprints.app, name="ingest-preprints")
 app.add_typer(ledger.app, name="ledger")
+app.add_typer(llm_usage.app, name="llm")
 app.add_typer(discover_citations.app, name="discover-citations")
 app.add_typer(fetch_variant_frequencies.app, name="fetch-variant-frequencies")
 app.add_typer(annotate_pdfs.app, name="annotate-pdfs")

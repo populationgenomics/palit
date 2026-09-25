@@ -5,7 +5,7 @@ The ledger is a single canonical database (default
 ``data/pubmed_ingestion_ledger.sqlite``) holding one row per PubMed DOI ever
 fetched, with refreshed bibliographic metadata and the terminal disposition the
 owning run wrote back. It replaces the old per-run buffer window + single
-``--previous-db`` set-difference: papers already *settled* (majority not-relevant,
+``--previous-db`` set-difference: papers already *settled* (assessed not relevant,
 or downloaded) are never reconsidered, while *actionable* papers (never assessed,
 or relevant-but-not-downloaded) are re-emitted into each new run's database.
 
@@ -38,7 +38,6 @@ from palit import pubmed_ftp
 from palit.papers import Paper, serialize_source_metadata
 from palit.progress import LoggingProgress as Progress
 from palit.pubmed_xml import extract_papers_from_xml
-from palit.relevance import compute_relevance_majority_vote
 
 console = Console()
 app = typer.Typer(help="PubMed ingestion ledger: dedup/disposition memory across runs")
@@ -115,25 +114,16 @@ def _require_ledger(ledger_path: Path) -> None:
 
 
 def relevant_from_assessment(assessment_json: str | None) -> int | None:
-    """Derive the majority-vote `relevant` flag (0/1) from the assessment array.
-
-    Returns None when there is no assessment, or when the array does not hold
-    exactly three results (the majority vote is undefined) -- the caller then
-    drops the assessment so the row stays cleanly actionable rather than stuck
-    as assessed-but-relevance-unknown.
-    """
+    """The `relevant` flag (0/1) of a stored relevance assessment, None if there is none."""
     if not assessment_json:
         return None
-    assessments = json.loads(assessment_json)
-    if len(assessments) != 3:
-        return None
-    return 1 if compute_relevance_majority_vote(assessments)["relevant"] else 0
+    return 1 if json.loads(assessment_json)["relevant"] else 0
 
 
 def settled_dois(ledger_path: Path) -> set[str]:
     """Return the DOIs the ledger has settled (never reconsider).
 
-    A DOI is settled if it was assessed majority not-relevant, or already
+    A DOI is settled if it was assessed not relevant, or already
     downloaded. ingest-preprints uses this to skip re-fetching preprints whose
     disposition is final; relevant-not-downloaded carry-overs come back through
     seed-run-db instead (it is source-agnostic).
@@ -457,9 +447,6 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
             download_status,
         ) in rows:
             relevant = relevant_from_assessment(assessment_json)
-            # Keep the invariant: an assessment we cannot majority-vote is dropped
-            # so the ledger row stays cleanly actionable rather than stuck.
-            stored_assessment = assessment_json if relevant is not None else None
             ledger_conn.execute(
                 """
                 INSERT INTO ledger
@@ -484,7 +471,7 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
                     source,
                     source_date,
                     source_metadata,
-                    stored_assessment,
+                    assessment_json,
                     relevant,
                     download_status,
                     run_id,
@@ -564,14 +551,13 @@ def _merge_disposition(
     value across all runs.
     """
     relevant = relevant_from_assessment(assessment_json)
-    stored = assessment_json if relevant is not None else None
     download_status = _normalize_download_status(download_status)
     cur = disp.get(doi)
     if cur is None:
-        disp[doi] = _Disposition(stored, relevant, download_status)
+        disp[doi] = _Disposition(assessment_json, relevant, download_status)
         return
     if relevant is not None:
-        cur.assessment = stored
+        cur.assessment = assessment_json
         cur.relevant = relevant
     cur.download_status = _more_processed(cur.download_status, download_status)
 

@@ -85,18 +85,21 @@ uv run palit ledger init --ledger $LEDGER
 # 1. Ingest papers for the window through the ledger. The ledger replaces the old
 #    buffer window + --previous-db: late-indexed stragglers arrive via the FTP
 #    update-file sync (constant cost, unbounded horizon), and papers already settled
-#    (majority not-relevant, or downloaded) are never reconsidered while
+#    (assessed not relevant, or downloaded) are never reconsidered while
 #    relevant-not-downloaded papers are re-emitted for a download retry. Preprints
 #    first so their metadata (version) survives for automatic PDF download;
 #    ingest-pubmed backfills PMIDs into preprint rows without overwriting them.
 uv run palit ingest-preprints --ledger $LEDGER $START_DATE $END_DATE
 uv run palit ingest-pubmed --ledger $LEDGER $START_DATE $END_DATE
 
-# 2. Assess relevance of papers
-uv run palit assess-relevance --panel-date $PANEL_DATE
+# 2. Assess relevance of papers: one Claude request per paper, sent as Message
+#    Batches (usually done within an hour). Safe to interrupt and re-run: it
+#    re-attaches to batches still in flight. Refused papers stay unassessed and
+#    are retried in the next run.
+uv run palit assess-relevance
 
-# 2a. (Optional) Parallel assessment across multiple GPUs
-for i in 0 1; do sbatch -p GPU-H100 --gpus=1 -t 24:00:00 -J "assess-relevance-shard-$i" -o "assess_relevance_shard_$i.log" --wrap="uv run palit assess-relevance --panel-date $PANEL_DATE --db-path data/pubmed_baseline_screening.sqlite --prompt-path prompts/retrospective_screening_prompt.txt --shard-index $i --num-shards 2"; done
+# 2a. (Optional) Screen the PubMed baseline with the retrospective prompt
+uv run palit assess-relevance --db-path data/pubmed_baseline_screening.sqlite --prompt-path prompts/retrospective_screening_prompt.txt
 
 # 3. Download full-text papers (automated PMC + preprints, manual fallback)
 uv run palit download-papers attempt-pmc
@@ -205,7 +208,7 @@ Two sources feed it, complementary by recency:
 - **Thin live efetch** over the current window — the freshest view of the newest
   papers, where the FTP files can briefly lag.
 
-Each run partitions previously-seen DOIs into **settled** (majority not-relevant, or
+Each run partitions previously-seen DOIs into **settled** (assessed not relevant, or
 downloaded — never reconsidered) and **actionable** (never assessed, or
 relevant-but-not-downloaded — re-emitted into the run). A CRDT month is finalised and
 dropped from the actionable set after a 6-month **closure horizon**, which bounds the
@@ -303,7 +306,7 @@ The retrospective prompt evaluates papers in their historical context, accepting
 
 ### Updating the Baseline
 
-After each fortnightly processing run completes, feed majority-relevant papers back into the baseline screening DB so it grows as a comprehensive repository:
+After each fortnightly processing run completes, feed relevant papers back into the baseline screening DB so it grows as a comprehensive repository:
 
 ```bash
 FORTNIGHTLY_DB=data/db_2026_february_h1.sqlite
@@ -314,9 +317,7 @@ ATTACH '$FORTNIGHTLY_DB' AS source;
 CREATE TEMP TABLE relevant_dois AS
 SELECT doi FROM source.papers
 WHERE relevance_assessment_json IS NOT NULL
-  AND (json_extract(relevance_assessment_json, '$[0].relevant')
-     + json_extract(relevance_assessment_json, '$[1].relevant')
-     + json_extract(relevance_assessment_json, '$[2].relevant')) >= 2;
+  AND json_extract(relevance_assessment_json, '$.relevant') = 1;
 
 INSERT OR IGNORE INTO papers
   (doi, pmid, title, abstract, authors, journal, source_date,

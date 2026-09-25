@@ -42,7 +42,6 @@ from palit.papers import (
     is_preprint,
     replace_paper_ids_for_display,
 )
-from palit.relevance import compute_relevance_majority_vote
 
 logger = logging.getLogger(__name__)
 
@@ -447,9 +446,6 @@ class ComprehensiveStats:
     # Preprint stats
     preprints_relevant: int
     papers_filtered: int
-
-    # Relevance assessment unanimity stats
-    non_unanimous_pct: float
 
 
 @dataclass
@@ -872,9 +868,7 @@ def load_gene_assessments(
                 relevance_assessment = None
                 if paper_row["relevance_assessment_json"]:
                     try:
-                        relevance_assessment = compute_relevance_majority_vote(
-                            json.loads(paper_row["relevance_assessment_json"])
-                        )
+                        relevance_assessment = json.loads(paper_row["relevance_assessment_json"])
                     except json.JSONDecodeError:
                         logger.warning(
                             f"Failed to parse relevance assessment for DOI {paper_row['doi']}"
@@ -1163,9 +1157,7 @@ def load_panel_publications_validation(
         for row in all_panel_papers:
             relevance_assessment = None
             try:
-                relevance_assessment = compute_relevance_majority_vote(
-                    json.loads(row["relevance_assessment_json"])
-                )
+                relevance_assessment = json.loads(row["relevance_assessment_json"])
             except json.JSONDecodeError:
                 logger.warning(f"Failed to parse relevance assessment for panel DOI {row['doi']}")
                 continue
@@ -1237,7 +1229,7 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # Get all papers with relevance assessments (filter in Python using majority vote)
+        # Get all papers with relevance assessments (filtered in Python below)
         cursor.execute("""
             SELECT
                 p.doi,
@@ -1261,14 +1253,12 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
         for row in cursor.fetchall():
             relevance_assessment = None
             try:
-                relevance_assessment = compute_relevance_majority_vote(
-                    json.loads(row["relevance_assessment_json"])
-                )
+                relevance_assessment = json.loads(row["relevance_assessment_json"])
             except json.JSONDecodeError:
                 logger.warning(f"Failed to parse relevance assessment for DOI {row['doi']}")
                 continue
 
-            # Filter: only include if majority is NOT relevant AND LOW confidence
+            # Filter: only include if NOT relevant AND LOW confidence
             if not relevance_assessment["relevant"] and relevance_assessment["confidence"] == "LOW":
                 evidence_extraction = None
                 if row["evidence_extraction_json"]:
@@ -1344,9 +1334,7 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
             relevance_assessment = None
             if row["relevance_assessment_json"]:
                 try:
-                    relevance_assessment = compute_relevance_majority_vote(
-                        json.loads(row["relevance_assessment_json"])
-                    )
+                    relevance_assessment = json.loads(row["relevance_assessment_json"])
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse relevance assessment for DOI {row['doi']}")
 
@@ -1528,13 +1516,8 @@ def load_favorite_journal_papers(
         if row["relevance_assessment_json"] is None:
             continue
 
-        try:
-            majority = compute_relevance_majority_vote(json.loads(row["relevance_assessment_json"]))
-        except (json.JSONDecodeError, ValueError, KeyError):
-            logger.warning(f"Failed to parse relevance assessment for DOI {doi}")
-            continue
-
-        if not majority.get("relevant"):
+        assessment = json.loads(row["relevance_assessment_json"])
+        if not assessment["relevant"]:
             sections.not_relevant.append(paper)
             continue
 
@@ -1562,48 +1545,10 @@ def load_favorite_journal_papers(
     return sections
 
 
-def calculate_unanimity_statistics(db_path: Path) -> tuple[int, int]:
-    """Calculate unanimity statistics for relevance assessments.
-
-    Returns:
-        Tuple of (total_assessments, unanimous_assessments)
-    """
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT relevance_assessment_json
-            FROM papers
-            WHERE relevance_assessment_json IS NOT NULL
-        """)
-
-        total = 0
-        unanimous = 0
-
-        for row in cursor.fetchall():
-            assessments = json.loads(row[0])
-            assert len(assessments) == 3
-            total += 1
-            # Count how many are relevant=True; unanimous if 0 or 3
-            relevant_count = sum(1 for a in assessments if a["relevant"])
-            if relevant_count == 0 or relevant_count == 3:
-                unanimous += 1
-
-        return total, unanimous
-
-
 def calculate_comprehensive_statistics(
     db_path: Path, results: GeneAssessmentResults, panel_validation: PanelValidationResult
 ) -> ComprehensiveStats:
     """Calculate enhanced statistics for report."""
-
-    # Calculate unanimity statistics
-    total_assessments, unanimous_assessments = calculate_unanimity_statistics(db_path)
-    non_unanimous_pct = (
-        ((total_assessments - unanimous_assessments) / total_assessments * 100)
-        if total_assessments > 0
-        else 0.0
-    )
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
@@ -1692,8 +1637,6 @@ def calculate_comprehensive_statistics(
             # Preprint stats
             preprints_relevant=len(preprint_dois),
             papers_filtered=papers_filtered,
-            # Relevance assessment unanimity stats
-            non_unanimous_pct=non_unanimous_pct,
         )
 
 

@@ -713,7 +713,6 @@
                 <li><strong>Preprints with Evidence:</strong> {{ statistics.preprints_relevant }}</li>
                 {% if statistics.papers_filtered %}<li><strong>Papers Excluded (Preprint Family Gate):</strong> {{ statistics.papers_filtered }}</li>{% endif %}
                 <li><strong>Panel Publications Correctly Identified:</strong> {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% ({{ statistics.true_positives_count }}/{{ statistics.true_positives_count + statistics.false_negatives_count }})</li>
-                <li><strong>Non-Unanimous Relevance Assessments:</strong> {{ "%.1f"|format(statistics.non_unanimous_pct) }}%</li>
             </ul>
 
             <details>

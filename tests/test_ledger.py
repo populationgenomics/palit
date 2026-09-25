@@ -50,8 +50,8 @@ def _new_run_db(tmp_path: Path, name: str = "run.sqlite") -> Path:
     return path
 
 
-def _assessment(*relevant: bool) -> str:
-    return json.dumps([{"relevant": r, "associations": []} for r in relevant])
+def _assessment(relevant: bool) -> str:
+    return json.dumps({"relevant": relevant, "associations": []})
 
 
 def _articleset_gz(articles: list[tuple[str, int, str]]) -> bytes:
@@ -110,9 +110,8 @@ def test_subtract_months(d: date, months: int, expected: date) -> None:
 def test_relevant_from_assessment() -> None:
     assert ledger.relevant_from_assessment(None) is None
     assert ledger.relevant_from_assessment("") is None
-    assert ledger.relevant_from_assessment(_assessment(True, True)) is None  # not 3
-    assert ledger.relevant_from_assessment(_assessment(True, True, False)) == 1
-    assert ledger.relevant_from_assessment(_assessment(False, False, True)) == 0
+    assert ledger.relevant_from_assessment(_assessment(True)) == 1
+    assert ledger.relevant_from_assessment(_assessment(False)) == 0
 
 
 # --- fetch-upsert -----------------------------------------------------------
@@ -160,16 +159,16 @@ def test_seed_run_db_partitions_settled_and_actionable(tmp_path: Path) -> None:
         ledger.upsert_papers(conn, papers, "2026-01-20")
         conn.execute(
             "UPDATE ledger SET relevance_assessment_json=?, relevant=1 WHERE doi='10.1/carry'",
-            (_assessment(True, True, True),),
+            (_assessment(True),),
         )
         conn.execute(
             "UPDATE ledger SET relevance_assessment_json=?, relevant=0 WHERE doi='10.1/notrel'",
-            (_assessment(False, False, False),),
+            (_assessment(False),),
         )
         conn.execute(
             "UPDATE ledger SET relevance_assessment_json=?, relevant=1, "
             "download_status='downloaded' WHERE doi='10.1/done'",
-            (_assessment(True, True, True),),
+            (_assessment(True),),
         )
         conn.commit()
     finally:
@@ -270,14 +269,14 @@ def test_writeback_updates_existing_and_inserts_expansion(tmp_path: Path) -> Non
         run.execute(
             "INSERT INTO papers (doi, pmid, title, source, source_type, "
             "relevance_assessment_json) VALUES ('10.1/known', 1, 'Known', 'pubmed', 'initial', ?)",
-            (_assessment(False, False, False),),
+            (_assessment(False),),
         )
         # An expansion paper the ledger has never seen, downloaded.
         run.execute(
             "INSERT INTO papers (doi, pmid, title, source, source_type, "
             "relevance_assessment_json, download_status) "
             "VALUES ('10.1/expansion', 2, 'Exp', 'crossref', 'expansion', ?, 'downloaded')",
-            (_assessment(True, True, True),),
+            (_assessment(True),),
         )
         run.commit()
     finally:
@@ -348,9 +347,9 @@ def test_seed_cross_era_resolve_discard_and_latest_wins(tmp_path: Path) -> None:
             "INSERT INTO papers (pmid, entrez_date, title, relevance_assessment_json, "
             "download_status) VALUES (?, ?, ?, ?, ?)",
             [
-                (100, "2026-01-15", "X", _assessment(False, False, False), "scheduled"),
-                (200, "2026-01-20", "Y", _assessment(False, False, False), None),
-                (999, "2026-01-25", "W", _assessment(True, True, True), None),  # not in ledger
+                (100, "2026-01-15", "X", _assessment(False), "scheduled"),
+                (200, "2026-01-20", "Y", _assessment(False), None),
+                (999, "2026-01-25", "W", _assessment(True), None),  # not in ledger
             ],
         )
         conn.commit()
@@ -365,8 +364,8 @@ def test_seed_cross_era_resolve_discard_and_latest_wins(tmp_path: Path) -> None:
             "INSERT INTO papers (doi, pmid, title, source, source_date, source_type, "
             "relevance_assessment_json, download_status) VALUES (?, ?, ?, 'pubmed', ?, 'initial', ?, ?)",
             [
-                ("10.1/x", 100, "X", "2026-03-10", _assessment(True, True, True), "downloaded"),
-                ("10.1/z", 300, "Z", "2026-03-12", _assessment(False, False, False), None),
+                ("10.1/x", 100, "X", "2026-03-10", _assessment(True), "downloaded"),
+                ("10.1/z", 300, "Z", "2026-03-12", _assessment(False), None),
             ],
         )
         conn.commit()
@@ -406,8 +405,8 @@ def test_seed_respects_crdt_floor(tmp_path: Path) -> None:
             "INSERT INTO papers (doi, pmid, title, source, source_date, source_type, "
             "relevance_assessment_json) VALUES (?, ?, ?, 'pubmed', ?, 'initial', ?)",
             [
-                ("10.1/recent", 1, "R", "2026-04-10", _assessment(False, False, False)),
-                ("10.1/ancient", 2, "A", "2012-04-10", _assessment(False, False, False)),
+                ("10.1/recent", 1, "R", "2026-04-10", _assessment(False)),
+                ("10.1/ancient", 2, "A", "2012-04-10", _assessment(False)),
             ],
         )
         conn.commit()

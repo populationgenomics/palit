@@ -32,9 +32,9 @@ CREATE TABLE papers (
     -- Download status tracking
     download_status TEXT CHECK(download_status IN ('scheduled', 'downloaded', 'manual_required')),
 
-    -- Main assessment fields (arrays of 3 results for majority voting)
-    relevance_assessment_raw JSON,  -- Array of 3 raw text responses, including LLM reasoning content
-    relevance_assessment_json JSON,  -- Array of 3 parsed objects
+    -- Relevance assessment of title and abstract
+    relevance_assessment_raw JSON,  -- The Claude message the assessment came from
+    relevance_assessment_json JSON,  -- The parsed assessment object
     evidence_extraction_raw TEXT,  -- Includes LLM reasoning content
     evidence_extraction_json JSON,
 

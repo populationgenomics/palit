@@ -1,357 +1,269 @@
 #!/usr/bin/env python3
-"""Standalone vLLM inference utility for assessing paper relevance."""
+"""Assess paper relevance from title and abstract with Claude."""
 
 import asyncio
 import json
 import logging
+import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import jsonschema
 import typer
-from tqdm import tqdm
+from anthropic.types.output_config_param import OutputConfigParam
 
 from palit.hgnc import HgncResolver
-from palit.llm_legacy import LLMProcessor, PromptResult, create_llm_processor
-from palit.panelapp_client import (
-    PanelAppClient,
-    format_panel_for_prompt,
+from palit.llm import (
+    MODEL,
+    AnthropicSettings,
+    BatchTransport,
+    Effort,
+    ImmediateTransport,
+    LlmRequest,
+    LlmResult,
+    ResultStatus,
+    Transport,
+    cached_system,
+    json_output_config,
+    make_client,
+    parse_json_output,
+    record_result,
 )
-from palit.relevance import compute_relevance_majority_vote
+from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
 
-app = typer.Typer(help="Assess paper relevance using vLLM inference with majority voting")
+app = typer.Typer(help="Assess paper relevance from title and abstract")
 logger = logging.getLogger(__name__)
 
-# SQLite busy timeout in seconds. When sharding, multiple processes write to
-# the same database; the default 5 s can be too short for large batch commits.
-DB_TIMEOUT_SECONDS = 60
-
-
-class PaperBatchProcessor:
-    """Handle database operations for batch processing papers."""
-
-    def __init__(self, db_path: Path):
-        """Initialize with database path."""
-        self.db_path = db_path
-
-    def get_batch_for_processing(
-        self, batch_size: int, shard_index: int, num_shards: int
-    ) -> list[dict[str, Any]]:
-        """
-        Get a batch of unprocessed papers for LLM inference.
-
-        Args:
-            batch_size: Number of papers to fetch
-            shard_index: Shard index (0-based) for parallel processing
-            num_shards: Total number of shards
-
-        Returns list of papers with doi, title, abstract.
-        """
-        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                SELECT doi, title, abstract
-                FROM papers
-                WHERE relevance_assessment_json IS NULL
-                AND title IS NOT NULL
-                AND abstract IS NOT NULL
-                AND rowid % ? = ?
-                ORDER BY doi
-                LIMIT ?
-            """,
-                (num_shards, shard_index, batch_size),
-            )
-
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
-
-    def update_paper_relevance_assessments(
-        self,
-        papers: list[dict[str, Any]],
-        all_results: list[tuple[PromptResult | None, PromptResult | None, PromptResult | None]],
-        hgnc_resolver: HgncResolver,
-    ) -> None:
-        """
-        Update paper relevance assessment responses and extracted JSON.
-        Also populates gene_mentions with source='relevance_assessment'.
-
-        Args:
-            papers: List of paper dicts with DOIs
-            all_results: List of 3-tuples of PromptResult objects or None, same order as papers
-            hgnc_resolver: HGNC resolver for gene symbol normalization
-        """
-        if not papers or not all_results:
-            return
-
-        successful_updates = 0
-
-        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-            cursor = conn.cursor()
-
-            # Update each paper with its 3 results
-            for paper, results_triple in zip(papers, all_results, strict=True):
-                # Require all 3 results to succeed
-                if not all(result is not None for result in results_triple):
-                    continue
-
-                doi = paper["doi"]
-
-                # Store arrays of raw and parsed results
-                raw_array = [result.raw_response for result in results_triple if result]
-                json_array = [result.parsed_json for result in results_triple if result]
-
-                # Compute majority vote for decision-making
-                majority_result = compute_relevance_majority_vote(json_array)
-                is_relevant = majority_result["relevant"]
-                associations = majority_result["associations"]
-
-                # Update papers table with arrays
-                cursor.execute(
-                    """
-                    UPDATE papers
-                    SET relevance_assessment_raw = ?,
-                        relevance_assessment_json = ?,
-                        download_status = CASE
-                            WHEN ? = 1 AND download_status IS NULL THEN 'scheduled'
-                            ELSE download_status
-                        END
-                    WHERE doi = ?
-                """,
-                    (
-                        json.dumps(raw_array),
-                        json.dumps(json_array),
-                        1 if is_relevant else 0,
-                        doi,
-                    ),
-                )
-
-                # Extract and resolve gene symbols from associations (only for relevant papers)
-                if is_relevant and associations:
-                    for assoc in associations:
-                        paper_gene_symbol: str = assoc["gene_symbol"]
-                        entry = hgnc_resolver.resolve(paper_gene_symbol)
-                        if entry is None:
-                            logger.debug(
-                                f"Unresolved gene symbol '{paper_gene_symbol}' in DOI {doi}"
-                            )
-                            continue
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO gene_mentions
-                            (hgnc_id, paper_gene_symbol, paper_doi, source)
-                            VALUES (?, ?, ?, 'relevance_assessment')
-                            """,
-                            (entry.hgnc_id, paper_gene_symbol.upper(), doi),
-                        )
-
-                successful_updates += 1
-
-            conn.commit()
-            logger.info(
-                f"Updated {successful_updates} papers with relevance assessments and gene_mentions"
-            )
-
-    def get_processing_statistics(self, shard_index: int, num_shards: int) -> dict[str, int]:
-        """Get statistics about processing progress for this shard."""
-        logger.debug("Querying database for processing statistics...")
-        with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-            cursor = conn.cursor()
-
-            # Total papers
-            logger.debug("  Counting total papers...")
-            cursor.execute(
-                "SELECT COUNT(*) FROM papers WHERE rowid % ? = ?", (num_shards, shard_index)
-            )
-            total_papers = cursor.fetchone()[0]
-
-            # Papers with both title and abstract
-            logger.debug("  Counting processable papers...")
-            cursor.execute(
-                """
-                SELECT COUNT(*) FROM papers
-                WHERE title IS NOT NULL AND abstract IS NOT NULL
-                AND rowid % ? = ?
-            """,
-                (num_shards, shard_index),
-            )
-            processable_papers = cursor.fetchone()[0]
-
-            # Processed papers
-            logger.debug("  Counting already processed papers...")
-            cursor.execute(
-                """
-                SELECT COUNT(*) FROM papers
-                WHERE relevance_assessment_json IS NOT NULL
-                AND rowid % ? = ?
-            """,
-                (num_shards, shard_index),
-            )
-            processed_papers = cursor.fetchone()[0]
-
-            # Remaining papers
-            logger.debug("  Counting remaining papers to process...")
-            cursor.execute(
-                """
-                SELECT COUNT(*) FROM papers
-                WHERE relevance_assessment_json IS NULL
-                AND title IS NOT NULL
-                AND abstract IS NOT NULL
-                AND rowid % ? = ?
-            """,
-                (num_shards, shard_index),
-            )
-            remaining_papers = cursor.fetchone()[0]
-
-            return {
-                "total_papers": total_papers,
-                "processable_papers": processable_papers,
-                "processed_papers": processed_papers,
-                "remaining_papers": remaining_papers,
-            }
-
+STAGE = "relevance"
+EFFORT: Effort = "low"
+MAX_TOKENS = 8000
 
 # Maximum abstract length in characters (~2500 tokens at 4 chars/token).
 # Legitimate abstracts rarely exceed 5000 chars; this handles edge cases like
 # taxonomic papers that dump species lists into the abstract.
 MAX_ABSTRACT_CHARS = 10000
 
+# The prompt files end with an input section ("** Input Paper **" or "**Input Paper**")
+# holding the {title} and {abstract} placeholders. Everything before it is the
+# shared, cacheable system prompt.
+_INPUT_HEADING = re.compile(r"^\*\*\s*Input Paper\s*\*\*\s*$", re.MULTILINE)
 
-def prepare_prompts_for_papers(
-    papers: list[dict[str, Any]],
-    template: str,
-    extra_template_vars: dict[str, Any] | None = None,
-) -> list[str]:
+
+@dataclass(frozen=True)
+class RelevancePrompt:
+    system: str
+    user_template: str  # str.format template with {title} and {abstract}
+
+
+def load_prompt(prompt_path: Path, panel_description: str | None) -> RelevancePrompt:
+    """Split a relevance prompt file into its system prompt and per-paper template."""
+    template = prompt_path.read_text()
+    match = _INPUT_HEADING.search(template)
+    if match is None:
+        raise ValueError(f"{prompt_path} has no '** Input Paper **' heading")
+    system_template = template[: match.start()]
+    # format() also unescapes the prompt's literal {{ }} braces.
+    if "{panel_description}" in system_template:
+        if panel_description is None:
+            raise ValueError(f"{prompt_path} needs a panel description (--scope-panel-id)")
+        system = system_template.format(panel_description=panel_description)
+    else:
+        system = system_template.format()
+    return RelevancePrompt(system=system.rstrip(), user_template=template[match.start() :])
+
+
+def build_request(
+    paper: dict[str, Any], prompt: RelevancePrompt, output_config: OutputConfigParam
+) -> LlmRequest:
+    abstract: str = paper["abstract"]
+    if len(abstract) > MAX_ABSTRACT_CHARS:
+        logger.warning(
+            f"Truncating abstract for DOI {paper['doi']} from {len(abstract)} to {MAX_ABSTRACT_CHARS} chars"
+        )
+        abstract = abstract[:MAX_ABSTRACT_CHARS] + "... [truncated]"
+    user_text = prompt.user_template.format(title=paper["title"], abstract=abstract)
+    return LlmRequest(
+        subject=paper["doi"],
+        params={
+            "model": MODEL,
+            "max_tokens": MAX_TOKENS,
+            "system": cached_system(prompt.system),
+            "messages": [{"role": "user", "content": user_text}],
+            "output_config": output_config,
+        },
+    )
+
+
+def select_papers(db_path: Path, limit: int | None) -> list[dict[str, Any]]:
+    """Papers without an assessment, excluding refused ones and ones in flight."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT doi, title, abstract
+            FROM papers p
+            WHERE relevance_assessment_json IS NULL
+              AND title IS NOT NULL
+              AND abstract IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM llm_requests r
+                  WHERE r.stage = ? AND r.subject = p.doi AND r.status IN ('refused', 'pending')
+              )
+            ORDER BY doi
+            LIMIT ?
+            """,
+            (STAGE, -1 if limit is None else limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@dataclass
+class StoreOutcome:
+    stored: int = 0
+    refused: int = 0
+    failed: int = 0
+
+
+def store_results(
+    db_path: Path,
+    results: list[LlmResult],
+    validator: jsonschema.protocols.Validator,
+    hgnc_resolver: HgncResolver,
+) -> StoreOutcome:
+    """Record every result; store valid assessments and their gene mentions.
+
+    A paper whose request failed or whose output is invalid keeps a NULL
+    assessment, so the next attempt selects it again.
     """
-    Prepare prompts for papers.
+    outcome = StoreOutcome()
+    invalid_requests: list[str] = []
+    with sqlite3.connect(db_path) as conn:
+        for result in results:
+            record_result(conn, result)
+            if result.status == ResultStatus.REFUSED:
+                assert result.message is not None
+                outcome.refused += 1
+                logger.warning(
+                    "Refused: %s (%s)",
+                    result.subject,
+                    result.message.stop_details.category
+                    if result.message.stop_details
+                    else "no category",
+                )
+                continue
+            if result.status != ResultStatus.SUCCEEDED:
+                outcome.failed += 1
+                if result.error_type == "invalid_request_error":
+                    invalid_requests.append(result.subject)
+                continue
+            assert result.message is not None
+            try:
+                assessment = parse_json_output(result.message)
+                validator.validate(assessment)
+            except (ValueError, jsonschema.ValidationError) as e:
+                logger.warning("Invalid assessment for %s: %s", result.subject, e)
+                outcome.failed += 1
+                continue
+            _store_assessment(conn, result, assessment, hgnc_resolver)
+            outcome.stored += 1
+    if invalid_requests:
+        raise RuntimeError(
+            f"{len(invalid_requests)} relevance requests were invalid (first: {invalid_requests[0]}); "
+            "see llm_requests.error_type"
+        )
+    return outcome
 
-    Args:
-        papers: List of paper dicts with 'title' and 'abstract'
-        template: Prompt template string with {title}, {abstract}, and optional other placeholders
-        extra_template_vars: Optional dict of additional template variables (e.g., {"panel_description": "..."})
 
-    Returns:
-        List of prompts in same order as papers.
-    """
-    prompts = []
-    for paper in papers:
-        abstract = paper["abstract"]
+def _store_assessment(
+    conn: sqlite3.Connection,
+    result: LlmResult,
+    assessment: dict[str, Any],
+    hgnc_resolver: HgncResolver,
+) -> None:
+    assert result.message is not None
+    doi = result.subject
+    conn.execute(
+        """
+        UPDATE papers
+        SET relevance_assessment_raw = ?,
+            relevance_assessment_json = ?,
+            download_status = CASE
+                WHEN ? = 1 AND download_status IS NULL THEN 'scheduled'
+                ELSE download_status
+            END
+        WHERE doi = ?
+        """,
+        (result.message.to_json(), json.dumps(assessment), 1 if assessment["relevant"] else 0, doi),
+    )
+    if not assessment["relevant"]:
+        return
+    for association in assessment["associations"]:
+        paper_gene_symbol: str = association["gene_symbol"]
+        entry = hgnc_resolver.resolve(paper_gene_symbol)
+        if entry is None:
+            logger.debug(f"Unresolved gene symbol '{paper_gene_symbol}' in DOI {doi}")
+            continue
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source)
+            VALUES (?, ?, ?, 'relevance_assessment')
+            """,
+            (entry.hgnc_id, paper_gene_symbol.upper(), doi),
+        )
 
-        # Truncate excessively long abstracts
-        if len(abstract) > MAX_ABSTRACT_CHARS:
-            logger.warning(
-                f"Truncating abstract for DOI {paper['doi']} from {len(abstract)} to {MAX_ABSTRACT_CHARS} chars"
-            )
-            abstract = abstract[:MAX_ABSTRACT_CHARS] + "... [truncated]"
 
-        # Build template variables starting with title and abstract
-        template_vars = {
-            "title": paper["title"],
-            "abstract": abstract,
-        }
-
-        # Add any extra template variables
-        if extra_template_vars:
-            template_vars.update(extra_template_vars)
-
-        # Fill the template
-        prompt = template.format(**template_vars)
-        prompts.append(prompt)
-
-    return prompts
+def count_remaining(db_path: Path) -> int:
+    with sqlite3.connect(db_path) as conn:
+        (remaining,) = conn.execute(
+            """
+            SELECT COUNT(*) FROM papers
+            WHERE relevance_assessment_json IS NULL AND title IS NOT NULL AND abstract IS NOT NULL
+            """
+        ).fetchone()
+    return int(remaining)
 
 
 async def _process_relevance(
     *,
-    llm_processor: LLMProcessor,
-    db_processor: PaperBatchProcessor,
-    hgnc_resolver: HgncResolver,
+    transport: Transport,
+    db_path: Path,
+    prompt: RelevancePrompt,
     schema: dict[str, Any],
-    template: str,
-    panel_description: str | None,
-    batch_size: int,
-    shard_index: int,
-    num_shards: int,
+    hgnc_resolver: HgncResolver,
+    limit: int | None,
     max_retries: int,
 ) -> None:
-    """Run the relevance assessment retry loop."""
-    stats = db_processor.get_processing_statistics(shard_index, num_shards)
-    initial_remaining = stats["remaining_papers"]
-    estimated_batches = (initial_remaining + batch_size - 1) // batch_size
-    logger.info(f"Estimated {estimated_batches} batches of {batch_size} papers each")
+    validator = jsonschema.Draft202012Validator(schema)
+    output_config = json_output_config(schema, EFFORT)
 
-    total_processed = 0
-    consecutive_failures = 0
-    retry_attempt = 0
+    resumed = await transport.resume(STAGE)
+    if resumed:
+        outcome = store_results(db_path, resumed, validator, hgnc_resolver)
+        logger.info("Collected %d results from earlier batches: %s", len(resumed), outcome)
 
-    with tqdm(total=initial_remaining, desc="Processing papers") as pbar:
-        while retry_attempt < max_retries:
-            stats = db_processor.get_processing_statistics(shard_index, num_shards)
-            if stats["remaining_papers"] == 0:
-                logger.info("All papers successfully processed!")
-                break
-
-            if retry_attempt > 0:
-                logger.info(
-                    f"Retry attempt {retry_attempt} - {stats['remaining_papers']} papers remaining"
-                )
-
-            batch_num = 0
-            batch_level_processed = 0
-
-            while True:
-                batch_num += 1
-                logger.info(f"Starting batch {batch_num} (retry {retry_attempt})")
-
-                logger.info(f"Fetching batch of {batch_size} papers from database...")
-                papers = db_processor.get_batch_for_processing(batch_size, shard_index, num_shards)
-                logger.info(f"  Retrieved {len(papers)} papers for processing")
-
-                if not papers:
-                    logger.info("No more papers in this pass")
-                    break
-
-                extra_vars = {"panel_description": panel_description} if panel_description else None
-                prompts = prepare_prompts_for_papers(papers, template, extra_vars)
-
-                # Process batch 3 times for majority voting
-                logger.info("  Running inference 3 times per paper...")
-                all_runs = []
-                for run_num in range(3):
-                    logger.info(f"    Run {run_num + 1}/3...")
-                    results = await llm_processor.process_batch(prompts, schema)
-                    all_runs.append(results)
-
-                # Transpose: convert from 3 lists of N results to N lists of 3 results
-                all_results = list(zip(*all_runs, strict=True))
-
-                db_processor.update_paper_relevance_assessments(papers, all_results, hgnc_resolver)
-
-                num_successful = sum(
-                    1 for triple in all_results if all(result is not None for result in triple)
-                )
-                batch_level_processed += num_successful
-                pbar.update(num_successful)
-
-                logger.info(f"Completed batch {batch_num}")
-                if num_successful < len(papers):
-                    logger.warning(f"  {len(papers) - num_successful} papers failed in this batch")
-                logger.info(f"Total processed in this pass: {batch_level_processed:,}")
-
-            total_processed += batch_level_processed
-
-            if batch_level_processed == 0:
-                consecutive_failures += 1
-                logger.warning(f"No progress made in retry attempt {retry_attempt}")
-                if consecutive_failures >= 2:
-                    logger.error("Multiple consecutive attempts with no progress - stopping")
-                    break
-            else:
-                consecutive_failures = 0
-
-            retry_attempt += 1
+    for attempt in range(1, max_retries + 1):
+        papers = select_papers(db_path, limit)
+        if not papers:
+            logger.info("No papers left to assess")
+            return
+        logger.info("Attempt %d: assessing %d papers", attempt, len(papers))
+        requests = [build_request(paper, prompt, output_config) for paper in papers]
+        results = await transport.run(STAGE, 1, requests)
+        outcome = store_results(db_path, results, validator, hgnc_resolver)
+        logger.info(
+            "Attempt %d: stored %d, refused %d, failed %d",
+            attempt,
+            outcome.stored,
+            outcome.refused,
+            outcome.failed,
+        )
+        if outcome.stored == 0:
+            logger.error("No progress in attempt %d - stopping", attempt)
+            return
+        if limit is not None:
+            return
 
 
 @app.callback(invoke_without_command=True)
@@ -360,69 +272,15 @@ def main(
         default=Path("data/db.sqlite"),
         help="Path to SQLite database",
     ),
-    panel_date: str = typer.Option(
-        ...,
+    panel_date: str | None = typer.Option(
+        None,
         "--panel-date",
-        help="Panel state at date (YYYY-MM-DD) for gene alias resolution",
+        help="Panel state at date (YYYY-MM-DD); required with --scope-panel-id",
     ),
     scope_panel_id: int | None = typer.Option(
         None,
         "--scope-panel-id",
-        help="Panel ID for panel-scoped relevance assessment (injects panel description into prompt template)",
-    ),
-    shard_index: int = typer.Option(
-        0,
-        "--shard-index",
-        help="Shard index (0-based) for parallel processing across multiple GPUs",
-    ),
-    num_shards: int = typer.Option(
-        1,
-        "--num-shards",
-        help="Total number of shards for parallel processing (values > 1 require database WAL mode)",
-    ),
-    model: str = typer.Option(
-        "openai/gpt-oss-120b",
-        "--model",
-        "-m",
-        help="Model name for vLLM",
-    ),
-    temperature: float = typer.Option(
-        1.0,
-        "--temperature",
-        "-t",
-        help="Sampling temperature",
-    ),
-    max_tokens: int = typer.Option(
-        4096,
-        "--max-tokens",
-        help="Maximum tokens to generate",
-    ),
-    batch_size: int = typer.Option(
-        1000,
-        "--batch-size",
-        "-b",
-        help="Number of papers per batch",
-    ),
-    tensor_parallel_size: int = typer.Option(
-        1,
-        "--tensor-parallel-size",
-        help="Tensor parallelism size",
-    ),
-    max_model_len: int = typer.Option(
-        8192,
-        "--max-model-len",
-        help="Maximum model context length",
-    ),
-    llm_config: str = typer.Option(
-        "",
-        "--llm-config",
-        help="JSON dict of extra backend config (forwarded to LLM processor)",
-    ),
-    log_level: str = typer.Option(
-        "INFO",
-        "--log-level",
-        "-l",
-        help="Logging level (DEBUG, INFO, WARNING, ERROR)",
+        help="Panel ID for panel-scoped relevance assessment (injects the panel description into the prompt)",
     ),
     prompt_path: Path = typer.Option(
         Path("prompts/relevance_assessment_prompt.txt"),
@@ -436,105 +294,64 @@ def main(
         "-s",
         help="Path to response schema file",
     ),
+    immediate: bool = typer.Option(
+        False,
+        "--immediate",
+        help="Send requests immediately instead of as Message Batches (for prompt development)",
+    ),
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        help="Assess at most this many papers, in one attempt (for prompt development)",
+    ),
     max_retries: int = typer.Option(
         5,
         "--max-retries",
-        help="Maximum number of retry attempts for failed batches",
+        help="Maximum number of attempts for papers whose request failed",
     ),
 ) -> None:
-    """Assess paper relevance using vLLM inference on unprocessed papers in batches."""
-    # Validate inputs
+    """Assess the relevance of every paper that has no assessment yet."""
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
 
-    if not prompt_path.exists():
-        logger.error(f"Prompt template not found: {prompt_path}")
-        raise typer.Exit(1)
-
-    if not schema_path.exists():
-        logger.error(f"Schema file not found: {schema_path}")
-        raise typer.Exit(1)
-
-    # Load prompt template and schema
-    logger.info("Loading prompt template and schema...")
-    template = prompt_path.read_text()
-    logger.info(f"  Loaded prompt template from {prompt_path}")
-    schema: dict[str, Any] = json.loads(schema_path.read_text())
-    logger.info(f"  Loaded schema from {schema_path}")
-
-    # Initialize components
-    logger.info("Initializing database processor...")
-    db_processor = PaperBatchProcessor(db_path)
-    logger.info(f"  Connected to database at {db_path}")
-
-    # Load HGNC resolver for gene symbol normalization
-    hgnc_resolver = HgncResolver.from_file()
-    logger.info(f"  Loaded HgncResolver with {len(hgnc_resolver._by_symbol)} genes")
-
-    # Fetch panel description if scope_panel_id is provided
-    client = PanelAppClient(panel_date)
     panel_description = None
     if scope_panel_id is not None:
-        logger.info(f"Fetching description for scope panel {scope_panel_id}...")
+        if panel_date is None:
+            logger.error("--scope-panel-id needs --panel-date")
+            raise typer.Exit(1)
+        panel_client = PanelAppClient(panel_date)
         try:
-            panel_info = client.get_panel_data(scope_panel_id)
+            panel_info = panel_client.get_panel_data(scope_panel_id)
         except ValueError as e:
             logger.error(f"Panel {scope_panel_id} not found in PanelApp data for {panel_date}")
             raise typer.Exit(1) from e
-
         panel_description = format_panel_for_prompt(scope_panel_id, panel_info)
-        logger.info(f"  Panel-scoped mode: {panel_info.get('name', 'Unknown')}")
+        logger.info(f"Panel-scoped mode: {panel_info.get('name', 'Unknown')}")
 
-    logger.info("Initializing LLM processor...")
-    llm_processor = create_llm_processor(
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        tensor_parallel_size=tensor_parallel_size,
-        max_model_len=max_model_len,
-        **(json.loads(llm_config) if llm_config else {}),
-    )
+    prompt = load_prompt(prompt_path, panel_description)
+    schema: dict[str, Any] = json.loads(schema_path.read_text())
+    hgnc_resolver = HgncResolver.from_file()
 
-    # Get initial statistics
-    logger.info("Fetching database statistics...")
-    stats = db_processor.get_processing_statistics(shard_index, num_shards)
-    logger.info(f"Database statistics (shard {shard_index}/{num_shards}):")
-    logger.info(f"  Total papers: {stats['total_papers']:,}")
-    logger.info(f"  Processable papers: {stats['processable_papers']:,}")
-    logger.info(f"  Already processed: {stats['processed_papers']:,}")
-    logger.info(f"  Remaining to process: {stats['remaining_papers']:,}")
+    logger.info(f"{count_remaining(db_path):,} papers without a relevance assessment")
 
-    if stats["remaining_papers"] == 0:
-        logger.info("No papers remaining to process!")
-        return
-
-    asyncio.run(
-        _process_relevance(
-            llm_processor=llm_processor,
-            db_processor=db_processor,
-            hgnc_resolver=hgnc_resolver,
+    async def run() -> None:
+        client = make_client(AnthropicSettings())
+        transport: Transport = (
+            ImmediateTransport(client) if immediate else BatchTransport(client, db_path)
+        )
+        await _process_relevance(
+            transport=transport,
+            db_path=db_path,
+            prompt=prompt,
             schema=schema,
-            template=template,
-            panel_description=panel_description,
-            batch_size=batch_size,
-            shard_index=shard_index,
-            num_shards=num_shards,
+            hgnc_resolver=hgnc_resolver,
+            limit=limit,
             max_retries=max_retries,
         )
-    )
 
-    # Final statistics
-    final_stats = db_processor.get_processing_statistics(shard_index, num_shards)
-    logger.info("Processing complete!")
-    logger.info(f"Final statistics (shard {shard_index}/{num_shards}):")
-    logger.info(f"  Total processed: {final_stats['processed_papers']:,}")
-    logger.info(f"  Remaining: {final_stats['remaining_papers']:,}")
-
-    if final_stats["remaining_papers"] > 0:
-        logger.warning(
-            f"Failed to process {final_stats['remaining_papers']} papers after {max_retries} attempts"
-        )
+    asyncio.run(run())
+    logger.info(f"{count_remaining(db_path):,} papers still without a relevance assessment")
 
 
 if __name__ == "__main__":

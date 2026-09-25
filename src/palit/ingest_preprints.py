@@ -354,7 +354,7 @@ def main(
         )
         raise typer.Exit(1)
 
-    # Skip preprints whose disposition the ledger has already settled (majority
+    # Skip preprints whose disposition the ledger has already settled (assessed
     # not-relevant, or downloaded). Relevant-not-downloaded carry-overs come back
     # through seed-run-db during ingest-pubmed, so they need no handling here.
     settled = ledger_ops.settled_dois(ledger)

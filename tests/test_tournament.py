@@ -1,0 +1,61 @@
+"""Tests for the tournament's per-gene prompt."""
+
+from pathlib import Path
+
+from palit.gencc import NO_PAA_ASSOCIATIONS, PAA_ASSOCIATIONS_CAVEAT, GenccIndex
+from palit.hgnc import HgncResolver
+from palit.papers import Paper, PubmedMetadata
+from palit.tournament import TournamentEntry, tournament_prompt
+
+TEMPLATE = (
+    Path(__file__).resolve().parents[1] / "prompts/tournament_selection_prompt.txt"
+).read_text()
+
+
+def _paper(doi: str, title: str) -> Paper:
+    return Paper(
+        doi=doi,
+        pmid=None,
+        title=title,
+        abstract="Three families.",
+        authors="",
+        journal="",
+        source="pubmed",
+        source_date="2024-01-15",
+        source_metadata=PubmedMetadata(),
+        source_type="expansion",
+        source_details="1",
+    )
+
+
+def test_entry_carries_the_genes_gencc_rows(
+    hgnc_resolver: HgncResolver, gencc_index: GenccIndex
+) -> None:
+    entry = TournamentEntry.for_gene(1, [], hgnc_resolver, gencc_index)
+    assert (entry.key, entry.gene_symbol) == ("1", "GENEA")
+    assert entry.gencc_context == (
+        "- disease A (MONDO:0000001) | Autosomal recessive | Strong\n"
+        "- disease B (MONDO:0000002) | Autosomal dominant | Limited"
+    )
+
+
+def test_entry_without_gencc_rows_says_so(
+    hgnc_resolver: HgncResolver, gencc_index: GenccIndex
+) -> None:
+    entry = TournamentEntry.for_gene(4, [], hgnc_resolver, gencc_index)
+    assert entry.gencc_context == NO_PAA_ASSOCIATIONS
+
+
+def test_prompt_shows_gene_curation_and_papers(
+    hgnc_resolver: HgncResolver, gencc_index: GenccIndex
+) -> None:
+    papers = [_paper("10.1/a", "GENEA variants in disease B")]
+    entry = TournamentEntry.for_gene(1, papers, hgnc_resolver, gencc_index)
+    prompt = tournament_prompt(TEMPLATE, entry, papers, max_papers=5)
+    assert "GENE: GENEA\n" in prompt
+    assert (
+        "(GenCC associations: disease | mode of inheritance | class):\n"
+        f"{entry.gencc_context}\n\n{PAA_ASSOCIATIONS_CAVEAT} "
+    ) in prompt
+    assert "<paper id=0><date>2024-01-15</date><title>GENEA variants in disease B</title>" in prompt
+    assert "UP TO 5 papers" in prompt

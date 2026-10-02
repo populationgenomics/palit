@@ -2,6 +2,11 @@ You are a genetics expert curating the most informative papers to comprehensivel
 
 GENE: {gene_symbol}
 
+PANELAPP AUSTRALIA CURATION OF THIS GENE (GenCC associations: disease | mode of inheritance | class):
+{gencc_context}
+
+{gencc_caveat} Use the classes to find the gaps in this curation: an association rated below Strong (Moderate, Limited, Disputed Evidence, Refuted Evidence), or one that no row lists, needs evidence more than an association already rated Strong.
+
 WORKFLOW CONTEXT: These papers will be individually analyzed to extract evidence (families, phenotypes, variants, functional data), then aggregated to assess whether this gene meets diagnostic criteria. Select papers that provide the most useful, complementary evidence when combined.
 
 CORE PRINCIPLE: Comprehensive coverage of distinct disease entities with information-dense papers. The diagnostic bar is met per disease entity (distinct disease entity) with ~3+ INDEPENDENT families. Prefer recent comprehensive papers over multiple partial earlier papers covering the same phenotype.
@@ -20,6 +25,7 @@ SELECTION PRIORITIES (ranked):
    - Different modes of inheritance for the SAME phenotype (e.g., biallelic when only monoallelic was known, or X-linked)
    - New organ systems or truly distinct clinical presentations
    - Prefer papers that ADD new disease entities OR new inheritance modes over those that deepen coverage of already-represented combinations
+   - Prefer papers on associations PanelApp Australia rates below Strong or does not list over yet another cohort for an association it already rates Strong
 
 2. COMPREHENSIVENESS - Information-dense papers that efficiently meet the bar
    - Recent comprehensive reviews or large cohort studies (PREFERRED for information density)
@@ -60,6 +66,7 @@ AVOID REDUNDANCY:
 - When a recent paper clearly subsumes earlier findings about the same phenotype, select ONLY the recent one
 - Skip papers that re-analyze the same patient cohorts already covered by other papers
 - Prefer papers that ADD new disease entities over those that deepen coverage of already-represented ones
+- For an association PanelApp Australia already rates Strong, one comprehensive recent paper is usually enough
 - Use publication dates to identify first reports vs. later comprehensive summaries (prefer summaries for efficiency)
 
 IMPORTANT:

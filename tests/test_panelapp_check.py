@@ -1,14 +1,24 @@
 """Tests for the PanelApp check's curated record and gene context."""
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from palit.gencc import NO_PAA_ASSOCIATIONS, PAA_ASSOCIATIONS_CAVEAT, GenccIndex
 from palit.hgnc import HgncResolver
-from palit.panelapp_check import CuratedRecord, gene_context, is_relevant, with_hgnc_ids
+from palit.panelapp_check import (
+    CuratedRecord,
+    gene_context,
+    is_relevant,
+    load_check_system,
+    with_hgnc_ids,
+)
 from palit.panelapp_integration import INCIDENTALOME_PANEL_ID, MENDELIOME_PANEL_ID
 
 Snapshot = dict[int, dict[str, Any]]
+
+CHECK_PROMPT = Path(__file__).resolve().parents[1] / "prompts/relevance_panelapp_check_prompt.txt"
 
 
 def test_record_includes_repeat_expansions(curated_record: CuratedRecord) -> None:
@@ -24,12 +34,13 @@ def test_incidentalome_only_gene_falls_back_to_all_panels(curated_record: Curate
 
 
 def test_without_fallback_incidentalome_entries_are_all_there_is(
-    panelapp_snapshot: Snapshot,
+    panelapp_snapshot: Snapshot, gencc_index: GenccIndex
 ) -> None:
     record = CuratedRecord.build(
         panelapp_snapshot,
         "2026-09-01",
         [MENDELIOME_PANEL_ID, INCIDENTALOME_PANEL_ID],
+        gencc_index,
         incidentalome_fallback=False,
     )
     gene = record.genes[3]
@@ -37,13 +48,19 @@ def test_without_fallback_incidentalome_entries_are_all_there_is(
     assert [e.panel_name for e in gene.entries] == ["Incidentalome"]
 
 
-def test_reference_entity_without_hgnc_id_raises(panelapp_snapshot: Snapshot) -> None:
+def test_reference_entity_without_hgnc_id_raises(
+    panelapp_snapshot: Snapshot, gencc_index: GenccIndex
+) -> None:
     other_panel = next(p for p in panelapp_snapshot.values() if p["name"] == "Ataxia")
     nameless = next(e for e in other_panel["genes"] if "hgnc_id" not in e["gene_data"])
     panelapp_snapshot[MENDELIOME_PANEL_ID]["genes"].append(nameless)
     with pytest.raises(ValueError, match="NOID"):
         CuratedRecord.build(
-            panelapp_snapshot, "2026-09-01", [MENDELIOME_PANEL_ID], incidentalome_fallback=True
+            panelapp_snapshot,
+            "2026-09-01",
+            [MENDELIOME_PANEL_ID],
+            gencc_index,
+            incidentalome_fallback=True,
         )
 
 
@@ -60,6 +77,36 @@ def test_gene_context_marks_citations_and_missing_genes(
     fallback = gene_context("GENEB", resolver, record, None, "x")
     assert "on all panels (Incidentalome-only gene)" in fallback
     assert "phenotypes: none listed" in fallback
+
+
+def test_gene_context_lists_gencc_rows_with_their_classes(
+    curated_record: CuratedRecord, hgnc_resolver: HgncResolver
+) -> None:
+    context = gene_context("GENEA", hgnc_resolver, curated_record, pmid=None, doi="x")
+    assert context == (
+        "GENEA (HGNC:1, genea protein): 1 entries on the reference panels\n"
+        "- Mendeliome | GREEN | BIALLELIC, autosomal or pseudoautosomal"
+        " | phenotypes: Some disease MIM#100000\n"
+        "GenCC associations (disease | mode of inheritance | class):\n"
+        "- disease A (MONDO:0000001) | Autosomal recessive | Strong\n"
+        "- disease B (MONDO:0000002) | Autosomal dominant | Limited"
+    )
+
+
+def test_gene_context_says_when_a_gene_has_no_gencc_rows(
+    curated_record: CuratedRecord, hgnc_resolver: HgncResolver
+) -> None:
+    context = gene_context("REPEAT1", hgnc_resolver, curated_record, pmid=None, doi="x")
+    assert context.endswith(
+        "GenCC associations (disease | mode of inheritance | class):\n" + NO_PAA_ASSOCIATIONS
+    )
+
+
+def test_check_system_carries_the_gencc_caveat(curated_record: CuratedRecord) -> None:
+    system = load_check_system(CHECK_PROMPT, curated_record)
+    assert PAA_ASSOCIATIONS_CAVEAT in system
+    assert "Mendeliome, Incidentalome" in system
+    assert "{" not in system
 
 
 def test_relevance_follows_verdicts(hgnc_resolver: HgncResolver) -> None:

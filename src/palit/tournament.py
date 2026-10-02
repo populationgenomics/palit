@@ -2,10 +2,11 @@
 """Shared tournament selection logic for literature filtering.
 
 Each gene's candidate papers are split into prompts of ``papers_per_round``
-papers; the model keeps up to ``max_papers`` from each, and the survivors go
-into the next round until a single prompt remains. All genes advance in
-lockstep, one Message Batch per round across every gene, because each round
-depends on the previous one.
+papers. Each prompt also shows the gene's PanelApp Australia GenCC rows, so that
+selection can favour weakly curated or uncurated associations. The model keeps
+up to ``max_papers`` from each prompt, and the survivors go into the next round
+until a single prompt remains. All genes advance in lockstep, one Message Batch
+per round across every gene, because each round depends on the previous one.
 
 Tournament state lives only in memory: after an interruption the tournament
 restarts, and results of batches still in flight are recorded for their usage
@@ -22,6 +23,8 @@ from typing import Any
 import jsonschema
 from anthropic.types.output_config_param import OutputConfigParam
 
+from palit.gencc import PAA_ASSOCIATIONS_CAVEAT, GenccIndex, format_paa_associations
+from palit.hgnc import HgncResolver
 from palit.llm import (
     MODEL,
     Effort,
@@ -55,7 +58,19 @@ class TournamentEntry:
 
     key: str  # HGNC ID as text
     gene_symbol: str
+    gencc_context: str  # the gene's PanelApp Australia GenCC rows, as shown in the prompt
     papers: list[Paper]
+
+    @classmethod
+    def for_gene(
+        cls, hgnc_id: int, papers: list[Paper], resolver: HgncResolver, gencc: GenccIndex
+    ) -> "TournamentEntry":
+        return cls(
+            key=str(hgnc_id),
+            gene_symbol=resolver.get_symbol(hgnc_id),
+            gencc_context=format_paa_associations(gencc.for_gene(hgnc_id)),
+            papers=papers,
+        )
 
 
 @dataclass
@@ -85,6 +100,19 @@ def format_papers_for_prompt(papers: list[Paper]) -> str:
             f"<abstract>{abstract}</abstract></paper>"
         )
     return "\n".join(lines)
+
+
+def tournament_prompt(
+    template: str, entry: TournamentEntry, papers: list[Paper], max_papers: int
+) -> str:
+    """The user message selecting up to *max_papers* of *papers* for *entry*'s gene."""
+    return template.format(
+        gene_symbol=entry.gene_symbol,
+        gencc_context=entry.gencc_context,
+        gencc_caveat=PAA_ASSOCIATIONS_CAVEAT,
+        max_papers=max_papers,
+        papers_list=format_papers_for_prompt(papers),
+    )
 
 
 def record_abandoned(db_path: Path, results: list[LlmResult]) -> None:
@@ -186,10 +214,11 @@ async def _run_prompts(
                     "messages": [
                         {
                             "role": "user",
-                            "content": prompt_template.format(
-                                gene_symbol=active[key].entry.gene_symbol,
-                                max_papers=max_papers,
-                                papers_list=format_papers_for_prompt(prompts[(key, index)]),
+                            "content": tournament_prompt(
+                                prompt_template,
+                                active[key].entry,
+                                prompts[(key, index)],
+                                max_papers,
                             ),
                         }
                     ],

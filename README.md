@@ -95,10 +95,12 @@ uv run palit ingest-pubmed --ledger $LEDGER $START_DATE $END_DATE
 # 2. Assess relevance of papers in two levels, sent as Message Batches. A scope
 #    screen of every title and abstract lists the genes of papers with human
 #    genetic evidence; a PanelApp check then compares those genes with their
-#    entries on the target panels (at PANEL_DATE) and keeps a paper only if a
-#    gene is new, has a new disease or inheritance mode, or is still amber or
-#    red. Safe to interrupt and re-run: it re-attaches to batches still in
-#    flight. Refused papers stay unassessed and are retried in the next run.
+#    entries on the target panels (at PANEL_DATE) and with PanelApp Australia's
+#    GenCC rows, which rate each association separately, and keeps a paper only
+#    if a gene is new, has a new disease or inheritance mode, or the association
+#    is still amber or red. Safe to interrupt and re-run: it re-attaches to
+#    batches still in flight. Refused papers stay unassessed and are retried in
+#    the next run.
 uv run palit assess-relevance --panel-date $PANEL_DATE
 
 # 2a. (Optional) Screen the PubMed baseline with the retrospective prompt. The
@@ -127,10 +129,11 @@ uv run palit discover-citations discover
 uv run palit discover-citations add --gene GENE_SYMBOL PMID1 PMID2 ...
 
 # 6. Expand literature beyond citations. Tournament selection over the screened
-#    baseline, bounded by --cutoff-date to the literature preceding the window,
-#    then unconditional seeding of the publications PanelApp already cites for
-#    each gene in the --panel-date snapshot (see "PanelApp publication seeding"
-#    below).
+#    baseline, bounded by --cutoff-date to the literature preceding the window
+#    and favouring associations that PanelApp Australia's GenCC rows rate below
+#    Strong or do not list, then unconditional seeding of the publications
+#    PanelApp already cites for each gene in the --panel-date snapshot (see
+#    "PanelApp publication seeding" below).
 uv run palit expand-literature --cutoff-date $START_DATE --panel-date $PANEL_DATE
 
 # 7. Download expansion papers (same workflow as step 3)

@@ -5,7 +5,9 @@ disease, MoI) with a class. These rows are the only record of its curation that
 rates each association separately. Disputed and Refuted submissions are kept from
 every submitter, because they gate the criteria of the associations they apply to.
 
-Genes are matched on ``gene_curie`` (``HGNC:<id>``), never on the symbol.
+Genes are matched on ``gene_curie`` (``HGNC:<id>``), never on the symbol. The
+module also formats a gene's PanelApp Australia rows, with their caveat, for the
+prompts that show them.
 """
 
 import csv
@@ -209,6 +211,30 @@ def load_gencc(gencc_path: Path, mondo: pronto.Ontology) -> GenccIndex:
         len(disputes),
     )
     return GenccIndex(genes)
+
+
+# Caveat for prompts that show a gene's PanelApp Australia GenCC rows as formatted by
+# format_paa_associations.
+PAA_ASSOCIATIONS_CAVEAT = (
+    "The GenCC associations are PanelApp Australia's submissions to GenCC, a projection of"
+    " the Mendeliome. They are an early-2025 snapshot and lack curation from about March 2025"
+    " onward. Unlike PanelApp's panel entries, they rate each gene-disease-MoI association"
+    " separately. Their classes Strong, Moderate and Limited correspond to the PanelApp"
+    " ratings GREEN, AMBER and RED; Disputed Evidence and Refuted Evidence mark associations"
+    " PanelApp Australia questions or rejects."
+)
+
+NO_PAA_ASSOCIATIONS = "PanelApp Australia has no GenCC submissions for this gene."
+
+
+def format_paa_associations(gene: GeneGencc) -> str:
+    """The gene's PanelApp Australia GenCC rows, one ``disease | MoI | class`` line each."""
+    if not gene.paa_associations:
+        return NO_PAA_ASSOCIATIONS
+    return "\n".join(
+        f"- {a.disease_title} ({a.mondo_id}) | {a.moi_title} | {a.classification}"
+        for a in gene.paa_associations
+    )
 
 
 def fetch_gencc(data_dir: Path) -> GenccIndex:

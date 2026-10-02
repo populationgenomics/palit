@@ -1,9 +1,10 @@
-"""Shared fixtures: a small PanelApp snapshot, HGNC resolver and curated record."""
+"""Shared fixtures: a small PanelApp snapshot, GenCC index, HGNC resolver and curated record."""
 
 from typing import Any
 
 import pytest
 
+from palit.gencc import GenccIndex, GeneGencc, PaaAssociation
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.panelapp_check import CuratedRecord
 from palit.panelapp_integration import INCIDENTALOME_PANEL_ID, MENDELIOME_PANEL_ID
@@ -87,8 +88,41 @@ def hgnc_resolver() -> HgncResolver:
 
 
 @pytest.fixture
-def curated_record(panelapp_snapshot: dict[int, dict[str, Any]]) -> CuratedRecord:
+def gencc_index() -> GenccIndex:
+    """GENEA (HGNC:1) has a Strong and a Limited PanelApp Australia GenCC row; no other gene
+    has any."""
+    strong = PaaAssociation(
+        mondo_id="MONDO:0000001",
+        disease_title="disease A",
+        moi_title="Autosomal recessive",
+        moi="Biallelic",
+        classification="Strong",
+        rating="GREEN",
+        date="2025-01-17",
+        definition="",
+    )
+    limited = PaaAssociation(
+        mondo_id="MONDO:0000002",
+        disease_title="disease B",
+        moi_title="Autosomal dominant",
+        moi="Monoallelic",
+        classification="Limited",
+        rating="RED",
+        date="2025-01-17",
+        definition="",
+    )
+    return GenccIndex({1: GeneGencc(paa_associations=(strong, limited))})
+
+
+@pytest.fixture
+def curated_record(
+    panelapp_snapshot: dict[int, dict[str, Any]], gencc_index: GenccIndex
+) -> CuratedRecord:
     """Reference panels Mendeliome and Incidentalome, with the Incidentalome fallback."""
     return CuratedRecord.build(
-        panelapp_snapshot, "2026-09-01", REFERENCE_PANEL_IDS, incidentalome_fallback=True
+        panelapp_snapshot,
+        "2026-09-01",
+        REFERENCE_PANEL_IDS,
+        gencc_index,
+        incidentalome_fallback=True,
     )

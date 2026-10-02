@@ -10,6 +10,7 @@ from typing import Any
 
 import typer
 
+from palit.gencc import GenccIndex, fetch_gencc
 from palit.hgnc import HgncResolver
 from palit.llm import AnthropicSettings, BatchTransport, ImmediateTransport, Transport, make_client
 from palit.llm_usage import print_stage_summary
@@ -178,6 +179,7 @@ async def _process_reduction(
     *,
     transport: Transport,
     hgnc_resolver: HgncResolver,
+    gencc: GenccIndex,
     genes_with_counts: list[tuple[int, int]],
     db_path: Path,
     schema: dict[str, Any],
@@ -221,11 +223,7 @@ async def _process_reduction(
                 f"No papers found for {hgnc_resolver.get_symbol(hgnc_id)} (HGNC:{hgnc_id})"
             )
             continue
-        entries.append(
-            TournamentEntry(
-                key=str(hgnc_id), gene_symbol=hgnc_resolver.get_symbol(hgnc_id), papers=papers
-            )
-        )
+        entries.append(TournamentEntry.for_gene(hgnc_id, papers, hgnc_resolver, gencc))
     outcomes = await run_tournaments(
         entries,
         transport=transport,
@@ -367,6 +365,8 @@ def main(
             logger.info(f"  ... and {len(genes_with_counts) - 20} more genes")
         return
 
+    gencc = fetch_gencc(db_path.parent)
+
     async def run() -> None:
         client = make_client(AnthropicSettings())
         transport: Transport = (
@@ -375,6 +375,7 @@ def main(
         await _process_reduction(
             transport=transport,
             hgnc_resolver=hgnc_resolver,
+            gencc=gencc,
             genes_with_counts=genes_with_counts,
             db_path=db_path,
             schema=schema,

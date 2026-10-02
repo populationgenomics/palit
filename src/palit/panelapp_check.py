@@ -2,14 +2,17 @@
 
 The scope screen finds papers with human genetic evidence for specific genes.
 This check shows the model each gene's PanelApp Australia entries on the
-reference panels and asks for a verdict per gene-disease association; the
-paper stays relevant only if one of them is not yet curated there.
+reference panels, together with its PanelApp Australia GenCC rows, which rate
+each association separately where the entries carry one lumped rating per
+gene and panel. It asks for a verdict per gene-disease association; the paper
+stays relevant only if one of them is not yet curated there.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from palit.gencc import PAA_ASSOCIATIONS_CAVEAT, GenccIndex, format_paa_associations
 from palit.hgnc import HgncResolver
 from palit.panelapp_client import clean_panel_publications
 from palit.panelapp_integration import INCIDENTALOME_PANEL_ID
@@ -49,13 +52,14 @@ class GeneRecord:
 
 @dataclass(frozen=True)
 class CuratedRecord:
-    """The PanelApp entries the check compares against, keyed by HGNC ID."""
+    """The PanelApp entries and GenCC rows the check compares against, keyed by HGNC ID."""
 
     panel_date: str
     reference_panel_ids: tuple[int, ...]
     reference_panel_names: tuple[str, ...]
     incidentalome_fallback: bool
     genes: dict[int, GeneRecord]
+    gencc: GenccIndex
 
     @classmethod
     def build(
@@ -63,6 +67,7 @@ class CuratedRecord:
         panel_data: dict[int, dict[str, Any]],
         panel_date: str,
         reference_panel_ids: list[int],
+        gencc: GenccIndex,
         *,
         incidentalome_fallback: bool,
     ) -> "CuratedRecord":
@@ -89,6 +94,7 @@ class CuratedRecord:
             reference_panel_names=tuple(panel_data[pid]["name"] for pid in reference_panel_ids),
             incidentalome_fallback=incidentalome_fallback,
             genes=genes,
+            gencc=gencc,
         )
 
 
@@ -123,6 +129,7 @@ def load_check_system(prompt_path: Path, record: CuratedRecord) -> str:
     return prompt_path.read_text().format(
         reference_panels=", ".join(record.reference_panel_names),
         fallback_note=FALLBACK_NOTE if record.incidentalome_fallback else "",
+        gencc_caveat=PAA_ASSOCIATIONS_CAVEAT,
     )
 
 
@@ -151,6 +158,8 @@ def gene_context(
             f"- {entry.panel_name} | {entry.rating} | {entry.moi} | phenotypes: {phenotypes}"
             + (" | CITES THIS PAPER" if entry.cites(pmid, doi) else "")
         )
+    lines.append("GenCC associations (disease | mode of inheritance | class):")
+    lines.append(format_paa_associations(record.gencc.for_gene(hgnc.hgnc_id)))
     return "\n".join(lines)
 
 

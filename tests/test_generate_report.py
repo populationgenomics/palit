@@ -606,6 +606,54 @@ def test_panel_matching_omitted_when_match_panels_never_ran(
         assert text not in html
 
 
+def test_gene_without_associations_is_left_out(db_path: Path, hgnc_resolver: HgncResolver) -> None:
+    """REPEAT1 (HGNC:2) is aggregated, but its only report went to unassessed_reports."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO papers (doi, pmid, title, source, source_type, source_details,
+                                evidence_extraction_json)
+            VALUES ('10.1/r', 555, 'Paper R', 'pubmed', 'initial', 'f.xml', ?)
+            """,
+            (_extraction(2),),
+        )
+        conn.execute(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source)"
+            " VALUES (2, 'REPEAT1', '10.1/r', 'recent_evidence')"
+        )
+        conn.execute(
+            """
+            INSERT INTO gene_aggregations (hgnc_id, assessment_raw, paper_id_mapping,
+                panelapp_context_json, unassessed_reports_json, quality_concerns_json)
+            VALUES (2, '{}', ?, ?, ?, '[]')
+            """,
+            (
+                json.dumps({"Brown2025": "10.1/r"}),
+                _context([], []),
+                json.dumps(
+                    [
+                        {
+                            "phenotype": "r",
+                            "inheritance_mode": "NR",
+                            "dois": ["10.1/r"],
+                            "reason": "Brown2025 reports one proband.",
+                        }
+                    ]
+                ),
+            ),
+        )
+    results = _load(db_path, hgnc_resolver)
+    assert [g.hgnc_id for g in results.novel_genes] == [3]
+    assert [g.hgnc_id for g in results.known_genes] == [1]
+    panel_validation = PanelValidationResult(0, 0, [], [], [], 0.0, 0.0)
+    statistics = calculate_comprehensive_statistics(db_path, results, panel_validation)
+    assert (statistics.total_genes_assessed, statistics.novel_genes_count) == (2, 1)
+    html = _render(db_path, results)
+    assert 'id="novel-gene-3"' in html
+    assert "REPEAT1" not in html
+    assert "gene-2" not in html
+
+
 def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) -> GeneAssessment:
     """A gene with one association, a highlighted new-MoI one when *highlighted*."""
     association = ReportAssociation(

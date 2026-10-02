@@ -1142,16 +1142,29 @@ def build_gene_assessment_results(
     target_panel_data: PanelGeneData,
     all_panels_data: AllPanelsData,
 ) -> GeneAssessmentResults:
-    """Every aggregated gene, split into novel and known genes and sorted for the report.
+    """Every aggregated gene with associations, split into novel and known genes and sorted.
+
+    A gene whose reports all went to ``unassessed_reports`` has an aggregation but no
+    associations. It has nothing to rate or submit, so the report leaves it out.
 
     *conn* must use ``sqlite3.Row`` as its row factory.
     """
     cursor = conn.cursor()
     cursor.execute(
         """
+        SELECT COUNT(*) FROM gene_aggregations g
+        WHERE NOT EXISTS (SELECT 1 FROM associations a WHERE a.hgnc_id = g.hgnc_id)
+        """
+    )
+    without_associations: int = cursor.fetchone()[0]
+    if without_associations:
+        logger.info(f"Skipping {without_associations} aggregated genes without associations")
+    cursor.execute(
+        """
         SELECT hgnc_id, paper_id_mapping, filtered_papers_json, panelapp_context_json,
                existing_panel_reviews_json, unassessed_reports_json, quality_concerns_json
-        FROM gene_aggregations
+        FROM gene_aggregations g
+        WHERE EXISTS (SELECT 1 FROM associations a WHERE a.hgnc_id = g.hgnc_id)
         ORDER BY hgnc_id
         """
     )

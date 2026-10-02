@@ -304,6 +304,48 @@ def test_new_associations_need_a_qualifying_family(gencc_index: GenccIndex, stat
         assert f"{status} association" in problem and "unassessed_reports" in problem
 
 
+UNCURATED = PanelAppContext(gencc=GeneGencc(), panel_entries=(), all_panels=False, panel_reviews=[])
+
+
+def _existing_without_gencc_row() -> dict[str, Any]:
+    """An existing association anchored on a panel entry or review, as STEP 3 allows."""
+    return _association(
+        existing_association_mondo_id=None, proposed_disease_name="GENEA-related disease"
+    )
+
+
+@pytest.mark.parametrize(
+    "panel_reviews",
+    [[], [PanelReviews(MENDELIOME_PANEL_ID, "Mendeliome", [])]],
+    ids=["no target panel", "target panel without reviews"],
+)
+def test_existing_is_rejected_for_a_gene_without_any_curation(
+    gencc_index: GenccIndex, panel_reviews: list[PanelReviews]
+) -> None:
+    item = dataclasses.replace(
+        _item(gencc_index), context=dataclasses.replace(UNCURATED, panel_reviews=panel_reviews)
+    )
+    answer = _stored_form(_answer(_existing_without_gencc_row()))
+    (problem,) = association_problems(answer, item)
+    assert "status existing" in problem and "use new_disease" in problem
+
+    new = _stored_form(_answer(_new_association("new_disease", 1)))
+    assert association_problems(new, item) == []
+
+
+def test_existing_is_kept_when_a_panel_entry_or_review_curates_the_gene(
+    gencc_index: GenccIndex, curated_record: CuratedRecord
+) -> None:
+    reviewed = [PanelReviews(MENDELIOME_PANEL_ID, "Mendeliome", [{"rating": "AMBER"}])]
+    answer = _stored_form(_answer(_existing_without_gencc_row()))
+    for context in (
+        dataclasses.replace(UNCURATED, panel_entries=curated_record.genes[GENEA].entries),
+        dataclasses.replace(UNCURATED, panel_reviews=reviewed),
+    ):
+        item = dataclasses.replace(_item(gencc_index), context=context)
+        assert association_problems(answer, item) == []
+
+
 def test_existing_association_without_families_is_kept(gencc_index: GenccIndex) -> None:
     answer = _stored_form(_answer(_association(family_count=None, independent_family_count=None)))
     assert association_problems(answer, _item(gencc_index)) == []

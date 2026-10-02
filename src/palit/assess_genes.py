@@ -433,6 +433,15 @@ class PanelAppContext:
             "all_panels": self.all_panels,
         }
 
+    @property
+    def has_curation(self) -> bool:
+        """Whether the model is shown any PanelApp Australia GenCC row, panel entry or review."""
+        return bool(
+            self.gencc.paa_associations
+            or self.panel_entries
+            or any(p.evaluations for p in self.panel_reviews)
+        )
+
     def reviews_json(self) -> list[dict[str, Any]] | None:
         """The ``existing_panel_reviews_json`` of ``gene_aggregations``."""
         if not self.panel_reviews:
@@ -704,6 +713,12 @@ def association_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> li
             )
         independent = entity["independent_family_count"]
         status = entity["panelapp_relation"]["status"]
+        if status == "existing" and not item.context.has_curation:
+            problems.append(
+                f"{entity['description']!r}: status existing, but PanelApp Australia has no "
+                "GenCC row, panel entry or review for this gene, so it curates no association "
+                "of it; use new_disease, or unassessed_reports without a qualifying family"
+            )
         if status in NEW_RELATION_STATUSES and (independent is None or independent < 1):
             problems.append(
                 f"{entity['description']!r}: {status} association with independent_family_count "

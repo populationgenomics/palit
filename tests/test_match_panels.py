@@ -9,7 +9,7 @@ import jsonschema
 import pytest
 from anthropic.types import Message
 
-from palit.llm import LlmResult, ResultStatus, json_output_config
+from palit.llm import LlmRequest, LlmResult, ResultStatus, json_output_config
 from palit.match_panels import (
     EFFORT,
     PROMPT_PATH,
@@ -130,6 +130,12 @@ def test_split_prompt_keeps_the_panel_list_in_the_system_part() -> None:
     assert user_template.startswith("ASSOCIATION:")
 
 
+def _sent_messages(request: LlmRequest) -> list[dict[str, Any]]:
+    """The request's messages as JSON, the form the API receives."""
+    messages: list[dict[str, Any]] = json.loads(json.dumps(list(request.params["messages"])))
+    return messages
+
+
 def test_build_request_describes_one_association(db_path: Path) -> None:
     system, user_template = _prompt()
     output_config = json_output_config(SCHEMA, EFFORT)
@@ -150,7 +156,7 @@ def test_build_request_describes_one_association(db_path: Path) -> None:
             ),
         }
     ]
-    assert "Mode of inheritance: not reported\n" in second.params["messages"][0]["content"]
+    assert "Mode of inheritance: not reported\n" in _sent_messages(second)[0]["content"]
 
 
 def _result(subject: str, answer: dict[str, Any], custom_id: str) -> LlmResult:

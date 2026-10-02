@@ -78,6 +78,9 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.13"
+# Lets `mypy tests` check against palit's own annotations: the editable install has
+# no py.typed, so through site-packages every palit name would be Any.
+mypy_path = "src"
 warn_return_any = true
 warn_unused_configs = true
 no_implicit_optional = true

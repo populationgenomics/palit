@@ -430,6 +430,12 @@ def _search_then_answer(mondo_id: str) -> Callable[[int, int, LlmRequest], Messa
     return script
 
 
+def _sent_messages(request: LlmRequest) -> list[dict[str, Any]]:
+    """The request's messages as JSON, the form the API receives."""
+    messages: list[dict[str, Any]] = json.loads(json.dumps(list(request.params["messages"])))
+    return messages
+
+
 def _conversation(association_id: int) -> Conversation:
     return Conversation(association_id, 1, [{"role": "user", "content": "map this"}])
 
@@ -465,7 +471,7 @@ def test_runner_stores_a_valid_mapping_after_a_tool_round(db_path: Path, index: 
     assert _row(db_path, 2) == ("MONDO:0000201", "renovascular hypertension", "broader", 1)
     assert _subjects(db_path) == [("2", 1, "succeeded"), ("2", 2, "succeeded")]
     # The second round replays the first answer and carries the tool result.
-    second = transport.requests[1][1].params["messages"]
+    second = _sent_messages(transport.requests[1][1])
     tool_result = second[2]["content"][0]
     assert tool_result["type"] == "tool_result" and not tool_result["is_error"]
     assert json.loads(tool_result["content"])["results"][0]["candidates"][0]["id"] == (
@@ -503,5 +509,5 @@ def test_runner_stops_tool_calls_at_the_last_round(db_path: Path, index: MondoIn
 
     assert (outcome.stored, outcome.failed) == (0, 1)
     assert [round_no for round_no, _ in transport.requests] == list(range(1, LAST_ROUND + 1))
-    last_user_turn = transport.requests[-1][1].params["messages"][-1]["content"]
+    last_user_turn = _sent_messages(transport.requests[-1][1])[-1]["content"]
     assert last_user_turn[-1]["type"] == "text"

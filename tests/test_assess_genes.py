@@ -1,11 +1,37 @@
 """Tests for aggregate evidence loading and citation handling."""
 
+import dataclasses
 import json
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from palit.assess_genes import PaperBatchProcessor, prune_invalid_citations
+import jsonschema
+import pytest
+from anthropic.types import Message
+
+from palit.assess_genes import (
+    PanelAppContext,
+    PanelReviews,
+    PaperBatchProcessor,
+    _GeneBatchItem,
+    association_problems,
+    coverage_problems,
+    prune_invalid_citations,
+    render_prompt,
+    replace_paper_ids_with_dois,
+    store_gene_aggregation,
+    target_panels_holding,
+)
+from palit.gencc import GenccIndex, GeneGencc
+from palit.panelapp_check import INCIDENTALOME_SCOPE, CuratedRecord
+from palit.panelapp_client import PanelGeneData
+from palit.panelapp_integration import (
+    INCIDENTALOME_PANEL_ID,
+    MENDELIOME_PANEL_ID,
+    calculate_association_rating,
+    criteria_object_to_list,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 AARS1 = 20
@@ -78,3 +104,401 @@ def test_prune_invalid_citations_keeps_extraction_quotes() -> None:
     assert assessment["disease_entities"][0]["citations"][0]["quote"] == "exact quote"
     assert assessment["disease_entities"][0]["evidence_assessments"][0]["citations"] == []
     assert assessment["quality_concerns"][0]["citations"] == []
+
+
+# --- Aggregation into associations -------------------------------------------------
+
+PROMPT_PATH = ROOT / "prompts/aggregate_assessment_prompt.j2"
+SCHEMA = json.loads((ROOT / "prompts/aggregate_assessment_schema.json").read_text())
+GENEA, GENEB = 1, 3
+PAPER_IDS = {"Smith2024": "10.1/a", "Jones2023": "10.1/b"}
+
+
+def _criteria() -> dict[str, Any]:
+    return {
+        name: {"result": True, "rationale": "r", "confidence": "HIGH", "citations": []}
+        for name in ("criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E")
+    }
+
+
+def _association(**fields: Any) -> dict[str, Any]:
+    """One association as the model returns it, reusing GENEA's Strong GenCC row."""
+    association: dict[str, Any] = {
+        "description": "disease A",
+        "inheritance_mode": "Biallelic",
+        "inheritance_details": "",
+        "grouping_rationale": "g",
+        "paper_ids": ["Smith2024"],
+        "existing_association_mondo_id": "MONDO:0000001",
+        "proposed_disease_name": None,
+        "panelapp_relation": {"status": "existing", "existing_rating": "GREEN", "basis": "b"},
+        "dispute_status": "None",
+        "patient_count": 4,
+        "reported_family_count": 3,
+        "family_count": 3,
+        "independent_family_count": 3,
+        "count_reduction_reasoning": "No reduction (3 families)",
+        "disease_mechanism": "NR",
+        "citations": [{"paper_id": "Smith2024", "quote": "q", "commentary": "c"}],
+        "evidence_weakening_factors": [
+            {"factor": "founder_or_recurrent_variant", "present": False, "details": "Not present"}
+        ],
+        "evidence_assessments": _criteria(),
+        "summary": "Smith2024 reports 4 individuals from 3 families.",
+    }
+    return association | fields
+
+
+def _new_association(status: str, independent: int | None) -> dict[str, Any]:
+    return _association(
+        description="new disease",
+        existing_association_mondo_id=None,
+        proposed_disease_name="GENEA-related new disease",
+        panelapp_relation={"status": status, "existing_rating": None, "basis": "none"},
+        family_count=independent,
+        independent_family_count=independent,
+    )
+
+
+def _answer(*associations: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "disease_entities": list(associations),
+        "unassessed_reports": [
+            {
+                "phenotype": "p",
+                "inheritance_mode": "Monoallelic",
+                "paper_ids": ["Jones2023"],
+                "reason": "r",
+            }
+        ],
+        "quality_concerns": [
+            {
+                "concern": "c",
+                "paper_ids": ["Jones2023"],
+                "citations": [{"paper_id": "Jones2023", "quote": "q2"}],
+            }
+        ],
+    }
+
+
+def _evidence(doi: str, author: str, year: str, entities: int = 1) -> dict[str, Any]:
+    return {
+        "doi": doi,
+        "pmid": None,
+        "journal": "J",
+        "date": f"{year}-01-01",
+        "title": "t",
+        "authors": f"{author}, A",
+        "paper_gene_symbol": "GENEA",
+        "gene_evaluations": [
+            {"hgnc_id": GENEA, "disease_entities": [{"description": "d"}] * entities}
+        ],
+    }
+
+
+def _item(gencc_index: GenccIndex, evidence: list[dict[str, Any]] | None = None) -> _GeneBatchItem:
+    evidence_list = evidence or [
+        _evidence("10.1/a", "Smith", "2024"),
+        _evidence("10.1/b", "Jones", "2023"),
+    ]
+    return _GeneBatchItem(
+        hgnc_id=GENEA,
+        hgnc_symbol="GENEA",
+        prompt="",
+        paper_id_to_doi=dict(PAPER_IDS),
+        evidence_list=evidence_list,
+        filtered_papers=None,
+        context=PanelAppContext(
+            gencc=gencc_index.for_gene(GENEA), panel_entries=(), all_panels=False, panel_reviews=[]
+        ),
+    )
+
+
+def _stored_form(answer: dict[str, Any]) -> dict[str, Any]:
+    criteria_object_to_list(answer["disease_entities"])
+    replace_paper_ids_with_dois(answer, PAPER_IDS)
+    return answer
+
+
+def test_schema_accepts_the_three_relation_statuses_and_enforces_min_length() -> None:
+    validator = jsonschema.Draft202012Validator(SCHEMA)
+    for status in ("existing", "new_disease", "new_moi"):
+        validator.validate(_answer(_new_association(status, 1)))
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(_answer(_new_association("new", 1)))
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(_answer(_association(summary="")))
+
+
+def test_paper_ids_become_dois_everywhere() -> None:
+    answer = _stored_form(_answer(_association()))
+    association = answer["disease_entities"][0]
+    assert association["dois"] == ["10.1/a"] and "paper_ids" not in association
+    assert association["citations"][0]["doi"] == "10.1/a"
+    assert "paper_id" not in association["citations"][0]
+    assert answer["unassessed_reports"][0]["dois"] == ["10.1/b"]
+    assert answer["quality_concerns"][0]["dois"] == ["10.1/b"]
+    assert answer["quality_concerns"][0]["citations"] == [{"quote": "q2", "doi": "10.1/b"}]
+
+
+def test_criterion_citations_become_dois() -> None:
+    association = _association()
+    association["evidence_assessments"]["criterion_A"]["citations"] = [
+        {"paper_id": "Jones2023", "quote": "q", "commentary": "c"}
+    ]
+    answer = _stored_form(_answer(association))
+    criterion_a = answer["disease_entities"][0]["evidence_assessments"][0]
+    assert criterion_a["name"] == "criterion_A"
+    assert criterion_a["citations"] == [{"quote": "q", "commentary": "c", "doi": "10.1/b"}]
+
+
+def test_unknown_paper_id_is_rejected() -> None:
+    answer = _answer(_association(paper_ids=["Smith2024", "Invented2020"]))
+    criteria_object_to_list(answer["disease_entities"])
+    with pytest.raises(ValueError, match="Invented2020"):
+        replace_paper_ids_with_dois(answer, PAPER_IDS)
+
+
+def test_coverage_requires_every_paper_with_a_disease_entity(gencc_index: GenccIndex) -> None:
+    answer = _stored_form(_answer(_association()))
+    no_entities = _evidence("10.1/c", "Lee", "2022", entities=0)
+    item = _item(
+        gencc_index,
+        [_evidence("10.1/a", "Smith", "2024"), _evidence("10.1/b", "Jones", "2023"), no_entities],
+    )
+    assert coverage_problems(answer, item) == []
+
+    answer["unassessed_reports"] = []
+    (problem,) = coverage_problems(answer, item)
+    assert "Jones2023 (10.1/b)" in problem
+
+
+def test_association_fields_are_checked(gencc_index: GenccIndex) -> None:
+    item = _item(gencc_index)
+    answer = _stored_form(
+        _answer(
+            _association(),
+            _association(description="both", proposed_disease_name="GENEA-related both"),
+            _association(
+                description="neither",
+                existing_association_mondo_id=None,
+                proposed_disease_name=None,
+            ),
+            _association(description="foreign", existing_association_mondo_id="MONDO:0009999"),
+        )
+    )
+    problems = association_problems(answer, item)
+    assert len(problems) == 3
+    assert "'both': set exactly one" in problems[0]
+    assert "'neither': set exactly one" in problems[1]
+    assert "MONDO:0009999 is not a PanelApp Australia GenCC row" in problems[2]
+
+
+@pytest.mark.parametrize("status", ["new_disease", "new_moi"])
+def test_new_associations_need_a_qualifying_family(gencc_index: GenccIndex, status: str) -> None:
+    item = _item(gencc_index)
+    assert association_problems(_stored_form(_answer(_new_association(status, 1))), item) == []
+    for independent in (0, None):
+        answer = _stored_form(_answer(_new_association(status, independent)))
+        (problem,) = association_problems(answer, item)
+        assert f"{status} association" in problem and "unassessed_reports" in problem
+
+
+def test_existing_association_without_families_is_kept(gencc_index: GenccIndex) -> None:
+    answer = _stored_form(_answer(_association(family_count=None, independent_family_count=None)))
+    assert association_problems(answer, _item(gencc_index)) == []
+
+
+def _message(answer: dict[str, Any]) -> Message:
+    return Message.model_validate(
+        {
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-opus-5-5",
+            "content": [{"type": "text", "text": json.dumps(answer)}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+    )
+
+
+def test_storing_a_gene_replaces_its_associations(tmp_path: Path, gencc_index: GenccIndex) -> None:
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+    item = _item(gencc_index)
+    first = _stored_form(_answer(_association(), _new_association("new_disease", 2)))
+    with sqlite3.connect(db_path) as conn:
+        store_gene_aggregation(conn, item, _message(first), first)
+        # map-mondo's result on the new association, which a re-aggregation must not keep.
+        conn.execute(
+            "UPDATE associations SET mondo_id = 'MONDO:0000777', mondo_label = 'x', "
+            "mondo_match = 'exact' WHERE mondo_id IS NULL"
+        )
+
+    second = _stored_form(_answer(_new_association("new_moi", 1)))
+    with sqlite3.connect(db_path) as conn:
+        store_gene_aggregation(conn, item, _message(second), second)
+        rows = conn.execute(
+            "SELECT position, mondo_id, mondo_label, mondo_match, assessment_json "
+            "FROM associations WHERE hgnc_id = ?",
+            (GENEA,),
+        ).fetchall()
+        (gene_rows,) = conn.execute("SELECT COUNT(*) FROM gene_aggregations").fetchone()
+    assert gene_rows == 1
+    assert [(r[0], r[1], r[2], r[3]) for r in rows] == [(0, None, None, None)]
+    assert json.loads(rows[0][4])["panelapp_relation"]["status"] == "new_moi"
+
+
+def test_storage_takes_mondo_from_the_reused_gencc_row(
+    tmp_path: Path, gencc_index: GenccIndex
+) -> None:
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+    item = _item(gencc_index)
+    answer = _stored_form(_answer(_association(), _new_association("new_disease", 2)))
+    with sqlite3.connect(db_path) as conn:
+        store_gene_aggregation(conn, item, _message(answer), answer)
+        rows = conn.execute(
+            "SELECT position, mondo_id, mondo_label, mondo_match FROM associations ORDER BY position"
+        ).fetchall()
+        unassessed, concerns, context = conn.execute(
+            "SELECT unassessed_reports_json, quality_concerns_json, panelapp_context_json "
+            "FROM gene_aggregations"
+        ).fetchone()
+    assert rows == [
+        (0, "MONDO:0000001", "disease A", "panelapp_gencc"),
+        (1, None, None, None),
+    ]
+    assert json.loads(unassessed)[0]["dois"] == ["10.1/b"]
+    assert json.loads(concerns)[0]["dois"] == ["10.1/b"]
+    assert [row["mondo_id"] for row in json.loads(context)["gencc_rows"]] == [
+        "MONDO:0000001",
+        "MONDO:0000002",
+    ]
+
+
+def test_association_rating_is_computed_per_association() -> None:
+    green = _stored_form(_answer(_association()))["disease_entities"][0]
+    amber = _stored_form(
+        _answer(
+            _association(
+                evidence_assessments=_criteria()
+                | {"criterion_D": {**_criteria()["criterion_D"], "result": False}}
+            )
+        )
+    )["disease_entities"][0]
+    red = _stored_form(_answer(_new_association("new_disease", 1)))["disease_entities"][0]
+    red["evidence_assessments"][0]["result"] = False
+    red["evidence_assessments"][1]["result"] = False
+    red["evidence_assessments"][2]["result"] = False
+    assert [calculate_association_rating(e) for e in (green, amber, red)] == [3, 2, 1]
+
+
+# --- Prompt context ----------------------------------------------------------------
+
+
+def _context(
+    record: CuratedRecord, hgnc_id: int, reviews: list[PanelReviews] | None = None
+) -> PanelAppContext:
+    gene = record.genes[hgnc_id]
+    return PanelAppContext(
+        gencc=record.gencc.for_gene(hgnc_id),
+        panel_entries=gene.entries,
+        all_panels=gene.all_panels,
+        panel_reviews=reviews or [],
+    )
+
+
+def _render(context: PanelAppContext, symbol: str, panel_formatted: str = "") -> str:
+    evidence = [_evidence("10.1/a", "Smith", "2024")]
+    prompt, mapping = render_prompt(
+        PROMPT_PATH, symbol, evidence, context, "2026-09-01", panel_formatted
+    )
+    assert mapping == {"Smith2024": "10.1/a"}
+    return prompt
+
+
+def test_incidentalome_only_gene_shows_entries_from_all_panels(
+    curated_record: CuratedRecord,
+) -> None:
+    prompt = _render(_context(curated_record, GENEB), "GENEB")
+    assert "PANEL ENTRIES ON ALL PANELS (current, lumped):" in prompt
+    assert f"Incidentalome, which {INCIDENTALOME_SCOPE}." in prompt
+    assert "- Ataxia (panel 9001): rating GREEN" in prompt
+    assert f"- Incidentalome (panel {INCIDENTALOME_PANEL_ID}): rating GREEN" in prompt
+
+
+def test_gene_on_the_mendeliome_shows_target_panel_entries_and_gencc_rows(
+    curated_record: CuratedRecord,
+) -> None:
+    prompt = _render(_context(curated_record, GENEA), "GENEA")
+    assert "PANEL ENTRIES ON THE TARGET PANELS (current, lumped):" in prompt
+    assert "PANEL ENTRIES ON ALL PANELS" not in prompt
+    assert f"- Mendeliome (panel {MENDELIOME_PANEL_ID}): rating GREEN" in prompt
+    assert '- MONDO:0000001 "disease A" — MoI "Autosomal recessive" (= Biallelic)' in prompt
+    assert "obsolete MONDO term" not in prompt
+
+
+def test_obsolete_gencc_term_is_marked(curated_record: CuratedRecord) -> None:
+    context = _context(curated_record, GENEA)
+    strong, limited = context.gencc.paa_associations
+    obsolete = dataclasses.replace(strong, obsolete=True, replaced_by=("MONDO:0000003",))
+    context = dataclasses.replace(context, gencc=GeneGencc(paa_associations=(obsolete, limited)))
+    prompt = _render(context, "GENEA")
+    assert '- MONDO:0000001 (obsolete MONDO term; reuse this id as given) "disease A"' in prompt
+    assert "MONDO:0000003" not in prompt
+
+
+def test_reviews_from_several_panels_are_labelled(curated_record: CuratedRecord) -> None:
+    reviews = [
+        PanelReviews(
+            MENDELIOME_PANEL_ID,
+            "Mendeliome",
+            [{"rating": "GREEN", "comments": [{"user_name": "A", "created": "d", "comment": "m"}]}],
+        ),
+        PanelReviews(INCIDENTALOME_PANEL_ID, "Incidentalome", [{"rating": "AMBER"}]),
+        PanelReviews(9002, "Silent", []),
+    ]
+    context = _context(curated_record, GENEA, reviews)
+    prompt = _render(context, "GENEA")
+    assert f'<previous_reviews panel="Mendeliome" panel_id="{MENDELIOME_PANEL_ID}">' in prompt
+    assert f'<previous_reviews panel="Incidentalome" panel_id="{INCIDENTALOME_PANEL_ID}">' in prompt
+    assert "    [d] A: m" in prompt
+    assert 'panel="Silent"' not in prompt
+    assert context.reviews_json() == [
+        {"panel_id": MENDELIOME_PANEL_ID, "evaluations": reviews[0].evaluations},
+        {"panel_id": INCIDENTALOME_PANEL_ID, "evaluations": [{"rating": "AMBER"}]},
+        {"panel_id": 9002, "evaluations": []},
+    ]
+    no_reviews = _render(_context(curated_record, GENEA), "GENEA")
+    assert "REVIEWS (one block per target panel that holds the gene):\n\nNone." in no_reviews
+
+
+def test_target_panels_holding_keeps_target_panel_order() -> None:
+    panel_data = PanelGeneData(
+        panel_ids=[MENDELIOME_PANEL_ID, INCIDENTALOME_PANEL_ID, 203],
+        gene_confidence={},
+        gene_panel_mapping={GENEA: {203, MENDELIOME_PANEL_ID}},
+        gene_moi={},
+    )
+    assert target_panels_holding(GENEA, panel_data) == [MENDELIOME_PANEL_ID, 203]
+    assert target_panels_holding(GENEB, panel_data) == []
+
+
+def test_scoped_run_asks_for_panel_relevance_per_association(
+    curated_record: CuratedRecord,
+) -> None:
+    context = _context(curated_record, GENEA)
+    panel = '<panel id="47">\nName: Arthrogryposis\n</panel>'
+    scoped = _render(context, "GENEA", panel)
+    assert "PANEL RELEVANCE (panel-scoped run)" in scoped
+    assert panel in scoped
+    assert "End each association's `summary` with one sentence" in scoped
+
+    unscoped = _render(context, "GENEA")
+    assert "PANEL RELEVANCE" not in unscoped and "Arthrogryposis" not in unscoped
+    assert 'one country."\nIMPORTANT INSTRUCTIONS:' in unscoped

@@ -22,10 +22,15 @@ RELEVANT_VERDICTS: frozenset[str] = frozenset(
 )
 _RATINGS = {"3": "GREEN", "2": "AMBER", "1": "RED", "0": "RED"}
 
+# Why a gene whose only reference-panel entry is on the Incidentalome is shown with its
+# entries from all panels.
+INCIDENTALOME_SCOPE = (
+    "deliberately carries only a gene's adult-onset incidental-findings associations"
+)
 FALLBACK_NOTE = (
     " The one exception is a gene whose only reference-panel entry is on the Incidentalome:"
-    " that panel deliberately carries only a gene's adult-onset incidental-findings"
-    " associations, so for such genes the entries from all panels are shown and count."
+    f" that panel {INCIDENTALOME_SCOPE}, so for such genes the entries from all panels are"
+    " shown and count."
 )
 
 
@@ -33,10 +38,13 @@ FALLBACK_NOTE = (
 class PanelEntry:
     """One gene or repeat-expansion entry on one panel."""
 
+    panel_id: int
     panel_name: str
     rating: str
     moi: str
+    mode_of_pathogenicity: str  # empty when the entry has none
     phenotypes: tuple[str, ...]
+    publications: tuple[str, ...]  # as PanelApp lists them
     pmids: frozenset[int]
     dois: frozenset[str]  # lowercased
 
@@ -108,15 +116,19 @@ def _panel_entries(panel: dict[str, Any], *, require_hgnc_id: bool) -> list[tupl
                     f"Entity '{entity['entity_name']}' in panel {panel['id']} has no hgnc_id"
                 )
             continue
-        publications = clean_panel_publications(entity.get("publications") or [])
+        listed = entity.get("publications") or []
+        publications = clean_panel_publications(listed)
         entries.append(
             (
                 int(hgnc_id.removeprefix("HGNC:")),
                 PanelEntry(
+                    panel_id=panel["id"],
                     panel_name=panel["name"],
                     rating=_RATINGS[entity["confidence_level"]],
                     moi=entity.get("mode_of_inheritance") or "not specified",
+                    mode_of_pathogenicity=entity.get("mode_of_pathogenicity") or "",
                     phenotypes=tuple(entity.get("phenotypes") or ()),
+                    publications=tuple(listed),
                     pmids=frozenset(publications.pmids),
                     dois=frozenset(doi.lower() for doi in publications.dois),
                 ),

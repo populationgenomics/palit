@@ -74,6 +74,8 @@ class PaaAssociation:
     rating: PanelRating | None  # None for Disputed and Refuted rows
     date: str  # ISO date of the submission
     definition: str  # MONDO definition, empty when the term has none
+    obsolete: bool  # the submitted MONDO term is obsolete in the loaded ontology
+    replaced_by: tuple[str, ...]  # MONDO's replacements for an obsolete term; often empty
 
 
 @dataclass(frozen=True)
@@ -134,9 +136,8 @@ def _paa_classification(title: str) -> PaaClassification:
     return cast(PaaClassification, title)
 
 
-def _definition(mondo: pronto.Ontology, mondo_id: str) -> str:
-    definition = mondo[mondo_id].definition
-    return str(definition).strip() if definition else ""
+def _definition(term: pronto.Term) -> str:
+    return str(term.definition).strip() if term.definition else ""
 
 
 def load_gencc(gencc_path: Path, mondo: pronto.Ontology) -> GenccIndex:
@@ -144,6 +145,8 @@ def load_gencc(gencc_path: Path, mondo: pronto.Ontology) -> GenccIndex:
 
     The export is a quoted TSV whose notes contain newlines, so it is read with csv.
     A PanelApp Australia row whose MONDO term is missing from *mondo* raises KeyError.
+    A row whose term is obsolete keeps its submitted id; MONDO's replacements, when it
+    names any, are recorded next to it.
     Records are sorted by disease, so the order does not depend on the export's.
     """
     paa: defaultdict[int, set[PaaAssociation]] = defaultdict(set)
@@ -160,6 +163,7 @@ def load_gencc(gencc_path: Path, mondo: pronto.Ontology) -> GenccIndex:
             date = _iso_date(row["submitted_as_date"])
             if submitter == PAA_SUBMITTER:
                 classification = _paa_classification(row["classification_title"])
+                term = mondo.get_term(mondo_id)
                 paa[hgnc_id].add(
                     PaaAssociation(
                         mondo_id=mondo_id,
@@ -169,7 +173,9 @@ def load_gencc(gencc_path: Path, mondo: pronto.Ontology) -> GenccIndex:
                         classification=classification,
                         rating=PAA_CLASS_TO_RATING.get(classification),
                         date=date,
-                        definition=_definition(mondo, mondo_id),
+                        definition=_definition(term),
+                        obsolete=term.obsolete,
+                        replaced_by=tuple(sorted(term.replaced_by.ids)),
                     )
                 )
             if dispute_class is not None:

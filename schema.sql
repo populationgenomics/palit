@@ -88,25 +88,48 @@ CREATE INDEX idx_papers_evidence_status ON papers(evidence_extraction_json)
 CREATE INDEX idx_papers_has_evidence ON papers(evidence_extraction_json)
     WHERE evidence_extraction_json IS NOT NULL;
 
--- Single assessment per gene with matched panels
-CREATE TABLE gene_assessments (
+-- One aggregation call per gene (assess-genes): what the model saw and its gene-level output.
+CREATE TABLE gene_aggregations (
     hgnc_id INTEGER PRIMARY KEY,
-    assessment_raw TEXT,   -- Raw LLM response including reasoning
-    assessment_json JSON,  -- Contains full aggregate assessment
-    paper_id_mapping JSON NOT NULL,  -- {AuthorYear: DOI} mapping used during assessment
-    filtered_papers_json JSON,  -- [{doi, reason}] papers excluded from assessment (e.g. preprint family gate)
-    matched_panels_raw TEXT,  -- Raw LLM response for panel matching including reasoning
-    matched_panels_json JSON,    -- Array: [{"panel_id": 137, "rationale": "..."}, ...]
-    -- Reviews on the single target panel returned by find_gene_panel at assess time,
-    -- as fetched via PanelApp's evaluations endpoint. Shape:
-    --   {"panel_id": <int>, "evaluations": [<raw evaluation dicts>]}
-    -- NULL when the gene was not on any target panel at assess time.
-    existing_panel_reviews_json JSON
+    assessment_raw TEXT NOT NULL,          -- Message JSON as returned by the API
+    paper_id_mapping JSON NOT NULL,        -- {AuthorYear: DOI} mapping used during assessment
+    filtered_papers_json JSON,             -- [{doi, reason}] removed by the preprint gate; NULL when none
+    -- PanelApp Australia's curation shown to the model:
+    --   {"gencc_rows": [PanelApp Australia GenCC rows],
+    --    "disputes": [Disputed/Refuted GenCC submissions, any submitter],
+    --    "panel_entries": [entries on the target panels, or on all panels when all_panels],
+    --    "all_panels": <bool, true for an Incidentalome-only gene>}
+    panelapp_context_json JSON NOT NULL,
+    -- Reviews on every target panel that held the gene at assess time, as fetched via
+    -- PanelApp's evaluations endpoint: [{"panel_id": <int>, "evaluations": [<raw evaluation
+    -- dicts>]}, ...] in target-panel order. NULL when the gene was on no target panel.
+    existing_panel_reviews_json JSON,
+    unassessed_reports_json JSON NOT NULL, -- [{phenotype, inheritance_mode, dois, reason}]
+    quality_concerns_json JSON NOT NULL    -- [{concern, dois, citations: [{doi, quote}]}]
 );
 
--- match_panels.py: find genes needing panel matching
-CREATE INDEX idx_gene_assessments_unmatched ON gene_assessments(matched_panels_json)
-    WHERE matched_panels_json IS NULL;
+-- One row per gene-disease-MoI association of one gene in this run. Storing a gene's
+-- aggregation deletes its old rows explicitly, in the same transaction.
+CREATE TABLE associations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- per-run identity
+    hgnc_id INTEGER NOT NULL REFERENCES gene_aggregations(hgnc_id),
+    position INTEGER NOT NULL,             -- order in the model output
+    assessment_json JSON NOT NULL,         -- the association object, with dois and criteria as a list
+    mondo_id TEXT,                         -- NULL until map-mondo has run for this row
+    mondo_label TEXT,
+    -- panelapp_gencc: reuses a PanelApp Australia GenCC row's disease (set by assess-genes);
+    -- exact / broader: chosen by map-mondo
+    mondo_match TEXT CHECK(mondo_match IN ('panelapp_gencc', 'exact', 'broader')),
+    mondo_raw TEXT,                        -- map-mondo's final message; NULL for panelapp_gencc
+    matched_panels_json JSON,              -- [{"panel_id", "rationale"}]
+    matched_panels_raw TEXT,
+    UNIQUE(hgnc_id, position),
+    CHECK((mondo_id IS NULL) = (mondo_match IS NULL))
+);
+
+CREATE INDEX idx_associations_hgnc ON associations(hgnc_id);
+CREATE INDEX idx_associations_unmapped ON associations(id) WHERE mondo_id IS NULL;
+CREATE INDEX idx_associations_unmatched ON associations(id) WHERE matched_panels_json IS NULL;
 
 -- Variant frequency information from gnomAD v4.1, one row per extracted variant.
 -- Filled by extract-evidence from its lookup_variants tool results (variant-lookup

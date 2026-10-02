@@ -1,77 +1,16 @@
 {
     "type": "object",
     "properties": {
-        "summary": {
-            "type": "string",
-            "description": "Prose summary; follow the prompt's required format."
-        },
-        "families": {
-            "type": "string",
-            "description": "Free-text family-count summary."
-        },
-        "variants": {
-            "type": "string"
-        },
-        "population_freq": {
-            "type": "string"
-        },
-        "segregation": {
-            "type": "string"
-        },
-        "functional": {
-            "type": "string"
-        },
-        "prior_reports": {
-            "type": "string"
-        },
         "disease_entities": {
             "type": "array",
-            "description": "Distinct (phenotype x MoI) disease entities.",
+            "description": "Distinct (disease x MoI) associations.",
             "items": {
                 "type": "object",
                 "properties": {
                     "description": {
                         "type": "string",
-                        "description": "Disease name or clinical description."
-                    },
-                    "mondo_disease_name": {
-                        "type": "string",
-                        "description": "Disease name from the provided candidates/fallbacks."
-                    },
-                    "dispute_status": {
-                        "type": "string",
-                        "enum": [
-                            "None",
-                            "Disputed",
-                            "Refuted"
-                        ],
-                        "description": "GenCC dispute decision for this entity."
-                    },
-                    "patient_count": {
-                        "type": "integer",
-                        "description": "Patients for this entity."
-                    },
-                    "family_count": {
-                        "type": [
-                            "integer",
-                            "null"
-                        ],
-                        "description": "Total families reported (count families, not individuals); null if NR."
-                    },
-                    "independent_family_count": {
-                        "type": [
-                            "integer",
-                            "null"
-                        ],
-                        "description": "Independent families used for Criteria A/B/C; <= family_count; null iff family_count null."
-                    },
-                    "count_reduction_reasoning": {
-                        "type": "string",
-                        "description": "Why family_count and independent_family_count differ, or 'No reduction'."
-                    },
-                    "disease_mechanism": {
-                        "type": "string",
-                        "description": "Molecular mechanism, or NR."
+                        "description": "Disease name or clinical description.",
+                        "minLength": 1
                     },
                     "inheritance_mode": {
                         "type": "string",
@@ -83,15 +22,127 @@
                             "Other",
                             "NR"
                         ],
-                        "description": "Mode of inheritance for this entity."
+                        "description": "Mode of inheritance for this association."
                     },
                     "inheritance_details": {
                         "type": "string",
                         "description": "Inheritance clarifications, or empty string."
                     },
+                    "grouping_rationale": {
+                        "type": "string",
+                        "description": "Which paper-level entities and PanelApp Australia association were combined or kept apart, and why.",
+                        "minLength": 1
+                    },
+                    "paper_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "IDs of the contributing papers whose evidence this association uses.",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "existing_association_mondo_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "MONDO id copied from the PanelApp Australia GenCC row this association reuses; null if none."
+                    },
+                    "proposed_disease_name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "'<GENE>-related <disease>' when no GenCC row is reused; null when existing_association_mondo_id is set."
+                    },
+                    "panelapp_relation": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "existing",
+                                    "new_disease",
+                                    "new_moi"
+                                ],
+                                "description": "existing: curated with this MoI; new_moi: disease curated, not with this MoI; new_disease: disease not curated."
+                            },
+                            "existing_rating": {
+                                "anyOf": [
+                                    {
+                                        "type": "string",
+                                        "enum": [
+                                            "GREEN",
+                                            "AMBER",
+                                            "RED"
+                                        ]
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "description": "PanelApp Australia's rating of this association; null if undeterminable or new_disease/new_moi."
+                            },
+                            "basis": {
+                                "type": "string",
+                                "description": "The GenCC row, panel entry or review the judgement rests on.",
+                                "minLength": 1
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "existing_rating",
+                            "basis"
+                        ],
+                        "additionalProperties": false
+                    },
+                    "dispute_status": {
+                        "type": "string",
+                        "enum": [
+                            "None",
+                            "Disputed",
+                            "Refuted"
+                        ],
+                        "description": "Dispute decision for this association."
+                    },
+                    "patient_count": {
+                        "type": "integer",
+                        "description": "Patients for this association."
+                    },
+                    "reported_family_count": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Families reported, before the qualifying gate; null if none reported."
+                    },
+                    "family_count": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Families passing the qualifying gate, incl. cohort-derived; null only if no usable numbers."
+                    },
+                    "independent_family_count": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Independent families used for Criteria A/B/C; <= family_count; null iff family_count null."
+                    },
+                    "count_reduction_reasoning": {
+                        "type": "string",
+                        "description": "Why family_count and independent_family_count differ, or 'No reduction'.",
+                        "minLength": 1
+                    },
+                    "disease_mechanism": {
+                        "type": "string",
+                        "description": "Molecular mechanism, or NR.",
+                        "minLength": 1
+                    },
                     "citations": {
                         "type": "array",
-                        "description": "Citations for this entity.",
+                        "description": "Citations for this association.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -118,7 +169,7 @@
                     "evidence_weakening_factors": {
                         "type": "array",
                         "minItems": 1,
-                        "description": "Six per-entity weakening factors, one per enum value.",
+                        "description": "Six per-association weakening factors, one per enum value.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -140,7 +191,8 @@
                                 },
                                 "details": {
                                     "type": "string",
-                                    "description": "Brief supporting evidence, or 'Not present'."
+                                    "description": "Brief supporting evidence, or 'Not present'.",
+                                    "minLength": 1
                                 }
                             },
                             "required": [
@@ -178,22 +230,77 @@
                             "criterion_E"
                         ],
                         "additionalProperties": false
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Facts from the contributing papers for this association, about 45 words.",
+                        "minLength": 1
                     }
                 },
                 "required": [
                     "description",
-                    "mondo_disease_name",
+                    "inheritance_mode",
+                    "inheritance_details",
+                    "grouping_rationale",
+                    "paper_ids",
+                    "existing_association_mondo_id",
+                    "proposed_disease_name",
+                    "panelapp_relation",
                     "dispute_status",
                     "patient_count",
+                    "reported_family_count",
                     "family_count",
                     "independent_family_count",
                     "count_reduction_reasoning",
                     "disease_mechanism",
-                    "inheritance_mode",
-                    "inheritance_details",
                     "citations",
                     "evidence_weakening_factors",
-                    "evidence_assessments"
+                    "evidence_assessments",
+                    "summary"
+                ],
+                "additionalProperties": false
+            }
+        },
+        "unassessed_reports": {
+            "type": "array",
+            "description": "Reports below the bar for new associations; empty if none.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "phenotype": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "inheritance_mode": {
+                        "type": "string",
+                        "enum": [
+                            "Monoallelic",
+                            "Biallelic",
+                            "X-linked",
+                            "Mitochondrial",
+                            "Other",
+                            "NR"
+                        ],
+                        "description": "Mode of inheritance."
+                    },
+                    "paper_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "minItems": 1
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why no family qualifies.",
+                        "minLength": 1
+                    }
+                },
+                "required": [
+                    "phenotype",
+                    "inheritance_mode",
+                    "paper_ids",
+                    "reason"
                 ],
                 "additionalProperties": false
             }
@@ -206,7 +313,8 @@
                 "properties": {
                     "concern": {
                         "type": "string",
-                        "description": "The issue and why it matters, with paper IDs."
+                        "description": "The issue and why it matters, with paper IDs.",
+                        "minLength": 1
                     },
                     "paper_ids": {
                         "type": "array",
@@ -224,17 +332,13 @@
                                 "paper_id": {
                                     "type": "string"
                                 },
-                                "commentary": {
-                                    "type": "string"
-                                },
                                 "quote": {
                                     "type": "string"
                                 }
                             },
                             "required": [
                                 "paper_id",
-                                "quote",
-                                "commentary"
+                                "quote"
                             ],
                             "additionalProperties": false
                         }
@@ -250,14 +354,8 @@
         }
     },
     "required": [
-        "summary",
-        "families",
-        "variants",
-        "population_freq",
-        "segregation",
-        "functional",
-        "prior_reports",
         "disease_entities",
+        "unassessed_reports",
         "quality_concerns"
     ],
     "additionalProperties": false,
@@ -269,7 +367,8 @@
                     "type": "boolean"
                 },
                 "rationale": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1
                 },
                 "confidence": {
                     "type": "string",

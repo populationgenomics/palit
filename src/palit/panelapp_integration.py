@@ -24,6 +24,11 @@ PANEL_NAMES = {
     REPEAT_DISORDERS_PANEL_ID: "Repeat Disorders",
 }
 
+# An aggregated association's relation to PanelApp Australia's curation of the gene:
+# curated with this MoI, curated only with another MoI, or not curated.
+RelationStatus = Literal["existing", "new_disease", "new_moi"]
+NEW_RELATION_STATUSES: frozenset[RelationStatus] = frozenset({"new_disease", "new_moi"})
+
 # PanelApp criteria names
 CriterionName = Literal["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
 PANELAPP_CRITERIA: list[CriterionName] = [
@@ -340,20 +345,22 @@ def entity_meets_green(entity: dict[str, Any]) -> bool:
     return (a or b or c) and d and e
 
 
-def meets_green_criteria(gene_eval: dict[str, Any]) -> bool:
-    """Check if the gene reaches GREEN: at least one disease entity satisfies
-    `(A OR B OR C) AND D AND E` on its own.
+def calculate_association_rating(entity: dict[str, Any]) -> int:
+    """Rate one association (disease entity) on its own PanelApp criteria.
+
+    - 3 (GREEN) if it satisfies (A OR B OR C) AND D AND E
+    - 2 (AMBER) if not GREEN but it has more than one independent family
+    - 1 (RED) otherwise
     """
-    return any(entity_meets_green(entity) for entity in gene_eval.get("disease_entities", []))
+    if entity_meets_green(entity):
+        return 3
+    if (entity["independent_family_count"] or 0) > 1:
+        return 2
+    return 1
 
 
 def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
-    """Calculate gene rating confidence level based on PanelApp criteria.
-
-    Rating logic:
-    - 3 (GREEN) if at least one disease entity satisfies (A OR B OR C) AND D AND E by itself
-    - 2 (AMBER) if not GREEN but more than one independent family for any phenotype
-    - 1 (RED) otherwise
+    """The gene's rating: the highest rating of its associations, RED when it has none.
 
     Args:
         gene_eval: Gene evaluation dictionary with disease_entities each carrying their
@@ -362,18 +369,10 @@ def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
     Returns:
         Confidence level: 3 (GREEN), 2 (AMBER), or 1 (RED)
     """
-    if meets_green_criteria(gene_eval):
-        return 3
-
-    disease_entities = gene_eval.get("disease_entities", [])
-    if disease_entities:
-        max_independent = max(
-            entity["independent_family_count"] or 0 for entity in disease_entities
-        )
-        if max_independent > 1:
-            return 2
-
-    return 1
+    return max(
+        (calculate_association_rating(e) for e in gene_eval.get("disease_entities", [])),
+        default=1,
+    )
 
 
 def panelapp_confidence_to_color(confidence: int | None) -> str:

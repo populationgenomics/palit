@@ -100,6 +100,8 @@ def gencc_index() -> GenccIndex:
         rating="GREEN",
         date="2025-01-17",
         definition="",
+        obsolete=False,
+        replaced_by=(),
     )
     limited = PaaAssociation(
         mondo_id="MONDO:0000002",
@@ -110,6 +112,8 @@ def gencc_index() -> GenccIndex:
         rating="RED",
         date="2025-01-17",
         definition="",
+        obsolete=False,
+        replaced_by=(),
     )
     return GenccIndex({1: GeneGencc(paa_associations=(strong, limited))})
 

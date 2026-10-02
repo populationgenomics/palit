@@ -65,6 +65,18 @@ def: "A disease of the second kind." []
 [Term]
 id: MONDO:0000003
 name: disease C
+
+[Term]
+id: MONDO:0000004
+name: obsolete disease D
+is_obsolete: true
+replaced_by: MONDO:0000003
+
+[Term]
+id: MONDO:0000005
+name: obsolete disease E
+is_obsolete: true
+consider: MONDO:0000001
 """
 
 PAA_DATE = "2025-01-17T00:00:00.000000Z"
@@ -138,6 +150,8 @@ def test_paa_rows_map_class_and_moi(tmp_path: Path, mondo: pronto.Ontology) -> N
             rating="GREEN",
             date="2025-01-17",
             definition="A disease of the first kind.",
+            obsolete=False,
+            replaced_by=(),
         ),
         PaaAssociation(
             mondo_id="MONDO:0000002",
@@ -148,6 +162,8 @@ def test_paa_rows_map_class_and_moi(tmp_path: Path, mondo: pronto.Ontology) -> N
             rating="AMBER",
             date="2025-01-17",
             definition="A disease of the second kind.",
+            obsolete=False,
+            replaced_by=(),
         ),
         PaaAssociation(
             mondo_id="MONDO:0000003",
@@ -158,6 +174,8 @@ def test_paa_rows_map_class_and_moi(tmp_path: Path, mondo: pronto.Ontology) -> N
             rating="RED",
             date="2025-01-17",
             definition="",
+            obsolete=False,
+            replaced_by=(),
         ),
     )
     assert index.for_gene(10).disputes == ()
@@ -297,3 +315,23 @@ def test_paa_row_with_unknown_mondo_term_raises(tmp_path: Path, mondo: pronto.On
             mondo,
             [_row(10, "MONDO:0009999", "disease Z", "Strong", "Autosomal dominant")],
         )
+
+
+def test_obsolete_mondo_terms_keep_the_submitted_id(tmp_path: Path, mondo: pronto.Ontology) -> None:
+    index = _load(
+        tmp_path,
+        mondo,
+        [
+            _row(10, "MONDO:0000001", "disease A", "Strong", "Autosomal recessive"),
+            _row(10, "MONDO:0000004", "disease D", "Strong", "Autosomal recessive"),
+            _row(10, "MONDO:0000005", "disease E", "Limited", "Autosomal dominant"),
+        ],
+    )
+    rows = {a.mondo_id: a for a in index.for_gene(10).paa_associations}
+    assert (rows["MONDO:0000001"].obsolete, rows["MONDO:0000001"].replaced_by) == (False, ())
+    assert (rows["MONDO:0000004"].obsolete, rows["MONDO:0000004"].replaced_by) == (
+        True,
+        ("MONDO:0000003",),
+    )
+    # A "consider" suggestion is not a replacement.
+    assert (rows["MONDO:0000005"].obsolete, rows["MONDO:0000005"].replaced_by) == (True, ())

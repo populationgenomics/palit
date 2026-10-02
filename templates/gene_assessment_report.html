@@ -120,8 +120,14 @@
     {# The association's MONDO term, with every non-exact or unusual state marked #}
     {% macro mondo_marker(assoc) %}
     {% set m = assoc.mondo %}
-    {% if m is none %}
-    <span class="mondo-badge mondo-unmapped" data-title="map-mondo has not mapped this association to a MONDO term yet">No MONDO term yet</span>
+    {% if assoc.mondo_mapping == 'not_run' %}
+    <span class="mondo-badge mondo-unmapped" data-title="map-mondo has not run for this association">No MONDO term yet</span>
+    {% elif assoc.mondo_mapping == 'pending' %}
+    <span class="mondo-badge mondo-unmapped" data-title="A map-mondo request for this association is in flight">No MONDO term yet</span>
+    {% elif assoc.mondo_mapping == 'refused' %}
+    <span class="mondo-badge mondo-unmapped" data-title="map-mondo was refused for this association and skips it from now on">No MONDO term: map-mondo refused</span>
+    {% elif assoc.mondo_mapping == 'failed' %}
+    <span class="mondo-badge mondo-unmapped" data-title="map-mondo gave no valid MONDO term in any attempt so far; a rerun retries it">No MONDO term: mapping failed</span>
     {% elif m.match == 'panelapp_gencc' %}
     <a class="mondo-id" href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>
     <span class="mondo-badge mondo-gencc" data-title="The disease of a PanelApp Australia GenCC row, reused with its MONDO term">PanelApp Australia GenCC</span>
@@ -185,8 +191,14 @@
     {# The matched panels of one association #}
     {% macro association_panels(assoc) %}
     <p class="association-panels"><strong>Matched panels:</strong>
-    {% if assoc.matched_panels is none %}
+    {% if assoc.panel_matching == 'not_run' %}
         <em class="muted">not matched yet (match-panels has not run for this association)</em>
+    {% elif assoc.panel_matching == 'pending' %}
+        <em class="muted">not matched yet (a match-panels request is in flight)</em>
+    {% elif assoc.panel_matching == 'refused' %}
+        <em class="muted">not matched (match-panels was refused for this association and skips it from now on)</em>
+    {% elif assoc.panel_matching == 'failed' %}
+        <em class="muted">not matched (match-panels gave no valid answer in any attempt so far; a rerun retries it)</em>
     {% elif not assoc.matched_panels %}
         <em class="muted">none</em>
     {% else %}
@@ -367,12 +379,14 @@
 
     {# Panels matched by any of the gene's associations, compared with the gene's current panels #}
     {% macro panel_recommendations(gene) %}
-    {% if gene.missing_panels or gene.unmatched_associations %}
+    {% set unmatched = gene.unmatched_by_state %}
+    {% set unmatched_labels = {'not_run': 'not run yet', 'pending': 'in flight', 'refused': 'refused', 'failed': 'failed'} %}
+    {% if gene.missing_panels or unmatched %}
     <details class="panel-recommendations">
         <summary>
             <strong>Suggested panels:</strong>
             {% if gene.missing_panels %}{{ gene.missing_panels | map(attribute='panel_name') | join(', ') }}{% else %}<em>none so far</em>{% endif %}
-            {% if gene.unmatched_associations %} <em class="muted">({{ gene.unmatched_associations }} of {{ gene.associations | length }} associations not matched yet)</em>{% endif %}
+            {% if unmatched %} <em class="muted">({{ unmatched.values() | sum }} of {{ gene.associations | length }} associations not matched: {% for state, count in unmatched.items() %}{{ count }} {{ unmatched_labels[state.value] }}{% if not loop.last %}, {% endif %}{% endfor %})</em>{% endif %}
         </summary>
         <div class="panel-details">
             {% for heading, suggestions in [("Panels the gene is not on", gene.missing_panels), ("Panels the gene is already on", gene.existing_panels)] %}

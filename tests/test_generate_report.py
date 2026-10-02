@@ -17,6 +17,7 @@ from palit.generate_report import (
     GeneAssessmentResults,
     PanelValidationResult,
     ReportAssociation,
+    StageState,
     build_gene_assessment_results,
     calculate_comprehensive_statistics,
     generate_html_report,
@@ -25,6 +26,7 @@ from palit.generate_report import (
     novel_gene_sort_key,
 )
 from palit.hgnc import HgncResolver
+from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.panelapp_client import AllPanelsData, PanelGeneData
 from palit.panelapp_integration import (
@@ -424,7 +426,13 @@ def test_matched_panels_per_association_and_union(results: GeneAssessmentResults
     assert reused_matches is not None
     assert [(m.panel_name, m.gene_on_panel) for m in reused_matches] == [("Ataxia", True)]
     assert by_id[13].matched_panels is None
-    assert genea.unmatched_associations == 1
+    assert {a.id: a.panel_matching for a in genea.associations} == {
+        10: StageState.STORED,
+        11: StageState.STORED,
+        12: StageState.STORED,
+        13: StageState.NOT_RUN,
+    }
+    assert genea.unmatched_by_state == {StageState.NOT_RUN: 1}
 
     assert [(s.panel_name, [r.disease_label for r in s.reasons]) for s in genea.missing_panels] == [
         ("Epilepsy", ["GENEA-related biallelic disease"])
@@ -432,6 +440,67 @@ def test_matched_panels_per_association_and_union(results: GeneAssessmentResults
     assert [
         (s.panel_name, [r.disease_label for r in s.reasons]) for s in genea.existing_panels
     ] == [("Ataxia", ["GENEA-related ataxia variant", "disease A"])]
+
+
+def _add_requests(
+    db_path: Path, stage: str, subject: str, requests: list[tuple[str, str | None]]
+) -> None:
+    """Requests of *stage* for *subject*, as (status, completed_at), in insertion order."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, completed_at)
+            VALUES (?, ?, ?, 1, 'claude-opus-5-5', ?, ?)
+            """,
+            [
+                (f"{stage}-{subject}-{i}", stage, subject, status, completed_at)
+                for i, (status, completed_at) in enumerate(requests)
+            ],
+        )
+
+
+STATE_CASES = [
+    ([], StageState.NOT_RUN),
+    ([("refused", "2026-10-01T10")], StageState.REFUSED),
+    # the second answer succeeded but was rejected, so nothing was stored
+    ([("errored", "2026-10-01T10"), ("succeeded", "2026-10-01T11")], StageState.FAILED),
+    ([("expired", "2026-10-01T10")], StageState.FAILED),
+    # the latest by completion time, not by insertion
+    ([("refused", "2026-10-01T11"), ("errored", "2026-10-01T10")], StageState.REFUSED),
+    ([("errored", "2026-10-01T10"), ("pending", None)], StageState.PENDING),
+]
+
+
+@pytest.mark.parametrize(("requests", "state"), STATE_CASES)
+def test_panel_matching_state_of_an_unmatched_association(
+    db_path: Path,
+    hgnc_resolver: HgncResolver,
+    requests: list[tuple[str, str | None]],
+    state: StageState,
+) -> None:
+    _add_requests(db_path, MATCH_PANELS_STAGE, "13", requests)
+    genea = _load(db_path, hgnc_resolver).known_genes[0]
+    (association,) = [a for a in genea.associations if a.id == 13]
+    assert association.panel_matching == state
+    assert genea.unmatched_by_state == {state: 1}
+
+
+@pytest.mark.parametrize(("requests", "state"), STATE_CASES)
+def test_mondo_mapping_state_of_an_unmapped_association(
+    db_path: Path,
+    hgnc_resolver: HgncResolver,
+    requests: list[tuple[str, str | None]],
+    state: StageState,
+) -> None:
+    _add_requests(db_path, MAP_MONDO_STAGE, "13", requests)
+    genea = _load(db_path, hgnc_resolver).known_genes[0]
+    states = {a.id: a.mondo_mapping for a in genea.associations}
+    assert states == {
+        10: StageState.STORED,  # reuses a GenCC row
+        11: StageState.NOT_RUN,
+        12: StageState.STORED,
+        13: state,
+    }
 
 
 def test_refused_papers_and_genes(results: GeneAssessmentResults) -> None:
@@ -508,6 +577,23 @@ def test_panel_matching_shown_once_match_panels_has_run(
     assert "Panel Suggestions:" in html
 
 
+def test_report_says_which_associations_were_refused_or_failed(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    _add_requests(db_path, MATCH_PANELS_STAGE, "13", [("refused", "2026-10-01T10")])
+    _add_requests(db_path, MATCH_PANELS_STAGE, "20", [("errored", "2026-10-01T10")])
+    _add_requests(db_path, MAP_MONDO_STAGE, "13", [("refused", "2026-10-01T10")])
+    _add_requests(db_path, MAP_MONDO_STAGE, "20", [("succeeded", "2026-10-01T10")])
+    html = _render(db_path, _load(db_path, hgnc_resolver))
+    assert "match-panels was refused for this association" in html
+    assert "match-panels gave no valid answer in any attempt so far" in html
+    assert "(1 of 4 associations not matched: 1 refused)" in html
+    assert "(1 of 1 associations not matched: 1 failed)" in html
+    assert "No MONDO term: map-mondo refused" in html
+    assert "No MONDO term: mapping failed" in html
+    assert "No MONDO term yet" in html  # association 11
+
+
 def test_panel_matching_omitted_when_match_panels_never_ran(
     db_path: Path, hgnc_resolver: HgncResolver
 ) -> None:
@@ -530,9 +616,11 @@ def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) ->
         ),
         disease_label="d",
         mondo=None,
+        mondo_mapping=StageState.NOT_RUN,
         rating=new,
         disputes=[],
         matched_panels=None,
+        panel_matching=StageState.NOT_RUN,
     )
     return GeneAssessment(
         hgnc_id=1,
@@ -547,7 +635,6 @@ def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) ->
         variant_frequencies=[],
         missing_panels=[],
         existing_panels=[],
-        unmatched_associations=1,
         prefill_json="{}",
         existing_panel_reviews=[],
         refused_papers=[],

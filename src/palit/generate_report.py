@@ -5,8 +5,10 @@ import json
 import logging
 import shutil
 import sqlite3
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,8 @@ from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.hgnc import HgncResolver
-from palit.llm import parse_json_output
+from palit.llm import ResultStatus, parse_json_output
+from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.panelapp_client import (
     AllPanelsData,
@@ -283,6 +286,29 @@ class DisputeRef:
     same_term: bool
 
 
+class StageState(StrEnum):
+    """Where map-mondo or match-panels stands for one association."""
+
+    STORED = "stored"  # the association holds the stage's result
+    NOT_RUN = "not_run"  # no request of the stage for this association
+    PENDING = "pending"  # the latest request is in a batch not collected yet
+    REFUSED = "refused"  # the latest request was refused; the stage skips it from now on
+    FAILED = "failed"  # requests ran but none gave a valid result; a rerun retries it
+
+
+def stage_state(stored: bool, latest_status: str | None) -> StageState:
+    """The state of a stage for one association, from its stored result and latest request."""
+    if stored:
+        return StageState.STORED
+    if latest_status is None:
+        return StageState.NOT_RUN
+    if latest_status == "pending":
+        return StageState.PENDING
+    if latest_status == ResultStatus.REFUSED:
+        return StageState.REFUSED
+    return StageState.FAILED
+
+
 @dataclass
 class ReportAssociation:
     """One gene-disease-MoI association of a gene, prepared for display."""
@@ -291,10 +317,12 @@ class ReportAssociation:
     position: int  # order in the model output
     assessment: dict[str, Any]  # the stored association JSON, paper IDs in display form
     disease_label: str  # the GenCC row's label when reused, else the proposed name
-    mondo: MondoTerm | None  # None until map-mondo has run for this association
+    mondo: MondoTerm | None  # None unless mondo_mapping is STORED
+    mondo_mapping: StageState  # STORED for a reused GenCC row too
     rating: int  # computed from this association's criteria: 3 GREEN, 2 AMBER, 1 RED
     disputes: list[DisputeRef]
-    matched_panels: list[PanelMatch] | None  # None until match-panels has run for it
+    matched_panels: list[PanelMatch] | None  # None unless panel_matching is STORED
+    panel_matching: StageState
 
     @property
     def relation_status(self) -> RelationStatus:
@@ -337,7 +365,6 @@ class GeneAssessment:
     variant_frequencies: list[VariantFrequency]  # Variants with frequency data
     missing_panels: list[PanelSuggestion]  # matched panels the gene is not on
     existing_panels: list[PanelSuggestion]  # matched panels the gene is already on
-    unmatched_associations: int  # associations match-panels has not run for
     prefill_json: str  # HTML-escaped JSON for data-prefill attribute
     existing_panel_reviews: list[ExistingPanelReviews]  # per target panel; empty if novel
     refused_papers: list[RefusedPaper]
@@ -345,6 +372,16 @@ class GeneAssessment:
     @property
     def has_highlighted_new_moi(self) -> bool:
         return any(a.new_moi_highlighted for a in self.associations)
+
+    @property
+    def unmatched_by_state(self) -> dict[StageState, int]:
+        """The number of associations without panel matches per state, in StageState order."""
+        counts = Counter(a.panel_matching for a in self.associations)
+        return {
+            state: counts[state]
+            for state in StageState
+            if state != StageState.STORED and counts[state]
+        }
 
 
 @dataclass(frozen=True)
@@ -904,7 +941,7 @@ def association_disputes(
 def _panel_matches(
     matched_panels_json: str | None, hgnc_id: int, all_panels_data: AllPanelsData
 ) -> list[PanelMatch] | None:
-    """An association's matched panels, or None while match-panels has not run for it."""
+    """An association's matched panels, or None while it has none stored."""
     if matched_panels_json is None:
         return None
     current_panels = all_panels_data.gene_to_panels.get(hgnc_id, set())
@@ -935,16 +972,28 @@ def load_associations(
     display_ids: dict[str, str],
     all_panels_data: AllPanelsData,
 ) -> list[ReportAssociation]:
-    """The gene's associations, by corpus rating and then independent family count."""
+    """The gene's associations, by corpus rating and then independent family count.
+
+    Each association carries the state of map-mondo and match-panels for it, from
+    its latest request of each stage (a pending request counts as the latest).
+    """
+    latest_status = """
+        (SELECT r.status FROM llm_requests r
+         WHERE r.stage = ? AND r.subject = CAST(a.id AS TEXT)
+         ORDER BY r.completed_at IS NOT NULL, r.completed_at DESC
+         LIMIT 1)
+    """
     cursor.execute(
-        """
-        SELECT id, position, assessment_json, mondo_id, mondo_label, mondo_match, mondo_raw,
-               matched_panels_json
-        FROM associations
-        WHERE hgnc_id = ?
-        ORDER BY position
+        f"""
+        SELECT a.id, a.position, a.assessment_json, a.mondo_id, a.mondo_label, a.mondo_match,
+               a.mondo_raw, a.matched_panels_json,
+               {latest_status} AS mondo_status,
+               {latest_status} AS matching_status
+        FROM associations a
+        WHERE a.hgnc_id = ?
+        ORDER BY a.position
         """,
-        (hgnc_id,),
+        (MAP_MONDO_STAGE, MATCH_PANELS_STAGE, hgnc_id),
     )
     associations = []
     for row in cursor.fetchall():
@@ -961,11 +1010,15 @@ def load_associations(
                     else assessment["proposed_disease_name"]
                 ),
                 mondo=mondo,
+                mondo_mapping=stage_state(mondo is not None, row["mondo_status"]),
                 rating=calculate_association_rating(assessment),
                 disputes=association_disputes(
                     assessment, row["mondo_id"], panelapp_context["disputes"]
                 ),
                 matched_panels=_panel_matches(row["matched_panels_json"], hgnc_id, all_panels_data),
+                panel_matching=stage_state(
+                    row["matched_panels_json"] is not None, row["matching_status"]
+                ),
             )
         )
     return sorted(associations, key=association_sort_key)
@@ -1077,7 +1130,6 @@ def load_gene(
         variant_frequencies=load_variant_frequencies_for_gene(cursor, hgnc_id, contributing_papers),
         missing_panels=missing_panels,
         existing_panels=existing_panels,
-        unmatched_associations=sum(a.matched_panels is None for a in associations),
         prefill_json=json.dumps(asdict(prefill_data)),
         existing_panel_reviews=existing_panel_reviews,
         refused_papers=load_refused_papers(cursor, hgnc_id),

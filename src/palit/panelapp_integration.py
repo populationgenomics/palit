@@ -4,6 +4,8 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from palit.gencc import MondoRef
+
 # Target panel IDs
 MENDELIOME_PANEL_ID = 137
 INCIDENTALOME_PANEL_ID = 126
@@ -114,6 +116,29 @@ ENUM_TO_PANELAPP_MOI = {
 }
 
 
+MondoMatch = Literal["panelapp_gencc", "exact", "broader"]
+
+
+@dataclass(frozen=True)
+class MondoTerm:
+    """The MONDO term stored on an association and how it was chosen."""
+
+    mondo_id: str
+    label: str
+    match: MondoMatch
+    rationale: str  # map-mondo's rationale; empty for a reused GenCC term
+    obsolete: bool  # a reused GenCC term that the loaded MONDO release marks obsolete
+    replaced_by: tuple[MondoRef, ...]  # MONDO's replacements for an obsolete term; often empty
+
+
+@dataclass(frozen=True)
+class PrefillAssociation:
+    """What the PanelApp prefill takes from one of the gene's associations."""
+
+    assessment: dict[str, Any]  # the stored association JSON, paper IDs in display form
+    mondo: MondoTerm | None  # None until map-mondo has run for this association
+
+
 @dataclass
 class PrefillData:
     """Prefill form data for PanelApp integration."""
@@ -125,8 +150,8 @@ class PrefillData:
     moi: str  # Full PanelApp MoI string
     mode_of_pathogenicity: str | None
     publications: str  # semicolon-separated identifiers (PMIDs where available, DOIs otherwise)
-    phenotypes: str  # semicolon-separated "description, MONDO_ID" pairs
-    comments: str  # summary text
+    phenotypes: str  # semicolon-separated "label, MONDO:id" entries or bare disease names
+    comments: str  # one plain-text section per association
 
 
 def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> tuple[str, str]:
@@ -188,47 +213,80 @@ def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> tuple[str, s
     return "Other", combined_details
 
 
+def prefill_phenotype(association: PrefillAssociation) -> str:
+    """The association's entry in the prefill's phenotype field.
+
+    A MONDO term gives ``label, MONDO:id``: its own label for a reused GenCC term
+    and an exact match, the proposed disease name for a broader match. A reused
+    GenCC term that MONDO obsoleted with exactly one replacement gives the
+    replacement instead; with no or several replacements it stays as submitted.
+    An association without a MONDO term gives its proposed disease name alone.
+    """
+    mondo = association.mondo
+    if mondo is None:
+        name: str = association.assessment["proposed_disease_name"]
+        return name
+    if mondo.match == "broader":
+        return f"{association.assessment['proposed_disease_name']}, {mondo.mondo_id}"
+    if mondo.obsolete and len(mondo.replaced_by) == 1:
+        replacement = mondo.replaced_by[0]
+        return f"{replacement.label}, {replacement.mondo_id}"
+    return f"{mondo.label}, {mondo.mondo_id}"
+
+
+def prefill_comment_section(association: PrefillAssociation) -> str:
+    """The association's section of the prefill comment: a heading line, then its summary.
+
+    The heading names the disease as the phenotype field does, flags a broader
+    MONDO term with its label, and gives the MoI and the rating computed from
+    this run's papers.
+    """
+    assessment = association.assessment
+    disease = prefill_phenotype(association)
+    if association.mondo is not None and association.mondo.match == "broader":
+        disease += f" (broader MONDO term: {association.mondo.label})"
+    moi = assessment["inheritance_mode"].replace("_", " ")
+    rating = panelapp_confidence_to_color(calculate_association_rating(assessment)).upper()
+    return f"{disease} | {moi} | {rating} in this corpus\n{assessment['summary']}"
+
+
 def prepare_prefill_data(
     hgnc_id: int,
-    associations: list[dict[str, Any]],
+    associations: list[PrefillAssociation],
     form_type: str,
     panel_id: int,
-    cited_papers: list[tuple[str, int | None]],
+    doi_to_pmid: dict[str, int | None],
 ) -> PrefillData:
-    """Prepare prefill form data from a gene's associations.
+    """One PanelApp prefill for the gene, as the union over its associations.
+
+    The rating is the top association rating and the MoI is aggregated over all
+    associations. Phenotypes, publications and comment sections follow the order
+    of *associations* (the report's order); repeated phenotypes and publications
+    are listed once.
 
     Args:
         hgnc_id: HGNC ID (integer) of the gene
-        associations: Each association's assessment JSON with its row's ``mondo_id`` and
-            ``mondo_label`` added (both None while the association has no MONDO term),
-            in report order
+        associations: The gene's associations, in report order
         form_type: "add" or "review"
         panel_id: Target panel ID
-        cited_papers: List of (doi, pmid) pairs for papers cited in the assessment
+        doi_to_pmid: PMID (None when the paper has none) of every DOI the associations cite
 
     Returns:
         PrefillData object ready for form rendering
     """
-    rating_str = panelapp_confidence_to_color(calculate_gene_rating(associations)).upper()
+    assessments = [a.assessment for a in associations]
+    rating_str = panelapp_confidence_to_color(calculate_gene_rating(assessments)).upper()
 
-    inheritance_mode, _ = derive_aggregate_moi(associations)
+    inheritance_mode, _ = derive_aggregate_moi(assessments)
     moi = ENUM_TO_PANELAPP_MOI[inheritance_mode]
 
-    # Format publications: use PMID where available, DOI otherwise
-    publications = ";".join(str(pmid) if pmid is not None else doi for doi, pmid in cited_papers)
+    dois = dict.fromkeys(doi for assessment in assessments for doi in assessment["dois"])
+    publications = ";".join(
+        doi if (pmid := doi_to_pmid[doi]) is None else str(pmid) for doi in dois
+    )
 
-    # Semicolon-separated "label, MONDO_ID" pairs; an association without a MONDO term
-    # contributes its proposed disease name alone.
-    phenotype_entries: set[str] = set()
-    for association in associations:
-        mondo_id = association["mondo_id"]
-        if mondo_id is None:
-            phenotype_entries.add(association["proposed_disease_name"])
-        else:
-            phenotype_entries.add(f"{association['mondo_label']}, {mondo_id}")
-    phenotypes = ";".join(sorted(phenotype_entries))
-
-    comments = "\n\n".join(association["summary"] for association in associations)
+    phenotypes = ";".join(dict.fromkeys(prefill_phenotype(a) for a in associations))
+    comments = "\n\n".join(prefill_comment_section(a) for a in associations)
 
     return PrefillData(
         form_type=form_type,

@@ -68,6 +68,14 @@ GENCC_MOI_TO_ENUM: dict[str, GenccMoi] = {
 
 
 @dataclass(frozen=True)
+class MondoRef:
+    """A MONDO term by id and label."""
+
+    mondo_id: str
+    label: str
+
+
+@dataclass(frozen=True)
 class PaaAssociation:
     """One PanelApp Australia GenCC row: a classified (gene, disease, MoI) association."""
 
@@ -80,7 +88,7 @@ class PaaAssociation:
     date: str  # ISO date of the submission
     definition: str  # MONDO definition, empty when the term has none
     obsolete: bool  # the submitted MONDO term is obsolete in the loaded ontology
-    replaced_by: tuple[str, ...]  # MONDO's replacements for an obsolete term; often empty
+    replaced_by: tuple[MondoRef, ...]  # MONDO's replacements for an obsolete term; often empty
 
 
 @dataclass(frozen=True)
@@ -145,13 +153,23 @@ def _definition(term: pronto.Term) -> str:
     return str(term.definition).strip() if term.definition else ""
 
 
+def _replacements(term: pronto.Term) -> tuple[MondoRef, ...]:
+    """MONDO's replacements for *term*, by id, with their labels."""
+    refs = []
+    for replacement in sorted(term.replaced_by, key=lambda t: t.id):
+        if replacement.name is None:
+            raise ValueError(f"MONDO term {replacement.id} has no label")
+        refs.append(MondoRef(mondo_id=replacement.id, label=replacement.name))
+    return tuple(refs)
+
+
 def load_gencc(gencc_path: Path, mondo: pronto.Ontology) -> GenccIndex:
     """PanelApp Australia's GenCC rows and all Disputed/Refuted submissions, per gene.
 
     The export is a quoted TSV whose notes contain newlines, so it is read with csv.
     A PanelApp Australia row whose MONDO term is missing from *mondo* raises KeyError.
     A row whose term is obsolete keeps its submitted id; MONDO's replacements, when it
-    names any, are recorded next to it.
+    names any, are recorded next to it with their labels.
     Records are sorted by disease, so the order does not depend on the export's.
     """
     paa: defaultdict[int, set[PaaAssociation]] = defaultdict(set)
@@ -180,7 +198,7 @@ def load_gencc(gencc_path: Path, mondo: pronto.Ontology) -> GenccIndex:
                         date=date,
                         definition=_definition(term),
                         obsolete=term.obsolete,
-                        replaced_by=tuple(sorted(term.replaced_by.ids)),
+                        replaced_by=_replacements(term),
                     )
                 )
             if dispute_class is not None:

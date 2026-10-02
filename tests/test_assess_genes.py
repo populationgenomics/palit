@@ -23,7 +23,7 @@ from palit.assess_genes import (
     store_gene_aggregation,
     target_panels_holding,
 )
-from palit.gencc import GenccIndex, GeneGencc
+from palit.gencc import GenccIndex, GeneGencc, MondoRef
 from palit.panelapp_check import INCIDENTALOME_SCOPE, CuratedRecord
 from palit.panelapp_client import PanelGeneData
 from palit.panelapp_integration import (
@@ -446,11 +446,17 @@ def test_gene_on_the_mendeliome_shows_target_panel_entries_and_gencc_rows(
 def test_obsolete_gencc_term_is_marked(curated_record: CuratedRecord) -> None:
     context = _context(curated_record, GENEA)
     strong, limited = context.gencc.paa_associations
-    obsolete = dataclasses.replace(strong, obsolete=True, replaced_by=("MONDO:0000003",))
+    obsolete = dataclasses.replace(
+        strong, obsolete=True, replaced_by=(MondoRef("MONDO:0000003", "disease C"),)
+    )
     context = dataclasses.replace(context, gencc=GeneGencc(paa_associations=(obsolete, limited)))
     prompt = _render(context, "GENEA")
     assert '- MONDO:0000001 (obsolete MONDO term; reuse this id as given) "disease A"' in prompt
     assert "MONDO:0000003" not in prompt
+    stored = json.loads(json.dumps(context.to_json()))
+    assert stored["gencc_rows"][0]["replaced_by"] == [
+        {"mondo_id": "MONDO:0000003", "label": "disease C"}
+    ]
 
 
 def test_reviews_from_several_panels_are_labelled(curated_record: CuratedRecord) -> None:

@@ -10,18 +10,28 @@ from anthropic.types import Message
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
+from palit.gencc import MondoRef
 from palit.generate_report import (
+    FavoriteJournalSections,
     GeneAssessment,
     GeneAssessmentResults,
+    PanelValidationResult,
     ReportAssociation,
     build_gene_assessment_results,
+    calculate_comprehensive_statistics,
+    generate_html_report,
     is_highlighted_new_moi,
     known_gene_sort_key,
     novel_gene_sort_key,
 )
 from palit.hgnc import HgncResolver
+from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.panelapp_client import AllPanelsData, PanelGeneData
-from palit.panelapp_integration import MENDELIOME_PANEL_ID, PANELAPP_CRITERIA
+from palit.panelapp_integration import (
+    ENUM_TO_PANELAPP_MOI,
+    MENDELIOME_PANEL_ID,
+    PANELAPP_CRITERIA,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 ATAXIA_PANEL_ID = 9001
@@ -50,6 +60,7 @@ def _association(
     mondo_id: str | None = None,
     dispute_status: str = "None",
     inheritance_mode: str = "Monoallelic",
+    dois: tuple[str, ...] = ("10.1/a",),
 ) -> str:
     """A stored association: dois instead of paper IDs, criteria as a list."""
     return json.dumps(
@@ -58,7 +69,7 @@ def _association(
             "inheritance_mode": inheritance_mode,
             "inheritance_details": "",
             "grouping_rationale": "g",
-            "dois": ["10.1/a"],
+            "dois": list(dois),
             "existing_association_mondo_id": mondo_id,
             "proposed_disease_name": None if mondo_id else f"GENEA-related {description}",
             "panelapp_relation": {
@@ -108,7 +119,7 @@ GENCC_ROW = {
     "date": "2025-01-17",
     "definition": "",
     "obsolete": True,
-    "replaced_by": ["MONDO:0000009"],
+    "replaced_by": [{"mondo_id": "MONDO:0000009", "label": "disease A, replacement"}],
 }
 
 DISPUTES = [
@@ -281,7 +292,7 @@ def db_path(tmp_path: Path) -> Path:
                     20,
                     3,
                     0,
-                    _association("B disease", status="new_disease", green=True),
+                    _association("B disease", status="new_disease", green=True, dois=("10.1/b",)),
                     None,
                     None,
                     None,
@@ -305,13 +316,13 @@ def db_path(tmp_path: Path) -> Path:
                 ("g1", ASSESS_GENES_STAGE, "4", "refused", "bio", "2026-10-01T05"),
                 # refused once, then aggregated
                 ("g2", ASSESS_GENES_STAGE, "3", "refused", "bio", "2026-10-01T06"),
+                ("m1", MATCH_PANELS_STAGE, "10", "succeeded", None, "2026-10-01T07"),
             ],
         )
     return path
 
 
-@pytest.fixture
-def results(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentResults:
+def _load(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentResults:
     target = PanelGeneData(
         panel_ids=[MENDELIOME_PANEL_ID],
         gene_confidence={1: 2},
@@ -329,6 +340,11 @@ def results(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentResults
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         return build_gene_assessment_results(conn, hgnc_resolver, target, all_panels)
+
+
+@pytest.fixture
+def results(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentResults:
+    return _load(db_path, hgnc_resolver)
 
 
 @pytest.mark.parametrize(
@@ -373,7 +389,7 @@ def test_disease_labels_and_mondo_states(results: GeneAssessmentResults) -> None
     assert (reused.mondo.match, reused.mondo.obsolete, reused.mondo.replaced_by) == (
         "panelapp_gencc",
         True,
-        ("MONDO:0000009",),
+        (MondoRef("MONDO:0000009", "disease A, replacement"),),
     )
 
     broader = by_id[12]
@@ -435,19 +451,73 @@ def test_display_ids_and_gene_level_blocks(results: GeneAssessmentResults) -> No
     assert [p.doi for p in genea.contributing_papers] == ["10.1/a"]
 
 
-def test_prefill_takes_its_inputs_from_the_associations(results: GeneAssessmentResults) -> None:
+def test_prefill_unions_the_associations_in_report_order(results: GeneAssessmentResults) -> None:
     prefill = json.loads(results.known_genes[0].prefill_json)
-    assert prefill["form_type"] == "review"
+    assert (prefill["form_type"], prefill["panel_id"]) == ("review", MENDELIOME_PANEL_ID)
     assert prefill["rating"] == "GREEN"
+    assert prefill["moi"] == ENUM_TO_PANELAPP_MOI["Monoallelic"]
     assert prefill["phenotypes"].split(";") == [
-        "GENEA-related biallelic disease",
+        "GENEA-related ataxia variant, MONDO:0000200",  # broader: the proposed name
         "GENEA-related other disease",
-        "ataxia, MONDO:0000200",
-        "disease A, MONDO:0000001",
-    ]  # sorted; associations without a MONDO term give their proposed name
-    assert prefill["comments"].startswith("PMID 111 reports ataxia variant.")
+        "GENEA-related biallelic disease",
+        "disease A, replacement, MONDO:0000009",  # the obsolete GenCC term's replacement
+    ]
+    assert prefill["publications"] == "111"
+    assert [section.split("\n")[0] for section in prefill["comments"].split("\n\n")] == [
+        "GENEA-related ataxia variant, MONDO:0000200 (broader MONDO term: ataxia)"
+        " | Monoallelic | GREEN in this corpus",
+        "GENEA-related other disease | Monoallelic | AMBER in this corpus",
+        "GENEA-related biallelic disease | Monoallelic | AMBER in this corpus",
+        "disease A, replacement, MONDO:0000009 | Monoallelic | RED in this corpus",
+    ]
+    assert prefill["comments"].split("\n")[1] == "PMID 111 reports ataxia variant."
     novel = json.loads(results.novel_genes[0].prefill_json)
     assert (novel["form_type"], novel["panel_id"]) == ("add", MENDELIOME_PANEL_ID)
+    assert novel["publications"] == "222"
+
+
+def _render(db_path: Path, results: GeneAssessmentResults) -> str:
+    panel_validation = PanelValidationResult(0, 0, [], [], [], 0.0, 0.0)
+    return generate_html_report(
+        novel_genes=results.novel_genes,
+        known_genes=results.known_genes,
+        statistics=calculate_comprehensive_statistics(db_path, results, panel_validation),
+        panel_validation=panel_validation,
+        low_confidence_papers=[],
+        manual_download_papers=[],
+        favorite_journal_papers=FavoriteJournalSections([], [], [], [], [], [], [], [], []),
+        template_dir=ROOT / "templates",
+        panel_date="2026-10-01",
+        report_id="test",
+        target_panel_ids=[MENDELIOME_PANEL_ID],
+        target_panel_names=results.target_panel_names,
+        refused_genes=results.refused_genes,
+        panels_matched=results.panels_matched,
+        panelapp_integration=False,
+    )
+
+
+def test_panel_matching_shown_once_match_panels_has_run(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    assert results.panels_matched
+    html = _render(db_path, results)
+    assert "Matched panels:" in html
+    assert "not matched yet" in html
+    assert "Suggested panels:" in html
+    assert "Panel Suggestions:" in html
+
+
+def test_panel_matching_omitted_when_match_panels_never_ran(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM llm_requests WHERE stage = ?", (MATCH_PANELS_STAGE,))
+    results = _load(db_path, hgnc_resolver)
+    assert not results.panels_matched
+    html = _render(db_path, results)
+    for text in ("Matched panels:", "not matched yet", "Suggested panels:", "Panel Suggestions:"):
+        assert text not in html
 
 
 def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) -> GeneAssessment:

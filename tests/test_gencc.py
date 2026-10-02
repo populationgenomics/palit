@@ -10,6 +10,7 @@ from palit.gencc import (
     DisputeSubmission,
     GenccIndex,
     GeneGencc,
+    MondoRef,
     PaaAssociation,
     load_gencc,
 )
@@ -331,7 +332,7 @@ def test_obsolete_mondo_terms_keep_the_submitted_id(tmp_path: Path, mondo: pront
     assert (rows["MONDO:0000001"].obsolete, rows["MONDO:0000001"].replaced_by) == (False, ())
     assert (rows["MONDO:0000004"].obsolete, rows["MONDO:0000004"].replaced_by) == (
         True,
-        ("MONDO:0000003",),
+        (MondoRef("MONDO:0000003", "disease C"),),
     )
     # A "consider" suggestion is not a replacement.
     assert (rows["MONDO:0000005"].obsolete, rows["MONDO:0000005"].replaced_by) == (True, ())

@@ -125,7 +125,7 @@
     {% elif m.match == 'panelapp_gencc' %}
     <a class="mondo-id" href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>
     <span class="mondo-badge mondo-gencc" data-title="The disease of a PanelApp Australia GenCC row, reused with its MONDO term">PanelApp Australia GenCC</span>
-    {% if m.obsolete %}<span class="mondo-badge mondo-obsolete" data-title="The GenCC row's MONDO term is obsolete in the loaded MONDO release">Obsolete in MONDO{% if m.replaced_by %}: replaced by {{ m.replaced_by | join(', ') }}{% else %}, no replacement named{% endif %}</span>{% endif %}
+    {% if m.obsolete %}<span class="mondo-badge mondo-obsolete" data-title="The GenCC row's MONDO term is obsolete in the loaded MONDO release">Obsolete in MONDO{% if m.replaced_by %}: replaced by {{ m.replaced_by | map(attribute='mondo_id') | join(', ') }}{% else %}, no replacement named{% endif %}</span>{% endif %}
     {% elif m.match == 'exact' %}
     <span class="mondo-badge mondo-exact" data-title="{{ m.rationale }}">MONDO exact</span>
     <span class="mondo-term">{{ m.label }} (<a href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>)</span>
@@ -218,7 +218,9 @@
             <p class="association-mechanism"><strong>Mechanism:</strong> {{ e.disease_mechanism }}</p>
             {% endif %}
             <p class="association-papers"><strong>Papers:</strong> {{ paper_links(e.dois | papers_for_dois(gene.contributing_papers)) }}</p>
+            {% if panels_matched %}
             {{ association_panels(assoc) }}
+            {% endif %}
             {% if e.citations %}
             <details class="association-citations">
                 <summary><strong>Cited evidence ({{ e.citations | length }})</strong></summary>
@@ -408,7 +410,9 @@
         {{ unassessed_reports(gene) }}
         {{ quality_concerns(gene) }}
         {{ refused_papers(gene) }}
+        {% if panels_matched %}
         {{ panel_recommendations(gene) }}
+        {% endif %}
 
         {% if gene.variant_frequencies %}
         <div class="variant-frequency-section">
@@ -829,7 +833,7 @@
                 <li><strong>Novel Gene Associations:</strong> {{ statistics.novel_genes_count }}</li>
                 <li><strong>Potential Upgrades:</strong> {{ statistics.known_genes_upgraded }}</li>
                 <li><strong>Contributing Papers:</strong> {{ statistics.total_contributing_papers }}</li>
-                <li><strong>Panel Suggestions:</strong> {{ statistics.total_panel_suggestions }}</li>
+                {% if panels_matched %}<li><strong>Panel Suggestions:</strong> {{ statistics.total_panel_suggestions }}</li>{% endif %}
                 <li><strong>Associations:</strong> {{ statistics.total_associations }}</li>
                 <li><strong>Highlighted New-MoI Associations:</strong> {{ statistics.highlighted_new_moi_count }}</li>
                 <li><strong>Unreviewed on Target Panel:</strong> {{ statistics.unreviewed_count }}</li>

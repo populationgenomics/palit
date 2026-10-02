@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import markdown
 import nh3
@@ -19,8 +19,10 @@ from markupsafe import Markup
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
+from palit.gencc import MondoRef
 from palit.hgnc import HgncResolver
 from palit.llm import parse_json_output
+from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.panelapp_client import (
     AllPanelsData,
     PanelAppClient,
@@ -28,6 +30,9 @@ from palit.panelapp_client import (
     get_current_panel_publications,
 )
 from palit.panelapp_integration import (
+    MondoMatch,
+    MondoTerm,
+    PrefillAssociation,
     RelationStatus,
     calculate_association_rating,
     calculate_gene_rating,
@@ -260,21 +265,6 @@ class ExistingPanelReviews:
     evaluations: list[dict[str, Any]]
 
 
-MondoMatch = Literal["panelapp_gencc", "exact", "broader"]
-
-
-@dataclass(frozen=True)
-class MondoTerm:
-    """The MONDO term stored on an association and how it was chosen."""
-
-    mondo_id: str
-    label: str
-    match: MondoMatch
-    rationale: str  # map-mondo's rationale; empty for a reused GenCC term
-    obsolete: bool  # a reused GenCC term that the loaded MONDO release marks obsolete
-    replaced_by: tuple[str, ...]  # MONDO's replacements for an obsolete term; often empty
-
-
 @dataclass(frozen=True)
 class DisputeRef:
     """A GenCC submission for the gene with the dispute status the association states.
@@ -375,6 +365,7 @@ class GeneAssessmentResults:
     refused_genes: list[RefusedGene]
     target_panel_data: PanelGeneData
     target_panel_names: dict[int, str]  # panel_id → display name, for current target panels
+    panels_matched: bool  # match-panels has run in this database; panel-scoped runs skip it
 
 
 @dataclass
@@ -873,7 +864,7 @@ def _mondo_term(row: sqlite3.Row, gencc_rows: list[dict[str, Any]]) -> MondoTerm
             match=match,
             rationale="",
             obsolete=gencc_row["obsolete"],
-            replaced_by=tuple(gencc_row["replaced_by"]),
+            replaced_by=tuple(MondoRef(**ref) for ref in gencc_row["replaced_by"]),
         )
     answer = parse_json_output(Message.model_validate_json(row["mondo_raw"]))
     return MondoTerm(
@@ -1038,7 +1029,11 @@ def load_gene(
         paper.variant_frequencies = load_variant_frequencies_for_paper(cursor, paper)
 
     associations = load_associations(
-        cursor, hgnc_id, json.loads(row["panelapp_context_json"]), display_ids, all_panels_data
+        cursor,
+        hgnc_id,
+        json.loads(row["panelapp_context_json"]),
+        display_ids,
+        all_panels_data,
     )
     gene_level = replace_paper_ids_for_display(
         {
@@ -1063,17 +1058,10 @@ def load_gene(
         prefill_form_type = "review"
     prefill_data = prepare_prefill_data(
         hgnc_id=hgnc_id,
-        associations=[
-            {
-                **a.assessment,
-                "mondo_id": a.mondo.mondo_id if a.mondo is not None else None,
-                "mondo_label": a.mondo.label if a.mondo is not None else None,
-            }
-            for a in associations
-        ],
+        associations=[PrefillAssociation(a.assessment, a.mondo) for a in associations],
         form_type=prefill_form_type,
         panel_id=prefill_panel_id,
-        cited_papers=[(p.doi, p.pmid) for p in contributing_papers],
+        doi_to_pmid={p.doi: p.pmid for p in contributing_papers},
     )
 
     return GeneAssessment(
@@ -1136,7 +1124,17 @@ def build_gene_assessment_results(
         refused_genes=load_refused_genes(cursor, hgnc_resolver),
         target_panel_data=target_panel_data,
         target_panel_names=target_panel_names,
+        panels_matched=match_panels_has_run(cursor),
     )
+
+
+def match_panels_has_run(cursor: sqlite3.Cursor) -> bool:
+    """Whether match-panels has sent any request in this database."""
+    cursor.execute(
+        "SELECT EXISTS(SELECT 1 FROM llm_requests WHERE stage = ?)", (MATCH_PANELS_STAGE,)
+    )
+    has_run: bool = cursor.fetchone()[0] == 1
+    return has_run
 
 
 def load_gene_assessments(
@@ -1932,6 +1930,7 @@ def generate_html_report(
     target_panel_names: dict[int, str],
     refused_genes: list[RefusedGene],
     *,
+    panels_matched: bool,
     panelapp_integration: bool,
 ) -> str:
     """Generate HTML report directly using Jinja2 templates."""
@@ -2057,6 +2056,7 @@ def generate_html_report(
         report_config_json=report_config_json,
         target_panel_names=target_panel_names,
         refused_genes=refused_genes,
+        panels_matched=panels_matched,
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
         gnomad_thresholds={
             "het": GNOMAD_HET_THRESHOLD,
@@ -2155,6 +2155,7 @@ def main(
         target_panel_ids=actual_panel_ids,
         target_panel_names=results.target_panel_names,
         refused_genes=results.refused_genes,
+        panels_matched=results.panels_matched,
         panelapp_integration=panelapp_integration,
     )
 

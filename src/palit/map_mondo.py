@@ -117,12 +117,17 @@ class MappingOutcome:
 
 
 def select_associations(db_path: Path, limit: int | None) -> list[Association]:
-    """Associations without a MONDO term, except the ones this stage was refused."""
+    """Associations without a MONDO term, except the ones this stage was refused.
+
+    Only rows of a stored aggregation count: rows left behind by deleting a
+    ``gene_aggregations`` row are skipped.
+    """
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT a.id, a.hgnc_id, a.assessment_json
             FROM associations a
+            JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
             WHERE a.mondo_id IS NULL
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
@@ -152,7 +157,11 @@ def select_associations(db_path: Path, limit: int | None) -> list[Association]:
 def count_unmapped(db_path: Path) -> int:
     with sqlite3.connect(db_path) as conn:
         (count,) = conn.execute(
-            "SELECT COUNT(*) FROM associations WHERE mondo_id IS NULL"
+            """
+            SELECT COUNT(*) FROM associations a
+            JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
+            WHERE a.mondo_id IS NULL
+            """
         ).fetchone()
     return int(count)
 

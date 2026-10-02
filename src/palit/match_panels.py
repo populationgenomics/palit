@@ -80,12 +80,17 @@ def format_all_panels_for_prompt(panels: dict[int, dict[str, Any]]) -> str:
 
 
 def select_associations(db_path: Path) -> list[Association]:
-    """Associations without panel matches, except refused ones and ones in flight."""
+    """Associations without panel matches, except refused ones and ones in flight.
+
+    Only rows of a stored aggregation count: rows left behind by deleting a
+    ``gene_aggregations`` row are skipped.
+    """
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT a.id, a.assessment_json
             FROM associations a
+            JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
             WHERE a.matched_panels_json IS NULL
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
@@ -114,7 +119,11 @@ def select_associations(db_path: Path) -> list[Association]:
 def count_unmatched(db_path: Path) -> int:
     with sqlite3.connect(db_path) as conn:
         (count,) = conn.execute(
-            "SELECT COUNT(*) FROM associations WHERE matched_panels_json IS NULL"
+            """
+            SELECT COUNT(*) FROM associations a
+            JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
+            WHERE a.matched_panels_json IS NULL
+            """
         ).fetchone()
     return int(count)
 

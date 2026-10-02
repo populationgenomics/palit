@@ -352,6 +352,26 @@ def test_storing_a_gene_replaces_its_associations(tmp_path: Path, gencc_index: G
     assert json.loads(rows[0][4])["panelapp_relation"]["status"] == "new_moi"
 
 
+def test_storing_a_gene_removes_rows_left_by_a_deleted_aggregation(
+    tmp_path: Path, gencc_index: GenccIndex
+) -> None:
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+    item = _item(gencc_index)
+    answer = _stored_form(_answer(_association(), _new_association("new_disease", 2)))
+    with sqlite3.connect(db_path) as conn:
+        store_gene_aggregation(conn, item, _message(answer), answer)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = ?", (GENEA,))
+    with sqlite3.connect(db_path) as conn:
+        store_gene_aggregation(conn, item, _message(answer), answer)
+        positions = conn.execute(
+            "SELECT position FROM associations WHERE hgnc_id = ? ORDER BY position", (GENEA,)
+        ).fetchall()
+    assert positions == [(0,), (1,)]
+
+
 def test_storage_takes_mondo_from_the_reused_gencc_row(
     tmp_path: Path, gencc_index: GenccIndex
 ) -> None:

@@ -113,6 +113,15 @@ def test_select_associations_skips_matched_refused_and_pending_rows(db_path: Pat
     assert count_unmatched(db_path) == 4
 
 
+def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = 11273")
+        (left_behind,) = conn.execute("SELECT COUNT(*) FROM associations").fetchone()
+    assert left_behind == 5
+    assert select_associations(db_path) == []
+    assert count_unmatched(db_path) == 0
+
+
 def test_split_prompt_keeps_the_panel_list_in_the_system_part() -> None:
     system, user_template = _prompt()
     assert PANEL_LIST in system

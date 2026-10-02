@@ -797,6 +797,9 @@ def store_gene_aggregation(
     that row's MONDO term now; the others stay unmapped until ``map-mondo``.
     """
     gencc_titles = {a.mondo_id: a.disease_title for a in item.context.gencc.paa_associations}
+    # Explicit, because the connection does not enable foreign keys, so the
+    # schema's ON DELETE CASCADE does not fire; this also removes rows left
+    # behind by a gene_aggregations row deleted by hand.
     conn.execute("DELETE FROM associations WHERE hgnc_id = ?", (item.hgnc_id,))
     conn.execute(
         """

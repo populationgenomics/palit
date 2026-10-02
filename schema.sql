@@ -109,10 +109,13 @@ CREATE TABLE gene_aggregations (
 );
 
 -- One row per gene-disease-MoI association of one gene in this run. Storing a gene's
--- aggregation deletes its old rows explicitly, in the same transaction.
+-- aggregation deletes its old rows explicitly, in the same transaction. Deleting a
+-- gene_aggregations row by hand cascades only where PRAGMA foreign_keys is on; the
+-- stages and the report read associations through gene_aggregations, so rows left
+-- behind are ignored until the gene is stored again.
 CREATE TABLE associations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- per-run identity
-    hgnc_id INTEGER NOT NULL REFERENCES gene_aggregations(hgnc_id),
+    hgnc_id INTEGER NOT NULL REFERENCES gene_aggregations(hgnc_id) ON DELETE CASCADE,
     position INTEGER NOT NULL,             -- order in the model output
     assessment_json JSON NOT NULL,         -- the association object, with dois and criteria as a list
     mondo_id TEXT,                         -- NULL until map-mondo has run for this row

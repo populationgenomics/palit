@@ -22,6 +22,7 @@ from palit.map_mondo import (
     Conversation,
     MappingRunner,
     association_text,
+    count_unmapped,
     parse_mapping,
     select_associations,
 )
@@ -351,6 +352,23 @@ def test_select_associations_takes_only_unmapped_unrefused_rows(db_path: Path) -
             summary="Two families.",
         )
     ]
+
+
+def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = 6772")
+        (left_behind,) = conn.execute("SELECT COUNT(*) FROM associations").fetchone()
+    assert left_behind == 3
+    assert select_associations(db_path, None) == []
+    assert count_unmapped(db_path) == 0
+
+
+def test_deleting_an_aggregation_cascades_where_foreign_keys_are_on(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = 6772")
+        (left_behind,) = conn.execute("SELECT COUNT(*) FROM associations").fetchone()
+    assert left_behind == 0
 
 
 def test_association_text_lists_the_gene_and_its_gencc_rows(db_path: Path) -> None:

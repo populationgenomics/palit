@@ -91,7 +91,8 @@
                     <th>Disease entities</th>
                     <th>MoI</th>
                     <th>Patients</th>
-                    <th>Families</th>
+                    {% if disease_entities[0].reported_family_count is defined %}<th>Reported families</th>{% endif %}
+                    <th>Qualifying families</th>
                     {% if disease_entities[0].citations is defined and contributing_papers %}<th>Citations</th>{% endif %}
                 </tr>
             </thead>
@@ -107,6 +108,7 @@
                     </td>
                     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
                     <td>{{ entity.patient_count }}</td>
+                    {% if entity.reported_family_count is defined %}<td>{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }}</td>{% endif %}
                     <td{% if entity.independent_family_count is not none and entity.independent_family_count == max_independent and max_independent > 0 %} class="disease-entity-max-family-count"{% endif %}{% if entity.count_reduction_reasoning %} data-title="{{ entity.count_reduction_reasoning }}"{% endif %}>{% if entity.family_count is none %}NR{% elif entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %}{{ entity.family_count }} → {{ entity.independent_family_count }}{% else %}{{ entity.family_count }}{% endif %}</td>
                     {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for link in citation_links %}{{ cite(link) }} {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
                 </tr>
@@ -190,7 +192,7 @@
     {# Macro for rendering criteria assessment grid for a SINGLE disease entity (per-entity criteria). #}
     {% macro criteria_grid(entity, hgnc_id, contributing_papers=none, paper=none) %}
     {% if entity.family_count is not none %}
-    <p class="entity-count-summary"><strong>Families:</strong> {{ entity.family_count }} reported{% if entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %} → {{ entity.independent_family_count }} independent{% endif %} <span class="count-note">(A/B/C use the independent count){% if entity.count_reduction_reasoning %} — {{ entity.count_reduction_reasoning }}{% endif %}</span></p>
+    <p class="entity-count-summary"><strong>Families:</strong> {% if entity.reported_family_count is defined %}{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }} reported, {% endif %}{{ entity.family_count }} qualifying{% if entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %} → {{ entity.independent_family_count }} independent{% endif %} <span class="count-note">(A/B/C use the independent count){% if entity.count_reduction_reasoning %} — {{ entity.count_reduction_reasoning }}{% endif %}</span></p>
     {% endif %}
     <div class="criteria-grid">
         {% set criteria_meta = {

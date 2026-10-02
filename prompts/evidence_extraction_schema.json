@@ -54,27 +54,23 @@
                                     "type": "string",
                                     "description": "Disease name or clinical description."
                                 },
-                                "mondo_id": {
-                                    "type": "string",
-                                    "enum": [
-                                        "MONDO:0700092",
-                                        "MONDO:0003778",
-                                        "MONDO:0002254",
-                                        "MONDO:0005047",
-                                        "MONDO:0044970"
-                                    ],
-                                    "description": "Disease category."
-                                },
                                 "patient_count": {
                                     "type": "integer",
                                     "description": "Patients for this entity."
+                                },
+                                "reported_family_count": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "description": "Families reported, before the qualifying gate; null if none reported."
                                 },
                                 "family_count": {
                                     "type": [
                                         "integer",
                                         "null"
                                     ],
-                                    "description": "Total families reported (count families, not individuals); null if NR."
+                                    "description": "Families passing the qualifying gate, incl. cohort-derived; null only if no usable numbers."
                                 },
                                 "independent_family_count": {
                                     "type": [
@@ -225,8 +221,8 @@
                             },
                             "required": [
                                 "description",
-                                "mondo_id",
                                 "patient_count",
+                                "reported_family_count",
                                 "family_count",
                                 "independent_family_count",
                                 "count_reduction_reasoning",

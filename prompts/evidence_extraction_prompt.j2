@@ -52,11 +52,15 @@ A reported variant counts toward Criterion A/B/C only if it QUALIFIES under all 
 
 (3) Variant type is consistent with the assumed disease mechanism (e.g., truncating variant in a loss-of-function disease; activating missense in a gain-of-function disease).
 
+BIALLELIC ENTITIES: For a biallelic entity the gate applies to the genotype, not to a single allele. A family counts only when it is homozygous for a qualifying variant, or when both of its variants pass the gate and are in trans, with phase confirmed (parental testing, segregation in the family, or read-based phasing) or reasonably inferred (e.g., one tested parent carries only one of the two variants). Where this gene also has a monoallelic disease with overlapping features, a family with one qualifying allele and a second variant that is unassessed or fails the gate does not count toward the biallelic entity: the qualifying allele alone may explain the phenotype.
+
 Variants that do not pass this gate must NOT be counted toward family_count for Criteria A/B/C, even if they appear in the paper. State this exclusion in the criterion rationale where it materially affects the count.
 
-TOTAL vs INDEPENDENT FAMILY COUNT — report two counts per entity.
+FAMILY COUNTS — report three counts per entity: reported, qualifying and independent.
 
-`family_count` (total): families reported with a qualifying variant for this entity. Count families, not individuals — affected relatives in one pedigree are ONE family, however large the pedigree. Do NOT reduce this for shared alleles, shared ancestry, or geography.
+`reported_family_count`: every family the paper reports for this entity, before the QUALIFYING VARIANT GATE (the CNV, gene-fusion and digenic/oligogenic exclusions still apply). Count families, not individuals — affected relatives in one pedigree are ONE family, however large the pedigree. Null when the paper reports no families, including when it reports patients without grouping them into families.
+
+`family_count` (qualifying): the families whose genotype passes the QUALIFYING VARIANT GATE, counted among the reported families plus any derived under COHORTS WITHOUT FAMILY STRUCTURE below. Same counting unit. Do NOT reduce this for shared alleles, shared ancestry, or geography. Null only when the paper gives no usable patient or family numbers at all.
 
 `independent_family_count` (≤ family_count): of those, how many are independent observations of the gene–disease link — families that do not descend from a common ancestral origin of the variant. Criteria A/B/C use this count. It is the sum of:
 - each family whose qualifying variant is not shared with another family → 1;
@@ -70,14 +74,19 @@ HARD FLOOR (overrides rule 3 only): a variant shared by MORE THAN 10 families is
 
 Founder/recurrence is a confidence caveat (`founder_or_recurrent_variant`); the shared-origin collapse above is its only count effect — do not penalise twice, and it never feeds Criterion E.
 
-Always set `count_reduction_reasoning` to the two counts plus the per-group disposition, e.g. "7 total: 5 distinct variants → 5; L14V in 2 Han/Shanghai families, no haplotype → 1; independent 6". Write "No reduction (N families)" only when the counts are equal.
+Always set `count_reduction_reasoning` to the qualifying and independent counts plus the per-group disposition, e.g. "7 qualifying: 5 distinct variants → 5; L14V in 2 Han/Shanghai families, no haplotype → 1; independent 6". Write "No reduction (N families)" only when the counts are equal and no family was derived under COHORTS WITHOUT FAMILY STRUCTURE.
+
+COHORTS WITHOUT FAMILY STRUCTURE: Registries, natural-history cohorts and case series often report patients without grouping them into families. Do not leave `family_count` null for them. Derive the families from the patients who carry a qualifying genotype:
+  (a) The paper states how many families, pedigrees or probands the patients come from → that number (it is also `reported_family_count`).
+  (b) Otherwise → one family per patient.
+A genotype stated for the whole cohort (e.g., "all patients were homozygous for c.1234+6T>C") applies to every patient in it. Only affected patients count: embryos, fetuses without a reported disease phenotype, cell lines, iPSCs, biopsies and other specimens never add a family unless the paper ties them to a distinct affected individual not already counted. When two cohorts may include the same patients (same registry, same centre or consortium, overlapping recruitment), do not add them: take the larger and state the possible overlap in `count_reduction_reasoning`. A derived count is a family count like any other: the shared-origin collapse and the HARD FLOOR above apply to it. State the rule and the numbers in `count_reduction_reasoning`, e.g. "120 registry patients, no family structure, all homozygous c.1234+6T>C → (b) 120 families; one variant in >10 families → hard floor, independent 120". `reported_family_count` stays null under (b), because the paper reports no families.
 
 LUMPING AND SPLITTING DISEASE ENTITIES - CRITICAL:
 
 Each entry in the `disease_entities` array represents one (phenotype × inheritance mode) combination. Decide entry boundaries in two steps. Assess from the paper content only.
 
 **STEP 1 — SPLIT BY INHERITANCE MODE (mandatory, no exceptions):**
-Each disease entity must have EXACTLY ONE inheritance_mode. When an autosomal gene's same phenotype has evidence for BOTH monoallelic and biallelic inheritance, create TWO separate entries — one per MoI — even if the description, mondo_id, and disease_mechanism are otherwise identical. (This monoallelic/biallelic split applies to autosomal genes only; every entity of an X-linked gene is "X-linked" — see the location-first rule under inheritance_mode below.) PanelApp curates each gene–disease relationship per MoI, so per-MoI family and patient counts are required for downstream classification. Do NOT fold mixed-MoI evidence into a single entry; combination modes are not permitted.
+Each disease entity must have EXACTLY ONE inheritance_mode. When an autosomal gene's same phenotype has evidence for BOTH monoallelic and biallelic inheritance, create TWO separate entries — one per MoI — even if the description and disease_mechanism are otherwise identical. (This monoallelic/biallelic split applies to autosomal genes only; every entity of an X-linked gene is "X-linked" — see the location-first rule under inheritance_mode below.) PanelApp curates each gene–disease relationship per MoI, so per-MoI family and patient counts are required for downstream classification. Do NOT fold mixed-MoI evidence into a single entry; combination modes are not permitted.
 
 **STEP 2 — WITHIN A SINGLE MoI, decide LUMP vs SPLIT using ClinGen criteria (weigh together):**
 
@@ -100,11 +109,11 @@ EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST (PER ENTITY):
 
 For each disease entity, you must explicitly assess the six weakening factors below and emit them in that entity's `evidence_weakening_factors` array (always all six entries per entity). Any criterion rationale for that entity must explicitly reference any factor with `present: true` that affects the verdict.
 
-1. **founder_or_recurrent_variant**: The same variant recurs across counted families without evidence of independent origins (see TOTAL vs INDEPENDENT FAMILY COUNT). A confidence caveat: where it reflects a shared ancestral origin it is already captured in `independent_family_count`, and it never, on its own, fails Criterion E.
+1. **founder_or_recurrent_variant**: The same variant recurs across counted families without evidence of independent origins (see FAMILY COUNTS). A confidence caveat: where it reflects a shared ancestral origin it is already captured in `independent_family_count`, and it never, on its own, fails Criterion E.
 2. **inherited_no_segregation_with_affected**: Variants are inherited from carrier parents who are unaffected, of unknown affected status, or where segregation with affected status is not documented across informative meioses.
 3. **missense_no_variant_specific_functional**: A missense-dominated cohort for this entity without variant-specific functional validation (assays must test the actual reported variants, not just gene knockdown).
 4. **population_frequency_incompatible_with_moi**: One or more reported variants for this entity exceed plausible population-frequency thresholds for the assumed MoI, based on the gnomAD v4.1 lookup results and any frequencies the paper reports. In `details`, give the variant and its counts (e.g., "c.123A>G: gnomAD v4.1 AC 212/1,614,046, 3 homozygotes").
-5. **phenotype_non_mendelian**: This entity's phenotype is a susceptibility/risk-factor allele, modifier locus, mostly-asymptomatic biomarker, predominantly epigenetic disorder, or otherwise not a clearly Mendelian disease.
+5. **phenotype_non_mendelian**: This entity is not a Mendelian disease, for one of the reasons listed under CRITERION D: common-variant or association-study risk, a low-penetrance risk allele, a digenic or oligogenic requirement, a modifier locus, a biomarker-only phenotype, or a predominantly epigenetic disorder. Present exactly when criterion_D is false. Reduced penetrance of a Mendelian allele, a "susceptibility to" disease name, and limited or single-case evidence are not this factor.
 6. **functional_below_criterion_c_threshold**: Functional evidence cited (or that could be cited) for this entity under Criterion C does not satisfy Pillar 2(a) or 2(b) below — it relies on biochemical assays, heterologous overexpression, or patient-cell deficit without rescue.
 
 For each factor: emit `{"factor": "<enum>", "present": true|false, "details": "<1-2 sentences citing specific evidence; for present=false use 'Not present' or a brief sanity-check statement>"}`.
@@ -116,7 +125,7 @@ For each entity, set `criterion_A.result` to true if and only if that entity's `
 
 KEY REQUIREMENTS:
 - Count FAMILIES, not individual patients (multiple affected siblings = 1 family).
-- Each counted family must contribute at least one variant that passes the qualifying gate.
+- Each counted family must carry a genotype that passes the qualifying gate (for a biallelic entity, both alleles; see BIALLELIC ENTITIES).
 - Phenotype documentation must be DETAILED:
   * Individual patient clinical details (not just summaries)
   * Systematic phenotyping with consistent core features
@@ -157,17 +166,22 @@ If Pillar 2 is not met, Criterion C is FALSE regardless of family count. State t
 CRITERION D: Inheritance Pattern Appropriate for Diagnostic Reporting
 "Evidence indicates that disease-causing mutations follow a pattern of causation appropriate for reporting in a diagnostic setting."
 
-For each entity, set `criterion_D.result` to true when the entity's gene–disease relationship is MENDELIAN (monogenic) and CLINICALLY ACTIONABLE:
-- Clear inheritance pattern (exactly one of: Monoallelic, Biallelic, X-linked, Mitochondrial, Other) for this entity
-- Penetrance is high enough to be diagnostically useful — either complete or well-characterised reduced penetrance with a clear genotype-phenotype relationship
-- The phenotype itself is a recognisable disease, not a biochemical/biomarker abnormality, susceptibility allele, modifier locus, or asymptomatic finding
+D asks one question: is this entity a Mendelian (monogenic) disease, in which a genotype in this gene alone (one allele for a monoallelic or X-linked entity, two for a biallelic one) can cause the disease? D concerns the kind of gene–disease relationship, not how much evidence supports it. The number of families, the depth of phenotyping, and whether the authors call the link "possible" or "candidate" belong to Criteria A/B/C and E. A single case, a tentative link or otherwise limited evidence is never a reason to set D false.
 
-Set `criterion_D.result` to false for an entity when its phenotype is one of:
-- A **susceptibility / risk-factor allele** (variants increase disease risk but are neither necessary nor sufficient — e.g., association-study findings, oligogenic risk modifiers)
-- A **modifier locus** (variants modulate severity/expression of another genetic disorder rather than cause disease independently)
-- A condition where the **majority of variant carriers are asymptomatic** or have only laboratory abnormalities without clinical disease (penetrance too low for diagnostic action)
-- A **predominantly epigenetic disorder** where sequence variation in this gene only rarely contributes to disease (most pathogenic events are methylation/imprinting changes)
-- A **somatic cancer driver** as the primary phenotype (already excluded under IMPORTANT INSTRUCTIONS, restated for clarity)
+Set `criterion_D.result` to true for every entity that is a Mendelian disease, including with reduced penetrance or variable expressivity.
+
+Set `criterion_D.result` to false only when the entity is not a Mendelian disease, that is when one of the following holds:
+- **Common-variant or association-study risk**: the evidence is a GWAS signal, a common variant, or enrichment of variants in cases over controls (including burden tests), reported as a change in risk rather than as the cause of disease in individual patients.
+- **Low-penetrance risk allele**: see REDUCED PENETRANCE below.
+- **Digenic or oligogenic requirement**: disease occurs only when variants in another gene are also present. A variant elsewhere that only modifies penetrance or severity does not make D false.
+- **Modifier locus**: variants in this gene modulate the severity or expression of another genetic disorder rather than cause disease themselves.
+- **Biomarker only**: carriers show a biochemical or laboratory abnormality without clinical disease.
+- **Predominantly epigenetic disorder**: sequence variation in this gene only rarely contributes; most pathogenic events are methylation or imprinting changes.
+- **Somatic cancer driver** as the primary phenotype (already excluded under IMPORTANT INSTRUCTIONS, restated for clarity).
+
+REDUCED PENETRANCE: decide from the evidence, not from the disease name. A "susceptibility to" label (in OMIM, GenCC or a paper) does not decide D.
+- **Reduced-penetrance Mendelian allele → D true**: rare variants reported in affected individuals as the cause or candidate cause of their disease (case reports, families, or cohorts with individual genotypes), even when unaffected carriers are documented or the papers estimate that only a minority of carriers are affected (e.g., about 20%).
+- **Low-penetrance risk allele → D false**: the evidence that the variants matter is statistical rather than individual (an odds ratio, or enrichment in cases over controls, without affected individuals whose disease the papers attribute to the variant), or the papers report that carriers become affected only together with variants in another gene.
 
 For post-zygotic mosaic/somatic disorders causing rare disease (in scope per IMPORTANT INSTRUCTIONS), classify inheritance_mode by the reported zygosity (see the MOSAIC/SOMATIC VARIANTS guidance under inheritance_mode below); the entity meets D if the variant is reportable and actionable in a diagnostic setting.
 
@@ -200,15 +214,9 @@ NEVER infer, estimate, or make assumptions about missing data.
 
 - disease_entities: array of distinct disease entities with their patient and family counts. Each entry must include:
   * description: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the paper.
-  * mondo_id: Disease category classification. Select EXACTLY ONE from:
-    - "MONDO:0700092" = Neurodevelopmental disorder
-    - "MONDO:0003778" = Inborn error of immunity
-    - "MONDO:0002254" = Syndromic disease
-    - "MONDO:0005047" = Infertility disorder
-    - "MONDO:0044970" = Mitochondrial disease
-    RULE: If the gene is mitochondrial, ALWAYS select MONDO:0044970. Otherwise select the most specific applicable category based on the clinical presentation.
   * patient_count: number of patients for this specific disease entity (always required)
-  * family_count: total families reported for this disease entity (count families, not individuals). Use null when not reported (NR). See TOTAL vs INDEPENDENT FAMILY COUNT.
+  * reported_family_count: every family the paper reports for this disease entity, before the qualifying gate (count families, not individuals). Null when the paper reports no families. See FAMILY COUNTS.
+  * family_count: families whose genotype passes the QUALIFYING VARIANT GATE, including families derived under COHORTS WITHOUT FAMILY STRUCTURE. Null only when the paper gives no usable patient or family numbers. See FAMILY COUNTS.
   * independent_family_count: of those, how many are independent observations (no shared ancestral origin) — the count Criteria A/B/C use. ≤ family_count; null only when family_count is null.
   * count_reduction_reasoning: the two counts plus the reason for any collapse, or "No reduction (N families)".
   * disease_mechanism: molecular mechanism by which variants cause disease, extracted from paper. Use free text to describe mechanism as stated in paper. Common examples: "loss-of-function", "gain-of-function", "dominant-negative", "loss-of-function (haploinsufficiency)", "unknown mechanism". Use "NR" when not discussed in paper. Extract ONLY from paper content.
@@ -236,7 +244,7 @@ NEVER infer, estimate, or make assumptions about missing data.
       * "the original 5 families in [ref 3] plus 2 new families"
 
     - ✅ EXTRACT - SCREENING / COHORT PAPERS re-including a known proband (the failure mode this rule most often misses):
-      When this paper reports a family for a gene in its OWN cohort (you assigned that gene family_count ≥ 1) AND attributes that gene's disease finding to a prior study — "previously reported [ref]", "first revealed/described in [ref]", "as shown by [ref]", or a table cell / footnote / shading marking the variant or family as previously reported or known — that proband is almost always THE SAME individual the prior study reported. Populate previously_reported_sources for it (title from the cited reference; family_count = the overlapping count; context = the attributing quote). This holds EVEN WHEN the sentence reads like disease background ("a novel cause of X was identified in a patient [ref]"): a cohort/screening paper restating a prior gene–disease discovery is re-counting the proband it contributed to that discovery, not adding a new one.
+      When this paper reports a family for a gene in its OWN cohort (you counted at least one family for that gene) AND attributes that gene's disease finding to a prior study — "previously reported [ref]", "first revealed/described in [ref]", "as shown by [ref]", or a table cell / footnote / shading marking the variant or family as previously reported or known — that proband is almost always THE SAME individual the prior study reported. Populate previously_reported_sources for it (title from the cited reference; family_count = the overlapping count; context = the attributing quote). This holds EVEN WHEN the sentence reads like disease background ("a novel cause of X was identified in a patient [ref]"): a cohort/screening paper restating a prior gene–disease discovery is re-counting the proband it contributed to that discovery, not adding a new one.
 
     - ❌ DO NOT EXTRACT - These discuss variants/diseases, not the same families:
       * "the variant c.940G>A was previously reported in a patient [ref 12]" (DIFFERENT patient with same variant - recurrent variant)
@@ -266,10 +274,11 @@ NEVER infer, estimate, or make assumptions about missing data.
   * evidence_assessments: REQUIRED per entity — an object with all five keys criterion_A through criterion_E, capturing the PanelApp diagnostic evidence assessment for THIS entity's gene–disease relationship from this paper. See the CRITERION A–E sections above for per-entity rules. The examples below omit this field for brevity but it must always be present.
   Examples (showing entity descriptors only; `evidence_weakening_factors` and `evidence_assessments` are required but elided for readability — see the JSON output format at the bottom for full shape):
 {% raw %}
-  - All novel families: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "mondo_id": "[appropriate category]", "patient_count": 7, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "clinical features and patient counts"}, {"quote": "<verbatim passage>", "commentary": "family counts"}]}]
-  - Mixed novel + previously reported: [{"description": "Beckwith-Wiedemann syndrome with multi-locus imprinting disturbance", "mondo_id": "[appropriate category]", "patient_count": 10, "family_count": 10, "independent_family_count": 10, "count_reduction_reasoning": "No reduction (10 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "imprinting", "previously_reported_sources": [{"title": "Novel genetic variants of KHDC3L and other members of the subcortical maternal complex", "family_count": 1, "context": "including the 1 family previously described [ref 27]"}], "citations": [{"quote": "<verbatim passage>", "commentary": "mentions 10 total families including 1 previously reported"}]}]
-  - No families reported: [{"description": "epilepsy (functional study only)", "mondo_id": "[appropriate category]", "patient_count": 0, "family_count": null, "independent_family_count": null, "count_reduction_reasoning": "Not reported", "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "functional validation without patient data"}]}]
-  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "Gardos channelopathy (hereditary hemolytic anemia)", "mondo_id": "[appropriate category]", "patient_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "de novo", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "Case III: heterozygous de novo p.Ser181Cys"}]}, {"description": "Gardos channelopathy (hereditary hemolytic anemia)", "mondo_id": "[appropriate category]", "patient_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "consanguineous", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "Case I: homozygous p.Gly2Asp"}]}]
+  - All novel families: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "patient_count": 7, "reported_family_count": 4, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "clinical features and patient counts"}, {"quote": "<verbatim passage>", "commentary": "family counts"}]}]
+  - Mixed novel + previously reported: [{"description": "Beckwith-Wiedemann syndrome with multi-locus imprinting disturbance", "patient_count": 10, "reported_family_count": 10, "family_count": 10, "independent_family_count": 10, "count_reduction_reasoning": "No reduction (10 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "imprinting", "previously_reported_sources": [{"title": "Novel genetic variants of KHDC3L and other members of the subcortical maternal complex", "family_count": 1, "context": "including the 1 family previously described [ref 27]"}], "citations": [{"quote": "<verbatim passage>", "commentary": "mentions 10 total families including 1 previously reported"}]}]
+  - No families reported: [{"description": "epilepsy (functional study only)", "patient_count": 0, "reported_family_count": null, "family_count": null, "independent_family_count": null, "count_reduction_reasoning": "Not reported", "disease_mechanism": "NR", "inheritance_mode": "NR", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "functional validation without patient data"}]}]
+  - Registry cohort without family structure: [{"description": "<disease name>", "patient_count": 120, "reported_family_count": null, "family_count": 120, "independent_family_count": 120, "count_reduction_reasoning": "120 registry patients, no family structure, all homozygous c.1234+6T>C → (b) 120 families; one variant in >10 families → hard floor, independent 120", "disease_mechanism": "loss-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "cohort size and shared genotype"}]}]
+  - Same phenotype with both MoIs (MoI split required — one row per MoI): [{"description": "Gardos channelopathy (hereditary hemolytic anemia)", "patient_count": 1, "reported_family_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "de novo", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "Case III: heterozygous de novo p.Ser181Cys"}]}, {"description": "Gardos channelopathy (hereditary hemolytic anemia)", "patient_count": 1, "reported_family_count": 1, "family_count": 1, "independent_family_count": 1, "count_reduction_reasoning": "No reduction (1 family)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Biallelic", "inheritance_details": "consanguineous", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "Case I: homozygous p.Gly2Asp"}]}]
 {% endraw %}
 
 **Style:** Use UK English spelling, except in verbatim quotes.
@@ -282,7 +291,7 @@ WRITING STYLE (applies to `summary`, every `rationale`, `details`, `commentary`,
 - Do not use PanelApp criterion vocabulary ("Criterion A", "diagnostic-grade", "meets the functional bar") in `summary`; that belongs in `evidence_assessments`.
 
 PROSE SUMMARY REQUIREMENTS:
-Provide a short prose summary (at most ~60 words per gene) of the gene–disease evidence in this paper, for curators and for aggregation across papers. Target pattern: "Reports N individuals from M families with <zygosity> <variant type> variants and <key phenotype>." followed by at most one sentence on functional or animal-model experiments and their readouts. Example: "Reports three individuals from two consanguineous families with homozygous truncating variants and congenital hypopituitarism with growth-hormone deficiency. Patient fibroblasts show protein mislocalisation and increased cell death." 
+Provide a short prose summary (at most ~60 words per gene) of the gene–disease evidence in this paper, for curators and for aggregation across papers. Target pattern: "Reports N individuals from M families with <zygosity> <variant type> variants and <key phenotype>." followed by at most one sentence on functional or animal-model experiments and their readouts. Example: "Reports three individuals from two consanguineous families with homozygous truncating variants and congenital hypopituitarism with growth-hormone deficiency. Patient fibroblasts show protein mislocalisation and increased cell death." N and M are the numbers the paper reports (`patient_count` and `reported_family_count`); leave out "from M families" when the paper reports no families. Write them in plain words, without "qualifying" or other gate vocabulary: the qualifying and independent counts are carried by their own fields.
 
 Omit protein-function background, study design narrative, and anything the structured fields already carry.
 
@@ -404,11 +413,11 @@ IMPORTANT INSTRUCTIONS:
   * If a gene has ONLY digenic/oligogenic evidence in this paper, do not create a gene
     evaluation for it.
   * Biallelic (two alleles in the same gene) remains in scope.
-- INDEPENDENT FAMILIES: Criteria A/B/C count `independent_family_count`, not `family_count` — see TOTAL vs INDEPENDENT FAMILY COUNT for how shared-origin families collapse.
-- FOUNDER / RECURRENT VARIANT TERMINOLOGY: Do not describe a variant as a "founder allele", "founder variant", or as showing a "founder effect" unless one of the following holds: (a) the paper itself uses that term about the specific variant, (b) the paper documents shared haplotype evidence linking carriers, or (c) the paper cites prior work establishing founder status. Elevated allele frequency in a specific ancestry alone is consistent with founder effect but does not establish it — alternative explanations include drift, recurrent mutation at hotspots (e.g., CpG sites), and simple polymorphism. Describe the observation in the paper's own terms (e.g., "present at higher frequency in X population", "carrier frequency 1:N suggesting a founder effect") rather than escalating to "founder allele". This applies wherever variants are described — `summary`, `quality_concerns`, and citation commentary alike. (The structured `evidence_weakening_factors.founder_or_recurrent_variant` factor concerns counting/independence and is governed by the TOTAL vs INDEPENDENT FAMILY COUNT rule, not by this terminology rule.)
+- INDEPENDENT FAMILIES: Criteria A/B/C count `independent_family_count`, not `family_count` — see FAMILY COUNTS for how shared-origin families collapse.
+- FOUNDER / RECURRENT VARIANT TERMINOLOGY: Do not describe a variant as a "founder allele", "founder variant", or as showing a "founder effect" unless one of the following holds: (a) the paper itself uses that term about the specific variant, (b) the paper documents shared haplotype evidence linking carriers, or (c) the paper cites prior work establishing founder status. Elevated allele frequency in a specific ancestry alone is consistent with founder effect but does not establish it — alternative explanations include drift, recurrent mutation at hotspots (e.g., CpG sites), and simple polymorphism. Describe the observation in the paper's own terms (e.g., "present at higher frequency in X population", "carrier frequency 1:N suggesting a founder effect") rather than escalating to "founder allele". This applies wherever variants are described — `summary`, `quality_concerns`, and citation commentary alike. (The structured `evidence_weakening_factors.founder_or_recurrent_variant` factor concerns counting/independence and is governed by the FAMILY COUNTS rule, not by this terminology rule.)
 - PHENOTYPE REQUIREMENTS: Detailed individual patient descriptions required, not summaries
 - Count families as primary units, mention patient numbers as supplementary
-- VARIANT QUALIFICATION: All Criterion A/B/C family counts use only families whose variants pass the QUALIFYING VARIANT GATE. Predicted/proven null variants in haploinsufficient genes qualify directly under gate clause (1)(b); other variant types must meet (1)(c)(i)–(iii).
+- VARIANT QUALIFICATION: All Criterion A/B/C family counts use only families whose variants pass the QUALIFYING VARIANT GATE (for biallelic entities, both alleles; see BIALLELIC ENTITIES). Predicted/proven null variants in haploinsufficient genes qualify directly under gate clause (1)(b); other variant types must meet (1)(c)(i)–(iii).
 - CRITERION C BAR: Use the two-pillar rule; biochemical or heterologous-overexpression evidence alone does not satisfy Pillar 2.
 - GENE SYMBOL REQUIREMENTS: Use the approved symbol returned by `lookup_genes`. Every gene_symbol in gene_evaluations must be a valid HGNC gene
   symbol. Do NOT include placeholder entries, marker entries, notes, or dummy gene symbols
@@ -486,8 +495,8 @@ Respond in JSON format with your evaluation:
       "disease_entities": [
         {
           "description": "disease name or clinical features with modifiers",
-          "mondo_id": "[selected category]",
           "patient_count": N,
+          "reported_family_count": N_or_null,
           "family_count": N_or_null,
           "independent_family_count": N_or_null,
           "count_reduction_reasoning": "two counts + reason for any collapse, or No reduction (N families)",

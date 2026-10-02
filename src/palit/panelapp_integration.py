@@ -85,13 +85,13 @@ def validate_independent_family_counts(entities: list[dict[str, Any]]) -> bool:
     null exactly when family_count is null, otherwise 0 <= independent <= family_count.
     """
     for entity in entities:
-        total = entity.get("family_count")
+        qualifying = entity.get("family_count")
         independent = entity.get("independent_family_count")
-        if total is None or independent is None:
-            if total is not None or independent is not None:
+        if qualifying is None or independent is None:
+            if qualifying is not None or independent is not None:
                 return False
             continue
-        if not 0 <= independent <= total:
+        if not 0 <= independent <= qualifying:
             return False
     return True
 

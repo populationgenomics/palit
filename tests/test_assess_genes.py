@@ -11,12 +11,15 @@ import pytest
 from anthropic.types import Message
 
 from palit.assess_genes import (
+    STAGE,
     PanelAppContext,
     PanelReviews,
     PaperBatchProcessor,
     _GeneBatchItem,
     association_problems,
+    build_request,
     coverage_problems,
+    genes_to_assess,
     prune_invalid_citations,
     render_prompt,
     replace_paper_ids_with_dois,
@@ -24,6 +27,7 @@ from palit.assess_genes import (
     target_panels_holding,
 )
 from palit.gencc import GenccIndex, GeneGencc, MondoRef
+from palit.llm import FALLBACK_MODEL, MODEL, json_output_config, stage_refusals
 from palit.panelapp_check import INCIDENTALOME_SCOPE, CuratedRecord
 from palit.panelapp_client import PanelGeneData
 from palit.panelapp_integration import (
@@ -570,3 +574,41 @@ def test_scoped_run_asks_for_panel_relevance_per_association(
     unscoped = _render(context, "GENEA")
     assert "PANEL RELEVANCE" not in unscoped and "Arthrogryposis" not in unscoped
     assert 'one country."\nIMPORTANT INSTRUCTIONS:' in unscoped
+
+
+def test_genes_refused_by_model_go_to_the_fallback_and_refused_for_good_ones_stay_out(
+    tmp_path: Path, gencc_index: GenccIndex
+) -> None:
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+        conn.execute(
+            "INSERT INTO papers (doi, title, source, source_type) "
+            "VALUES ('10.1/a', 't', 'pubmed', 'initial')"
+        )
+        conn.executemany(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (?, 'G', '10.1/a', 'recent_evidence')",
+            [(1,), (2,), (3,), (4,)],
+        )
+        conn.executemany(
+            "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, "
+            "completed_at) VALUES (?, ?, ?, 1, ?, ?, '2026-10-01T00:00:00+00:00')",
+            [
+                ("a", STAGE, "2", MODEL, "refused"),
+                ("b", STAGE, "3", MODEL, "refused"),
+                ("c", STAGE, "3", FALLBACK_MODEL, "refused"),
+                ("d", STAGE, "4", MODEL, "pending"),
+            ],
+        )
+        refusals = stage_refusals(conn, STAGE)
+    assert genes_to_assess(db_path, None, refusals) == [1, 2]
+    assert genes_to_assess(db_path, [2, 3], refusals) == [2]
+    assert [refusals.model_for(str(g)) for g in (1, 2)] == [MODEL, FALLBACK_MODEL]
+
+    item = _item(gencc_index)
+    output_config = json_output_config({"type": "object"}, "medium")
+    primary = build_request(item, output_config, MODEL)
+    fallback = build_request(item, output_config, FALLBACK_MODEL)
+    assert fallback.params["model"] == FALLBACK_MODEL
+    assert {**fallback.params, "model": MODEL} == primary.params

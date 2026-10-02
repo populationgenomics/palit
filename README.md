@@ -52,7 +52,9 @@ ant auth login --profile <profile>
 
 Palit reads the profile name from `PALIT_ANTHROPIC_PROFILE`, set either in the environment or in `.env` (see `.env.example`). The variable is required: an LLM stage stops with a validation error naming it before sending any request. Palit deliberately ignores `ANTHROPIC_PROFILE` and `ANTHROPIC_API_KEY`, which Claude Code sessions may export for their own workspace. The SDK refreshes the access token itself. The refresh token eventually expires, so when a previously working profile starts failing authentication, run `ant auth login --profile <profile>` again. Run one palit process per profile: the SDK serialises token refreshes within a process only.
 
-`uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, tokens, and USD cost per stage for a run database. Every stage prints the same summary for itself when it finishes, listing each refused paper or gene; `uv run palit llm refusals --db-path data/db.sqlite` lists all refusals with their safety-classifier category (refused subjects are not resubmitted within a run). `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API (it needs the profile above).
+Requests go to Claude Opus 5.5 (`MODEL` in `src/palit/llm.py`). When Opus 5.5 refuses a paper, gene or association in a stage, the stage's next attempt sends that subject to Claude Sonnet 5.5 (`FALLBACK_MODEL`) with the same prompt, schema, effort and token limit. The multi-round stages (`extract-evidence`, `map-mondo`) restart the subject's conversation from round 1 on Sonnet 5.5, since thinking blocks cannot be replayed to another model, and the tournament resends a refused prompt on Sonnet 5.5 within its round. A subject is refused for good only when Sonnet 5.5 refuses it too; this is what "refused" means in the stage summaries and the report, and stages skip such subjects. The fallback attempt runs in the same invocation and counts toward `--max-retries`. With `--limit`, a stage runs one attempt, so the fallback waits for the next invocation. `--retry-refused` on `assess-relevance` and `extract-evidence` sends the subjects refused for good in earlier invocations through both models once more. The report marks the relevance assessments, extractions and aggregations that came from Sonnet 5.5. The fallback is palit's own because the Batches API rejects the server-side `fallbacks` parameter.
+
+`uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, tokens, and USD cost per stage, model and service tier for a run database. Every stage prints the same summary for itself when it finishes, listing each refused request; `uv run palit llm refusals --db-path data/db.sqlite` lists all refusals with their safety-classifier category and the subject's outcome: recovered (answered after the refusal), refused for good (Sonnet 5.5 refused it last), or not answered yet. `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API for both models (it needs the profile above).
 
 ### External Services
 
@@ -101,8 +103,9 @@ uv run palit ingest-pubmed --ledger $LEDGER $START_DATE $END_DATE
 #    GenCC rows, which rate each association separately, and keeps a paper only
 #    if a gene is new, has a new disease or inheritance mode, or the association
 #    is still amber or red. Safe to interrupt and re-run: it re-attaches to
-#    batches still in flight. Refused papers stay unassessed and are retried in
-#    the next run.
+#    batches still in flight. Papers Opus 5.5 refuses go to Sonnet 5.5 (see
+#    "Claude API" above); papers both refuse stay unassessed, and
+#    --retry-refused sends them once more.
 uv run palit assess-relevance --panel-date $PANEL_DATE
 
 # 2a. (Optional) Screen the PubMed baseline with the retrospective prompt. The
@@ -119,9 +122,10 @@ uv run palit download-papers register
 # 4. Extract evidence from the PDFs: Claude reads each PDF, looks up its genes
 #    (HGNC) and variants (gnomAD v4.1, via the variant-lookup service; requires
 #    VARIANT_LOOKUP_* env vars, see Setup) in one round, and cites verbatim
-#    quotes. Two batch rounds; safe to interrupt and re-run. Re-runs skip papers
-#    that were refused; add --retry-refused to send each of them once more,
-#    since the safety classifier does not refuse the same paper every time.
+#    quotes. Two batch rounds; safe to interrupt and re-run. Papers Opus 5.5
+#    refuses are extracted by Sonnet 5.5; re-runs skip papers both refused. Add
+#    --retry-refused to send each of them once more, since the safety
+#    classifier does not refuse the same paper every time.
 #    Each disease entity carries three family counts. The reported count is
 #    every family the paper reports. The qualifying count (`family_count`) is
 #    the families whose genotype passes the qualifying variant gate. The

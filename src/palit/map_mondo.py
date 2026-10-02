@@ -13,6 +13,9 @@ mapping takes several tool rounds. Conversations are kept in memory, append-only
 because Opus 5.5 rejects replayed thinking after an edited history. An answer is
 stored only when it passes the schema and names an eligible MONDO term; otherwise
 the association stays unmapped and the next attempt starts a fresh conversation.
+A conversation stays on the model it started on: when MODEL refuses an
+association in any round, the next attempt starts its conversation afresh on
+FALLBACK_MODEL, because thinking blocks cannot be replayed to another model.
 """
 
 import asyncio
@@ -37,19 +40,21 @@ from palit.gencc import (
 )
 from palit.hgnc import HgncResolver
 from palit.llm import (
-    MODEL,
     Effort,
     ImmediateTransport,
     LlmRequest,
     LlmResult,
     ResultStatus,
+    StageRefusals,
     Transport,
     assistant_content,
     cached_system,
     json_output_config,
+    log_refusal,
     make_client,
     parse_json_output,
     record_result,
+    stage_refusals,
 )
 from palit.llm_usage import print_stage_summary
 from palit.mondo_tools import TOOLS, MondoIndex, MondoToolRunner
@@ -96,17 +101,19 @@ class MondoMapping:
 
 @dataclass(frozen=True)
 class Conversation:
-    """The input messages of one round for one association."""
+    """The input messages of one round for one association, and the model it is on."""
 
     association_id: int
     round: int
     messages: list[dict[str, Any]]
+    model: str
 
 
 @dataclass
 class MappingOutcome:
     stored: int = 0
     refused: int = 0
+    to_fallback: int = 0  # the refusals by MODEL: these restart on FALLBACK_MODEL
     failed: int = 0
 
 
@@ -115,8 +122,10 @@ class MappingOutcome:
 # ---------------------------------------------------------------------------
 
 
-def select_associations(db_path: Path, limit: int | None) -> list[Association]:
-    """Associations without a MONDO term, except the ones this stage was refused.
+def select_associations(
+    db_path: Path, limit: int | None, refusals: StageRefusals
+) -> list[Association]:
+    """Associations without a MONDO term, except the ones refused for good.
 
     Only rows of a stored aggregation count: rows left behind by deleting a
     ``gene_aggregations`` row are skipped.
@@ -128,17 +137,12 @@ def select_associations(db_path: Path, limit: int | None) -> list[Association]:
             FROM associations a
             JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
             WHERE a.mondo_id IS NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM llm_requests r
-                  WHERE r.stage = ? AND r.subject = CAST(a.id AS TEXT) AND r.status = 'refused'
-              )
             ORDER BY a.id
-            LIMIT ?
-            """,
-            (STAGE, -1 if limit is None else limit),
+            """
         ).fetchall()
+    due = [row for row in rows if not refusals.refused_for_good(str(row[0]))]
     associations = []
-    for association_id, hgnc_id, assessment_json in rows:
+    for association_id, hgnc_id, assessment_json in due if limit is None else due[:limit]:
         assessment = json.loads(assessment_json)
         associations.append(
             Association(
@@ -207,7 +211,7 @@ def build_request(
     return LlmRequest(
         subject=str(conversation.association_id),
         params={
-            "model": MODEL,
+            "model": conversation.model,
             "max_tokens": MAX_TOKENS,
             "system": cached_system(system),
             "tools": TOOLS,
@@ -301,13 +305,9 @@ class MappingRunner:
             conversation = conversations[int(result.subject)]
             message = result.message
             if result.status == ResultStatus.REFUSED:
-                assert message is not None
                 outcome.refused += 1
-                logger.warning(
-                    "Refused: association %s (%s)",
-                    result.subject,
-                    message.stop_details.category if message.stop_details else "no category",
-                )
+                outcome.to_fallback += result.goes_to_fallback
+                log_refusal(result, f"association {result.subject} in round {result.round}")
                 self._record(result)
             elif result.status != ResultStatus.SUCCEEDED:
                 outcome.failed += 1
@@ -370,6 +370,7 @@ class MappingRunner:
                 {"role": "assistant", "content": assistant_content(message)},
                 {"role": "user", "content": user_content},
             ],
+            model=conversation.model,
         )
 
     def _store(self, result: LlmResult, message: Message) -> bool:
@@ -407,9 +408,16 @@ async def map_associations(
     limit: int | None,
     max_retries: int,
 ) -> None:
-    """Map every unmapped association, retrying failed ones up to *max_retries* times."""
+    """Map every unmapped association, retrying failed ones up to *max_retries* times.
+
+    An attempt makes progress when it stores a mapping or sends an association on
+    to FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
+    that restarts those associations on FALLBACK_MODEL.
+    """
     for attempt in range(1, max_retries + 1):
-        associations = select_associations(db_path, limit)
+        with sqlite3.connect(db_path) as conn:
+            refusals = stage_refusals(conn, STAGE)
+        associations = select_associations(db_path, limit, refusals)
         if not associations:
             logger.info("No associations left to map")
             return
@@ -425,19 +433,21 @@ async def map_associations(
                         ),
                     }
                 ],
+                model=refusals.model_for(str(association.id)),
             )
             for association in associations
         ]
         logger.info("Attempt %d: mapping %d associations", attempt, len(conversations))
         outcome = await runner.advance(conversations)
         logger.info(
-            "Attempt %d: stored %d, refused %d, failed %d",
+            "Attempt %d: stored %d, refused %d (%d go to the fallback model), failed %d",
             attempt,
             outcome.stored,
             outcome.refused,
+            outcome.to_fallback,
             outcome.failed,
         )
-        if outcome.stored == 0:
+        if outcome.stored + outcome.to_fallback == 0:
             logger.error("No progress in attempt %d - stopping", attempt)
             return
         if limit is not None:
@@ -458,7 +468,8 @@ def main(
     max_retries: int = typer.Option(
         3,
         "--max-retries",
-        help="Maximum number of attempts for associations whose mapping failed or was rejected",
+        help="Maximum number of attempts for associations whose mapping failed, was rejected "
+        "or was refused; the fallback-model conversation after a refusal is one of them",
     ),
 ) -> None:
     """Map every association without a MONDO term onto one, with the model and the MONDO tools."""

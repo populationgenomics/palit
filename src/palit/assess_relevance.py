@@ -15,6 +15,9 @@ check, and with ``--screen-only`` the screen decides alone (for building a
 comprehensive repository, such as the retrospective baseline). The screen
 result is stored as soon as it arrives, so an interrupted run resumes with
 the check. Gene mentions record the screen's genes for every paper it passes.
+
+Each level falls back on its own: a paper MODEL refused at a level goes to
+FALLBACK_MODEL at that level in the next attempt (see :mod:`palit.llm`).
 """
 
 import asyncio
@@ -23,6 +26,7 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,19 +37,22 @@ from anthropic.types.output_config_param import OutputConfigParam
 from palit.gencc import fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
-    MODEL,
+    EVERY_REFUSAL,
     BatchTransport,
     Effort,
     ImmediateTransport,
     LlmRequest,
     LlmResult,
     ResultStatus,
+    StageRefusals,
     Transport,
     cached_system,
     json_output_config,
+    log_refusal,
     make_client,
     parse_json_output,
     record_result,
+    stage_refusals,
 )
 from palit.llm_usage import print_stage_summary
 from palit.panelapp_check import (
@@ -124,7 +131,7 @@ def _truncated_abstract(doi: str, abstract: str) -> str:
 
 
 def build_request(
-    paper: dict[str, Any], prompt: RelevancePrompt, output_config: OutputConfigParam
+    paper: dict[str, Any], prompt: RelevancePrompt, output_config: OutputConfigParam, model: str
 ) -> LlmRequest:
     """The scope-screen request for one paper."""
     user_text = prompt.user_template.format(
@@ -133,7 +140,7 @@ def build_request(
     return LlmRequest(
         subject=paper["doi"],
         params={
-            "model": MODEL,
+            "model": model,
             "max_tokens": MAX_TOKENS,
             "system": cached_system(prompt.system),
             "messages": [{"role": "user", "content": user_text}],
@@ -142,7 +149,7 @@ def build_request(
     )
 
 
-def build_check_request(paper: dict[str, Any], check: CheckSettings) -> LlmRequest:
+def build_check_request(paper: dict[str, Any], check: CheckSettings, model: str) -> LlmRequest:
     """The PanelApp-check request for one screened paper."""
     screen = json.loads(paper["relevance_screen_json"])
     user_text = check_user_text(
@@ -157,7 +164,7 @@ def build_check_request(paper: dict[str, Any], check: CheckSettings) -> LlmReque
     return LlmRequest(
         subject=paper["doi"],
         params={
-            "model": MODEL,
+            "model": model,
             "max_tokens": CHECK_MAX_TOKENS,
             "system": cached_system(check.system),
             "messages": [{"role": "user", "content": user_text}],
@@ -166,8 +173,22 @@ def build_check_request(paper: dict[str, Any], check: CheckSettings) -> LlmReque
     )
 
 
-def select_papers(db_path: Path, limit: int | None) -> list[dict[str, Any]]:
-    """Papers without a screen or assessment, excluding refused ones and ones in flight."""
+def _due(
+    rows: list[sqlite3.Row], refusals: StageRefusals, limit: int | None
+) -> list[dict[str, Any]]:
+    papers = [dict(row) for row in rows if not refusals.refused_for_good(row["doi"])]
+    return papers if limit is None else papers[:limit]
+
+
+def load_refusals(db_path: Path, stage: str, since: datetime) -> StageRefusals:
+    with sqlite3.connect(db_path) as conn:
+        return stage_refusals(conn, stage, since)
+
+
+def select_papers(
+    db_path: Path, limit: int | None, refusals: StageRefusals
+) -> list[dict[str, Any]]:
+    """Papers without a screen or assessment, except ones refused for good and ones in flight."""
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -180,18 +201,19 @@ def select_papers(db_path: Path, limit: int | None) -> list[dict[str, Any]]:
               AND abstract IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
-                  WHERE r.stage = ? AND r.subject = p.doi AND r.status IN ('refused', 'pending')
+                  WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'pending'
               )
             ORDER BY doi
-            LIMIT ?
             """,
-            (STAGE, -1 if limit is None else limit),
+            (STAGE,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return _due(rows, refusals, limit)
 
 
-def select_screened(db_path: Path, limit: int | None) -> list[dict[str, Any]]:
-    """Screened papers awaiting the PanelApp check, excluding refused ones and ones in flight."""
+def select_screened(
+    db_path: Path, limit: int | None, refusals: StageRefusals
+) -> list[dict[str, Any]]:
+    """Screened papers awaiting the PanelApp check, except ones refused for good and in flight."""
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -202,20 +224,20 @@ def select_screened(db_path: Path, limit: int | None) -> list[dict[str, Any]]:
               AND relevance_screen_json IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
-                  WHERE r.stage = ? AND r.subject = p.doi AND r.status IN ('refused', 'pending')
+                  WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'pending'
               )
             ORDER BY doi
-            LIMIT ?
             """,
-            (CHECK_STAGE, -1 if limit is None else limit),
+            (CHECK_STAGE,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return _due(rows, refusals, limit)
 
 
 @dataclass
 class StoreOutcome:
     stored: int = 0
     refused: int = 0
+    to_fallback: int = 0  # the refusals by MODEL: these papers go to FALLBACK_MODEL next
     failed: int = 0
 
 
@@ -235,16 +257,9 @@ def _parsed_outputs(
     for result in results:
         record_result(conn, result)
         if result.status == ResultStatus.REFUSED:
-            assert result.message is not None
             outcome.refused += 1
-            logger.warning(
-                "Refused: %s %s (%s)",
-                result.stage,
-                result.subject,
-                result.message.stop_details.category
-                if result.message.stop_details
-                else "no category",
-            )
+            outcome.to_fallback += result.goes_to_fallback
+            log_refusal(result, result.subject)
             continue
         if result.status != ResultStatus.SUCCEEDED:
             outcome.failed += 1
@@ -404,8 +419,15 @@ async def _process_relevance(
     check: CheckSettings | None,
     limit: int | None,
     max_retries: int,
+    refusals_since: datetime,
 ) -> None:
-    """Screen and check papers; *check* None means the screen decides alone."""
+    """Screen and check papers; *check* None means the screen decides alone.
+
+    Each attempt selects the papers still without a result at each level. An
+    attempt makes progress when it stores a result or sends a paper on to
+    FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
+    that sends those papers to FALLBACK_MODEL.
+    """
     validator = jsonschema.Draft202012Validator(schema)
     output_config = json_output_config(schema, EFFORT)
     screen_only = check is None
@@ -429,20 +451,30 @@ async def _process_relevance(
 
     for attempt in range(1, max_retries + 1):
         progress = 0
-        papers = select_papers(db_path, limit)
+        refusals = load_refusals(db_path, STAGE, refusals_since)
+        papers = select_papers(db_path, limit, refusals)
         if papers:
             logger.info("Attempt %d: screening %d papers", attempt, len(papers))
-            requests = [build_request(paper, prompt, output_config) for paper in papers]
+            requests = [
+                build_request(paper, prompt, output_config, refusals.model_for(paper["doi"]))
+                for paper in papers
+            ]
             outcome = store(await transport.run(STAGE, 1, requests))
             logger.info("Attempt %d screen: %s", attempt, outcome)
-            progress += outcome.stored
-        screened = [] if check is None else select_screened(db_path, limit)
+            progress += outcome.stored + outcome.to_fallback
+        screened: list[dict[str, Any]] = []
+        if check is not None:
+            refusals = load_refusals(db_path, CHECK_STAGE, refusals_since)
+            screened = select_screened(db_path, limit, refusals)
         if check is not None and screened:
             logger.info("Attempt %d: checking %d papers against PanelApp", attempt, len(screened))
-            requests = [build_check_request(paper, check) for paper in screened]
+            requests = [
+                build_check_request(paper, check, refusals.model_for(paper["doi"]))
+                for paper in screened
+            ]
             outcome = store_checks(db_path, await transport.run(CHECK_STAGE, 2, requests), check)
             logger.info("Attempt %d PanelApp check: %s", attempt, outcome)
-            progress += outcome.stored
+            progress += outcome.stored + outcome.to_fallback
         if not papers and not screened:
             logger.info("No papers left to assess")
             return
@@ -517,13 +549,22 @@ def main(
     max_retries: int = typer.Option(
         5,
         "--max-retries",
-        help="Maximum number of attempts for papers whose request failed",
+        help="Maximum number of attempts for papers whose request failed or was refused; "
+        "the fallback-model request after a refusal is one of them",
+    ),
+    retry_refused: bool = typer.Option(
+        False,
+        "--retry-refused",
+        help="Send papers that both models refused in earlier invocations again, once each, "
+        "starting with the primary model (refusals vary between calls)",
     ),
 ) -> None:
     """Assess the relevance of every paper that has no assessment yet."""
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
+    # With --retry-refused, only refusals during this invocation count.
+    refusals_since = datetime.now(UTC) if retry_refused else EVERY_REFUSAL
     if scope_panel_id is not None and target_panel_ids:
         logger.error("--scope-panel-id and --target-panel-id are mutually exclusive")
         raise typer.Exit(1)
@@ -584,6 +625,7 @@ def main(
             check=check,
             limit=limit,
             max_retries=max_retries,
+            refusals_since=refusals_since,
         )
 
     asyncio.run(run())

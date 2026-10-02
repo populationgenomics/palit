@@ -13,7 +13,16 @@ import pytest
 from anthropic.types import Message
 
 from palit.gencc import GenccIndex
-from palit.llm import LlmRequest, LlmResult, ResultStatus
+from palit.hgnc import HgncEntry, HgncResolver
+from palit.llm import (
+    FALLBACK_MODEL,
+    MODEL,
+    LlmRequest,
+    LlmResult,
+    ResultStatus,
+    StageRefusals,
+    stage_refusals,
+)
 from palit.map_mondo import (
     LAST_ROUND,
     SCHEMA_PATH,
@@ -23,6 +32,7 @@ from palit.map_mondo import (
     MappingRunner,
     association_text,
     count_unmapped,
+    map_associations,
     parse_mapping,
     select_associations,
 )
@@ -305,7 +315,8 @@ def _assessment(name: str | None) -> str:
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
-    """Gene 6772 with a GenCC-anchored association (1), an unmapped one (2) and a refused one (3)."""
+    """Gene 6772 with a GenCC-anchored association (1), an unmapped one (2) and one refused
+    for good (3)."""
     path = tmp_path / "run.sqlite"
     with sqlite3.connect(path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
@@ -333,16 +344,16 @@ def db_path(tmp_path: Path) -> Path:
         )
         conn.execute(
             """
-            INSERT INTO llm_requests (custom_id, stage, subject, round, model, status)
-            VALUES ('map_mondo-1-x', ?, '3', 1, 'claude-opus-5-5', 'refused')
+            INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, completed_at)
+            VALUES ('map_mondo-1-x', ?, '3', 1, ?, 'refused', '2026-10-01T00:00:00+00:00')
             """,
-            (STAGE,),
+            (STAGE, FALLBACK_MODEL),
         )
     return path
 
 
 def test_select_associations_takes_only_unmapped_unrefused_rows(db_path: Path) -> None:
-    assert select_associations(db_path, None) == [
+    assert select_associations(db_path, None, _refusals(db_path)) == [
         Association(
             id=2,
             hgnc_id=6772,
@@ -359,7 +370,7 @@ def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path:
         conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = 6772")
         (left_behind,) = conn.execute("SELECT COUNT(*) FROM associations").fetchone()
     assert left_behind == 3
-    assert select_associations(db_path, None) == []
+    assert select_associations(db_path, None, _refusals(db_path)) == []
     assert count_unmapped(db_path) == 0
 
 
@@ -372,7 +383,7 @@ def test_deleting_an_aggregation_cascades_where_foreign_keys_are_on(db_path: Pat
 
 
 def test_association_text_lists_the_gene_and_its_gencc_rows(db_path: Path) -> None:
-    (association,) = select_associations(db_path, None)
+    (association,) = select_associations(db_path, None, _refusals(db_path))
     text = association_text(association, "SMAD6", GenccIndex({}))
     assert "GENE: SMAD6 (HGNC:6772)" in text
     assert "Proposed disease name: SMAD6-related renovascular hypertension" in text
@@ -380,7 +391,7 @@ def test_association_text_lists_the_gene_and_its_gencc_rows(db_path: Path) -> No
 
 
 class ScriptedTransport:
-    """Answers each request from a script keyed by (association id, round)."""
+    """Answers each request from a script keyed by (association id, round), on its model."""
 
     def __init__(self, script: Callable[[int, int, LlmRequest], Message]) -> None:
         self._script = script
@@ -392,6 +403,7 @@ class ScriptedTransport:
         results = []
         for i, request in enumerate(requests):
             self.requests.append((round_no, request))
+            message = self._script(int(request.subject), round_no, request)
             results.append(
                 LlmResult(
                     custom_id=f"{stage}-{round_no}-{request.subject}-{i}-{len(self.requests)}",
@@ -399,9 +411,11 @@ class ScriptedTransport:
                     stage=stage,
                     subject=request.subject,
                     round=round_no,
-                    model="claude-opus-5-5",
-                    status=ResultStatus.SUCCEEDED,
-                    message=self._script(int(request.subject), round_no, request),
+                    model=request.params["model"],
+                    status=ResultStatus.REFUSED
+                    if message.stop_reason == "refusal"
+                    else ResultStatus.SUCCEEDED,
+                    message=message,
                     error_type=None,
                 )
             )
@@ -437,7 +451,7 @@ def _sent_messages(request: LlmRequest) -> list[dict[str, Any]]:
 
 
 def _conversation(association_id: int) -> Conversation:
-    return Conversation(association_id, 1, [{"role": "user", "content": "map this"}])
+    return Conversation(association_id, 1, [{"role": "user", "content": "map this"}], MODEL)
 
 
 def _row(db_path: Path, association_id: int) -> tuple[Any, ...]:
@@ -494,7 +508,7 @@ def test_runner_records_but_does_not_store_an_obsolete_answer(
     assert (outcome.stored, outcome.failed) == (0, 1)
     assert _row(db_path, 2) == (None, None, None, 0)
     assert len(_subjects(db_path)) == 2
-    assert [a.id for a in select_associations(db_path, None)] == [2]
+    assert [a.id for a in select_associations(db_path, None, _refusals(db_path))] == [2]
 
 
 def test_runner_stops_tool_calls_at_the_last_round(db_path: Path, index: MondoIndex) -> None:
@@ -511,3 +525,82 @@ def test_runner_stops_tool_calls_at_the_last_round(db_path: Path, index: MondoIn
     assert [round_no for round_no, _ in transport.requests] == list(range(1, LAST_ROUND + 1))
     last_user_turn = _sent_messages(transport.requests[-1][1])[-1]["content"]
     assert last_user_turn[-1]["type"] == "text"
+
+
+def _resolver() -> HgncResolver:
+    entry = HgncEntry(
+        hgnc_id=6772,
+        symbol="SMAD6",
+        name="SMAD family member 6",
+        prev_symbols=(),
+        alias_symbols=(),
+        locus_group="protein-coding gene",
+        location="15q22.31",
+        chromosome="15",
+    )
+    return HgncResolver(
+        _by_symbol={"SMAD6": entry}, _by_prev={}, _by_alias={}, _by_hgnc_id={6772: entry}
+    )
+
+
+def _refusals(db_path: Path) -> StageRefusals:
+    with sqlite3.connect(db_path) as conn:
+        return stage_refusals(conn, STAGE)
+
+
+def test_selection_routes_an_association_model_refused_to_the_fallback(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, completed_at)
+            VALUES ('map_mondo-3-y', ?, '2', 3, ?, 'refused', '2026-10-01T00:00:00+00:00')
+            """,
+            (STAGE, MODEL),
+        )
+    refusals = _refusals(db_path)
+    assert [a.id for a in select_associations(db_path, None, refusals)] == [2]
+    assert refusals.model_for("2") == FALLBACK_MODEL
+
+
+def test_a_refused_conversation_restarts_on_the_fallback_model_in_the_same_run(
+    db_path: Path, index: MondoIndex
+) -> None:
+    def refuse_on_model(association_id: int, round_no: int, request: LlmRequest) -> Message:
+        if request.params["model"] == MODEL and round_no == 2:
+            return _message("refusal", [])
+        return _search_then_answer("MONDO:0000201")(association_id, round_no, request)
+
+    transport = ScriptedTransport(refuse_on_model)
+    runner = MappingRunner(
+        transport=transport, db_path=db_path, system="s", schema=SCHEMA, index=index
+    )
+    asyncio.run(
+        map_associations(
+            runner=runner,
+            db_path=db_path,
+            hgnc_resolver=_resolver(),
+            gencc=GenccIndex({}),
+            limit=None,
+            max_retries=3,
+        )
+    )
+    assert [(round_no, request.params["model"]) for round_no, request in transport.requests] == [
+        (1, MODEL),
+        (2, MODEL),
+        (1, FALLBACK_MODEL),
+        (2, FALLBACK_MODEL),
+    ]
+    # The fallback conversation starts from the association text alone.
+    assert len(_sent_messages(transport.requests[2][1])) == 1
+    assert _row(db_path, 2) == ("MONDO:0000201", "renovascular hypertension", "broader", 1)
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT round, model, status FROM llm_requests WHERE stage = ? AND subject = '2' "
+            "ORDER BY rowid",
+            (STAGE,),
+        ).fetchall() == [
+            (1, MODEL, "succeeded"),
+            (2, MODEL, "refused"),
+            (1, FALLBACK_MODEL, "succeeded"),
+            (2, FALLBACK_MODEL, "succeeded"),
+        ]

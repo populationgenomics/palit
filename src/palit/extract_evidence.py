@@ -12,6 +12,10 @@ because Opus 5.5 rejects replayed thinking blocks after an edited history.
 A final answer is stored only when it passes the schema, the structural checks,
 and the quote check (every quote verbatim in the PDF). Otherwise the paper stays
 unextracted and the next attempt starts a fresh conversation.
+
+A conversation stays on the model it started on. When MODEL refuses a paper in
+any round, the next attempt starts the paper's conversation afresh from round 1
+on FALLBACK_MODEL: thinking blocks cannot be replayed to another model.
 """
 
 import asyncio
@@ -36,20 +40,23 @@ from jinja2 import Environment, FileSystemLoader
 
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import (
-    MODEL,
+    EVERY_REFUSAL,
     BatchTransport,
     Effort,
     ImmediateTransport,
     LlmRequest,
     LlmResult,
     ResultStatus,
+    StageRefusals,
     Transport,
     assistant_content,
     cached_system,
     json_output_config,
+    log_refusal,
     make_client,
     parse_json_output,
     record_result,
+    stage_refusals,
 )
 from palit.llm_usage import print_stage_summary
 from palit.lookup_tools import (
@@ -95,9 +102,6 @@ MAX_UNGROUNDED_QUOTE_SHARE = 0.25
 BUDGET_EXHAUSTED_TEXT = (
     "Lookup budget exhausted. Write the final JSON answer now with the results you already have."
 )
-
-# Refusals recorded at or after this instant exclude a paper: by default, every refusal.
-EVERY_REFUSAL = datetime.min.replace(tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -246,11 +250,12 @@ def structural_problems(extraction: dict[str, Any]) -> list[str]:
 
 @dataclass(frozen=True)
 class Conversation:
-    """The input messages of one round for one paper."""
+    """The input messages of one round for one paper, and the model the conversation is on."""
 
     doi: str
     round: int
     messages: list[dict[str, Any]]
+    model: str
 
 
 @dataclass(frozen=True)
@@ -275,7 +280,7 @@ def build_request(conversation: Conversation, settings: RequestSettings) -> LlmR
     return LlmRequest(
         subject=conversation.doi,
         params={
-            "model": MODEL,
+            "model": conversation.model,
             "max_tokens": MAX_TOKENS,
             "system": cached_system(settings.system),
             "tools": TOOLS,
@@ -293,6 +298,14 @@ def save_conversation(conn: sqlite3.Connection, conversation: Conversation) -> N
         """,
         (STAGE, conversation.doi, conversation.round, json.dumps(conversation.messages)),
     )
+
+
+def start_conversation(conn: sqlite3.Connection, conversation: Conversation) -> None:
+    """Store a round-1 conversation in place of every round of the paper's earlier one."""
+    conn.execute(
+        "DELETE FROM llm_conversations WHERE stage = ? AND subject = ?", (STAGE, conversation.doi)
+    )
+    save_conversation(conn, conversation)
 
 
 def load_conversation(conn: sqlite3.Connection, doi: str, round_no: int) -> list[dict[str, Any]]:
@@ -329,13 +342,9 @@ def variant_lookup_results(messages: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def select_papers(
-    db_path: Path, limit: int | None, refusals_since: datetime
+    db_path: Path, limit: int | None, refusals: StageRefusals
 ) -> list[dict[str, Any]]:
-    """Downloaded papers without an extraction, excluding ones in flight and refused ones.
-
-    Only refusals recorded at or after *refusals_since* exclude a paper; the
-    refusal rows themselves stay as the record of what was refused.
-    """
+    """Downloaded papers without an extraction, except ones in flight and ones refused for good."""
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -346,15 +355,14 @@ def select_papers(
               AND evidence_extraction_json IS NULL
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
-                  WHERE r.stage = ? AND r.subject = p.doi
-                    AND (r.status = 'pending' OR (r.status = 'refused' AND r.completed_at >= ?))
+                  WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'pending'
               )
             ORDER BY doi
-            LIMIT ?
             """,
-            (STAGE, refusals_since.isoformat(), -1 if limit is None else limit),
+            (STAGE,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    papers = [dict(row) for row in rows if not refusals.refused_for_good(row["doi"])]
+    return papers if limit is None else papers[:limit]
 
 
 async def upload_pdfs(
@@ -433,6 +441,7 @@ class RoundOutcome:
     next_round: list[Conversation]
     stored: int = 0
     refused: int = 0
+    to_fallback: int = 0  # the refusals by MODEL: these papers restart on FALLBACK_MODEL
     failed: int = 0
 
 
@@ -470,6 +479,7 @@ class ExtractionRunner:
                 outcome = await self.handle(results)
                 total.stored += outcome.stored
                 total.refused += outcome.refused
+                total.to_fallback += outcome.to_fallback
                 total.failed += outcome.failed
                 conversations += outcome.next_round
         return total
@@ -482,13 +492,9 @@ class ExtractionRunner:
                 messages = load_conversation(conn, result.subject, result.round)
             message = result.message
             if result.status == ResultStatus.REFUSED:
-                assert message is not None
                 outcome.refused += 1
-                logger.warning(
-                    "Refused: %s (%s)",
-                    result.subject,
-                    message.stop_details.category if message.stop_details else "no category",
-                )
+                outcome.to_fallback += result.goes_to_fallback
+                log_refusal(result, f"{result.subject} in round {result.round}")
                 self._record(result)
             elif result.status != ResultStatus.SUCCEEDED:
                 outcome.failed += 1
@@ -568,6 +574,7 @@ class ExtractionRunner:
                 {"role": "assistant", "content": assistant_content(message)},
                 {"role": "user", "content": [*tool_results, {"type": "text", "text": follow_up}]},
             ],
+            model=result.model,
         )
 
     async def _store_final(
@@ -749,6 +756,12 @@ async def _process_evidence(
     max_retries: int,
     refusals_since: datetime,
 ) -> None:
+    """Extract every paper due an extraction, in attempts of whole conversations.
+
+    An attempt makes progress when it stores an extraction or sends a paper on
+    to FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
+    that restarts those papers on FALLBACK_MODEL.
+    """
     resumed = await transport.resume(STAGE)
     if resumed:
         outcome = await runner.handle(resumed)
@@ -763,7 +776,9 @@ async def _process_evidence(
         logger.info("Finished resumed conversations: stored %d", continued.stored)
 
     for attempt in range(1, max_retries + 1):
-        papers = select_papers(db_path, limit, refusals_since)
+        with sqlite3.connect(db_path) as conn:
+            refusals = stage_refusals(conn, STAGE, refusals_since)
+        papers = select_papers(db_path, limit, refusals)
         if not papers:
             logger.info("No papers left to extract")
             return
@@ -773,23 +788,25 @@ async def _process_evidence(
                 doi=paper["doi"],
                 round=1,
                 messages=[first_user_message(paper, file_ids[paper["doi"]], settings.cache_pdf)],
+                model=refusals.model_for(paper["doi"]),
             )
             for paper in papers
             if paper["doi"] in file_ids
         ]
         with sqlite3.connect(db_path) as conn:
             for conversation in conversations:
-                save_conversation(conn, conversation)
+                start_conversation(conn, conversation)
         logger.info("Attempt %d: extracting %d papers", attempt, len(conversations))
         outcome = await runner.advance(conversations)
         logger.info(
-            "Attempt %d: stored %d, refused %d, failed %d",
+            "Attempt %d: stored %d, refused %d (%d go to the fallback model), failed %d",
             attempt,
             outcome.stored,
             outcome.refused,
+            outcome.to_fallback,
             outcome.failed,
         )
-        if outcome.stored == 0:
+        if outcome.stored + outcome.to_fallback == 0:
             logger.error("No progress in attempt %d - stopping", attempt)
             return
         if limit is not None:
@@ -842,19 +859,21 @@ def main(
     max_retries: int = typer.Option(
         5,
         "--max-retries",
-        help="Maximum number of attempts for papers whose extraction failed or was rejected",
+        help="Maximum number of attempts for papers whose extraction failed, was rejected or "
+        "was refused; the fallback-model conversation after a refusal is one of them",
     ),
     retry_refused: bool = typer.Option(
         False,
         "--retry-refused",
-        help="Send papers refused in earlier invocations again, once each (refusals vary between calls)",
+        help="Send papers that both models refused in earlier invocations again, once each, "
+        "starting with the primary model (refusals vary between calls)",
     ),
 ) -> None:
     """Extract evidence from every downloaded paper that has no extraction yet."""
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
-    # With --retry-refused, only refusals during this invocation exclude a paper.
+    # With --retry-refused, only refusals during this invocation count.
     refusals_since = datetime.now(UTC) if retry_refused else EVERY_REFUSAL
 
     panel_formatted = ""

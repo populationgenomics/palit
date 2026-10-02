@@ -44,6 +44,18 @@
     {% endif %}
     {% endmacro %}
 
+    {# Note on a result the fallback model gave after the primary model refused the request #}
+    {% macro fallback_note(verb, what) -%}
+    <span class="fallback-badge" data-title="{{ model_name }} refused {{ what }}; {{ fallback_model_name }}, the fallback model, answered it">{{ verb }} by {{ fallback_model_name }}</span>
+    {%- endmacro %}
+
+    {# Gene-header note for an aggregation the fallback model wrote #}
+    {% macro aggregation_fallback_note(gene) %}
+    {% if gene.aggregated_by_fallback %}
+        {{ fallback_note('Aggregated', 'the aggregation of this gene') }}
+    {% endif %}
+    {% endmacro %}
+
     {# Link to a quote in the report's PDF viewer #}
     {% macro cite(link) -%}
     <a href="viewer/index.html?paper={{ link.doi | paper_key | urlencode }}&amp;q={{ link.quote_index }}" target="_blank">[{{ link.display_id | short_id }}{% if link.page %}:p{{ link.page }}{% endif %}]</a>
@@ -125,7 +137,7 @@
     {% elif assoc.mondo_mapping == 'pending' %}
     <span class="mondo-badge mondo-unmapped" data-title="A map-mondo request for this association is in flight">No MONDO term yet</span>
     {% elif assoc.mondo_mapping == 'refused' %}
-    <span class="mondo-badge mondo-unmapped" data-title="map-mondo was refused for this association and skips it from now on">No MONDO term: map-mondo refused</span>
+    <span class="mondo-badge mondo-unmapped" data-title="{{ model_name }} and its fallback {{ fallback_model_name }} both refused map-mondo for this association, so it is skipped from now on">No MONDO term: map-mondo refused</span>
     {% elif assoc.mondo_mapping == 'failed' %}
     <span class="mondo-badge mondo-unmapped" data-title="map-mondo gave no valid MONDO term in any attempt so far; a rerun retries it">No MONDO term: mapping failed</span>
     {% elif m.match == 'panelapp_gencc' %}
@@ -196,7 +208,7 @@
     {% elif assoc.panel_matching == 'pending' %}
         <em class="muted">not matched yet (a match-panels request is in flight)</em>
     {% elif assoc.panel_matching == 'refused' %}
-        <em class="muted">not matched (match-panels was refused for this association and skips it from now on)</em>
+        <em class="muted">not matched ({{ model_name }} and its fallback {{ fallback_model_name }} both refused match-panels for this association, so it is skipped from now on)</em>
     {% elif assoc.panel_matching == 'failed' %}
         <em class="muted">not matched (match-panels gave no valid answer in any attempt so far; a rerun retries it)</em>
     {% elif not assoc.matched_panels %}
@@ -293,12 +305,12 @@
     {% endif %}
     {% endmacro %}
 
-    {# The gene's papers that extract-evidence was refused #}
+    {# The gene's papers that both models refused in extract-evidence #}
     {% macro refused_papers(gene) %}
     {% if gene.refused_papers %}
     <div class="refused-papers">
         <h5><strong>⚠️ Papers not read ({{ gene.refused_papers | length }})</strong></h5>
-        <p><em>Evidence extraction was refused for these papers of the gene, so their evidence is missing from the associations above.</em></p>
+        <p><em>{{ model_name }} and its fallback {{ fallback_model_name }} both refused evidence extraction for these papers of the gene, so their evidence is missing from the associations above.</em></p>
         <ul>
             {% for paper in gene.refused_papers %}
             <li>{{ paper_link(paper) }}: {{ paper.title }}{% if paper.category %} <span class="muted">(refusal category: {{ paper.category }})</span>{% endif %}</li>
@@ -593,7 +605,7 @@
         {% set screen = paper.relevance_assessment.screen %}
         {% set check = paper.relevance_assessment.panelapp_check %}
         <details class="llm-relevance-assessment">
-            <summary><strong>LLM Relevance Assessment</strong></summary>
+            <summary><strong>LLM Relevance Assessment</strong>{% if paper.fallback.relevance_levels %} {{ fallback_note('Assessed', 'the ' ~ (paper.fallback.relevance_levels | join(' and ')) ~ ' of this paper') }}{% endif %}</summary>
             <p><strong>Relevant:</strong> {{ 'Yes' if paper.relevance_assessment.relevant else 'No' }}</p>
             <p><strong>Scope screen:</strong> {{ 'passed' if screen.relevant else 'not relevant' }} ({{ screen.confidence }} confidence). {{ screen.rationale }}</p>
             {% if check %}
@@ -617,7 +629,7 @@
 
         {% if include_evidence and paper.evidence_extraction %}
         <details class="individual-evidence-extraction">
-            <summary><strong>Evidence</strong></summary>
+            <summary><strong>Evidence</strong>{% if paper.fallback.extraction %} {{ fallback_note('Extracted', 'the evidence extraction of this paper') }}{% endif %}</summary>
             {% set gene_eval = (paper.evidence_extraction.gene_evaluations | selectattr('hgnc_id', 'defined') | selectattr('hgnc_id', 'equalto', gene.hgnc_id) | list)[0] %}
             <div class="gene-evaluation">
                 <div class="evidence-summary-expanded">
@@ -985,6 +997,7 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
+                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'add') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1013,6 +1026,7 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
+                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1033,6 +1047,7 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
+                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1053,6 +1068,7 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
+                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1079,6 +1095,7 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
+                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1099,6 +1116,7 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
+                    {{ aggregation_fallback_note(gene) }}
                     <span class="unreviewed-badge" title="No expert review on PanelApp for this gene/panel">⚠️ Unreviewed</span>
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
@@ -1123,6 +1141,7 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
+                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>

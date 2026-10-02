@@ -10,7 +10,8 @@ per round across every gene, because each round depends on the previous one.
 
 Tournament state lives only in memory: after an interruption the tournament
 restarts, and results of batches still in flight are recorded for their usage
-but not used.
+but not used. A prompt MODEL refuses is sent again on FALLBACK_MODEL within the
+same round, before the round's selections are used.
 """
 
 import json
@@ -26,6 +27,7 @@ from anthropic.types.output_config_param import OutputConfigParam
 from palit.gencc import PAA_ASSOCIATIONS_CAVEAT, GenccIndex, format_paa_associations
 from palit.hgnc import HgncResolver
 from palit.llm import (
+    FALLBACK_MODEL,
     MODEL,
     Effort,
     LlmRequest,
@@ -197,10 +199,16 @@ async def _run_prompts(
     max_papers: int,
     max_retries: int,
 ) -> dict[tuple[str, int], tuple[list[Paper], str]]:
-    """Selected papers and raw response per prompt, retrying failed prompts."""
+    """Selected papers and raw response per prompt, retrying failed prompts.
+
+    Each try sends every prompt without a valid answer yet. A prompt MODEL refused
+    goes to FALLBACK_MODEL from the next try on; that try counts toward
+    *max_retries* like any other.
+    """
     selections: dict[tuple[str, int], tuple[list[Paper], str]] = {}
     pending = list(prompts)
     failures: dict[tuple[str, int], str] = {}
+    models = dict.fromkeys(prompts, MODEL)
     for _ in range(max_retries):
         if not pending:
             break
@@ -209,7 +217,7 @@ async def _run_prompts(
             LlmRequest(
                 subject=subject,
                 params={
-                    "model": MODEL,
+                    "model": models[(key, index)],
                     "max_tokens": MAX_TOKENS,
                     "messages": [
                         {
@@ -238,7 +246,15 @@ async def _run_prompts(
             if result.status != ResultStatus.SUCCEEDED or result.message is None:
                 if result.error_type == "invalid_request_error":
                     raise RuntimeError(f"invalid tournament request {result.subject}")
-                failures[job] = result.status.value
+                if result.goes_to_fallback:
+                    logger.warning(
+                        "%s refused tournament prompt %s; sending it to %s",
+                        result.model,
+                        result.subject,
+                        FALLBACK_MODEL,
+                    )
+                    models[job] = FALLBACK_MODEL
+                failures[job] = f"{result.status.value} by {result.model}"
                 pending.append(job)
                 continue
             try:

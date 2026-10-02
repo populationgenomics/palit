@@ -3,6 +3,7 @@
 import asyncio
 import sqlite3
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,26 +16,30 @@ from anthropic.types import Message
 from anthropic.types.messages import MessageBatchIndividualResponse
 
 from palit.llm import (
+    FALLBACK_MODEL,
     MID_STREAM_ATTEMPTS,
+    MODEL,
     BatchTransport,
     ImmediateTransport,
     LlmRequest,
+    LlmResult,
     ResultStatus,
     chunk_for_batches,
     json_output_config,
     record_result,
     request_cost,
+    stage_refusals,
 )
-from palit.llm_usage import list_refusals
+from palit.llm_usage import SubjectOutcome, list_refusals, outcome_counts
 
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
 
 
-def _request(subject: str, text: str = "x") -> LlmRequest:
+def _request(subject: str, text: str = "x", model: str = MODEL) -> LlmRequest:
     return LlmRequest(
         subject=subject,
         params={
-            "model": "claude-opus-5-5",
+            "model": model,
             "max_tokens": 16,
             "messages": [{"role": "user", "content": text}],
         },
@@ -283,3 +288,113 @@ def test_immediate_raises_invalid_request_errors_inside_the_stream() -> None:
     streams = FakeStreams([_stream_error(200, "invalid_request_error")])
     with pytest.raises(anthropic.APIStatusError):
         asyncio.run(_immediate(streams).run("test", 1, [_request("a")]))
+
+
+def test_request_cost_batch_sonnet_55() -> None:
+    # 1M uncached input at $1 + 1M 5m writes at $1.25 + 1M 1h writes at $2
+    # + 1M reads at $0.10 + 1M output at $5.
+    cost = request_cost(FALLBACK_MODEL, "batch", *[1_000_000] * 5)
+    assert cost == pytest.approx(9.35)
+    assert request_cost(FALLBACK_MODEL, "standard", 0, 0, 0, 1_000_000, 0) == pytest.approx(0.2)
+
+
+def _add_requests(db_path: Path, rows: list[tuple[str, str, str, str, str | None]]) -> None:
+    """Requests as (stage, subject, model, status, completed_at)."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO llm_requests (custom_id, stage, subject, round, model, status,
+                                      completed_at)
+            VALUES (?, ?, ?, 1, ?, ?, ?)
+            """,
+            [(f"r{i}", *row) for i, row in enumerate(rows)],
+        )
+
+
+def test_stage_refusals_route_by_the_model_that_refused(db_path: Path) -> None:
+    _add_requests(
+        db_path,
+        [
+            ("relevance", "by-model", MODEL, "refused", "2026-09-02T00:00:00+00:00"),
+            ("relevance", "for-good", MODEL, "refused", "2026-09-02T00:00:00+00:00"),
+            ("relevance", "for-good", FALLBACK_MODEL, "refused", "2026-09-02T01:00:00+00:00"),
+            ("relevance", "old-model", "claude-opus-5", "refused", "2026-09-02T00:00:00+00:00"),
+            ("relevance", "answered", MODEL, "succeeded", "2026-09-02T00:00:00+00:00"),
+            ("extraction", "other-stage", MODEL, "refused", "2026-09-02T00:00:00+00:00"),
+            ("relevance", "earlier", FALLBACK_MODEL, "refused", "2026-08-01T00:00:00+00:00"),
+        ],
+    )
+    with sqlite3.connect(db_path) as conn:
+        refusals = stage_refusals(conn, "relevance")
+        since_september = stage_refusals(conn, "relevance", datetime(2026, 9, 1, tzinfo=UTC))
+    assert refusals.by_model == {"by-model", "for-good"}
+    assert refusals.by_fallback == {"for-good", "earlier"}
+    assert refusals.model_for("by-model") == FALLBACK_MODEL
+    for subject in ("old-model", "answered", "other-stage", "new"):
+        assert refusals.model_for(subject) == MODEL
+    assert refusals.refused_for_good("for-good") and not refusals.refused_for_good("by-model")
+    with pytest.raises(ValueError, match="refused"):
+        refusals.model_for("for-good")
+    # Refusals before the cutoff no longer count: the subject starts on MODEL again.
+    assert since_september.model_for("earlier") == MODEL
+
+
+def test_result_goes_to_fallback_only_after_a_refusal_by_model() -> None:
+    def result(model: str, status: ResultStatus) -> LlmResult:
+        return LlmResult("c", None, "relevance", "s", 1, model, status, None, None)
+
+    assert result(MODEL, ResultStatus.REFUSED).goes_to_fallback
+    assert not result(FALLBACK_MODEL, ResultStatus.REFUSED).goes_to_fallback
+    assert not result(MODEL, ResultStatus.ERRORED).goes_to_fallback
+
+
+def test_batch_transport_submits_one_model_per_batch(db_path: Path) -> None:
+    batches = FakeBatches(
+        {t: {"type": "succeeded", "message": _message("end_turn")} for t in "abc"}
+    )
+    requests = [
+        _request("doi-a", "a"),
+        _request("doi-b", "b", FALLBACK_MODEL),
+        _request("doi-c", "c"),
+    ]
+    results = asyncio.run(_transport(db_path, batches).run("relevance", 1, requests))
+    assert sorted(len(created) for created in batches.created) == [1, 2]
+    assert {r.subject: r.model for r in results} == {
+        "doi-a": MODEL,
+        "doi-b": FALLBACK_MODEL,
+        "doi-c": MODEL,
+    }
+    with sqlite3.connect(db_path) as conn:
+        assert sorted(conn.execute("SELECT model FROM llm_batches").fetchall()) == [
+            (MODEL,),
+            (FALLBACK_MODEL,),
+        ]
+        assert conn.execute(
+            "SELECT model FROM llm_requests WHERE subject = 'doi-b'"
+        ).fetchone() == (FALLBACK_MODEL,)
+
+
+def test_refusals_list_the_subject_outcome(db_path: Path) -> None:
+    _add_requests(
+        db_path,
+        [
+            ("relevance", "recovered", MODEL, "refused", "2026-09-02T00"),
+            ("relevance", "recovered", FALLBACK_MODEL, "succeeded", "2026-09-02T01"),
+            ("relevance", "for-good", MODEL, "refused", "2026-09-02T00"),
+            ("relevance", "for-good", FALLBACK_MODEL, "refused", "2026-09-02T01"),
+            ("relevance", "waiting", MODEL, "refused", "2026-09-02T00"),
+            ("relevance", "waiting", FALLBACK_MODEL, "pending", None),
+        ],
+    )
+    refusals = list_refusals(db_path, "relevance")
+    assert sorted((r.subject, r.model, r.outcome) for r in refusals) == [
+        ("for-good", MODEL, SubjectOutcome.REFUSED_FOR_GOOD),
+        ("for-good", FALLBACK_MODEL, SubjectOutcome.REFUSED_FOR_GOOD),
+        ("recovered", MODEL, SubjectOutcome.RECOVERED),
+        ("waiting", MODEL, SubjectOutcome.UNANSWERED),
+    ]
+    assert outcome_counts(refusals) == {
+        SubjectOutcome.RECOVERED: 1,
+        SubjectOutcome.REFUSED_FOR_GOOD: 1,
+        SubjectOutcome.UNANSWERED: 1,
+    }

@@ -1,7 +1,11 @@
 """Tests for the two relevance levels' storage, without network."""
 
+import asyncio
 import json
 import sqlite3
+from collections.abc import Sequence
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,13 +17,25 @@ from palit.assess_relevance import (
     CHECK_STAGE,
     STAGE,
     CheckSettings,
+    RelevancePrompt,
+    _process_relevance,
+    load_refusals,
     select_papers,
     select_screened,
     store_checks,
     store_screens,
 )
 from palit.hgnc import HgncResolver
-from palit.llm import LlmResult, ResultStatus, json_output_config
+from palit.llm import (
+    EVERY_REFUSAL,
+    FALLBACK_MODEL,
+    MODEL,
+    LlmRequest,
+    LlmResult,
+    ResultStatus,
+    StageRefusals,
+    json_output_config,
+)
 from palit.panelapp_check import CuratedRecord
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,8 +136,10 @@ def test_screen_finalises_rejections_and_gene_less_papers(
     pending = _row(db_path, "10.1/gene")
     assert pending["relevance_assessment_json"] is None
     assert json.loads(pending["relevance_screen_json"])["associations"][0]["gene_symbol"] == "GENEA"
-    assert select_papers(db_path, None) == []
-    assert [p["doi"] for p in select_screened(db_path, None)] == ["10.1/gene"]
+    assert select_papers(db_path, None, _refusals(db_path, STAGE)) == []
+    assert [p["doi"] for p in select_screened(db_path, None, _refusals(db_path, CHECK_STAGE))] == [
+        "10.1/gene"
+    ]
 
 
 def test_check_finalises_with_verdicts_and_mentions(
@@ -155,7 +173,7 @@ def test_check_finalises_with_verdicts_and_mentions(
     with sqlite3.connect(db_path) as conn:
         mentions = conn.execute("SELECT hgnc_id, source FROM gene_mentions").fetchall()
     assert sorted(mentions) == [(1, "relevance_assessment"), (4, "relevance_assessment")]
-    assert select_screened(db_path, None) == []
+    assert select_screened(db_path, None, _refusals(db_path, CHECK_STAGE)) == []
 
 
 def test_check_with_only_curated_genes_is_not_relevant(
@@ -195,7 +213,7 @@ def test_screen_only_decides_alone(db_path: Path, hgnc_resolver: HgncResolver) -
     assessment = json.loads(row["relevance_assessment_json"])
     assert assessment["relevant"] is True and assessment["panelapp_check"] is None
     assert row["relevance_screen_json"] is None
-    assert select_screened(db_path, None) == []
+    assert select_screened(db_path, None, _refusals(db_path, CHECK_STAGE)) == []
 
 
 def test_empty_check_leaves_the_paper_for_another_attempt(
@@ -215,3 +233,137 @@ def test_empty_check_leaves_the_paper_for_another_attempt(
     )
     assert (outcome.stored, outcome.failed) == (0, 1)
     assert _row(db_path, "10.1/gene")["relevance_assessment_json"] is None
+
+
+def _refused(stage: str, subject: str, model: str) -> LlmResult:
+    message = Message.model_validate(
+        {
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": model,
+            "content": [],
+            "stop_reason": "refusal",
+            "stop_sequence": None,
+            "stop_details": {"type": "refusal", "category": "bio", "explanation": None},
+            "usage": {"input_tokens": 10, "output_tokens": 0},
+        }
+    )
+    return LlmResult(
+        custom_id=f"{stage}-{subject}-{model}",
+        batch_id=None,
+        stage=stage,
+        subject=subject,
+        round=1,
+        model=model,
+        status=ResultStatus.REFUSED,
+        message=message,
+        error_type=None,
+    )
+
+
+def _refusals(db_path: Path, stage: str) -> StageRefusals:
+    return load_refusals(db_path, stage, EVERY_REFUSAL)
+
+
+def test_selection_routes_refused_papers_to_the_fallback_model(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    validator = jsonschema.Draft202012Validator(SCREEN_SCHEMA)
+    outcome = store_screens(
+        db_path,
+        [
+            _refused(STAGE, "10.1/out", MODEL),
+            _refused(STAGE, "10.1/nogene", MODEL),
+            _refused(STAGE, "10.1/nogene", FALLBACK_MODEL),
+        ],
+        validator,
+        hgnc_resolver,
+        screen_only=False,
+    )
+    assert (outcome.refused, outcome.to_fallback) == (3, 2)
+    refusals = _refusals(db_path, STAGE)
+    papers = select_papers(db_path, None, refusals)
+    # 10.1/nogene was refused for good; 10.1/out goes to the fallback model next.
+    assert {p["doi"]: refusals.model_for(p["doi"]) for p in papers} == {
+        "10.1/gene": MODEL,
+        "10.1/out": FALLBACK_MODEL,
+    }
+    assert [p["doi"] for p in select_papers(db_path, 1, refusals)] == ["10.1/gene"]
+    # With --retry-refused, refusals before this invocation no longer count.
+    later = load_refusals(db_path, STAGE, datetime.now(UTC) + timedelta(seconds=1))
+    assert len(select_papers(db_path, None, later)) == 3
+    assert later.model_for("10.1/out") == MODEL
+
+
+def test_check_level_falls_back_on_its_own(
+    db_path: Path, check: CheckSettings, hgnc_resolver: HgncResolver
+) -> None:
+    store_screens(
+        db_path,
+        [_result(STAGE, "10.1/gene", _screen(True, ["GENEA"]))],
+        jsonschema.Draft202012Validator(SCREEN_SCHEMA),
+        hgnc_resolver,
+        screen_only=False,
+    )
+    store_checks(db_path, [_refused(CHECK_STAGE, "10.1/gene", MODEL)], check)
+    refusals = _refusals(db_path, CHECK_STAGE)
+    [paper] = select_screened(db_path, None, refusals)
+    assert refusals.model_for(paper["doi"]) == FALLBACK_MODEL
+    assert _refusals(db_path, STAGE).model_for("10.1/gene") == MODEL
+    store_checks(db_path, [_refused(CHECK_STAGE, "10.1/gene", FALLBACK_MODEL)], check)
+    assert select_screened(db_path, None, _refusals(db_path, CHECK_STAGE)) == []
+
+
+class RefusingTransport:
+    """MODEL refuses every screen; FALLBACK_MODEL answers with a rejection."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []  # (subject, model)
+
+    async def run(
+        self, stage: str, round_no: int, requests: Sequence[LlmRequest]
+    ) -> list[LlmResult]:
+        results = []
+        for request in requests:
+            model = request.params["model"]
+            self.sent.append((request.subject, model))
+            if model == MODEL:
+                results.append(_refused(stage, request.subject, model))
+            else:
+                answer = _result(stage, request.subject, _screen(False, []))
+                results.append(replace(answer, custom_id=f"{answer.custom_id}-f", model=model))
+        return results
+
+    async def resume(self, stage: str) -> list[LlmResult]:
+        return []
+
+
+def test_a_round_of_refusals_is_followed_by_the_fallback_attempt(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    transport = RefusingTransport()
+    asyncio.run(
+        _process_relevance(
+            transport=transport,
+            db_path=db_path,
+            prompt=RelevancePrompt(system="s", user_template="{title} {abstract}"),
+            schema=SCREEN_SCHEMA,
+            resolver=hgnc_resolver,
+            check=None,
+            limit=None,
+            max_retries=5,
+            refusals_since=EVERY_REFUSAL,
+        )
+    )
+    dois = ["10.1/gene", "10.1/nogene", "10.1/out"]
+    assert transport.sent == [(doi, MODEL) for doi in dois] + [
+        (doi, FALLBACK_MODEL) for doi in dois
+    ]
+    for doi in dois:
+        assert json.loads(_row(db_path, doi)["relevance_assessment_json"])["relevant"] is False
+    with sqlite3.connect(db_path) as conn:
+        recorded = conn.execute(
+            "SELECT model, status, COUNT(*) FROM llm_requests GROUP BY model, status ORDER BY model"
+        ).fetchall()
+    assert recorded == [(MODEL, "refused", 3), (FALLBACK_MODEL, "succeeded", 3)]

@@ -1030,6 +1030,22 @@ details.panel-recommendations .panel-details {
     margin-right: 4px;
 }
 
+/* A result the fallback model gave after the primary model refused the request */
+.fallback-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.7em;
+    font-weight: 600;
+    background: #eef2f8;
+    color: #3d5a80;
+    border: 1px solid #a9bcd6;
+    vertical-align: middle;
+    margin-left: 6px;
+    cursor: help;
+    position: relative;
+}
+
 .detailed-paper.paper-filtered {
     opacity: 0.5;
 }

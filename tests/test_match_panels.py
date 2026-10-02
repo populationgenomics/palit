@@ -9,7 +9,16 @@ import jsonschema
 import pytest
 from anthropic.types import Message
 
-from palit.llm import LlmRequest, LlmResult, ResultStatus, json_output_config
+from palit.llm import (
+    FALLBACK_MODEL,
+    MODEL,
+    LlmRequest,
+    LlmResult,
+    ResultStatus,
+    StageRefusals,
+    json_output_config,
+    stage_refusals,
+)
 from palit.match_panels import (
     EFFORT,
     PROMPT_PATH,
@@ -42,8 +51,9 @@ def _assessment(description: str, **fields: str) -> str:
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
-    """Gene 11273 with a matched association (1), unmatched ones (2, 4), one refused
-    by this stage (3) and one in flight (5). Association 4 was refused by map-mondo."""
+    """Gene 11273 with a matched association (1), unmatched ones (2, 4), one this stage
+    refused for good (3) and one in flight (5). Association 4 was refused by MODEL here and
+    by map-mondo."""
     path = tmp_path / "run.sqlite"
     with sqlite3.connect(path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
@@ -76,14 +86,17 @@ def db_path(tmp_path: Path) -> Path:
         )
         conn.executemany(
             """
-            INSERT INTO llm_requests (custom_id, stage, subject, round, model, status)
-            VALUES (?, ?, ?, 1, 'claude-opus-5-5', ?)
+            INSERT INTO llm_requests (custom_id, stage, subject, round, model, status,
+                                      completed_at)
+            VALUES (?, ?, ?, 1, ?, ?, '2026-10-01T00:00:00+00:00')
             """,
             [
-                ("match_panels-1-a", STAGE, "3", "refused"),
-                ("match_panels-1-b", STAGE, "5", "pending"),
-                ("match_panels-1-c", STAGE, "2", "errored"),
-                ("map_mondo-1-a", "map_mondo", "4", "refused"),
+                ("match_panels-1-a", STAGE, "3", MODEL, "refused"),
+                ("match_panels-1-a2", STAGE, "3", FALLBACK_MODEL, "refused"),
+                ("match_panels-1-b", STAGE, "5", MODEL, "pending"),
+                ("match_panels-1-c", STAGE, "2", MODEL, "errored"),
+                ("match_panels-1-d", STAGE, "4", MODEL, "refused"),
+                ("map_mondo-1-a", "map_mondo", "4", FALLBACK_MODEL, "refused"),
             ],
         )
     return path
@@ -94,7 +107,7 @@ def _prompt() -> tuple[str, str]:
 
 
 def test_select_associations_skips_matched_refused_and_pending_rows(db_path: Path) -> None:
-    assert select_associations(db_path) == [
+    assert select_associations(db_path, _refusals(db_path)) == [
         Association(
             id=2,
             description="adult-onset hereditary spastic paraplegia",
@@ -111,6 +124,8 @@ def test_select_associations_skips_matched_refused_and_pending_rows(db_path: Pat
         ),
     ]
     assert count_unmatched(db_path) == 4
+    refusals = _refusals(db_path)
+    assert (refusals.model_for("2"), refusals.model_for("4")) == (MODEL, FALLBACK_MODEL)
 
 
 def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path: Path) -> None:
@@ -118,7 +133,7 @@ def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path:
         conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = 11273")
         (left_behind,) = conn.execute("SELECT COUNT(*) FROM associations").fetchone()
     assert left_behind == 5
-    assert select_associations(db_path) == []
+    assert select_associations(db_path, _refusals(db_path)) == []
     assert count_unmatched(db_path) == 0
 
 
@@ -128,6 +143,11 @@ def test_split_prompt_keeps_the_panel_list_in_the_system_part() -> None:
     assert "{panel_list}" not in system
     assert "ASSOCIATION:" not in system
     assert user_template.startswith("ASSOCIATION:")
+
+
+def _refusals(db_path: Path) -> StageRefusals:
+    with sqlite3.connect(db_path) as conn:
+        return stage_refusals(conn, STAGE)
 
 
 def _sent_messages(request: LlmRequest) -> list[dict[str, Any]]:
@@ -140,8 +160,8 @@ def test_build_request_describes_one_association(db_path: Path) -> None:
     system, user_template = _prompt()
     output_config = json_output_config(SCHEMA, EFFORT)
     first, second = (
-        build_request(association, system, user_template, output_config)
-        for association in select_associations(db_path)
+        build_request(association, system, user_template, output_config, MODEL)
+        for association in select_associations(db_path, _refusals(db_path))
     )
     assert first.subject == "2"
     assert first.params["system"] == second.params["system"]

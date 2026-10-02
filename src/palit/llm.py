@@ -12,6 +12,11 @@ Stages build their own ``MessageCreateParamsNonStreaming`` and hand a list of
 Both return :class:`LlmResult` objects. The stage writes its own output and calls
 :func:`record_result` for every result in the same SQLite transaction, so a crash
 never leaves a stage output without its request bookkeeping, or the reverse.
+
+Refusals fall back from :data:`MODEL` to :data:`FALLBACK_MODEL`. Stages pick the
+model for each request with :func:`stage_refusals`: a subject goes to MODEL
+until MODEL refuses it in that stage, and then to FALLBACK_MODEL with otherwise
+identical params. A subject is refused for good once FALLBACK_MODEL refuses it.
 """
 
 import asyncio
@@ -19,6 +24,7 @@ import json
 import logging
 import sqlite3
 import uuid
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,6 +46,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-opus-5-5"
+# Gets every request about a subject once MODEL has refused the subject in that stage.
+FALLBACK_MODEL = "claude-sonnet-5-5"
+# For the report's notes on results that came from FALLBACK_MODEL.
+MODEL_NAME = "Opus 5.5"
+FALLBACK_MODEL_NAME = "Sonnet 5.5"
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
@@ -185,6 +196,79 @@ class LlmResult:
     message: Message | None  # set for SUCCEEDED and REFUSED
     error_type: str | None  # set for ERRORED, e.g. "invalid_request_error"
 
+    @property
+    def goes_to_fallback(self) -> bool:
+        """Whether MODEL refused it, so the subject's next request goes to FALLBACK_MODEL."""
+        return self.status == ResultStatus.REFUSED and self.model == MODEL
+
+
+def log_refusal(result: LlmResult, label: str) -> None:
+    """Warn about a refused *result*; *label* names its subject, e.g. ``"HGNC:1100"``."""
+    assert result.message is not None
+    stop_details = result.message.stop_details
+    logger.warning(
+        "%s: %s refused %s (%s); %s",
+        result.stage,
+        result.model,
+        label,
+        stop_details.category if stop_details is not None else "no category",
+        f"the next attempt goes to {FALLBACK_MODEL}"
+        if result.goes_to_fallback
+        else "refused for good",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fallback
+# ---------------------------------------------------------------------------
+
+
+# Refusals recorded at or after this instant count: by default, every refusal.
+EVERY_REFUSAL = datetime.min.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class StageRefusals:
+    """The subjects of one stage that MODEL and FALLBACK_MODEL refused.
+
+    Refusals by any other model, such as one an earlier run used, do not count.
+    """
+
+    by_model: frozenset[str]
+    by_fallback: frozenset[str]
+
+    def refused_for_good(self, subject: str) -> bool:
+        """Whether FALLBACK_MODEL refused *subject*, so the stage skips it."""
+        return subject in self.by_fallback
+
+    def model_for(self, subject: str) -> str:
+        """The model of the stage's next request about *subject*.
+
+        FALLBACK_MODEL once MODEL refused the subject, MODEL before. Raises
+        ValueError for a subject refused for good: stages leave those out.
+        """
+        if subject in self.by_fallback:
+            raise ValueError(f"{subject} was refused by {FALLBACK_MODEL} too")
+        return FALLBACK_MODEL if subject in self.by_model else MODEL
+
+
+def stage_refusals(
+    conn: sqlite3.Connection, stage: str, since: datetime = EVERY_REFUSAL
+) -> StageRefusals:
+    """The refusals *stage* recorded at or after *since*, by model."""
+    refused: dict[str, set[str]] = {MODEL: set(), FALLBACK_MODEL: set()}
+    for model, subject in conn.execute(
+        """
+        SELECT model, subject FROM llm_requests
+        WHERE stage = ? AND status = 'refused' AND model IN (?, ?) AND completed_at >= ?
+        """,
+        (stage, MODEL, FALLBACK_MODEL, since.isoformat()),
+    ):
+        refused[model].add(subject)
+    return StageRefusals(
+        by_model=frozenset(refused[MODEL]), by_fallback=frozenset(refused[FALLBACK_MODEL])
+    )
+
 
 def _new_custom_id(stage: str, round_no: int) -> str:
     return f"{stage}-{round_no}-{uuid.uuid4().hex[:24]}"
@@ -318,8 +402,14 @@ class BatchTransport:
     async def run(
         self, stage: str, round_no: int, requests: Sequence[LlmRequest]
     ) -> list[LlmResult]:
+        """Submit *requests* in batches of one model each, as ``llm_batches`` records it."""
+        by_model: dict[str, list[LlmRequest]] = defaultdict(list)
+        for request in requests:
+            by_model[request.params["model"]].append(request)
         batch_ids = [
-            await self._submit(stage, round_no, chunk) for chunk in chunk_for_batches(requests)
+            await self._submit(stage, round_no, chunk)
+            for group in by_model.values()
+            for chunk in chunk_for_batches(group)
         ]
         results: list[LlmResult] = []
         for batch_id in batch_ids:
@@ -584,6 +674,7 @@ class ModelPrices:
 
 PRICES: dict[str, ModelPrices] = {
     "claude-opus-5-5": ModelPrices(input=4.0, output=20.0, cache_read_multiplier=0.05),
+    "claude-sonnet-5-5": ModelPrices(input=2.0, output=10.0, cache_read_multiplier=0.1),
     "claude-opus-5": ModelPrices(input=5.0, output=25.0, cache_read_multiplier=0.1),
 }
 CACHE_WRITE_5M_MULTIPLIER = 1.25

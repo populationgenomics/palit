@@ -4,7 +4,9 @@
 One request per association without panel matches: the system part lists every
 panel and is the same for all requests, so it is cached; the user part carries
 the association's disease, mode of inheritance and summary. Matches are stored
-on the association row, in the transaction that records the request.
+on the association row, in the transaction that records the request. An
+association MODEL refused goes to FALLBACK_MODEL in the next attempt (see
+:mod:`palit.llm`).
 """
 
 import asyncio
@@ -20,19 +22,21 @@ import typer
 from anthropic.types.output_config_param import OutputConfigParam
 
 from palit.llm import (
-    MODEL,
     BatchTransport,
     Effort,
     ImmediateTransport,
     LlmRequest,
     LlmResult,
     ResultStatus,
+    StageRefusals,
     Transport,
     cached_system,
     json_output_config,
+    log_refusal,
     make_client,
     parse_json_output,
     record_result,
+    stage_refusals,
 )
 from palit.llm_usage import print_stage_summary
 from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
@@ -78,8 +82,8 @@ def format_all_panels_for_prompt(panels: dict[int, dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def select_associations(db_path: Path) -> list[Association]:
-    """Associations without panel matches, except refused ones and ones in flight.
+def select_associations(db_path: Path, refusals: StageRefusals) -> list[Association]:
+    """Associations without panel matches, except ones refused for good and ones in flight.
 
     Only rows of a stored aggregation count: rows left behind by deleting a
     ``gene_aggregations`` row are skipped.
@@ -94,7 +98,7 @@ def select_associations(db_path: Path) -> list[Association]:
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
                   WHERE r.stage = ? AND r.subject = CAST(a.id AS TEXT)
-                    AND r.status IN ('refused', 'pending')
+                    AND r.status = 'pending'
               )
             ORDER BY a.id
             """,
@@ -102,6 +106,8 @@ def select_associations(db_path: Path) -> list[Association]:
         ).fetchall()
     associations = []
     for association_id, assessment_json in rows:
+        if refusals.refused_for_good(str(association_id)):
+            continue
         assessment = json.loads(assessment_json)
         associations.append(
             Association(
@@ -167,7 +173,11 @@ def format_inheritance(association: Association) -> str:
 
 
 def build_request(
-    association: Association, system: str, user_template: str, output_config: OutputConfigParam
+    association: Association,
+    system: str,
+    user_template: str,
+    output_config: OutputConfigParam,
+    model: str,
 ) -> LlmRequest:
     user_text = user_template.format(
         description=association.description,
@@ -177,7 +187,7 @@ def build_request(
     return LlmRequest(
         subject=str(association.id),
         params={
-            "model": MODEL,
+            "model": model,
             "max_tokens": MAX_TOKENS,
             "system": cached_system(system),
             "messages": [{"role": "user", "content": user_text}],
@@ -222,7 +232,7 @@ def handle_results(
             association_id = int(result.subject)
             message = result.message
             if result.status == ResultStatus.REFUSED:
-                logger.warning("Refused: association %d", association_id)
+                log_refusal(result, f"association {association_id}")
                 continue
             if result.status != ResultStatus.SUCCEEDED or message is None:
                 if result.error_type == "invalid_request_error":
@@ -252,6 +262,12 @@ async def _process_panel_matching(
     name_to_id: dict[str, int],
     max_retries: int,
 ) -> None:
+    """Match every association due matches, in attempts.
+
+    An attempt makes progress when it stores matches or sends an association on
+    to FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
+    that sends those associations to FALLBACK_MODEL.
+    """
     validator = jsonschema.Draft202012Validator(schema)
     output_config = json_output_config(schema, EFFORT)
     resumed = await transport.resume(STAGE)
@@ -259,19 +275,34 @@ async def _process_panel_matching(
         stored = handle_results(resumed, db_path, validator, name_to_id)
         logger.info("Collected %d results from earlier batches, stored %d", len(resumed), stored)
     for attempt in range(1, max_retries + 1):
-        associations = select_associations(db_path)
+        with sqlite3.connect(db_path) as conn:
+            refusals = stage_refusals(conn, STAGE)
+        associations = select_associations(db_path, refusals)
         if not associations:
             logger.info("No associations left to match")
             return
         logger.info("Attempt %d: matching %d associations", attempt, len(associations))
         requests = [
-            build_request(association, system, user_template, output_config)
+            build_request(
+                association,
+                system,
+                user_template,
+                output_config,
+                refusals.model_for(str(association.id)),
+            )
             for association in associations
         ]
         results = await transport.run(STAGE, 1, requests)
         stored = handle_results(results, db_path, validator, name_to_id)
-        logger.info("Attempt %d: stored %d of %d", attempt, stored, len(associations))
-        if stored == 0:
+        to_fallback = sum(result.goes_to_fallback for result in results)
+        logger.info(
+            "Attempt %d: stored %d of %d; %d go to the fallback model",
+            attempt,
+            stored,
+            len(associations),
+            to_fallback,
+        )
+        if stored + to_fallback == 0:
             logger.error("No progress in attempt %d - stopping", attempt)
             return
 
@@ -290,7 +321,8 @@ def main(
     max_retries: int = typer.Option(
         5,
         "--max-retries",
-        help="Maximum number of attempts for associations whose matching failed",
+        help="Maximum number of attempts for associations whose matching failed or was "
+        "refused; the fallback-model request after a refusal is one of them",
     ),
     immediate: bool = typer.Option(
         False,

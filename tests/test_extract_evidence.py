@@ -1,26 +1,49 @@
 """Tests for extraction helpers that need no network or PDFs."""
 
+import asyncio
 import json
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from anthropic.types import Message
 
 from palit.extract_evidence import (
-    EVERY_REFUSAL,
     STAGE,
+    Conversation,
+    ExtractionRunner,
+    RequestSettings,
+    RoundOutcome,
     extraction_quotes,
     normalize_extraction_genes,
     prune_citations,
     select_papers,
+    start_conversation,
     structural_problems,
     symbol_pattern,
     variant_lookup_results,
 )
 from palit.hgnc import HgncEntry, HgncResolver
-from palit.lookup_tools import frequency_row, summarise_variant_response
+from palit.llm import (
+    EVERY_REFUSAL,
+    FALLBACK_MODEL,
+    MODEL,
+    LlmRequest,
+    LlmResult,
+    ResultStatus,
+    json_output_config,
+    stage_refusals,
+)
+from palit.lookup_tools import (
+    LookupRunner,
+    VariantLookupClient,
+    VariantLookupSettings,
+    frequency_row,
+    summarise_variant_response,
+)
 from palit.panelapp_integration import criteria_object_to_list
 
 CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
@@ -306,8 +329,11 @@ def test_prune_citations_keeps_variant_quotes() -> None:
     assert gene["variants"][0]["quote"] == "variant quote"
 
 
-def test_select_papers_retries_only_refusals_before_the_cutoff(tmp_path: Path) -> None:
-    """Refusals before the cutoff no longer exclude a paper; in-flight and later ones do."""
+def test_select_papers_skips_only_papers_refused_for_good(tmp_path: Path) -> None:
+    """A refusal by MODEL leaves a paper due its fallback; one by FALLBACK_MODEL excludes it.
+
+    Refusals before the --retry-refused cutoff no longer count; in-flight papers stay out.
+    """
     db_path = tmp_path / "run.sqlite"
     before = datetime(2026, 9, 1, tzinfo=UTC)
     cutoff = datetime(2026, 9, 2, tzinfo=UTC)
@@ -319,6 +345,7 @@ def test_select_papers_retries_only_refusals_before_the_cutoff(tmp_path: Path) -
             "evidence_extraction_json) VALUES (?, 't', 'pubmed', 'initial', 'downloaded', ?)",
             [
                 ("10.1/new", None),
+                ("10.1/to-fallback", None),
                 ("10.1/refused-before", None),
                 ("10.1/refused-after", None),
                 ("10.1/pending", None),
@@ -327,17 +354,172 @@ def test_select_papers_retries_only_refusals_before_the_cutoff(tmp_path: Path) -
         )
         conn.executemany(
             "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, "
-            "completed_at) VALUES (?, ?, ?, 1, 'm', ?, ?)",
+            "completed_at) VALUES (?, ?, ?, 2, ?, ?, ?)",
             [
-                ("a", STAGE, "10.1/refused-before", "refused", before.isoformat()),
-                ("b", STAGE, "10.1/refused-after", "refused", after.isoformat()),
-                ("c", STAGE, "10.1/pending", "pending", None),
-                ("d", "assess_relevance", "10.1/new", "refused", before.isoformat()),
+                ("a", STAGE, "10.1/to-fallback", MODEL, "refused", after.isoformat()),
+                ("b", STAGE, "10.1/refused-before", FALLBACK_MODEL, "refused", before.isoformat()),
+                ("c", STAGE, "10.1/refused-after", FALLBACK_MODEL, "refused", after.isoformat()),
+                ("d", STAGE, "10.1/pending", MODEL, "pending", None),
+                ("e", "relevance", "10.1/new", FALLBACK_MODEL, "refused", before.isoformat()),
             ],
         )
 
-    def selected(refusals_since: datetime) -> list[str]:
-        return [p["doi"] for p in select_papers(db_path, None, refusals_since)]
+    def selected(since: datetime) -> dict[str, str]:
+        with sqlite3.connect(db_path) as conn:
+            refusals = stage_refusals(conn, STAGE, since)
+        return {
+            p["doi"]: refusals.model_for(p["doi"]) for p in select_papers(db_path, None, refusals)
+        }
 
-    assert selected(EVERY_REFUSAL) == ["10.1/new"]
-    assert selected(cutoff) == ["10.1/new", "10.1/refused-before"]
+    assert selected(EVERY_REFUSAL) == {"10.1/new": MODEL, "10.1/to-fallback": FALLBACK_MODEL}
+    assert selected(cutoff) == {
+        "10.1/new": MODEL,
+        "10.1/to-fallback": FALLBACK_MODEL,
+        "10.1/refused-before": MODEL,
+    }
+
+
+def _message(stop_reason: str, content: list[dict[str, Any]], model: str) -> Message:
+    return Message.model_validate(
+        {
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": model,
+            "content": content,
+            "stop_reason": stop_reason,
+            "stop_sequence": None,
+            "stop_details": (
+                {"type": "refusal", "category": "bio", "explanation": None}
+                if stop_reason == "refusal"
+                else None
+            ),
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+    )
+
+
+class RoundTwoRefuser:
+    """Round 1 asks for a gene lookup; round 2 is refused, by whichever model gets it."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[int, LlmRequest]] = []
+
+    async def run(
+        self, stage: str, round_no: int, requests: Sequence[LlmRequest]
+    ) -> list[LlmResult]:
+        results = []
+        for request in requests:
+            self.sent.append((round_no, request))
+            model = request.params["model"]
+            if round_no == 1:
+                message = _message(
+                    "tool_use",
+                    [
+                        {"type": "thinking", "thinking": "", "signature": f"sig-{model}"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "lookup_genes",
+                            "input": {"symbols": ["GENEA"]},
+                        },
+                    ],
+                    model,
+                )
+                status = ResultStatus.SUCCEEDED
+            else:
+                message = _message("refusal", [], model)
+                status = ResultStatus.REFUSED
+            results.append(
+                LlmResult(
+                    custom_id=f"{stage}-{round_no}-{len(self.sent)}",
+                    batch_id=None,
+                    stage=stage,
+                    subject=request.subject,
+                    round=round_no,
+                    model=model,
+                    status=status,
+                    message=message,
+                    error_type=None,
+                )
+            )
+        return results
+
+    async def resume(self, stage: str) -> list[LlmResult]:
+        return []
+
+
+def test_a_refusal_in_round_two_restarts_the_conversation_on_the_fallback_model(
+    tmp_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+    schema = json.loads((SCHEMA_SQL.parent / "prompts/evidence_extraction_schema.json").read_text())
+    transport = RoundTwoRefuser()
+    first_message = {"role": "user", "content": "paper"}
+    starts: list[list[tuple[int, str]]] = []  # llm_conversations right after each start
+
+    def conversations() -> list[tuple[int, str]]:
+        with sqlite3.connect(db_path) as conn:
+            return [
+                (round_no, json.loads(messages_json)[-1]["role"])
+                for round_no, messages_json in conn.execute(
+                    "SELECT round, messages_json FROM llm_conversations ORDER BY round"
+                )
+            ]
+
+    async def attempt(runner: ExtractionRunner) -> RoundOutcome:
+        with sqlite3.connect(db_path) as conn:
+            refusals = stage_refusals(conn, STAGE)
+            conversation = Conversation(
+                doi="10.1/a",
+                round=1,
+                messages=[first_message],
+                model=refusals.model_for("10.1/a"),
+            )
+            start_conversation(conn, conversation)
+        starts.append(conversations())
+        return await runner.advance([conversation])
+
+    async def run() -> tuple[RoundOutcome, RoundOutcome]:
+        variants = VariantLookupClient(
+            VariantLookupSettings(
+                VARIANT_LOOKUP_BASE_URL="http://unused.invalid", VARIANT_LOOKUP_API_KEY="x"
+            )
+        )
+        try:
+            runner = ExtractionRunner(
+                transport=transport,
+                db_path=db_path,
+                papers_dir=tmp_path,
+                settings=RequestSettings(
+                    system="s",
+                    output_config=json_output_config(schema, "medium"),
+                    cache_pdf=False,
+                ),
+                schema=schema,
+                hgnc_resolver=hgnc_resolver,
+                lookups=LookupRunner(variants, hgnc_resolver),
+            )
+            first = await attempt(runner)
+            second = await attempt(runner)
+        finally:
+            await variants.aclose()
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert (first.refused, first.to_fallback) == (1, 1)
+    assert (second.refused, second.to_fallback) == (1, 0)
+    sent = [(round_no, request.params["model"]) for round_no, request in transport.sent]
+    assert sent == [(1, MODEL), (2, MODEL), (1, FALLBACK_MODEL), (2, FALLBACK_MODEL)]
+    # The fallback conversation starts from the paper alone and replays only its own turn.
+    fallback_round_two = json.loads(json.dumps(list(transport.sent[3][1].params["messages"])))
+    assert fallback_round_two[0] == first_message
+    assert fallback_round_two[1]["content"][0]["signature"] == f"sig-{FALLBACK_MODEL}"
+    assert len(fallback_round_two) == 3
+    # Starting the fallback conversation dropped the refused conversation's round 2.
+    assert starts == [[(1, "user")], [(1, "user")]]
+    with sqlite3.connect(db_path) as conn:
+        refusals = stage_refusals(conn, STAGE)
+    assert refusals.refused_for_good("10.1/a")

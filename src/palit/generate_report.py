@@ -20,10 +20,18 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
+from palit.assess_relevance import CHECK_STAGE as RELEVANCE_CHECK_STAGE
+from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.hgnc import HgncResolver
-from palit.llm import ResultStatus, parse_json_output
+from palit.llm import (
+    FALLBACK_MODEL,
+    FALLBACK_MODEL_NAME,
+    MODEL_NAME,
+    ResultStatus,
+    parse_json_output,
+)
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.panelapp_client import (
@@ -147,6 +155,42 @@ class VariantFrequency:
     citations: list[CitationLink]  # Papers reporting this variant, sorted by display_id
 
 
+def answered_by_fallback(cursor: sqlite3.Cursor, stage: str, subject: str) -> bool:
+    """Whether the latest answered request of *stage* about *subject* went to FALLBACK_MODEL.
+
+    The stored result of a stage comes from its latest answered request: a
+    subject with a result is not selected again.
+    """
+    cursor.execute(
+        """
+        SELECT model FROM llm_requests
+        WHERE stage = ? AND subject = ? AND status = 'succeeded'
+        ORDER BY completed_at DESC LIMIT 1
+        """,
+        (stage, subject),
+    )
+    row = cursor.fetchone()
+    return row is not None and row[0] == FALLBACK_MODEL
+
+
+@dataclass(frozen=True)
+class FallbackNotes:
+    """Which of a paper's results came from FALLBACK_MODEL after MODEL refused it."""
+
+    relevance_levels: tuple[str, ...]  # "scope screen" and/or "PanelApp check"
+    extraction: bool
+
+
+def load_fallback_notes(cursor: sqlite3.Cursor, doi: str) -> FallbackNotes:
+    levels = (("scope screen", RELEVANCE_STAGE), ("PanelApp check", RELEVANCE_CHECK_STAGE))
+    return FallbackNotes(
+        relevance_levels=tuple(
+            label for label, stage in levels if answered_by_fallback(cursor, stage, doi)
+        ),
+        extraction=answered_by_fallback(cursor, EXTRACTION_STAGE, doi),
+    )
+
+
 @dataclass
 class DetailedPaper:
     """Complete paper information for detailed display."""
@@ -162,6 +206,7 @@ class DetailedPaper:
     relevance_assessment: dict[str, Any] | None
     evidence_extraction: dict[str, Any] | None
     quote_refs: dict[str, QuoteRef]  # this paper's quotes -> position in its citations file
+    fallback: FallbackNotes
     preprint: bool = False
     pmid: int | None = None  # For PubMed display links
     display_id: str = ""  # "PMID {pmid}" for published papers, AuthorYear for preprints
@@ -292,19 +337,23 @@ class StageState(StrEnum):
     STORED = "stored"  # the association holds the stage's result
     NOT_RUN = "not_run"  # no request of the stage for this association
     PENDING = "pending"  # the latest request is in a batch not collected yet
-    REFUSED = "refused"  # the latest request was refused; the stage skips it from now on
+    REFUSED = "refused"  # FALLBACK_MODEL refused the latest request; the stage skips it from now on
     FAILED = "failed"  # requests ran but none gave a valid result; a rerun retries it
 
 
-def stage_state(stored: bool, latest_status: str | None) -> StageState:
-    """The state of a stage for one association, from its stored result and latest request."""
+def stage_state(stored: bool, latest_status: str | None, latest_model: str | None) -> StageState:
+    """The state of a stage for one association, from its stored result and latest request.
+
+    A latest refusal by MODEL counts as failed: the next attempt sends the
+    association to FALLBACK_MODEL.
+    """
     if stored:
         return StageState.STORED
     if latest_status is None:
         return StageState.NOT_RUN
     if latest_status == "pending":
         return StageState.PENDING
-    if latest_status == ResultStatus.REFUSED:
+    if latest_status == ResultStatus.REFUSED and latest_model == FALLBACK_MODEL:
         return StageState.REFUSED
     return StageState.FAILED
 
@@ -341,12 +390,12 @@ class ReportAssociation:
 
 @dataclass(frozen=True)
 class RefusedPaper:
-    """A paper of the gene that extract-evidence was refused and never read."""
+    """A paper of the gene that both models refused in extract-evidence, so it was never read."""
 
     doi: str
     pmid: int | None
     title: str
-    category: str | None  # the refusal's safety-classifier category
+    category: str | None  # the fallback model's refusal category
 
 
 @dataclass
@@ -368,6 +417,7 @@ class GeneAssessment:
     prefill_json: str  # HTML-escaped JSON for data-prefill attribute
     existing_panel_reviews: list[ExistingPanelReviews]  # per target panel; empty if novel
     refused_papers: list[RefusedPaper]
+    aggregated_by_fallback: bool  # FALLBACK_MODEL wrote the aggregation after MODEL refused it
 
     @property
     def has_highlighted_new_moi(self) -> bool:
@@ -386,7 +436,7 @@ class GeneAssessment:
 
 @dataclass(frozen=True)
 class RefusedGene:
-    """A gene that assess-genes was refused and that has no aggregation."""
+    """A gene that both models refused in assess-genes and that has no aggregation."""
 
     hgnc_id: int
     hgnc_symbol: str
@@ -448,7 +498,7 @@ class ComprehensiveStats:
     total_associations: int
     highlighted_new_moi_count: int
 
-    # Papers of assessed genes that extract-evidence was refused
+    # Papers of assessed genes that both models refused in extract-evidence
     refused_papers_count: int
 
     # Known genes on the target panel with zero expert reviews
@@ -813,6 +863,7 @@ def load_contributing_papers(
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=evidence_extraction,
                 quote_refs=load_quote_refs(cursor, doi),
+                fallback=load_fallback_notes(cursor, doi),
                 preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
                 pmid=paper_row["pmid"],
                 paper_gene_symbol=paper_row["paper_gene_symbol"],
@@ -823,7 +874,10 @@ def load_contributing_papers(
 
 
 def load_refused_papers(cursor: sqlite3.Cursor, hgnc_id: int) -> list[RefusedPaper]:
-    """The gene's papers that extract-evidence was refused and that have no extraction.
+    """The gene's papers without an extraction that extract-evidence refused for good.
+
+    A paper is refused for good once FALLBACK_MODEL refused it; a paper only
+    MODEL refused is still due its fallback request.
 
     A paper belongs to the gene when the relevance screen named the gene for it,
     when the gene's tournament selected it, or when it was added for the gene as a
@@ -834,12 +888,13 @@ def load_refused_papers(cursor: sqlite3.Cursor, hgnc_id: int) -> list[RefusedPap
         SELECT p.doi, p.pmid, p.title,
                (SELECT r2.refusal_category FROM llm_requests r2
                 WHERE r2.stage = ? AND r2.subject = p.doi AND r2.status = 'refused'
+                  AND r2.model = ?
                 ORDER BY r2.completed_at DESC LIMIT 1) AS category
         FROM papers p
         WHERE p.evidence_extraction_json IS NULL
           AND EXISTS (
               SELECT 1 FROM llm_requests r
-              WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'refused'
+              WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'refused' AND r.model = ?
           )
           AND (
               EXISTS (
@@ -856,7 +911,17 @@ def load_refused_papers(cursor: sqlite3.Cursor, hgnc_id: int) -> list[RefusedPap
           )
         ORDER BY p.source_date DESC, p.doi
         """,
-        (EXTRACTION_STAGE, EXTRACTION_STAGE, hgnc_id, hgnc_id, hgnc_id, hgnc_id, hgnc_id),
+        (
+            EXTRACTION_STAGE,
+            FALLBACK_MODEL,
+            EXTRACTION_STAGE,
+            FALLBACK_MODEL,
+            hgnc_id,
+            hgnc_id,
+            hgnc_id,
+            hgnc_id,
+            hgnc_id,
+        ),
     )
     return [
         RefusedPaper(doi=row["doi"], pmid=row["pmid"], title=row["title"], category=row["category"])
@@ -865,17 +930,17 @@ def load_refused_papers(cursor: sqlite3.Cursor, hgnc_id: int) -> list[RefusedPap
 
 
 def load_refused_genes(cursor: sqlite3.Cursor, hgnc_resolver: HgncResolver) -> list[RefusedGene]:
-    """Genes that assess-genes was refused and that have no aggregation."""
+    """Genes without an aggregation that assess-genes refused for good (FALLBACK_MODEL refused)."""
     cursor.execute(
         """
         SELECT CAST(r.subject AS INTEGER) AS hgnc_id, r.refusal_category
         FROM llm_requests r
-        WHERE r.stage = ? AND r.status = 'refused'
+        WHERE r.stage = ? AND r.status = 'refused' AND r.model = ?
           AND CAST(r.subject AS INTEGER) NOT IN (SELECT hgnc_id FROM gene_aggregations)
         GROUP BY r.subject
         ORDER BY hgnc_id
         """,
-        (ASSESS_GENES_STAGE,),
+        (ASSESS_GENES_STAGE, FALLBACK_MODEL),
     )
     return [
         RefusedGene(
@@ -977,23 +1042,28 @@ def load_associations(
     Each association carries the state of map-mondo and match-panels for it, from
     its latest request of each stage (a pending request counts as the latest).
     """
-    latest_status = """
-        (SELECT r.status FROM llm_requests r
-         WHERE r.stage = ? AND r.subject = CAST(a.id AS TEXT)
-         ORDER BY r.completed_at IS NOT NULL, r.completed_at DESC
-         LIMIT 1)
-    """
+
+    def latest(column: str) -> str:
+        return f"""
+            (SELECT r.{column} FROM llm_requests r
+             WHERE r.stage = ? AND r.subject = CAST(a.id AS TEXT)
+             ORDER BY r.completed_at IS NOT NULL, r.completed_at DESC
+             LIMIT 1)
+        """
+
     cursor.execute(
         f"""
         SELECT a.id, a.position, a.assessment_json, a.mondo_id, a.mondo_label, a.mondo_match,
                a.mondo_raw, a.matched_panels_json,
-               {latest_status} AS mondo_status,
-               {latest_status} AS matching_status
+               {latest("status")} AS mondo_status,
+               {latest("model")} AS mondo_model,
+               {latest("status")} AS matching_status,
+               {latest("model")} AS matching_model
         FROM associations a
         WHERE a.hgnc_id = ?
         ORDER BY a.position
         """,
-        (MAP_MONDO_STAGE, MATCH_PANELS_STAGE, hgnc_id),
+        (MAP_MONDO_STAGE, MAP_MONDO_STAGE, MATCH_PANELS_STAGE, MATCH_PANELS_STAGE, hgnc_id),
     )
     associations = []
     for row in cursor.fetchall():
@@ -1010,14 +1080,18 @@ def load_associations(
                     else assessment["proposed_disease_name"]
                 ),
                 mondo=mondo,
-                mondo_mapping=stage_state(mondo is not None, row["mondo_status"]),
+                mondo_mapping=stage_state(
+                    mondo is not None, row["mondo_status"], row["mondo_model"]
+                ),
                 rating=calculate_association_rating(assessment),
                 disputes=association_disputes(
                     assessment, row["mondo_id"], panelapp_context["disputes"]
                 ),
                 matched_panels=_panel_matches(row["matched_panels_json"], hgnc_id, all_panels_data),
                 panel_matching=stage_state(
-                    row["matched_panels_json"] is not None, row["matching_status"]
+                    row["matched_panels_json"] is not None,
+                    row["matching_status"],
+                    row["matching_model"],
                 ),
             )
         )
@@ -1133,6 +1207,7 @@ def load_gene(
         prefill_json=json.dumps(asdict(prefill_data)),
         existing_panel_reviews=existing_panel_reviews,
         refused_papers=load_refused_papers(cursor, hgnc_id),
+        aggregated_by_fallback=answered_by_fallback(cursor, ASSESS_GENES_STAGE, str(hgnc_id)),
     )
 
 
@@ -1351,6 +1426,7 @@ def load_panel_publications_validation(
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=evidence_extraction,
                 quote_refs=load_quote_refs(cursor, row["doi"]),
+                fallback=load_fallback_notes(cursor, row["doi"]),
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
             )
@@ -1444,6 +1520,7 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                     relevance_assessment=relevance_assessment,
                     evidence_extraction=evidence_extraction,
                     quote_refs=load_quote_refs(cursor, row["doi"]),
+                    fallback=load_fallback_notes(cursor, row["doi"]),
                     preprint=is_preprint(row["journal"], row["pmid"]),
                     pmid=row["pmid"],
                 )
@@ -1505,6 +1582,7 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=None,
                 quote_refs={},
+                fallback=load_fallback_notes(cursor, row["doi"]),
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
             )
@@ -2123,6 +2201,8 @@ def generate_html_report(
         refused_genes=refused_genes,
         panels_matched=panels_matched,
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
+        model_name=MODEL_NAME,
+        fallback_model_name=FALLBACK_MODEL_NAME,
         gnomad_thresholds={
             "het": GNOMAD_HET_THRESHOLD,
             "hom": GNOMAD_HOM_THRESHOLD,

@@ -9,9 +9,12 @@ import pytest
 from anthropic.types import Message
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
+from palit.assess_relevance import CHECK_STAGE as RELEVANCE_CHECK_STAGE
+from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.generate_report import (
+    FallbackNotes,
     FavoriteJournalSections,
     GeneAssessment,
     GeneAssessmentResults,
@@ -26,6 +29,7 @@ from palit.generate_report import (
     novel_gene_sort_key,
 )
 from palit.hgnc import HgncResolver
+from palit.llm import FALLBACK_MODEL, MODEL
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.panelapp_client import AllPanelsData, PanelGeneData
@@ -170,8 +174,11 @@ def _extraction(hgnc_id: int) -> str:
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
-    """GENEA (HGNC:1), known, with four associations in mixed states and a refused paper;
-    GENEB (HGNC:3), novel, with one association; GENEC (HGNC:4) refused by assess-genes."""
+    """GENEA (HGNC:1), known, with four associations in mixed states and refused papers;
+    GENEB (HGNC:3), novel, with one association; GENEC (HGNC:4) refused by assess-genes.
+
+    Sonnet 5.5 extracted 10.1/a after Opus 5.5 refused it, screened 10.1/b, and aggregated
+    GENEB after Opus 5.5 refused it."""
     path = tmp_path / "run.sqlite"
     with sqlite3.connect(path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
@@ -187,7 +194,25 @@ def db_path(tmp_path: Path) -> Path:
                 ("10.1/refused", 333, "Refused paper", "initial", "f.xml", None),
                 ("10.1/seeded", None, "Seeded refused paper", "expansion", "panelapp:1", None),
                 ("10.1/other", 444, "Other gene's refused paper", "initial", "f.xml", None),
+                ("10.1/due", 555, "Paper due its fallback", "initial", "f.xml", None),
             ],
+        )
+        conn.execute(
+            "UPDATE papers SET relevance_assessment_json = ? WHERE doi = '10.1/b'",
+            (
+                json.dumps(
+                    {
+                        "relevant": True,
+                        "screen": {
+                            "relevant": True,
+                            "confidence": "HIGH",
+                            "rationale": "New families.",
+                            "associations": [],
+                        },
+                        "panelapp_check": None,
+                    }
+                ),
+            ),
         )
         conn.executemany(
             "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) VALUES (?, ?, ?, ?)",
@@ -195,6 +220,7 @@ def db_path(tmp_path: Path) -> Path:
                 (1, "GENEA", "10.1/a", "recent_evidence"),
                 (3, "GENEB", "10.1/b", "recent_evidence"),
                 (1, "GENEA", "10.1/refused", "relevance_assessment"),
+                (1, "GENEA", "10.1/due", "relevance_assessment"),
                 (3, "GENEB", "10.1/other", "relevance_assessment"),
             ],
         )
@@ -307,18 +333,80 @@ def db_path(tmp_path: Path) -> Path:
             """
             INSERT INTO llm_requests (custom_id, stage, subject, round, model, status,
                                       refusal_category, completed_at)
-            VALUES (?, ?, ?, 1, 'claude-opus-5-5', ?, ?, ?)
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?)
             """,
             [
-                ("e1", EXTRACTION_STAGE, "10.1/refused", "refused", "bio", "2026-10-01T01"),
-                ("e2", EXTRACTION_STAGE, "10.1/seeded", "refused", None, "2026-10-01T02"),
-                ("e3", EXTRACTION_STAGE, "10.1/other", "refused", "bio", "2026-10-01T03"),
-                # refused once, then extracted: not a refused paper
-                ("e4", EXTRACTION_STAGE, "10.1/a", "refused", "bio", "2026-10-01T04"),
-                ("g1", ASSESS_GENES_STAGE, "4", "refused", "bio", "2026-10-01T05"),
-                # refused once, then aggregated
-                ("g2", ASSESS_GENES_STAGE, "3", "refused", "bio", "2026-10-01T06"),
-                ("m1", MATCH_PANELS_STAGE, "10", "succeeded", None, "2026-10-01T07"),
+                # refused by both models, the fallback's category shown
+                (
+                    "e0",
+                    EXTRACTION_STAGE,
+                    "10.1/refused",
+                    MODEL,
+                    "refused",
+                    "cyber",
+                    "2026-10-01T00",
+                ),
+                (
+                    "e1",
+                    EXTRACTION_STAGE,
+                    "10.1/refused",
+                    FALLBACK_MODEL,
+                    "refused",
+                    "bio",
+                    "2026-10-01T01",
+                ),
+                (
+                    "e2",
+                    EXTRACTION_STAGE,
+                    "10.1/seeded",
+                    FALLBACK_MODEL,
+                    "refused",
+                    None,
+                    "2026-10-01T02",
+                ),
+                (
+                    "e3",
+                    EXTRACTION_STAGE,
+                    "10.1/other",
+                    FALLBACK_MODEL,
+                    "refused",
+                    "bio",
+                    "2026-10-01T03",
+                ),
+                # refused by MODEL only: due its fallback request, not a refused paper
+                ("e5", EXTRACTION_STAGE, "10.1/due", MODEL, "refused", "bio", "2026-10-01T03"),
+                # refused once, then extracted by the fallback model: not a refused paper
+                ("e4", EXTRACTION_STAGE, "10.1/a", MODEL, "refused", "bio", "2026-10-01T04"),
+                (
+                    "e6",
+                    EXTRACTION_STAGE,
+                    "10.1/a",
+                    FALLBACK_MODEL,
+                    "succeeded",
+                    None,
+                    "2026-10-01T05",
+                ),
+                ("e7", EXTRACTION_STAGE, "10.1/b", MODEL, "succeeded", None, "2026-10-01T05"),
+                ("s1", RELEVANCE_STAGE, "10.1/b", MODEL, "refused", "bio", "2026-09-01T01"),
+                (
+                    "s2",
+                    RELEVANCE_STAGE,
+                    "10.1/b",
+                    FALLBACK_MODEL,
+                    "succeeded",
+                    None,
+                    "2026-09-01T02",
+                ),
+                ("s3", RELEVANCE_CHECK_STAGE, "10.1/b", MODEL, "succeeded", None, "2026-09-01T03"),
+                ("s4", RELEVANCE_STAGE, "10.1/a", MODEL, "succeeded", None, "2026-09-01T01"),
+                ("g1", ASSESS_GENES_STAGE, "4", FALLBACK_MODEL, "refused", "bio", "2026-10-01T05"),
+                # refused by MODEL only, without an aggregation: not a refused gene
+                ("g3", ASSESS_GENES_STAGE, "2", MODEL, "refused", "bio", "2026-10-01T05"),
+                # refused once, then aggregated by the fallback model
+                ("g2", ASSESS_GENES_STAGE, "3", MODEL, "refused", "bio", "2026-10-01T06"),
+                ("g4", ASSESS_GENES_STAGE, "3", FALLBACK_MODEL, "succeeded", None, "2026-10-01T07"),
+                ("g5", ASSESS_GENES_STAGE, "1", MODEL, "succeeded", None, "2026-10-01T07"),
+                ("m1", MATCH_PANELS_STAGE, "10", MODEL, "succeeded", None, "2026-10-01T07"),
             ],
         )
     return path
@@ -443,31 +531,39 @@ def test_matched_panels_per_association_and_union(results: GeneAssessmentResults
 
 
 def _add_requests(
-    db_path: Path, stage: str, subject: str, requests: list[tuple[str, str | None]]
+    db_path: Path, stage: str, subject: str, requests: list[tuple[str, str | None, str]]
 ) -> None:
-    """Requests of *stage* for *subject*, as (status, completed_at), in insertion order."""
+    """Requests of *stage* for *subject*, as (status, completed_at, model), in insertion order."""
     with sqlite3.connect(db_path) as conn:
         conn.executemany(
             """
             INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, completed_at)
-            VALUES (?, ?, ?, 1, 'claude-opus-5-5', ?, ?)
+            VALUES (?, ?, ?, 1, ?, ?, ?)
             """,
             [
-                (f"{stage}-{subject}-{i}", stage, subject, status, completed_at)
-                for i, (status, completed_at) in enumerate(requests)
+                (f"{stage}-{subject}-{i}", stage, subject, model, status, completed_at)
+                for i, (status, completed_at, model) in enumerate(requests)
             ],
         )
 
 
 STATE_CASES = [
     ([], StageState.NOT_RUN),
-    ([("refused", "2026-10-01T10")], StageState.REFUSED),
+    ([("refused", "2026-10-01T10", FALLBACK_MODEL)], StageState.REFUSED),
+    # refused by MODEL only: the next attempt goes to FALLBACK_MODEL
+    ([("refused", "2026-10-01T10", MODEL)], StageState.FAILED),
     # the second answer succeeded but was rejected, so nothing was stored
-    ([("errored", "2026-10-01T10"), ("succeeded", "2026-10-01T11")], StageState.FAILED),
-    ([("expired", "2026-10-01T10")], StageState.FAILED),
+    (
+        [("errored", "2026-10-01T10", MODEL), ("succeeded", "2026-10-01T11", MODEL)],
+        StageState.FAILED,
+    ),
+    ([("expired", "2026-10-01T10", MODEL)], StageState.FAILED),
     # the latest by completion time, not by insertion
-    ([("refused", "2026-10-01T11"), ("errored", "2026-10-01T10")], StageState.REFUSED),
-    ([("errored", "2026-10-01T10"), ("pending", None)], StageState.PENDING),
+    (
+        [("refused", "2026-10-01T11", FALLBACK_MODEL), ("errored", "2026-10-01T10", MODEL)],
+        StageState.REFUSED,
+    ),
+    ([("errored", "2026-10-01T10", MODEL), ("pending", None, FALLBACK_MODEL)], StageState.PENDING),
 ]
 
 
@@ -475,7 +571,7 @@ STATE_CASES = [
 def test_panel_matching_state_of_an_unmatched_association(
     db_path: Path,
     hgnc_resolver: HgncResolver,
-    requests: list[tuple[str, str | None]],
+    requests: list[tuple[str, str | None, str]],
     state: StageState,
 ) -> None:
     _add_requests(db_path, MATCH_PANELS_STAGE, "13", requests)
@@ -489,7 +585,7 @@ def test_panel_matching_state_of_an_unmatched_association(
 def test_mondo_mapping_state_of_an_unmapped_association(
     db_path: Path,
     hgnc_resolver: HgncResolver,
-    requests: list[tuple[str, str | None]],
+    requests: list[tuple[str, str | None, str]],
     state: StageState,
 ) -> None:
     _add_requests(db_path, MAP_MONDO_STAGE, "13", requests)
@@ -511,6 +607,23 @@ def test_refused_papers_and_genes(results: GeneAssessmentResults) -> None:
     ]
     assert results.novel_genes[0].refused_papers[0].doi == "10.1/other"
     assert [(g.hgnc_id, g.hgnc_symbol) for g in results.refused_genes] == [(4, "GENEC")]
+
+
+def test_results_of_the_fallback_model_are_marked(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    genea, geneb = results.known_genes[0], results.novel_genes[0]
+    assert (genea.aggregated_by_fallback, geneb.aggregated_by_fallback) == (False, True)
+    [paper_a] = genea.contributing_papers
+    [paper_b] = geneb.contributing_papers
+    assert paper_a.fallback == FallbackNotes(relevance_levels=(), extraction=True)
+    assert paper_b.fallback == FallbackNotes(relevance_levels=("scope screen",), extraction=False)
+
+    html = _render(db_path, results)
+    assert html.count(">Aggregated by Sonnet 5.5</span>") == 1
+    assert html.count(">Extracted by Sonnet 5.5</span>") == 1
+    assert html.count(">Assessed by Sonnet 5.5</span>") == 1
+    assert "Opus 5.5 refused the scope screen of this paper; Sonnet 5.5" in html
 
 
 def test_display_ids_and_gene_level_blocks(results: GeneAssessmentResults) -> None:
@@ -580,12 +693,13 @@ def test_panel_matching_shown_once_match_panels_has_run(
 def test_report_says_which_associations_were_refused_or_failed(
     db_path: Path, hgnc_resolver: HgncResolver
 ) -> None:
-    _add_requests(db_path, MATCH_PANELS_STAGE, "13", [("refused", "2026-10-01T10")])
-    _add_requests(db_path, MATCH_PANELS_STAGE, "20", [("errored", "2026-10-01T10")])
-    _add_requests(db_path, MAP_MONDO_STAGE, "13", [("refused", "2026-10-01T10")])
-    _add_requests(db_path, MAP_MONDO_STAGE, "20", [("succeeded", "2026-10-01T10")])
+    refused = ("refused", "2026-10-01T10", FALLBACK_MODEL)
+    _add_requests(db_path, MATCH_PANELS_STAGE, "13", [refused])
+    _add_requests(db_path, MATCH_PANELS_STAGE, "20", [("errored", "2026-10-01T10", MODEL)])
+    _add_requests(db_path, MAP_MONDO_STAGE, "13", [refused])
+    _add_requests(db_path, MAP_MONDO_STAGE, "20", [("succeeded", "2026-10-01T10", MODEL)])
     html = _render(db_path, _load(db_path, hgnc_resolver))
-    assert "match-panels was refused for this association" in html
+    assert "Opus 5.5 and its fallback Sonnet 5.5 both refused match-panels" in html
     assert "match-panels gave no valid answer in any attempt so far" in html
     assert "(1 of 4 associations not matched: 1 refused)" in html
     assert "(1 of 1 associations not matched: 1 failed)" in html
@@ -686,6 +800,7 @@ def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) ->
         prefill_json="{}",
         existing_panel_reviews=[],
         refused_papers=[],
+        aggregated_by_fallback=False,
     )
 
 

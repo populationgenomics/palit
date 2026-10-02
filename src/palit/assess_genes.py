@@ -5,7 +5,8 @@ One request per gene. The model groups the contributing papers' disease entities
 into associations, anchored on what PanelApp Australia already curates for the
 gene (its GenCC rows, its panel entries and its reviews), and assesses each
 association on its own. An association that reuses a GenCC row takes that row's
-MONDO term; the others get theirs from ``map-mondo``.
+MONDO term; the others get theirs from ``map-mondo``. A gene MODEL refused goes
+to FALLBACK_MODEL in the next attempt (see :mod:`palit.llm`).
 """
 
 import asyncio
@@ -25,18 +26,20 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from palit.gencc import GeneGencc, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
-    MODEL,
     BatchTransport,
     Effort,
     ImmediateTransport,
     LlmRequest,
     LlmResult,
     ResultStatus,
+    StageRefusals,
     Transport,
     json_output_config,
+    log_refusal,
     make_client,
     parse_json_output,
     record_result,
+    stage_refusals,
 )
 from palit.llm_usage import print_stage_summary
 from palit.panelapp_check import INCIDENTALOME_SCOPE, CuratedRecord, PanelEntry
@@ -619,8 +622,8 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
     )
 
 
-def genes_to_assess(db_path: Path, only: list[int] | None) -> list[int]:
-    """Genes with recent evidence and no aggregation, excluding refused ones and ones in flight.
+def genes_to_assess(db_path: Path, only: list[int] | None, refusals: StageRefusals) -> list[int]:
+    """Genes with recent evidence and no aggregation, except ones refused for good and in flight.
 
     ``only`` restricts the result to these HGNC IDs.
     """
@@ -633,24 +636,24 @@ def genes_to_assess(db_path: Path, only: list[int] | None) -> list[int]:
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
                   WHERE r.stage = ? AND r.subject = CAST(gm.hgnc_id AS TEXT)
-                    AND r.status IN ('refused', 'pending')
+                    AND r.status = 'pending'
               )
             ORDER BY gm.hgnc_id
             """,
             (STAGE,),
         ).fetchall()
-    hgnc_ids = [row[0] for row in rows]
+    hgnc_ids = [row[0] for row in rows if not refusals.refused_for_good(str(row[0]))]
     if only is None:
         return hgnc_ids
     wanted = set(only)
     return [h for h in hgnc_ids if h in wanted]
 
 
-def build_request(item: _GeneBatchItem, output_config: OutputConfigParam) -> LlmRequest:
+def build_request(item: _GeneBatchItem, output_config: OutputConfigParam, model: str) -> LlmRequest:
     return LlmRequest(
         subject=str(item.hgnc_id),
         params={
-            "model": MODEL,
+            "model": model,
             "max_tokens": MAX_TOKENS,
             "messages": [{"role": "user", "content": item.prompt}],
             "output_config": output_config,
@@ -869,6 +872,7 @@ def _association_overview(assessment: dict[str, Any]) -> str:
 class _Outcome:
     stored: int = 0
     refused: int = 0
+    to_fallback: int = 0  # the refusals by MODEL: these genes go to FALLBACK_MODEL next
     failed: int = 0
 
 
@@ -885,13 +889,9 @@ def handle_results(
         message = result.message
         stored = False
         if result.status == ResultStatus.REFUSED:
-            assert message is not None
             outcome.refused += 1
-            logger.warning(
-                "Refused: HGNC:%s (%s)",
-                result.subject,
-                message.stop_details.category if message.stop_details else "no category",
-            )
+            outcome.to_fallback += result.goes_to_fallback
+            log_refusal(result, f"HGNC:{result.subject}")
         elif result.status != ResultStatus.SUCCEEDED or message is None:
             outcome.failed += 1
             if result.error_type == "invalid_request_error":
@@ -950,6 +950,12 @@ async def _process_assessments(
     limit: int | None,
     max_retries: int,
 ) -> None:
+    """Assess every gene due an assessment, in attempts.
+
+    An attempt makes progress when it stores an assessment or sends a gene on to
+    FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
+    that sends those genes to FALLBACK_MODEL.
+    """
     validator = jsonschema.Draft202012Validator(schema)
     output_config = json_output_config(schema, EFFORT)
     items: dict[str, _GeneBatchItem] = {}
@@ -977,7 +983,9 @@ async def _process_assessments(
         logger.info("Collected %d results from earlier batches: %s", len(resumed), outcome)
 
     for attempt in range(1, max_retries + 1):
-        hgnc_ids = [g for g in genes_to_assess(db_path, only) if g not in skipped]
+        with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
+            refusals = stage_refusals(conn, STAGE)
+        hgnc_ids = [g for g in genes_to_assess(db_path, only, refusals) if g not in skipped]
         if limit is not None:
             hgnc_ids = hgnc_ids[:limit]
         batch = prepared(hgnc_ids)
@@ -985,18 +993,20 @@ async def _process_assessments(
             logger.info("No genes left to assess")
             return
         logger.info("Attempt %d: assessing %d genes", attempt, len(batch))
-        results = await transport.run(
-            STAGE, 1, [build_request(item, output_config) for item in batch]
-        )
-        outcome = handle_results(results, items, db_path, validator)
+        requests = [
+            build_request(item, output_config, refusals.model_for(str(item.hgnc_id)))
+            for item in batch
+        ]
+        outcome = handle_results(await transport.run(STAGE, 1, requests), items, db_path, validator)
         logger.info(
-            "Attempt %d: stored %d, refused %d, failed %d",
+            "Attempt %d: stored %d, refused %d (%d go to the fallback model), failed %d",
             attempt,
             outcome.stored,
             outcome.refused,
+            outcome.to_fallback,
             outcome.failed,
         )
-        if outcome.stored == 0:
+        if outcome.stored + outcome.to_fallback == 0:
             logger.error("No progress in attempt %d - stopping", attempt)
             return
         if limit is not None:
@@ -1024,7 +1034,8 @@ def main(
     max_retries: int = typer.Option(
         5,
         "--max-retries",
-        help="Maximum number of attempts for genes whose assessment failed or was rejected",
+        help="Maximum number of attempts for genes whose assessment failed, was rejected or "
+        "was refused; the fallback-model request after a refusal is one of them",
     ),
     panel_date: str = typer.Option(
         ...,

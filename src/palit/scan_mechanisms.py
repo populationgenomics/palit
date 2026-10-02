@@ -11,9 +11,11 @@ from typing import Any, Protocol
 import jinja2
 import typer
 from anthropic import AsyncAnthropic
+from anthropic.types.output_config_param import OutputConfigParam
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from palit.llm import (
+    FALLBACK_MODEL,
     MODEL,
     Effort,
     ImmediateTransport,
@@ -249,37 +251,52 @@ def _load_prompt_template() -> jinja2.Template:
     return jinja2.Template(template_text)
 
 
+def scan_request(
+    gene: GeneText, template: jinja2.Template, output_config: OutputConfigParam, model: str
+) -> LlmRequest:
+    return LlmRequest(
+        subject=str(gene.hgnc_id),
+        params={
+            "model": model,
+            "max_tokens": MAX_TOKENS,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": template.render(gene_symbol=gene.gene_symbol, review_text=gene.text),
+                }
+            ],
+            "output_config": output_config,
+        },
+    )
+
+
 async def scan_all(
     gene_texts: list[GeneText],
     client: AsyncAnthropic,
     output_dir: Path,
     concurrency: int,
 ) -> None:
+    """Scan every gene's text; genes MODEL refuses are scanned again on FALLBACK_MODEL."""
     template = _load_prompt_template()
     raw_dir = output_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     output_config = json_output_config(MechanismScanResult.model_json_schema(), EFFORT)
     by_id = {str(gene.hgnc_id): gene for gene in gene_texts}
-    requests = [
-        LlmRequest(
-            subject=str(gene.hgnc_id),
-            params={
-                "model": MODEL,
-                "max_tokens": MAX_TOKENS,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": template.render(
-                            gene_symbol=gene.gene_symbol, review_text=gene.text
-                        ),
-                    }
-                ],
-                "output_config": output_config,
-            },
+    transport = ImmediateTransport(client, workers=concurrency)
+    results = await transport.run(
+        STAGE, 1, [scan_request(gene, template, output_config, MODEL) for gene in gene_texts]
+    )
+    refused = [by_id[result.subject] for result in results if result.goes_to_fallback]
+    if refused:
+        logger.warning(
+            "%s refused %d genes; scanning them with %s", MODEL, len(refused), FALLBACK_MODEL
         )
-        for gene in gene_texts
-    ]
-    results = await ImmediateTransport(client, workers=concurrency).run(STAGE, 1, requests)
+        results = [result for result in results if not result.goes_to_fallback]
+        results += await transport.run(
+            STAGE,
+            1,
+            [scan_request(gene, template, output_config, FALLBACK_MODEL) for gene in refused],
+        )
 
     gof_genes: list[str] = []
     dn_genes: list[str] = []
@@ -287,7 +304,11 @@ async def scan_all(
     for result in results:
         gene = by_id[result.subject]
         if result.status != ResultStatus.SUCCEEDED or result.message is None:
-            failures.append(GeneFailure(gene_symbol=gene.gene_symbol, error=result.status.value))
+            failures.append(
+                GeneFailure(
+                    gene_symbol=gene.gene_symbol, error=f"{result.status.value} by {result.model}"
+                )
+            )
             continue
         try:
             scan = MechanismScanResult.model_validate(parse_json_output(result.message))

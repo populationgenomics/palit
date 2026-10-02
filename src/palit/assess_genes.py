@@ -333,6 +333,10 @@ class PaperBatchProcessor:
     def get_evidence_for_gene(self, hgnc_id: int) -> list[dict[str, Any]]:
         """Get all evidence extractions for a specific gene.
 
+        One entry per paper. ``paper_gene_symbol`` comes from the extraction's own
+        gene mention, so a relevance-stage mention under an older symbol of the same
+        gene neither duplicates the paper nor adds a stale alias.
+
         Args:
             hgnc_id: HGNC ID of the gene to search for
 
@@ -345,11 +349,12 @@ class PaperBatchProcessor:
 
             cursor.execute(
                 """
-                SELECT DISTINCT p.doi, p.pmid, p.journal, p.source_date, p.title, p.authors,
+                SELECT p.doi, p.pmid, p.journal, p.source_date, p.title, p.authors,
                        p.evidence_extraction_json, gm.paper_gene_symbol
                 FROM papers p
                 JOIN gene_mentions gm ON p.doi = gm.paper_doi
                 WHERE gm.hgnc_id = ?
+                AND gm.source IN ('recent_evidence', 'expansion_evidence')
                 AND p.evidence_extraction_json IS NOT NULL
                 ORDER BY p.doi
             """,

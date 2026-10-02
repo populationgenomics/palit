@@ -852,10 +852,12 @@ def load_gene_assessments(
             missing_panels.sort(key=lambda x: x.panel_name)
             existing_panels.sort(key=lambda x: x.panel_name)
 
-            # Get contributing papers for this gene with full details (all sources)
+            # Contributing papers for this gene, initial and expansion alike: one row per
+            # paper, with the symbol from the extraction's gene mention (a relevance-stage
+            # mention may carry an older symbol of the same gene).
             cursor.execute(
                 """
-                SELECT DISTINCT
+                SELECT
                     p.doi,
                     p.title,
                     p.abstract,
@@ -871,6 +873,7 @@ def load_gene_assessments(
                 FROM papers p
                 JOIN gene_mentions gm ON p.doi = gm.paper_doi
                 WHERE gm.hgnc_id = ?
+                AND gm.source IN ('recent_evidence', 'expansion_evidence')
                 AND p.evidence_extraction_json IS NOT NULL
                 ORDER BY p.source_date DESC, p.doi DESC
             """,

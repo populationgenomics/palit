@@ -1,6 +1,6 @@
 # PanelApp Australia Literature Assessment
 
-LLM-based literature assessment system for rare disease gene curation. Automatically screens papers for relevance, extracts evidence against PanelApp Australia diagnostic criteria, and generates comprehensive gene-centric reports with panel recommendations.
+LLM-based literature assessment system for rare disease gene curation. It screens papers for relevance and extracts evidence against PanelApp Australia diagnostic criteria. It then groups each gene's evidence into gene-disease-MoI associations and rates each one. The report shows every association next to what PanelApp Australia already curates, with the panels it matches.
 
 ## Setup
 
@@ -39,6 +39,8 @@ The system uses multiple databases:
 - **Classifier training** (`data/screening_classifier/training.sqlite`): Created from `src/palit/screening_classifier/training.sql` (only needed for training)
 
 Both main and screening workflows use the same schema for consistency, allowing the same tools (e.g., `assess-relevance`) to work on both databases.
+
+Stages that read PanelApp Australia's GenCC submissions or the MONDO ontology download `gencc_submissions.tsv` and `mondo.obo` into the run database's directory (e.g. `data/`) when the files are missing or older than 7 days.
 
 ### Claude API
 
@@ -120,6 +122,13 @@ uv run palit download-papers register
 #    quotes. Two batch rounds; safe to interrupt and re-run. Re-runs skip papers
 #    that were refused; add --retry-refused to send each of them once more,
 #    since the safety classifier does not refuse the same paper every time.
+#    Each disease entity carries three family counts. The reported count is
+#    every family the paper reports. The qualifying count (`family_count`) is
+#    the families whose genotype passes the qualifying variant gate. The
+#    independent count drops families that share the variant's ancestral
+#    origin; criteria A to C use it. For registries and case series without
+#    family structure, the qualifying and independent counts are derived from
+#    the patients who carry a qualifying genotype.
 uv run palit extract-evidence
 
 # 5. Discover papers referenced in evidence (citation-based expansion)
@@ -143,21 +152,41 @@ uv run palit download-papers open-browser --expansion-only
 # ... manually download PDFs to data/papers/ ...
 uv run palit download-papers register
 
-# 8. Extract evidence from expansion papers
+# 8. Extract evidence from expansion papers (same as step 4)
 uv run palit extract-evidence
 
-# 9. Aggregate evidence across papers per gene (panel-agnostic)
+# 9. Aggregate each gene's evidence across papers into gene-disease-MoI
+#    associations, one request per gene. The model groups the papers' disease
+#    entities into associations, anchored on what PanelApp Australia already
+#    curates for the gene: its GenCC rows, and its entries and reviews on every
+#    target panel that holds it. Each association records its relation to
+#    PanelApp Australia (existing, new disease or new MoI) and its rating from
+#    the evidence in this run's corpus. A gene is skipped when PanelApp already
+#    cites all of its papers. Safe to interrupt and re-run: it re-attaches to
+#    batches still in flight and skips genes that already have an aggregation.
 uv run palit assess-genes --panel-date $PANEL_DATE
 
-# 10. Match genes to appropriate panels based on phenotype descriptions
+# 10. Map each association that reuses no PanelApp Australia GenCC row onto a
+#     MONDO term. Claude searches the local MONDO release with tools and
+#     answers with a term and a match type: exact when the term names the
+#     disease, broader when it is the most specific term that includes the
+#     disease. The report marks broader terms. Requests go out immediately, not
+#     as batches, because a mapping takes several tool rounds. Re-runs map only
+#     the associations still without a term.
+uv run palit map-mondo
+
+# 11. Match each association to diagnostic panels by its disease, MoI and
+#     summary
 uv run palit match-panels --panel-date $PANEL_DATE
 
-# 11. Generate the report package: index.html, the PDF viewer page, and each
+# 12. Generate the report package: index.html, the PDF viewer page, and each
 #     cited paper's PDF (symlinked) with its quote highlights (citations/*.json).
-#     `aws s3 sync` uploads the symlink targets.
+#     Each gene shows one block per association, with its relation to PanelApp
+#     Australia and its rating in this corpus. `aws s3 sync` uploads the
+#     symlink targets.
 uv run palit generate-report --report-id report_mendeliome --panel-date $PANEL_DATE
 
-# 12. Fold this run's dispositions back into the ledger so future runs skip the
+# 13. Fold this run's dispositions back into the ledger so future runs skip the
 #     papers settled here and resume any relevant-not-downloaded ones. Covers
 #     expansion/discovered-citation papers too (keyed by DOI). Separate from, and
 #     run alongside, the baseline-screening update below.
@@ -351,9 +380,11 @@ PANEL_DATE=2025-10-20
 PANEL_ID=47  # Arthrogryposis panel ID
 PANEL_NAME=arthrogryposis
 
-# 1. Copy pre-filtered baseline DB papers to new database
+# 1. Copy pre-filtered baseline DB papers to new database. Only the paper
+#    metadata is copied: step 2 assesses relevance afresh and schedules the
+#    relevant papers for download.
 sqlite3 data/$PANEL_NAME.sqlite < schema.sql
-sqlite3 data/$PANEL_NAME.sqlite "ATTACH 'data/pubmed_baseline_screening.sqlite' AS source; INSERT INTO papers (pmid, title, abstract, authors, journal, entrez_date, source_type, source_details) SELECT pmid, title, abstract, authors, journal, entrez_date, 'initial', source_details FROM source.papers"
+sqlite3 data/$PANEL_NAME.sqlite "ATTACH 'data/pubmed_baseline_screening.sqlite' AS source; INSERT INTO papers (doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, source_type, source_details) SELECT doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, 'initial', source_details FROM source.papers"
 
 # 2. Assess relevance scoped to the panel: the screen gets the panel description,
 #    and the PanelApp check compares against this panel only
@@ -375,11 +406,16 @@ uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite
 # ... manually download PDFs ...
 uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 
-# 5. Extract evidence and assess genes (panel-scoped)
+# 5. Extract evidence and assess genes (panel-scoped). Each association's
+#    summary explains how it relates to the panel's scope.
 uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID --scope-panel-id $PANEL_ID
 
-# 6. Generate report package with panel-scoped novelty detection
+# 6. Map associations without a GenCC row onto MONDO terms, as in the main
+#    workflow. Scoped runs skip match-panels.
+uv run palit map-mondo --db-path data/$PANEL_NAME.sqlite
+
+# 7. Generate report package with panel-scoped novelty detection
 uv run palit generate-report \
   --report-id panel_$PANEL_NAME \
   --db-path data/$PANEL_NAME.sqlite \

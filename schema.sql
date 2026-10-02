@@ -181,7 +181,7 @@ CREATE TABLE llm_requests (
     custom_id TEXT PRIMARY KEY,           -- '<stage>-<round>-<random>'
     batch_id TEXT REFERENCES llm_batches(batch_id),  -- NULL for immediate requests
     stage TEXT NOT NULL,
-    subject TEXT NOT NULL,                -- DOI, or HGNC ID as text
+    subject TEXT NOT NULL,                -- DOI, HGNC ID or association id as text
     round INTEGER NOT NULL,
     model TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('pending', 'succeeded', 'refused', 'errored', 'expired', 'canceled')),

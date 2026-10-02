@@ -152,7 +152,7 @@ def parse_json_output(message: Message) -> Any:
 
 @dataclass(frozen=True)
 class LlmRequest:
-    """One Messages request about one subject (a DOI, or an HGNC ID as text)."""
+    """One Messages request about one subject (a DOI, an HGNC ID or an association id, as text)."""
 
     subject: str
     params: MessageCreateParamsNonStreaming

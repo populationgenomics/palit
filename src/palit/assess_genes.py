@@ -22,7 +22,7 @@ from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from palit.gencc import GeneGencc, fetch_gencc
+from palit.gencc import GeneGencc, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
     MODEL,
@@ -1060,7 +1060,7 @@ def main(
         panelapp_client.get_all_panel_data(),
         panel_date,
         panel_data.panel_ids,
-        fetch_gencc(db_path.parent),
+        fetch_gencc(db_path.parent, fetch_mondo(db_path.parent)),
         incidentalome_fallback=scope_panel_id is None,
     )
 

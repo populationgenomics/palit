@@ -10,7 +10,7 @@ from typing import Any
 
 import typer
 
-from palit.gencc import GenccIndex, fetch_gencc
+from palit.gencc import GenccIndex, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import AnthropicSettings, BatchTransport, ImmediateTransport, Transport, make_client
 from palit.llm_usage import print_stage_summary
@@ -360,7 +360,7 @@ def main(
         logger.info("No genes require expansion")
         return
 
-    gencc = fetch_gencc(db_path.parent)
+    gencc = fetch_gencc(db_path.parent, fetch_mondo(db_path.parent))
 
     async def run() -> None:
         client = make_client(AnthropicSettings())

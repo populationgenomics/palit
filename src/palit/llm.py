@@ -125,6 +125,18 @@ def cached_system(text: str) -> list[TextBlockParam]:
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
 
+def assistant_content(message: Message) -> list[dict[str, Any]]:
+    """The assistant turn exactly as returned, for replay in the next round.
+
+    Only top-level ``None`` fields are dropped; nested values (tool inputs,
+    thinking signatures) are kept verbatim.
+    """
+    return [
+        {key: value for key, value in block.model_dump(mode="json").items() if value is not None}
+        for block in message.content
+    ]
+
+
 def parse_json_output(message: Message) -> Any:
     """The structured output of a finished message."""
     if message.stop_reason != "end_turn":

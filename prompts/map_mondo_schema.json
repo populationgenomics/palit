@@ -1,0 +1,35 @@
+{
+    "type": "object",
+    "properties": {
+        "mondo_id": {
+            "type": "string",
+            "pattern": "^MONDO:[0-9]{7}$",
+            "description": "The chosen MONDO term, e.g. MONDO:0015469"
+        },
+        "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The term's label exactly as lookup_mondo returned it"
+        },
+        "match": {
+            "type": "string",
+            "enum": [
+                "exact",
+                "broader"
+            ],
+            "description": "exact: the term names this disease; broader: the most specific term that includes the disease"
+        },
+        "rationale": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One sentence"
+        }
+    },
+    "required": [
+        "mondo_id",
+        "label",
+        "match",
+        "rationale"
+    ],
+    "additionalProperties": false
+}

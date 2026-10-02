@@ -30,7 +30,7 @@ import jsonschema
 import typer
 from anthropic.types.output_config_param import OutputConfigParam
 
-from palit.gencc import fetch_gencc
+from palit.gencc import fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
     MODEL,
@@ -557,7 +557,7 @@ def main(
             panel_client.get_all_panel_data(),
             panel_date,
             reference_panel_ids,
-            fetch_gencc(db_path.parent),
+            fetch_gencc(db_path.parent, fetch_mondo(db_path.parent)),
             incidentalome_fallback=scope_panel_id is None,
         )
         check_schema: dict[str, Any] = json.loads(check_schema_path.read_text())

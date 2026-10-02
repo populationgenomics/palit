@@ -19,6 +19,7 @@ from anthropic.types import ToolParam
 
 from palit.llm import MODEL, AnthropicSettings, json_output_config, make_client
 from palit.lookup_tools import TOOLS as EXTRACTION_TOOLS
+from palit.mondo_tools import TOOLS as MONDO_TOOLS
 from palit.scan_mechanisms import MechanismScanResult
 
 PROMPTS = Path(__file__).resolve().parents[1] / "prompts"
@@ -34,6 +35,7 @@ CONFIGURATIONS: list[tuple[str, dict[str, Any], list[ToolParam]]] = [
     ("relevance_panelapp", _schema("relevance_panelapp_check_schema.json"), []),
     ("extraction", _schema("evidence_extraction_schema.json"), EXTRACTION_TOOLS),
     ("assess_genes", _schema("aggregate_assessment_schema.json"), []),
+    ("map_mondo", _schema("map_mondo_schema.json"), MONDO_TOOLS),
     ("match_panels", _schema("panel_matching_schema.json"), []),
     ("tournament", _schema("tournament_selection_schema.json"), []),
     ("scan_mechanisms", MechanismScanResult.model_json_schema(), []),

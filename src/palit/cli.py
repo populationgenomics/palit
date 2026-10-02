@@ -20,6 +20,7 @@ from palit import (
     ingest_pubmed,
     ledger,
     llm_usage,
+    map_mondo,
     match_panels,
     reduce_literature,
     scan_mechanisms,
@@ -61,6 +62,7 @@ app.add_typer(scan_mechanisms.app, name="scan-mechanisms")
 app.add_typer(assess_relevance.app, name="assess-relevance")
 app.add_typer(extract_evidence.app, name="extract-evidence")
 app.add_typer(assess_genes.app, name="assess-genes")
+app.add_typer(map_mondo.app, name="map-mondo")
 app.add_typer(match_panels.app, name="match-panels")
 app.add_typer(expand_literature.app, name="expand-literature")
 app.add_typer(reduce_literature.app, name="reduce-literature")

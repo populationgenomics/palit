@@ -7,25 +7,30 @@ every submitter, because they gate the criteria of the associations they apply t
 
 Genes are matched on ``gene_curie`` (``HGNC:<id>``), never on the symbol. The
 module also formats a gene's PanelApp Australia rows, with their caveat, for the
-prompts that show them.
+prompts that show them, and downloads the GenCC export and MONDO when they are
+stale. MONDO is fetched separately, so a stage that also needs the ontology
+itself parses it once.
 """
 
 import csv
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast, get_args
 
+import httpx2
 import pronto
-
-from palit.mondo_lookup import GENCC_URL, MONDO_OBO_URL, download_if_stale
 
 logger = logging.getLogger(__name__)
 
+GENCC_URL = "https://search.thegencc.org/download/action/submissions-export-tsv"
+MONDO_OBO_URL = "https://github.com/monarch-initiative/mondo/releases/latest/download/mondo.obo"
 GENCC_FILENAME = "gencc_submissions.tsv"
 MONDO_FILENAME = "mondo.obo"
+MAX_DOWNLOAD_AGE_SECONDS = 7 * 24 * 3600
 
 PAA_SUBMITTER = "PanelApp Australia"
 
@@ -243,11 +248,38 @@ def format_paa_associations(gene: GeneGencc) -> str:
     )
 
 
-def fetch_gencc(data_dir: Path) -> GenccIndex:
-    """Download the GenCC export and MONDO into *data_dir* when stale, then load them."""
-    gencc_path = data_dir / GENCC_FILENAME
+def download_if_stale(url: str, path: Path) -> None:
+    """Download *url* to *path* unless *path* exists and is less than a week old."""
+    if path.exists():
+        age = time.time() - path.stat().st_mtime
+        if age < MAX_DOWNLOAD_AGE_SECONDS:
+            logger.info("Using cached %s (age: %.0fh)", path, age / 3600)
+            return
+        logger.info("Re-downloading stale %s (age: %.0fh)", path, age / 3600)
+    else:
+        logger.info("Downloading %s", url)
+
+    with httpx2.Client(follow_redirects=True, timeout=120) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        path.write_bytes(response.content)
+    logger.info("Downloaded %s bytes to %s", f"{len(response.content):,}", path)
+
+
+def fetch_mondo(data_dir: Path) -> pronto.Ontology:
+    """MONDO from *data_dir*, downloaded first when missing or stale."""
     mondo_path = data_dir / MONDO_FILENAME
-    download_if_stale(GENCC_URL, gencc_path)
     download_if_stale(MONDO_OBO_URL, mondo_path)
     logger.info("Loading MONDO ontology from %s", mondo_path)
-    return load_gencc(gencc_path, pronto.Ontology(str(mondo_path), encoding="utf-8"))
+    return pronto.Ontology(str(mondo_path), encoding="utf-8")
+
+
+def fetch_gencc(data_dir: Path, mondo: pronto.Ontology) -> GenccIndex:
+    """The GenCC export from *data_dir*, downloaded first when missing or stale.
+
+    *mondo* is the ontology from :func:`fetch_mondo`, so a stage that also needs
+    MONDO itself parses it once.
+    """
+    gencc_path = data_dir / GENCC_FILENAME
+    download_if_stale(GENCC_URL, gencc_path)
+    return load_gencc(gencc_path, mondo)

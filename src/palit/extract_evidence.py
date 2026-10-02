@@ -45,6 +45,7 @@ from palit.llm import (
     LlmResult,
     ResultStatus,
     Transport,
+    assistant_content,
     cached_system,
     json_output_config,
     make_client,
@@ -301,18 +302,6 @@ def load_conversation(conn: sqlite3.Connection, doi: str, round_no: int) -> list
         (STAGE, doi, round_no),
     ).fetchone()
     return json.loads(messages_json)  # type: ignore[no-any-return]
-
-
-def assistant_content(message: Message) -> list[dict[str, Any]]:
-    """The assistant turn exactly as returned, for replay in the next round.
-
-    Only top-level ``None`` fields are dropped; nested values (tool inputs,
-    thinking signatures) are kept verbatim.
-    """
-    return [
-        {key: value for key, value in block.model_dump(mode="json").items() if value is not None}
-        for block in message.content
-    ]
 
 
 def variant_lookup_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -47,10 +47,10 @@ Stages that read PanelApp Australia's GenCC submissions or the MONDO ontology do
 LLM stages call the Claude API through the Anthropic SDK, authenticated with an `ant` OAuth profile instead of an API key. Log in once per profile (`brew install anthropics/tap/ant` first if needed):
 
 ```bash
-ant auth login --profile palit
+ant auth login --profile <profile>
 ```
 
-Palit uses the profile named by `PALIT_ANTHROPIC_PROFILE` (default `palit`). It deliberately ignores `ANTHROPIC_PROFILE` and `ANTHROPIC_API_KEY`, which Claude Code sessions may export for their own workspace. The SDK refreshes the access token itself. The refresh token eventually expires, so when a previously working profile starts failing authentication, run `ant auth login --profile palit` again. Run one palit process per profile: the SDK serialises token refreshes within a process only.
+Palit reads the profile name from `PALIT_ANTHROPIC_PROFILE`, set either in the environment or in `.env` (see `.env.example`). The variable is required: an LLM stage stops with a validation error naming it before sending any request. Palit deliberately ignores `ANTHROPIC_PROFILE` and `ANTHROPIC_API_KEY`, which Claude Code sessions may export for their own workspace. The SDK refreshes the access token itself. The refresh token eventually expires, so when a previously working profile starts failing authentication, run `ant auth login --profile <profile>` again. Run one palit process per profile: the SDK serialises token refreshes within a process only.
 
 `uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, tokens, and USD cost per stage for a run database. Every stage prints the same summary for itself when it finishes, listing each refused paper or gene; `uv run palit llm refusals --db-path data/db.sqlite` lists all refusals with their safety-classifier category (refused subjects are not resubmitted within a run). `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API (it needs the profile above).
 

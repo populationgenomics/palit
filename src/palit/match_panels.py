@@ -21,7 +21,6 @@ from anthropic.types.output_config_param import OutputConfigParam
 
 from palit.llm import (
     MODEL,
-    AnthropicSettings,
     BatchTransport,
     Effort,
     ImmediateTransport,
@@ -316,7 +315,7 @@ def main(
     logger.info("%s associations without panel matches", f"{count_unmatched(db_path):,}")
 
     async def run() -> None:
-        client = make_client(AnthropicSettings())
+        client = make_client()
         transport: Transport = (
             ImmediateTransport(client) if immediate else BatchTransport(client, db_path)
         )

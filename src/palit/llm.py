@@ -34,6 +34,7 @@ from anthropic.types.message_create_params import MessageCreateParamsNonStreamin
 from anthropic.types.messages import MessageBatchIndividualResponse
 from anthropic.types.messages.batch_create_params import Request
 from anthropic.types.output_config_param import OutputConfigParam
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -76,18 +77,24 @@ class AnthropicSettings(BaseSettings):
     The profile is palit's own setting rather than ``ANTHROPIC_PROFILE``: Claude
     Code sessions export ``ANTHROPIC_PROFILE`` for their own workspace, and an
     explicit ``profile=`` makes the SDK ignore every credential environment variable.
+    It has no default, and its alias is the full variable name so that a missing
+    variable's validation error names it.
     """
 
     model_config = SettingsConfigDict(
         env_prefix="PALIT_ANTHROPIC_", env_file=".env", extra="ignore"
     )
 
-    profile: str = "palit"
+    profile: str = Field(alias="PALIT_ANTHROPIC_PROFILE")
     max_retries: int = 8
 
 
-def make_client(settings: AnthropicSettings) -> AsyncAnthropic:
-    """The process's single client, authenticated by an ``ant`` OAuth profile."""
+def make_client() -> AsyncAnthropic:
+    """The process's single client, authenticated by an ``ant`` OAuth profile.
+
+    Raises ``pydantic.ValidationError`` when ``PALIT_ANTHROPIC_PROFILE`` is unset.
+    """
+    settings = AnthropicSettings()  # type: ignore[call-arg]
     return AsyncAnthropic(profile=settings.profile, max_retries=settings.max_retries)
 
 

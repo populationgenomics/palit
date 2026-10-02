@@ -12,7 +12,7 @@ import typer
 
 from palit.gencc import GenccIndex, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
-from palit.llm import AnthropicSettings, BatchTransport, ImmediateTransport, Transport, make_client
+from palit.llm import BatchTransport, ImmediateTransport, Transport, make_client
 from palit.llm_usage import print_stage_summary
 from palit.papers import Paper, deserialize_source_metadata
 from palit.tournament import TournamentEntry, TournamentOutcome, record_abandoned, run_tournaments
@@ -368,7 +368,7 @@ def main(
     gencc = fetch_gencc(db_path.parent, fetch_mondo(db_path.parent))
 
     async def run() -> None:
-        client = make_client(AnthropicSettings())
+        client = make_client()
         transport: Transport = (
             ImmediateTransport(client) if immediate else BatchTransport(client, db_path)
         )

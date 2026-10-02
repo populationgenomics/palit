@@ -15,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from palit.llm import (
     MODEL,
-    AnthropicSettings,
     Effort,
     ImmediateTransport,
     LlmRequest,
@@ -380,6 +379,6 @@ def scan(
     logger.info("Scanning %d genes for mechanism-of-disease mentions", len(gene_texts))
 
     async def run() -> None:
-        await scan_all(gene_texts, make_client(AnthropicSettings()), output_dir, concurrency)
+        await scan_all(gene_texts, make_client(), output_dir, concurrency)
 
     asyncio.run(run())

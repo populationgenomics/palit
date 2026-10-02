@@ -34,7 +34,6 @@ from palit.gencc import fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
     MODEL,
-    AnthropicSettings,
     BatchTransport,
     Effort,
     ImmediateTransport,
@@ -572,7 +571,7 @@ def main(
     logger.info(f"{count_remaining(db_path):,} papers without a relevance assessment")
 
     async def run() -> None:
-        client = make_client(AnthropicSettings())
+        client = make_client()
         transport: Transport = (
             ImmediateTransport(client) if immediate else BatchTransport(client, db_path)
         )

@@ -26,7 +26,6 @@ from palit.gencc import GeneGencc, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
     MODEL,
-    AnthropicSettings,
     BatchTransport,
     Effort,
     ImmediateTransport,
@@ -1105,7 +1104,7 @@ def main(
     )
 
     async def run() -> None:
-        client = make_client(AnthropicSettings())
+        client = make_client()
         transport: Transport = (
             ImmediateTransport(client) if immediate else BatchTransport(client, db_path)
         )

@@ -12,7 +12,7 @@ import typer
 
 from palit.gencc import GenccIndex, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
-from palit.llm import AnthropicSettings, BatchTransport, ImmediateTransport, Transport, make_client
+from palit.llm import BatchTransport, ImmediateTransport, Transport, make_client
 from palit.llm_usage import print_stage_summary
 from palit.panelapp_client import PanelAppClient
 from palit.panelapp_publications import seed_panelapp_publications
@@ -363,7 +363,7 @@ def main(
     gencc = fetch_gencc(db_path.parent, fetch_mondo(db_path.parent))
 
     async def run() -> None:
-        client = make_client(AnthropicSettings())
+        client = make_client()
         transport: Transport = (
             ImmediateTransport(client) if immediate else BatchTransport(client, db_path)
         )

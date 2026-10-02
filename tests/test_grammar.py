@@ -5,7 +5,8 @@ the output schema plus every declared tool (strict or not). Measured headroom fo
 the extraction schema is small, so each configuration a stage sends is checked
 here with a 16-token request (a fraction of a cent each).
 
-Needs Claude credentials, so it is opt-in: ``uv run pytest -m api``.
+Needs Claude credentials (the ``PALIT_ANTHROPIC_PROFILE`` profile), so it is opt-in:
+``uv run pytest -m api``.
 """
 
 import asyncio
@@ -17,7 +18,7 @@ import anthropic
 import pytest
 from anthropic.types import ToolParam
 
-from palit.llm import MODEL, AnthropicSettings, json_output_config, make_client
+from palit.llm import MODEL, json_output_config, make_client
 from palit.lookup_tools import TOOLS as EXTRACTION_TOOLS
 from palit.mondo_tools import TOOLS as MONDO_TOOLS
 from palit.scan_mechanisms import MechanismScanResult
@@ -43,7 +44,7 @@ CONFIGURATIONS: list[tuple[str, dict[str, Any], list[ToolParam]]] = [
 
 
 async def _compile(schema: dict[str, Any], tools: list[ToolParam]) -> None:
-    client = make_client(AnthropicSettings())
+    client = make_client()
     await client.messages.create(
         model=MODEL,
         max_tokens=16,

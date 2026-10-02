@@ -38,7 +38,6 @@ from palit.gencc import (
 from palit.hgnc import HgncResolver
 from palit.llm import (
     MODEL,
-    AnthropicSettings,
     Effort,
     ImmediateTransport,
     LlmRequest,
@@ -477,7 +476,7 @@ def main(
 
     async def run() -> None:
         runner = MappingRunner(
-            transport=ImmediateTransport(make_client(AnthropicSettings())),
+            transport=ImmediateTransport(make_client()),
             db_path=db_path,
             system=system,
             schema=schema,

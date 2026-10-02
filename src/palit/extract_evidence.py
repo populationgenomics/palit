@@ -95,6 +95,9 @@ BUDGET_EXHAUSTED_TEXT = (
     "Lookup budget exhausted. Write the final JSON answer now with the results you already have."
 )
 
+# Refusals recorded at or after this instant exclude a paper: by default, every refusal.
+EVERY_REFUSAL = datetime.min.replace(tzinfo=UTC)
+
 
 # ---------------------------------------------------------------------------
 # Gene symbols
@@ -308,8 +311,14 @@ def variant_lookup_results(messages: list[dict[str, Any]]) -> list[dict[str, Any
 # ---------------------------------------------------------------------------
 
 
-def select_papers(db_path: Path, limit: int | None) -> list[dict[str, Any]]:
-    """Downloaded papers without an extraction, excluding refused ones and ones in flight."""
+def select_papers(
+    db_path: Path, limit: int | None, refusals_since: datetime
+) -> list[dict[str, Any]]:
+    """Downloaded papers without an extraction, excluding ones in flight and refused ones.
+
+    Only refusals recorded at or after *refusals_since* exclude a paper; the
+    refusal rows themselves stay as the record of what was refused.
+    """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -320,12 +329,13 @@ def select_papers(db_path: Path, limit: int | None) -> list[dict[str, Any]]:
               AND evidence_extraction_json IS NULL
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
-                  WHERE r.stage = ? AND r.subject = p.doi AND r.status IN ('refused', 'pending')
+                  WHERE r.stage = ? AND r.subject = p.doi
+                    AND (r.status = 'pending' OR (r.status = 'refused' AND r.completed_at >= ?))
               )
             ORDER BY doi
             LIMIT ?
             """,
-            (STAGE, -1 if limit is None else limit),
+            (STAGE, refusals_since.isoformat(), -1 if limit is None else limit),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -720,6 +730,7 @@ async def _process_evidence(
     settings: RequestSettings,
     limit: int | None,
     max_retries: int,
+    refusals_since: datetime,
 ) -> None:
     resumed = await transport.resume(STAGE)
     if resumed:
@@ -735,7 +746,7 @@ async def _process_evidence(
         logger.info("Finished resumed conversations: stored %d", continued.stored)
 
     for attempt in range(1, max_retries + 1):
-        papers = select_papers(db_path, limit)
+        papers = select_papers(db_path, limit, refusals_since)
         if not papers:
             logger.info("No papers left to extract")
             return
@@ -816,11 +827,18 @@ def main(
         "--max-retries",
         help="Maximum number of attempts for papers whose extraction failed or was rejected",
     ),
+    retry_refused: bool = typer.Option(
+        False,
+        "--retry-refused",
+        help="Send papers refused in earlier invocations again, once each (refusals vary between calls)",
+    ),
 ) -> None:
     """Extract evidence from every downloaded paper that has no extraction yet."""
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
+    # With --retry-refused, only refusals during this invocation exclude a paper.
+    refusals_since = datetime.now(UTC) if retry_refused else EVERY_REFUSAL
 
     panel_formatted = ""
     if scope_panel_id is not None:
@@ -866,6 +884,7 @@ def main(
                 settings=settings,
                 limit=limit,
                 max_retries=max_retries,
+                refusals_since=refusals_since,
             )
         finally:
             await variant_client.aclose()

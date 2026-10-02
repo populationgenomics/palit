@@ -115,7 +115,9 @@ uv run palit download-papers register
 # 4. Extract evidence from the PDFs: Claude reads each PDF, looks up its genes
 #    (HGNC) and variants (gnomAD v4.1, via the variant-lookup service; requires
 #    VARIANT_LOOKUP_* env vars, see Setup) in one round, and cites verbatim
-#    quotes. Two batch rounds; safe to interrupt and re-run.
+#    quotes. Two batch rounds; safe to interrupt and re-run. Re-runs skip papers
+#    that were refused; add --retry-refused to send each of them once more,
+#    since the safety classifier does not refuse the same paper every time.
 uv run palit extract-evidence
 
 # 5. Discover papers referenced in evidence (citation-based expansion)

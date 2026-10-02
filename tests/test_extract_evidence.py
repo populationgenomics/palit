@@ -1,12 +1,18 @@
 """Tests for extraction helpers that need no network or PDFs."""
 
 import json
+import sqlite3
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from palit.extract_evidence import (
+    EVERY_REFUSAL,
+    STAGE,
     extraction_quotes,
     normalize_extraction_genes,
     prune_citations,
+    select_papers,
     structural_problems,
     variant_lookup_results,
 )
@@ -15,6 +21,7 @@ from palit.lookup_tools import frequency_row, summarise_variant_response
 from palit.panelapp_integration import criteria_object_to_list
 
 CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
+SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
 
 
 def _citation(quote: str) -> dict[str, str]:
@@ -177,7 +184,7 @@ def test_normalize_extraction_genes_adds_hgnc_id() -> None:
 
 
 def test_criteria_object_to_list_orders_and_names() -> None:
-    entity = {
+    entity: dict[str, Any] = {
         "evidence_assessments": {
             name: {"result": False, "rationale": name, "confidence": "LOW", "citations": []}
             for name in reversed(CRITERIA)
@@ -196,3 +203,40 @@ def test_prune_citations_keeps_variant_quotes() -> None:
     assert gene["disease_entities"][0]["citations"] == []
     assert gene["quality_concerns"][0]["citations"] == []
     assert gene["variants"][0]["quote"] == "variant quote"
+
+
+def test_select_papers_retries_only_refusals_before_the_cutoff(tmp_path: Path) -> None:
+    """Refusals before the cutoff no longer exclude a paper; in-flight and later ones do."""
+    db_path = tmp_path / "run.sqlite"
+    before = datetime(2026, 9, 1, tzinfo=UTC)
+    cutoff = datetime(2026, 9, 2, tzinfo=UTC)
+    after = datetime(2026, 9, 3, tzinfo=UTC)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, title, source, source_type, download_status, "
+            "evidence_extraction_json) VALUES (?, 't', 'pubmed', 'initial', 'downloaded', ?)",
+            [
+                ("10.1/new", None),
+                ("10.1/refused-before", None),
+                ("10.1/refused-after", None),
+                ("10.1/pending", None),
+                ("10.1/extracted", "{}"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, "
+            "completed_at) VALUES (?, ?, ?, 1, 'm', ?, ?)",
+            [
+                ("a", STAGE, "10.1/refused-before", "refused", before.isoformat()),
+                ("b", STAGE, "10.1/refused-after", "refused", after.isoformat()),
+                ("c", STAGE, "10.1/pending", "pending", None),
+                ("d", "assess_relevance", "10.1/new", "refused", before.isoformat()),
+            ],
+        )
+
+    def selected(refusals_since: datetime) -> list[str]:
+        return [p["doi"] for p in select_papers(db_path, None, refusals_since)]
+
+    assert selected(EVERY_REFUSAL) == ["10.1/new"]
+    assert selected(cutoff) == ["10.1/new", "10.1/refused-before"]

@@ -32,7 +32,7 @@ _DISPUTED_TITLES = {"Disputed Evidence"}
 _MAX_AGE_SECONDS = 7 * 24 * 3600  # 1 week
 
 
-def _download_if_stale(url: str, path: Path) -> None:
+def download_if_stale(url: str, path: Path) -> None:
     """Download a file if it doesn't exist or is older than 1 week."""
     if path.exists():
         age = time.time() - path.stat().st_mtime
@@ -112,8 +112,8 @@ class MondoLookup:
         mondo_path = cache_dir / "mondo.obo"
 
         # Download data (re-downloads if older than 7 days)
-        _download_if_stale(GENCC_URL, gencc_path)
-        _download_if_stale(MONDO_OBO_URL, mondo_path)
+        download_if_stale(GENCC_URL, gencc_path)
+        download_if_stale(MONDO_OBO_URL, mondo_path)
 
         # Load GenCC → gene→MONDO ID mapping
         gencc_entries = self._load_gencc(gencc_path)

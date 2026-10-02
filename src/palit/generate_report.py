@@ -8,15 +8,19 @@ import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import markdown
 import nh3
 import typer
+from anthropic.types import Message
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
+from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
+from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.hgnc import HgncResolver
+from palit.llm import parse_json_output
 from palit.panelapp_client import (
     AllPanelsData,
     PanelAppClient,
@@ -24,12 +28,9 @@ from palit.panelapp_client import (
     get_current_panel_publications,
 )
 from palit.panelapp_integration import (
-    INCIDENTALOME_PANEL_ID,
-    MONDO_CATEGORIES,
-    PANELAPP_MOI_TO_ENUM,
+    RelationStatus,
+    calculate_association_rating,
     calculate_gene_rating,
-    count_families_by_moi,
-    decompose_moi,
     derive_aggregate_moi,
     panelapp_confidence_to_color,
     prepare_prefill_data,
@@ -49,11 +50,8 @@ GNOMAD_HET_THRESHOLD = 30  # Monoallelic (dominant) - heterozygote count
 GNOMAD_HOM_THRESHOLD = 15  # Biallelic (recessive) - homozygote count
 GNOMAD_HEMI_THRESHOLD = 30  # X-linked - hemizygote count
 
-# Minimum families required to highlight an MoI expansion
+# A new_moi association is highlighted only from this many independent families on
 MIN_FAMILIES_FOR_MOI_EXPANSION = 2
-
-# Upper bound on panels named in a suppressed-MoI reason before falling back to a count
-MAX_NAMED_PANELS = 3
 
 # Hand-picked journals surfaced in the "Papers in Featured Journals" section.
 # Strings are PubMed-style and must match papers.journal verbatim.
@@ -77,162 +75,6 @@ FAVORITE_JOURNALS: tuple[str, ...] = (
     "Journal of medical genetics",
     "Human mutation",
 )
-
-
-@dataclass
-class MoiComparison:
-    """Result of comparing existing vs. new mode of inheritance."""
-
-    existing: str  # Existing MoI (enum format)
-    new: str  # New MoI (enum format)
-    new_details: str  # Inheritance details from evidence
-    status: str  # "expansion" | "contradiction"
-    highlighted: bool  # Whether to surface prominently to curators
-    reason: str  # Audit trail: why highlighted, or why suppressed
-    message: str  # Human-readable change description (tooltip)
-    icon: str  # Visual indicator emoji
-    css_class: str  # CSS styling class
-
-
-def compare_moi(
-    existing_moi: str | None,
-    new_moi: str,
-    moi_family_counts: dict[str, int] | None = None,
-) -> dict[str, str]:
-    """Classify the type of MoI change between existing and new.
-
-    Pure classifier — does not decide highlighting (that's apply_moi_suppression).
-
-    Args:
-        existing_moi: Current MoI from PanelApp (mapped to enum)
-        new_moi: New MoI from evidence (already in enum format)
-        moi_family_counts: Family counts per inheritance mode (for informational reason/message)
-
-    Returns:
-        Dict with:
-        - status: "same", "expansion", "contradiction"
-        - reason: Informational description of the change
-        - message: Human-readable explanation (tooltip)
-        - icon: Emoji for visual indicator
-        - css_class: CSS class for styling
-    """
-    # Normalize for comparison
-    existing = existing_moi.replace("_", " ").lower() if existing_moi else None
-    new = new_moi.replace("_", " ").lower() if new_moi else None
-
-    # Same mode
-    if existing == new:
-        return {
-            "status": "same",
-            "reason": "",
-            "message": "",
-            "icon": "",
-            "css_class": "",
-        }
-
-    # Existing was unknown, now we have information — this is an expansion
-    if existing in ["other", "nr", None] and new not in ["other", "nr"]:
-        return {
-            "status": "expansion",
-            "reason": "New MoI information where none existed before",
-            "message": "Evidence provides mode of inheritance information previously unknown",
-            "icon": "➕",  # noqa: RUF001
-            "css_class": "moi-expansion",
-        }
-
-    # Mode addition (adding inheritance modes)
-    if existing in ["monoallelic", "biallelic"] and new == "monoallelic and biallelic":
-        added_mode = "Biallelic" if existing == "monoallelic" else "Monoallelic"
-        added_count = (moi_family_counts or {}).get(added_mode, 0)
-        return {
-            "status": "expansion",
-            "reason": f"{added_count} families with {added_mode.lower()} inheritance"
-            f" (threshold: {MIN_FAMILIES_FOR_MOI_EXPANSION})",
-            "message": f"Evidence supports both modes"
-            f" ({added_count} families with {added_mode.lower()})",
-            "icon": "➕",  # noqa: RUF001
-            "css_class": "moi-expansion",
-        }
-
-    # Everything else is a contradiction
-    return {
-        "status": "contradiction",
-        "reason": "MoI differs from existing classification",
-        "message": "Evidence suggests a different mode of inheritance than currently recorded",
-        "icon": "⚠️",
-        "css_class": "moi-warning",
-    }
-
-
-def apply_moi_suppression(
-    status: str,
-    existing_moi: str | None,
-    new_moi: str,
-    hgnc_id: int,
-    moi_family_counts: dict[str, int],
-    all_panels_data: AllPanelsData,
-) -> str:
-    """Check whether an MoI change highlight should be suppressed.
-
-    Centralizes all "should we bother the curator?" rules. Each rule
-    returns a non-empty reason string to suppress; empty string means
-    highlight normally.
-
-    Rules:
-        1. Weak expansion — insufficient family evidence for the added mode
-        2. Incidentalome already-recorded — every constituent mode of the new MoI
-           is already recorded across the gene's panels
-    """
-    # Rule 1: Weak expansion (insufficient family evidence for the added mode)
-    existing_norm = (existing_moi or "").replace("_", " ").lower()
-    new_norm = new_moi.replace("_", " ").lower()
-    if (
-        status == "expansion"
-        and existing_norm in ("monoallelic", "biallelic")
-        and new_norm == "monoallelic and biallelic"
-    ):
-        added_mode = "Biallelic" if existing_norm == "monoallelic" else "Monoallelic"
-        added_count = moi_family_counts.get(added_mode, 0)
-        if added_count < MIN_FAMILIES_FOR_MOI_EXPANSION:
-            return (
-                f"Only {added_count} family/families with {added_mode.lower()}"
-                f" inheritance (threshold: {MIN_FAMILIES_FOR_MOI_EXPANSION})"
-            )
-
-    # Rule 2: Incidentalome — the Incidentalome deliberately carries only the
-    # incidental-findings subset of a gene's associations; the rest live on
-    # phenotype panels (off the Mendeliome). An aggregate MoI whose every
-    # constituent mode is already recorded across the gene's panels is the
-    # expected artifact of that scoping, not new information — suppress it.
-    gene_panels = all_panels_data.gene_to_panels.get(hgnc_id, set())
-    if INCIDENTALOME_PANEL_ID in gene_panels:
-        panel_mois = all_panels_data.gene_panel_mois.get(hgnc_id, {})
-        recorded = {mode for moi in panel_mois.values() for mode in decompose_moi(moi)}
-        if not decompose_moi(new_moi) - recorded:
-            return _moi_already_recorded_reason(new_moi, panel_mois, all_panels_data.panel_names)
-
-    return ""
-
-
-def _moi_already_recorded_reason(
-    new_moi: str, panel_mois: dict[int, str], panel_names: dict[int, str]
-) -> str:
-    """Name the panels that already record each mode of a suppressed MoI change.
-
-    e.g. "Biallelic already on Red cell disorders; Monoallelic already on 9 panels".
-    Names panels when a mode is on at most MAX_NAMED_PANELS of them (the curator's
-    signal is the rarely-placed mode); otherwise reports a count.
-    """
-    parts: list[str] = []
-    for mode in sorted(decompose_moi(new_moi)):
-        names = sorted(
-            panel_names[pid] for pid, moi in panel_mois.items() if mode in decompose_moi(moi)
-        )
-        if not names:
-            continue
-        where = ", ".join(names) if len(names) <= MAX_NAMED_PANELS else f"{len(names)} panels"
-        parts.append(f"{mode} already on {where}")
-    return "; ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -378,48 +220,150 @@ class FavoriteJournalSections:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class PanelMatch:
-    """Represents a panel match for a gene."""
+    """A panel that match-panels matched one association to."""
 
     panel_id: int
     panel_name: str
     rationale: str
+    gene_on_panel: bool  # the gene already has an entry on this panel
+
+
+@dataclass(frozen=True)
+class PanelSuggestionReason:
+    """Why one association of the gene was matched to a panel."""
+
+    disease_label: str
+    inheritance_mode: str
+    rationale: str
+
+
+@dataclass
+class PanelSuggestion:
+    """A panel matched by at least one of the gene's associations."""
+
+    panel_id: int
+    panel_name: str
+    reasons: list[PanelSuggestionReason]
 
 
 @dataclass(frozen=True)
 class ExistingPanelReviews:
-    """PanelApp evaluations captured at assess time for one target panel.
+    """PanelApp evaluations captured at assess time for one target panel that held the gene.
 
-    Stored on each known gene; the panel id is the single panel returned by
-    ``find_gene_panel`` during ``assess-genes``. An empty ``evaluations`` list
-    means no expert has reviewed the gene on that panel — the signal that
-    drives the "Unreviewed on Target Panel" section.
+    An empty ``evaluations`` list means no expert has reviewed the gene on that
+    panel, the signal that drives the "Unreviewed on Target Panel" section.
     """
 
     panel_id: int
     evaluations: list[dict[str, Any]]
 
 
+MondoMatch = Literal["panelapp_gencc", "exact", "broader"]
+
+
+@dataclass(frozen=True)
+class MondoTerm:
+    """The MONDO term stored on an association and how it was chosen."""
+
+    mondo_id: str
+    label: str
+    match: MondoMatch
+    rationale: str  # map-mondo's rationale; empty for a reused GenCC term
+    obsolete: bool  # a reused GenCC term that the loaded MONDO release marks obsolete
+    replaced_by: tuple[str, ...]  # MONDO's replacements for an obsolete term; often empty
+
+
+@dataclass(frozen=True)
+class DisputeRef:
+    """A GenCC submission for the gene with the dispute status the association states.
+
+    The model matches disputes to associations itself and names no submission, so
+    every submission with that status is listed; ``same_term`` marks the ones on
+    the association's own MONDO term.
+    """
+
+    submitter: str
+    status: str  # "Disputed" or "Refuted"
+    disease_title: str
+    mondo_id: str
+    moi_title: str
+    date: str
+    same_term: bool
+
+
+@dataclass
+class ReportAssociation:
+    """One gene-disease-MoI association of a gene, prepared for display."""
+
+    id: int
+    position: int  # order in the model output
+    assessment: dict[str, Any]  # the stored association JSON, paper IDs in display form
+    disease_label: str  # the GenCC row's label when reused, else the proposed name
+    mondo: MondoTerm | None  # None until map-mondo has run for this association
+    rating: int  # computed from this association's criteria: 3 GREEN, 2 AMBER, 1 RED
+    disputes: list[DisputeRef]
+    matched_panels: list[PanelMatch] | None  # None until match-panels has run for it
+
+    @property
+    def relation_status(self) -> RelationStatus:
+        status: RelationStatus = self.assessment["panelapp_relation"]["status"]
+        return status
+
+    @property
+    def independent_family_count(self) -> int | None:
+        count: int | None = self.assessment["independent_family_count"]
+        return count
+
+    @property
+    def new_moi_highlighted(self) -> bool:
+        return is_highlighted_new_moi(self.assessment)
+
+
+@dataclass(frozen=True)
+class RefusedPaper:
+    """A paper of the gene that extract-evidence was refused and never read."""
+
+    doi: str
+    pmid: int | None
+    title: str
+    category: str | None  # the refusal's safety-classifier category
+
+
 @dataclass
 class GeneAssessment:
-    """Represents a gene's assessment (panel-agnostic)."""
+    """A gene's aggregation: its associations and the gene-level blocks."""
 
     hgnc_id: int
     hgnc_symbol: str
-    assessment_json: dict[str, Any]
-    existing_rating: int | None  # Current confidence level in panel (for known genes)
-    existing_moi: str | None  # Current mode of inheritance from panel (mapped to enum)
-    new_moi: str  # Derived aggregate MoI from disease_entities
-    new_moi_details: str  # Derived aggregate MoI details from disease_entities
-    moi_comparison: MoiComparison | None  # Precomputed MoI comparison result
-    new_rating: int  # Calculated confidence level: 1 (RED), 2 (AMBER), 3 (GREEN)
+    associations: list[ReportAssociation]  # by corpus rating, then independent families
+    unassessed_reports: list[dict[str, Any]]  # [{phenotype, inheritance_mode, dois, reason}]
+    quality_concerns: list[dict[str, Any]]  # [{concern, dois, citations}]
+    existing_rating: int | None  # the gene's rating on its first target panel; None if novel
+    new_rating: int  # the top association rating: 3 (GREEN), 2 (AMBER), 1 (RED)
+    aggregate_moi: str  # derive_aggregate_moi over the associations, for gnomAD flags
     contributing_papers: list[DetailedPaper]
     variant_frequencies: list[VariantFrequency]  # Variants with frequency data
-    missing_panels: list[PanelMatch]  # Suggested panels gene is not in
-    existing_panels: list[PanelMatch]  # Panels gene is already in
+    missing_panels: list[PanelSuggestion]  # matched panels the gene is not on
+    existing_panels: list[PanelSuggestion]  # matched panels the gene is already on
+    unmatched_associations: int  # associations match-panels has not run for
     prefill_json: str  # HTML-escaped JSON for data-prefill attribute
-    existing_panel_reviews: ExistingPanelReviews | None  # Reviews at assess time, or None
+    existing_panel_reviews: list[ExistingPanelReviews]  # per target panel; empty if novel
+    refused_papers: list[RefusedPaper]
+
+    @property
+    def has_highlighted_new_moi(self) -> bool:
+        return any(a.new_moi_highlighted for a in self.associations)
+
+
+@dataclass(frozen=True)
+class RefusedGene:
+    """A gene that assess-genes was refused and that has no aggregation."""
+
+    hgnc_id: int
+    hgnc_symbol: str
+    category: str | None
 
 
 @dataclass
@@ -428,6 +372,7 @@ class GeneAssessmentResults:
 
     novel_genes: list[GeneAssessment]
     known_genes: list[GeneAssessment]
+    refused_genes: list[RefusedGene]
     target_panel_data: PanelGeneData
     target_panel_names: dict[int, str]  # panel_id → display name, for current target panels
 
@@ -471,9 +416,12 @@ class ComprehensiveStats:
     # Panel suggestions
     total_panel_suggestions: int
 
-    # MoI change stats
-    moi_expansions_count: int
-    moi_contradictions_count: int
+    # Associations, and new_moi associations highlighted for curators
+    total_associations: int
+    highlighted_new_moi_count: int
+
+    # Papers of assessed genes that extract-evidence was refused
+    refused_papers_count: int
 
     # Known genes on the target panel with zero expert reviews
     unreviewed_count: int
@@ -504,7 +452,7 @@ class KnownGeneCategories:
     red_to_green: list[GeneAssessment]
     amber_to_green: list[GeneAssessment]
     red_to_amber: list[GeneAssessment]
-    no_change_with_moi: list[GeneAssessment]
+    no_change_new_moi: list[GeneAssessment]
     no_change_unreviewed: list[GeneAssessment]
     no_change_reviewed: list[GeneAssessment]
 
@@ -515,7 +463,7 @@ class KnownGeneCategories:
             len(self.red_to_green)
             + len(self.amber_to_green)
             + len(self.red_to_amber)
-            + len(self.no_change_with_moi)
+            + len(self.no_change_new_moi)
             + len(self.no_change_unreviewed)
             + len(self.no_change_reviewed)
         )
@@ -742,318 +690,439 @@ def load_variant_frequencies_for_paper(
     return variant_frequencies
 
 
-def load_gene_assessments(
-    db_path: Path,
-    panel_date: str,
-    hgnc_resolver: HgncResolver,
-    target_panel_ids: list[int] | None = None,
-) -> GeneAssessmentResults:
-    """Load assessments from gene_assessments table for genes from initial papers only.
-
-    Args:
-        db_path: Path to the database
-        panel_date: Date (YYYY-MM-DD) to check panel membership at
-        target_panel_ids: List of panel IDs to use for novelty detection. If None, uses TARGET_PANEL_IDS.
-
-    Returns:
-        GeneAssessmentResults with sorted novel and known genes plus panel data
-    """
-    logger.info(f"Loading gene assessments from {db_path}...")
-
-    # Create client for the specified date and fetch panel data
-    panelapp_client = PanelAppClient(panel_date)
-    target_panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
-    all_panels_data = panelapp_client.get_all_panels_genes()
-    logger.info(
-        f"Loaded {len(target_panel_data.gene_confidence)} genes from target panels, {len(all_panels_data.gene_to_panels)} genes from all panels"
+def is_highlighted_new_moi(assessment: dict[str, Any]) -> bool:
+    """A new_moi association is highlighted once enough independent families support it."""
+    return (
+        assessment["panelapp_relation"]["status"] == "new_moi"
+        and (assessment["independent_family_count"] or 0) >= MIN_FAMILIES_FOR_MOI_EXPANSION
     )
 
-    novel_genes = []
-    known_genes = []
 
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+def association_sort_key(association: ReportAssociation) -> tuple[int, int, int]:
+    """Highest corpus rating first, then most independent families, then model order."""
+    return (
+        -association.rating,
+        -(association.independent_family_count or 0),
+        association.position,
+    )
 
-        # Get all genes from gene_assessments (already filtered to working set during aggregate-assessment)
-        cursor.execute("""
-            SELECT
-                hgnc_id,
-                assessment_json,
-                paper_id_mapping,
-                matched_panels_json,
-                filtered_papers_json,
-                existing_panel_reviews_json
-            FROM gene_assessments
-            ORDER BY hgnc_id
-        """)
 
-        for row in cursor.fetchall():
-            hgnc_id: int = row["hgnc_id"]
-            assessment_json = json.loads(row["assessment_json"])
-            paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
-            matched_panels = json.loads(row["matched_panels_json"] or "[]")
-            filtered_doi_reasons: dict[str, str] = {
-                fp["doi"]: fp["reason"] for fp in json.loads(row["filtered_papers_json"] or "[]")
-            }
-            existing_panel_reviews: ExistingPanelReviews | None = None
-            if row["existing_panel_reviews_json"]:
-                payload = json.loads(row["existing_panel_reviews_json"])
-                existing_panel_reviews = ExistingPanelReviews(
-                    panel_id=payload["panel_id"],
-                    evaluations=payload["evaluations"],
-                )
+def novel_gene_sort_key(gene: GeneAssessment) -> tuple[int, int, str]:
+    """Highest rating first, then genes with a highlighted new MoI, then by symbol."""
+    return (-gene.new_rating, 0 if gene.has_highlighted_new_moi else 1, gene.hgnc_symbol)
 
-            # Calculate rating from assessment
-            new_rating = calculate_gene_rating(assessment_json)
 
-            # Get current panel membership from target panels only (for novel/known determination)
-            # List preserves order from target_panel_ids
-            gene_panels = target_panel_data.gene_panel_mapping.get(hgnc_id, set())
-            target_panel_membership = [
-                pid for pid in target_panel_data.panel_ids if pid in gene_panels
-            ]
-
-            # Separate matched panels into missing and existing panels
-            missing_panels = []
-            existing_panels = []
-
-            for match in matched_panels:
-                panel_id = match["panel_id"]
-                rationale = match["rationale"]
-
-                # Check if gene is currently in this matched panel (from all panels data)
-                current_panels = all_panels_data.gene_to_panels.get(hgnc_id, set())
-                panel_name = all_panels_data.panel_names.get(panel_id)
-                if panel_name is None:
-                    logger.warning(
-                        f"Panel {panel_id} no longer exists in PanelApp, skipping match for HGNC:{hgnc_id}"
-                    )
-                    continue
-
-                if panel_id in current_panels:
-                    existing_panels.append(
-                        PanelMatch(
-                            panel_id=panel_id,
-                            panel_name=panel_name,
-                            rationale=rationale,
-                        )
-                    )
-                else:
-                    missing_panels.append(
-                        PanelMatch(
-                            panel_id=panel_id,
-                            panel_name=panel_name,
-                            rationale=rationale,
-                        )
-                    )
-
-            # Sort alphabetically
-            missing_panels.sort(key=lambda x: x.panel_name)
-            existing_panels.sort(key=lambda x: x.panel_name)
-
-            # Contributing papers for this gene, initial and expansion alike: one row per
-            # paper, with the symbol from the extraction's gene mention (a relevance-stage
-            # mention may carry an older symbol of the same gene).
-            cursor.execute(
-                """
-                SELECT
-                    p.doi,
-                    p.title,
-                    p.abstract,
-                    p.authors,
-                    p.journal,
-                    p.source_date,
-                    p.source_type,
-                    p.source_details,
-                    p.pmid,
-                    p.relevance_assessment_json,
-                    p.evidence_extraction_json,
-                    gm.paper_gene_symbol
-                FROM papers p
-                JOIN gene_mentions gm ON p.doi = gm.paper_doi
-                WHERE gm.hgnc_id = ?
-                AND gm.source IN ('recent_evidence', 'expansion_evidence')
-                AND p.evidence_extraction_json IS NOT NULL
-                ORDER BY p.source_date DESC, p.doi DESC
-            """,
-                (hgnc_id,),
-            )
-
-            contributing_papers = []
-            for paper_row in cursor.fetchall():
-                # Parse JSON fields safely
-                relevance_assessment = None
-                if paper_row["relevance_assessment_json"]:
-                    try:
-                        relevance_assessment = json.loads(paper_row["relevance_assessment_json"])
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            f"Failed to parse relevance assessment for DOI {paper_row['doi']}"
-                        )
-
-                evidence_extraction = None
-                if paper_row["evidence_extraction_json"]:
-                    try:
-                        evidence_extraction = json.loads(paper_row["evidence_extraction_json"])
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            f"Failed to parse evidence extraction for DOI {paper_row['doi']}"
-                        )
-
-                # Skip papers that don't have evidence extraction for this specific gene
-                # (they may mention the gene but only have evidence for other genes)
-                if evidence_extraction:
-                    gene_evals = evidence_extraction.get("gene_evaluations", [])
-                    has_gene_evidence = any(g.get("hgnc_id") == hgnc_id for g in gene_evals)
-                    if not has_gene_evidence:
-                        continue
-
-                doi = paper_row["doi"]
-                detailed_paper = DetailedPaper(
-                    doi=doi,
-                    title=paper_row["title"] or "Unknown Title",
-                    abstract=paper_row["abstract"],
-                    authors=paper_row["authors"],
-                    journal=paper_row["journal"],
-                    source_date=paper_row["source_date"],
-                    source_type=paper_row["source_type"],
-                    source_details=paper_row["source_details"],
-                    relevance_assessment=relevance_assessment,
-                    evidence_extraction=evidence_extraction,
-                    quote_refs=load_quote_refs(cursor, doi),
-                    preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
-                    pmid=paper_row["pmid"],
-                    paper_gene_symbol=paper_row["paper_gene_symbol"],
-                    filtered_reason=filtered_doi_reasons.get(doi),
-                )
-                contributing_papers.append(detailed_paper)
-
-            # Replace AuthorYear paper IDs with PMID display format
-            doi_to_pmid = {p.doi: p.pmid for p in contributing_papers if p.pmid is not None}
-            display_ids = build_display_ids(paper_id_to_doi, doi_to_pmid)
-            assessment_json = replace_paper_ids_for_display(assessment_json, display_ids)
-            # Assign display IDs and load per-paper variant frequencies
-            doi_to_display_id = {paper_id_to_doi[pid]: did for pid, did in display_ids.items()}
-            for paper in contributing_papers:
-                if paper.doi in doi_to_display_id:
-                    paper.display_id = doi_to_display_id[paper.doi]
-                paper.variant_frequencies = load_variant_frequencies_for_paper(cursor, paper)
-
-            # Load variant frequencies for this gene
-            variant_frequencies = load_variant_frequencies_for_gene(
-                cursor, hgnc_id, contributing_papers
-            )
-
-            # Gene is novel if not in any target panel
-            is_novel = not target_panel_membership
-
-            # Get existing rating and MoI for known genes
-            existing_rating = None
-            existing_moi = None
-            if not is_novel:
-                existing_rating = target_panel_data.gene_confidence[hgnc_id]
-                # Map PanelApp MoI to our enum
-                existing_moi = PANELAPP_MOI_TO_ENUM[target_panel_data.gene_moi[hgnc_id]]
-
-            # Compute MoI comparison (precompute for sorting and display)
-            disease_entities = assessment_json.get("disease_entities", [])
-            new_moi, new_moi_details = derive_aggregate_moi(disease_entities)
-            moi_family_counts = count_families_by_moi(disease_entities)
-
-            moi_comparison: MoiComparison | None = None
-            if existing_moi and new_moi:
-                comparison = compare_moi(existing_moi, new_moi, moi_family_counts=moi_family_counts)
-                if comparison["status"] != "same":
-                    suppression = apply_moi_suppression(
-                        comparison["status"],
-                        existing_moi,
-                        new_moi,
-                        hgnc_id,
-                        moi_family_counts,
-                        all_panels_data,
-                    )
-                    moi_comparison = MoiComparison(
-                        existing=existing_moi,
-                        new=new_moi,
-                        new_details=new_moi_details,
-                        status=comparison["status"],
-                        highlighted=not suppression,
-                        reason=suppression or comparison["reason"],
-                        message=comparison["message"],
-                        icon=comparison["icon"],
-                        css_class=comparison["css_class"],
-                    )
-
-            # Compute prefill data
-            if is_novel:
-                prefill_panel_id = target_panel_data.panel_ids[0]
-                prefill_form_type = "add"
-            else:
-                prefill_panel_id = target_panel_membership[0]
-                prefill_form_type = "review"
-
-            prefill_data = prepare_prefill_data(
-                hgnc_id=hgnc_id,
-                assessment_json=assessment_json,
-                form_type=prefill_form_type,
-                panel_id=prefill_panel_id,
-                cited_papers=[(p.doi, p.pmid) for p in contributing_papers],
-            )
-            prefill_json = json.dumps(asdict(prefill_data))
-
-            # Create assessment
-            assessment = GeneAssessment(
-                hgnc_id=hgnc_id,
-                hgnc_symbol=hgnc_resolver.get_symbol(hgnc_id),
-                assessment_json=assessment_json,
-                existing_rating=existing_rating,
-                existing_moi=existing_moi,
-                new_moi=new_moi,
-                new_moi_details=new_moi_details,
-                moi_comparison=moi_comparison,
-                new_rating=new_rating,
-                contributing_papers=contributing_papers,
-                variant_frequencies=variant_frequencies,
-                missing_panels=missing_panels,
-                existing_panels=existing_panels,
-                prefill_json=prefill_json,
-                existing_panel_reviews=existing_panel_reviews,
-            )
-
-            # Categorize by panel membership
-            if is_novel:
-                novel_genes.append(assessment)
-            else:
-                known_genes.append(assessment)
-
-    # Sort novel genes: by new rating (highest first), then highlighted MoI changes first, then gene name
-    novel_genes.sort(
-        key=lambda g: (
-            -g.new_rating,  # Negative for descending: 3 (GREEN), 2 (AMBER), 1 (RED)
-            0
-            if (g.moi_comparison and g.moi_comparison.highlighted)
-            else 1,  # Highlighted MoI changes first
-            g.hgnc_symbol,
+def known_gene_sort_key(gene: GeneAssessment) -> tuple[int, int, int, str]:
+    """Lowest existing rating first, then highest corpus rating, then highlighted new MoI."""
+    if gene.existing_rating is None:
+        raise ValueError(
+            f"Known gene {gene.hgnc_symbol} (HGNC:{gene.hgnc_id}) has no rating on the target panels"
         )
+    return (
+        gene.existing_rating,
+        -gene.new_rating,
+        0 if gene.has_highlighted_new_moi else 1,
+        gene.hgnc_symbol,
     )
 
-    # Sort known genes: by existing rating (lowest first), then new rating (highest first), then highlighted MoI changes first, then gene name
-    def known_sort_key(g: GeneAssessment) -> tuple:
-        # Get confidence level from target panels
-        target_confidence = target_panel_data.gene_confidence.get(g.hgnc_id)
 
-        if target_confidence is None:
-            raise ValueError(
-                f"Known gene {g.hgnc_symbol} (HGNC:{g.hgnc_id}) has no confidence level in target panels"
+def load_contributing_papers(
+    cursor: sqlite3.Cursor, hgnc_id: int, filtered_doi_reasons: dict[str, str]
+) -> list[DetailedPaper]:
+    """Papers with an extraction for the gene, initial and expansion alike, newest first.
+
+    One row per paper, with the symbol from the extraction's gene mention (a
+    relevance-stage mention may carry an older symbol of the same gene).
+    """
+    cursor.execute(
+        """
+        SELECT
+            p.doi,
+            p.title,
+            p.abstract,
+            p.authors,
+            p.journal,
+            p.source_date,
+            p.source_type,
+            p.source_details,
+            p.pmid,
+            p.relevance_assessment_json,
+            p.evidence_extraction_json,
+            gm.paper_gene_symbol
+        FROM papers p
+        JOIN gene_mentions gm ON p.doi = gm.paper_doi
+        WHERE gm.hgnc_id = ?
+        AND gm.source IN ('recent_evidence', 'expansion_evidence')
+        AND p.evidence_extraction_json IS NOT NULL
+        ORDER BY p.source_date DESC, p.doi DESC
+    """,
+        (hgnc_id,),
+    )
+
+    contributing_papers = []
+    for paper_row in cursor.fetchall():
+        relevance_assessment = (
+            json.loads(paper_row["relevance_assessment_json"])
+            if paper_row["relevance_assessment_json"]
+            else None
+        )
+        evidence_extraction = json.loads(paper_row["evidence_extraction_json"])
+        # A paper may mention the gene but only have evidence for other genes.
+        if not any(g.get("hgnc_id") == hgnc_id for g in evidence_extraction["gene_evaluations"]):
+            continue
+
+        doi = paper_row["doi"]
+        contributing_papers.append(
+            DetailedPaper(
+                doi=doi,
+                title=paper_row["title"] or "Unknown Title",
+                abstract=paper_row["abstract"],
+                authors=paper_row["authors"],
+                journal=paper_row["journal"],
+                source_date=paper_row["source_date"],
+                source_type=paper_row["source_type"],
+                source_details=paper_row["source_details"],
+                relevance_assessment=relevance_assessment,
+                evidence_extraction=evidence_extraction,
+                quote_refs=load_quote_refs(cursor, doi),
+                preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
+                pmid=paper_row["pmid"],
+                paper_gene_symbol=paper_row["paper_gene_symbol"],
+                filtered_reason=filtered_doi_reasons.get(doi),
             )
+        )
+    return contributing_papers
 
-        # Sort by existing confidence (ascending), new rating (descending), highlighted MoI (first), gene symbol
-        has_highlighted_moi = 0 if (g.moi_comparison and g.moi_comparison.highlighted) else 1
-        return (target_confidence, -g.new_rating, has_highlighted_moi, g.hgnc_symbol)
 
-    known_genes.sort(key=known_sort_key)
+def load_refused_papers(cursor: sqlite3.Cursor, hgnc_id: int) -> list[RefusedPaper]:
+    """The gene's papers that extract-evidence was refused and that have no extraction.
 
+    A paper belongs to the gene when the relevance screen named the gene for it,
+    when the gene's tournament selected it, or when it was added for the gene as a
+    PanelApp-cited or referenced paper (``source_details``).
+    """
+    cursor.execute(
+        """
+        SELECT p.doi, p.pmid, p.title,
+               (SELECT r2.refusal_category FROM llm_requests r2
+                WHERE r2.stage = ? AND r2.subject = p.doi AND r2.status = 'refused'
+                ORDER BY r2.completed_at DESC LIMIT 1) AS category
+        FROM papers p
+        WHERE p.evidence_extraction_json IS NULL
+          AND EXISTS (
+              SELECT 1 FROM llm_requests r
+              WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'refused'
+          )
+          AND (
+              EXISTS (
+                  SELECT 1 FROM gene_mentions gm
+                  WHERE gm.paper_doi = p.doi AND gm.hgnc_id = ?
+                    AND gm.source = 'relevance_assessment'
+              )
+              OR EXISTS (
+                  SELECT 1 FROM tournament_results t, json_each(t.selected_dois_json) j
+                  WHERE t.hgnc_id = ? AND j.value = p.doi
+              )
+              OR p.source_details IN (CAST(? AS TEXT), 'panelapp:' || ?)
+              OR p.source_details LIKE 'referenced:' || ? || ':%'
+          )
+        ORDER BY p.source_date DESC, p.doi
+        """,
+        (EXTRACTION_STAGE, EXTRACTION_STAGE, hgnc_id, hgnc_id, hgnc_id, hgnc_id, hgnc_id),
+    )
+    return [
+        RefusedPaper(doi=row["doi"], pmid=row["pmid"], title=row["title"], category=row["category"])
+        for row in cursor.fetchall()
+    ]
+
+
+def load_refused_genes(cursor: sqlite3.Cursor, hgnc_resolver: HgncResolver) -> list[RefusedGene]:
+    """Genes that assess-genes was refused and that have no aggregation."""
+    cursor.execute(
+        """
+        SELECT CAST(r.subject AS INTEGER) AS hgnc_id, r.refusal_category
+        FROM llm_requests r
+        WHERE r.stage = ? AND r.status = 'refused'
+          AND CAST(r.subject AS INTEGER) NOT IN (SELECT hgnc_id FROM gene_aggregations)
+        GROUP BY r.subject
+        ORDER BY hgnc_id
+        """,
+        (ASSESS_GENES_STAGE,),
+    )
+    return [
+        RefusedGene(
+            hgnc_id=row["hgnc_id"],
+            hgnc_symbol=hgnc_resolver.get_symbol(row["hgnc_id"]),
+            category=row["refusal_category"],
+        )
+        for row in cursor.fetchall()
+    ]
+
+
+def _mondo_term(row: sqlite3.Row, gencc_rows: list[dict[str, Any]]) -> MondoTerm | None:
+    """The association row's MONDO term, or None while it has none."""
+    mondo_id: str | None = row["mondo_id"]
+    if mondo_id is None:
+        return None
+    match: MondoMatch = row["mondo_match"]
+    if match == "panelapp_gencc":
+        gencc_row = next(r for r in gencc_rows if r["mondo_id"] == mondo_id)
+        return MondoTerm(
+            mondo_id=mondo_id,
+            label=row["mondo_label"],
+            match=match,
+            rationale="",
+            obsolete=gencc_row["obsolete"],
+            replaced_by=tuple(gencc_row["replaced_by"]),
+        )
+    answer = parse_json_output(Message.model_validate_json(row["mondo_raw"]))
+    return MondoTerm(
+        mondo_id=mondo_id,
+        label=row["mondo_label"],
+        match=match,
+        rationale=answer["rationale"],
+        obsolete=False,
+        replaced_by=(),
+    )
+
+
+def association_disputes(
+    assessment: dict[str, Any], mondo_id: str | None, disputes: list[dict[str, Any]]
+) -> list[DisputeRef]:
+    """The gene's GenCC submissions whose status is the association's dispute status.
+
+    Submissions on the association's own MONDO term come first.
+    """
+    status = assessment["dispute_status"]
+    refs = [
+        DisputeRef(
+            submitter=d["submitter"],
+            status=d["status"],
+            disease_title=d["disease_title"],
+            mondo_id=d["mondo_id"],
+            moi_title=d["moi_title"],
+            date=d["date"],
+            same_term=d["mondo_id"] == mondo_id,
+        )
+        for d in disputes
+        if d["status"] == status
+    ]
+    return sorted(refs, key=lambda d: not d.same_term)
+
+
+def _panel_matches(
+    matched_panels_json: str | None, hgnc_id: int, all_panels_data: AllPanelsData
+) -> list[PanelMatch] | None:
+    """An association's matched panels, or None while match-panels has not run for it."""
+    if matched_panels_json is None:
+        return None
+    current_panels = all_panels_data.gene_to_panels.get(hgnc_id, set())
+    matches = []
+    for match in json.loads(matched_panels_json):
+        panel_id = match["panel_id"]
+        panel_name = all_panels_data.panel_names.get(panel_id)
+        if panel_name is None:
+            logger.warning(
+                f"Panel {panel_id} no longer exists in PanelApp, skipping match for HGNC:{hgnc_id}"
+            )
+            continue
+        matches.append(
+            PanelMatch(
+                panel_id=panel_id,
+                panel_name=panel_name,
+                rationale=match["rationale"],
+                gene_on_panel=panel_id in current_panels,
+            )
+        )
+    return sorted(matches, key=lambda m: m.panel_name)
+
+
+def load_associations(
+    cursor: sqlite3.Cursor,
+    hgnc_id: int,
+    panelapp_context: dict[str, Any],
+    display_ids: dict[str, str],
+    all_panels_data: AllPanelsData,
+) -> list[ReportAssociation]:
+    """The gene's associations, by corpus rating and then independent family count."""
+    cursor.execute(
+        """
+        SELECT id, position, assessment_json, mondo_id, mondo_label, mondo_match, mondo_raw,
+               matched_panels_json
+        FROM associations
+        WHERE hgnc_id = ?
+        ORDER BY position
+        """,
+        (hgnc_id,),
+    )
+    associations = []
+    for row in cursor.fetchall():
+        assessment = replace_paper_ids_for_display(json.loads(row["assessment_json"]), display_ids)
+        mondo = _mondo_term(row, panelapp_context["gencc_rows"])
+        associations.append(
+            ReportAssociation(
+                id=row["id"],
+                position=row["position"],
+                assessment=assessment,
+                disease_label=(
+                    mondo.label
+                    if mondo is not None and mondo.match == "panelapp_gencc"
+                    else assessment["proposed_disease_name"]
+                ),
+                mondo=mondo,
+                rating=calculate_association_rating(assessment),
+                disputes=association_disputes(
+                    assessment, row["mondo_id"], panelapp_context["disputes"]
+                ),
+                matched_panels=_panel_matches(row["matched_panels_json"], hgnc_id, all_panels_data),
+            )
+        )
+    return sorted(associations, key=association_sort_key)
+
+
+def union_panel_suggestions(
+    associations: list[ReportAssociation],
+) -> tuple[list[PanelSuggestion], list[PanelSuggestion]]:
+    """The panels matched by any association, split into (gene not on it, gene on it).
+
+    Each panel lists the associations that matched it, with their rationales.
+    Both lists are sorted by panel name.
+    """
+    by_panel: dict[int, tuple[PanelSuggestion, bool]] = {}
+    for association in associations:
+        for match in association.matched_panels or []:
+            entry = by_panel.get(match.panel_id)
+            if entry is None:
+                entry = (PanelSuggestion(match.panel_id, match.panel_name, []), match.gene_on_panel)
+                by_panel[match.panel_id] = entry
+            entry[0].reasons.append(
+                PanelSuggestionReason(
+                    disease_label=association.disease_label,
+                    inheritance_mode=association.assessment["inheritance_mode"],
+                    rationale=match.rationale,
+                )
+            )
+    suggestions = sorted(by_panel.values(), key=lambda e: e[0].panel_name)
+    missing = [suggestion for suggestion, on_panel in suggestions if not on_panel]
+    existing = [suggestion for suggestion, on_panel in suggestions if on_panel]
+    return missing, existing
+
+
+def load_gene(
+    cursor: sqlite3.Cursor,
+    row: sqlite3.Row,
+    hgnc_resolver: HgncResolver,
+    target_panel_data: PanelGeneData,
+    all_panels_data: AllPanelsData,
+) -> GeneAssessment:
+    """One gene's aggregation row with its associations, papers and panel context."""
+    hgnc_id: int = row["hgnc_id"]
+    paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
+    filtered_doi_reasons: dict[str, str] = {
+        fp["doi"]: fp["reason"] for fp in json.loads(row["filtered_papers_json"] or "[]")
+    }
+    existing_panel_reviews = [
+        ExistingPanelReviews(panel_id=entry["panel_id"], evaluations=entry["evaluations"])
+        for entry in json.loads(row["existing_panel_reviews_json"] or "[]")
+    ]
+
+    contributing_papers = load_contributing_papers(cursor, hgnc_id, filtered_doi_reasons)
+
+    # Replace AuthorYear paper IDs with PMID display format
+    doi_to_pmid = {p.doi: p.pmid for p in contributing_papers if p.pmid is not None}
+    display_ids = build_display_ids(paper_id_to_doi, doi_to_pmid)
+    doi_to_display_id = {paper_id_to_doi[pid]: did for pid, did in display_ids.items()}
+    for paper in contributing_papers:
+        if paper.doi in doi_to_display_id:
+            paper.display_id = doi_to_display_id[paper.doi]
+        paper.variant_frequencies = load_variant_frequencies_for_paper(cursor, paper)
+
+    associations = load_associations(
+        cursor, hgnc_id, json.loads(row["panelapp_context_json"]), display_ids, all_panels_data
+    )
+    gene_level = replace_paper_ids_for_display(
+        {
+            "unassessed_reports": json.loads(row["unassessed_reports_json"]),
+            "quality_concerns": json.loads(row["quality_concerns_json"]),
+        },
+        display_ids,
+    )
+    missing_panels, existing_panels = union_panel_suggestions(associations)
+    association_jsons = [a.assessment for a in associations]
+
+    # Gene is novel if not in any target panel; the list keeps target-panel order
+    gene_panels = target_panel_data.gene_panel_mapping.get(hgnc_id, set())
+    target_panel_membership = [pid for pid in target_panel_data.panel_ids if pid in gene_panels]
+    is_novel = not target_panel_membership
+
+    if is_novel:
+        prefill_panel_id = target_panel_data.panel_ids[0]
+        prefill_form_type = "add"
+    else:
+        prefill_panel_id = target_panel_membership[0]
+        prefill_form_type = "review"
+    prefill_data = prepare_prefill_data(
+        hgnc_id=hgnc_id,
+        associations=[
+            {
+                **a.assessment,
+                "mondo_id": a.mondo.mondo_id if a.mondo is not None else None,
+                "mondo_label": a.mondo.label if a.mondo is not None else None,
+            }
+            for a in associations
+        ],
+        form_type=prefill_form_type,
+        panel_id=prefill_panel_id,
+        cited_papers=[(p.doi, p.pmid) for p in contributing_papers],
+    )
+
+    return GeneAssessment(
+        hgnc_id=hgnc_id,
+        hgnc_symbol=hgnc_resolver.get_symbol(hgnc_id),
+        associations=associations,
+        unassessed_reports=gene_level["unassessed_reports"],
+        quality_concerns=gene_level["quality_concerns"],
+        existing_rating=None if is_novel else target_panel_data.gene_confidence[hgnc_id],
+        new_rating=calculate_gene_rating(association_jsons),
+        aggregate_moi=derive_aggregate_moi(association_jsons)[0],
+        contributing_papers=contributing_papers,
+        variant_frequencies=load_variant_frequencies_for_gene(cursor, hgnc_id, contributing_papers),
+        missing_panels=missing_panels,
+        existing_panels=existing_panels,
+        unmatched_associations=sum(a.matched_panels is None for a in associations),
+        prefill_json=json.dumps(asdict(prefill_data)),
+        existing_panel_reviews=existing_panel_reviews,
+        refused_papers=load_refused_papers(cursor, hgnc_id),
+    )
+
+
+def build_gene_assessment_results(
+    conn: sqlite3.Connection,
+    hgnc_resolver: HgncResolver,
+    target_panel_data: PanelGeneData,
+    all_panels_data: AllPanelsData,
+) -> GeneAssessmentResults:
+    """Every aggregated gene, split into novel and known genes and sorted for the report.
+
+    *conn* must use ``sqlite3.Row`` as its row factory.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT hgnc_id, paper_id_mapping, filtered_papers_json, panelapp_context_json,
+               existing_panel_reviews_json, unassessed_reports_json, quality_concerns_json
+        FROM gene_aggregations
+        ORDER BY hgnc_id
+        """
+    )
+    novel_genes: list[GeneAssessment] = []
+    known_genes: list[GeneAssessment] = []
+    for row in cursor.fetchall():
+        gene = load_gene(conn.cursor(), row, hgnc_resolver, target_panel_data, all_panels_data)
+        (novel_genes if gene.existing_rating is None else known_genes).append(gene)
+
+    novel_genes.sort(key=novel_gene_sort_key)
+    known_genes.sort(key=known_gene_sort_key)
     logger.info(f"Loaded {len(novel_genes)} novel genes, {len(known_genes)} known genes")
 
     target_panel_names = {
@@ -1061,13 +1130,42 @@ def load_gene_assessments(
         for pid in target_panel_data.panel_ids
         if pid in all_panels_data.panel_names
     }
-
     return GeneAssessmentResults(
         novel_genes=novel_genes,
         known_genes=known_genes,
+        refused_genes=load_refused_genes(cursor, hgnc_resolver),
         target_panel_data=target_panel_data,
         target_panel_names=target_panel_names,
     )
+
+
+def load_gene_assessments(
+    db_path: Path,
+    panel_date: str,
+    hgnc_resolver: HgncResolver,
+    target_panel_ids: list[int] | None = None,
+) -> GeneAssessmentResults:
+    """Load every gene's aggregation and associations, with PanelApp membership at *panel_date*.
+
+    Args:
+        db_path: Path to the database
+        panel_date: Date (YYYY-MM-DD) to check panel membership at
+        target_panel_ids: List of panel IDs to use for novelty detection. If None, uses TARGET_PANEL_IDS.
+    """
+    logger.info(f"Loading gene aggregations from {db_path}...")
+
+    panelapp_client = PanelAppClient(panel_date)
+    target_panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
+    all_panels_data = panelapp_client.get_all_panels_genes()
+    logger.info(
+        f"Loaded {len(target_panel_data.gene_confidence)} genes from target panels, {len(all_panels_data.gene_to_panels)} genes from all panels"
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        return build_gene_assessment_results(
+            conn, hgnc_resolver, target_panel_data, all_panels_data
+        )
 
 
 def load_panel_publications_validation(
@@ -1353,17 +1451,17 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
         return manual_download_papers
 
 
-def _is_unreviewed_on_target(gene: GeneAssessment, target_panel_ids: set[int]) -> bool:
-    """True iff the gene has zero expert reviews on its target panel.
+def unreviewed_target_panels(gene: GeneAssessment, target_panel_ids: set[int]) -> list[int]:
+    """The target panels holding the gene, when none of them has an expert review; else [].
 
-    Falls through to False when the stored panel isn't in the current target
-    set (e.g. assess and report ran with different ``--target-panel-ids``),
-    so the gene lands in "Already Reviewed" rather than a false positive.
+    Only panels in the current target set count (assess and report may run with
+    different ``--target-panel-ids``), so a gene whose stored panels are all outside
+    it lands in "Already Reviewed" rather than a false positive.
     """
-    reviews = gene.existing_panel_reviews
-    if reviews is None or reviews.panel_id not in target_panel_ids:
-        return False
-    return not reviews.evaluations
+    panels = [r for r in gene.existing_panel_reviews if r.panel_id in target_panel_ids]
+    if any(r.evaluations for r in panels):
+        return []
+    return [r.panel_id for r in panels]
 
 
 def _gene_contribution_bucket(
@@ -1378,9 +1476,9 @@ def _gene_contribution_bucket(
         return "novel"
     if gene.existing_rating != gene.new_rating:
         return "rating_upgrade"
-    if gene.moi_comparison and gene.moi_comparison.highlighted:
+    if gene.has_highlighted_new_moi:
         return "moi_expansion"
-    if _is_unreviewed_on_target(gene, target_panel_ids):
+    if unreviewed_target_panels(gene, target_panel_ids):
         return "unreviewed"
     return "already_reviewed"
 
@@ -1583,20 +1681,12 @@ def calculate_comprehensive_statistics(
             for p in gene.contributing_papers:
                 all_dois.add(p.doi)
 
-        # Count MoI changes surfaced to curators (highlighted only)
-        moi_expansions = 0
-        moi_contradictions = 0
-        for gene in all_genes:
-            if gene.moi_comparison and gene.moi_comparison.highlighted:
-                if gene.moi_comparison.status == "expansion":
-                    moi_expansions += 1
-                elif gene.moi_comparison.status == "contradiction":
-                    moi_contradictions += 1
+        all_associations = [a for gene in all_genes for a in gene.associations]
 
         # Count unreviewed known genes (per current target panel set)
         target_panel_id_set = set(results.target_panel_data.panel_ids)
         unreviewed_count = sum(
-            1 for gene in results.known_genes if _is_unreviewed_on_target(gene, target_panel_id_set)
+            1 for gene in results.known_genes if unreviewed_target_panels(gene, target_panel_id_set)
         )
 
         # Preprint stats (computed from already-loaded data)
@@ -1626,9 +1716,9 @@ def calculate_comprehensive_statistics(
             expansion_papers=source_counts.get("expansion", 0),
             # Panel suggestions
             total_panel_suggestions=total_panel_suggestions,
-            # MoI change stats
-            moi_expansions_count=moi_expansions,
-            moi_contradictions_count=moi_contradictions,
+            total_associations=len(all_associations),
+            highlighted_new_moi_count=sum(a.new_moi_highlighted for a in all_associations),
+            refused_papers_count=len({p.doi for gene in all_genes for p in gene.refused_papers}),
             unreviewed_count=unreviewed_count,
             # Preprint stats
             preprints_relevant=len(preprint_dois),
@@ -1789,6 +1879,12 @@ def prepare_paper_citation_links(
     return [link for link in links if link is not None]
 
 
+def papers_for_dois(dois: list[str], papers: list[DetailedPaper]) -> list[DetailedPaper]:
+    """The papers among *papers* with these DOIs, in the order of *dois*."""
+    by_doi = {paper.doi: paper for paper in papers}
+    return [by_doi[doi] for doi in dois if doi in by_doi]
+
+
 def build_report_config(
     report_id: str,
     target_panel_ids: list[int],
@@ -1834,6 +1930,7 @@ def generate_html_report(
     report_id: str,
     target_panel_ids: list[int],
     target_panel_names: dict[int, str],
+    refused_genes: list[RefusedGene],
     *,
     panelapp_integration: bool,
 ) -> str:
@@ -1869,16 +1966,16 @@ def generate_html_report(
         else:
             no_change.append(gene)
 
-    # Split no_change into three: MoI-expansion highlight, unreviewed on target panel,
-    # and the remainder (already reviewed by at least one expert).
+    # Split no_change into three: a highlighted new-MoI association, unreviewed on the
+    # target panels, and the remainder (already reviewed by at least one expert).
     target_panel_id_set = set(target_panel_ids)
-    no_change_with_moi: list[GeneAssessment] = []
+    no_change_new_moi: list[GeneAssessment] = []
     no_change_unreviewed: list[GeneAssessment] = []
     no_change_reviewed: list[GeneAssessment] = []
     for gene in no_change:
-        if gene.moi_comparison and gene.moi_comparison.highlighted:
-            no_change_with_moi.append(gene)
-        elif _is_unreviewed_on_target(gene, target_panel_id_set):
+        if gene.has_highlighted_new_moi:
+            no_change_new_moi.append(gene)
+        elif unreviewed_target_panels(gene, target_panel_id_set):
             no_change_unreviewed.append(gene)
         else:
             no_change_reviewed.append(gene)
@@ -1887,7 +1984,7 @@ def generate_html_report(
         red_to_green=red_to_green,
         amber_to_green=amber_to_green,
         red_to_amber=red_to_amber,
-        no_change_with_moi=no_change_with_moi,
+        no_change_new_moi=no_change_new_moi,
         no_change_unreviewed=no_change_unreviewed,
         no_change_reviewed=no_change_reviewed,
     )
@@ -1915,6 +2012,10 @@ def generate_html_report(
     env.filters["short_id"] = lambda display_id: display_id.removeprefix("PMID ")
     env.filters["derive_moi"] = lambda pgs: derive_aggregate_moi(pgs)[0]
     env.filters["derive_moi_details"] = lambda pgs: derive_aggregate_moi(pgs)[1]
+    env.filters["papers_for_dois"] = papers_for_dois
+    env.filters["unreviewed_target_panels"] = lambda gene: unreviewed_target_panels(
+        gene, target_panel_id_set
+    )
 
     # Add custom sort filter that handles None values
     def sort_by_rating_count(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1923,61 +2024,6 @@ def generate_html_report(
 
     env.filters["sort_by_rating_count"] = sort_by_rating_count
 
-    # Badge data formatters: each returns {text, label, css} or None.
-    # The `badge` macro in the template renders any non-None result via a
-    # shared <span class="{prefix}-badge {prefix}-{css}" data-title="{label}">
-    # pattern, so adding a new badge type here only requires CSS for the
-    # new `{prefix}-{css}` modifier.
-    def format_mondo_badge(entity: dict[str, str]) -> dict[str, str]:
-        """Format disease entity into MONDO badge data."""
-        mondo_id = entity["mondo_id"]
-        category = MONDO_CATEGORIES.get(mondo_id)
-        if category:
-            text = category["abbrev"]
-            label = category["label"]
-            css = category["abbrev"].lower()
-        else:
-            text = entity.get("mondo_label", mondo_id)
-            label = text
-            css = "specific"
-        return {"text": text, "label": f"{label} ({mondo_id})", "css": css}
-
-    _DISPUTE_BADGE_LABELS = {
-        "Disputed": (
-            "this gene-disease relationship has been contested by an expert "
-            "curation panel. Criteria A/B/C must default to FALSE unless the "
-            "rationale explicitly overturns the prior dispute."
-        ),
-        "Refuted": (
-            "this gene-disease relationship has been formally rejected by an "
-            "expert curation panel. Criteria A/B/C must default to FALSE unless "
-            "the rationale explicitly overturns the prior refutation."
-        ),
-    }
-
-    def format_dispute_badge(entity: dict[str, Any]) -> dict[str, str] | None:
-        """Format dispute_status into badge data, or None when no badge applies.
-
-        When `dispute_panels` is present (stamped by `resolve_mondo_names` for
-        flagged candidates), prefix each panel's submitter and review date so
-        the tooltip names *who* disputed the pair and *when*.
-        """
-        status = entity.get("dispute_status")
-        if status not in _DISPUTE_BADGE_LABELS:
-            return None
-        panels = entity.get("dispute_panels") or []
-        if panels:
-            attribution = "; ".join(
-                f"{p['submitter']} ({p['date']})" if p.get("date") else p["submitter"]
-                for p in panels
-            )
-            label = f"{attribution}: {_DISPUTE_BADGE_LABELS[status]}"
-        else:
-            label = f"GenCC: {_DISPUTE_BADGE_LABELS[status]}"
-        return {"text": status, "label": label, "css": status.lower()}
-
-    env.filters["format_mondo_badge"] = format_mondo_badge
-    env.filters["format_dispute_badge"] = format_dispute_badge
     # Render markdown then sanitize to a strict allowlist of tags.
     # This prevents LLM-generated summaries from injecting links, images, or scripts.
     _summary_allowed_tags = {"p", "strong", "em"}
@@ -2010,6 +2056,8 @@ def generate_html_report(
         panelapp_integration=panelapp_integration,
         report_config_json=report_config_json,
         target_panel_names=target_panel_names,
+        refused_genes=refused_genes,
+        min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
         gnomad_thresholds={
             "het": GNOMAD_HET_THRESHOLD,
             "hom": GNOMAD_HOM_THRESHOLD,
@@ -2106,6 +2154,7 @@ def main(
         report_id=report_id,
         target_panel_ids=actual_panel_ids,
         target_panel_names=results.target_panel_names,
+        refused_genes=results.refused_genes,
         panelapp_integration=panelapp_integration,
     )
 

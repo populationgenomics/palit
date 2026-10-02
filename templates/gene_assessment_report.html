@@ -27,26 +27,22 @@
     </script>
     {% endif %}
 
+    {# What the ratings in gene headers and associations mean #}
+    {% macro corpus_note() %}
+    <p class="corpus-note">Each gene lists its gene-disease-MoI associations. Ratings after an arrow are the evidence in this corpus: they are computed from the papers this run read for the gene (new papers, tournament picks and publications PanelApp already cites), not from everything published. They are not recommendations; a corpus rating below PanelApp's rating is not a downgrade recommendation. A gene's header shows its top association's rating.</p>
+    {% endmacro %}
+
     {# Macro for linking to a paper: PubMed if PMID available, DOI otherwise #}
     {% macro paper_link(paper) %}
     {% if paper.pmid %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ paper.pmid }}/" target="_blank">{{ paper.pmid }}</a>{% else %}<a href="https://doi.org/{{ paper.doi }}" target="_blank">{{ paper.doi }}</a>{% endif %}
     {%- endmacro %}
 
-    {# Macro for rendering MoI comparison badge #}
-    {% macro moi_comparison_badge(moi_comp) %}
-    {% if moi_comp and moi_comp.highlighted %}
-        <span class="moi-badge {{ moi_comp.css_class }}" title="{{ moi_comp.message }}">
-            {{ moi_comp.icon }} MoI {{ "expansion" if moi_comp.status == "expansion" else "change" }}
-        </span>
+    {# Gene-header badge for a gene with a highlighted new-MoI association #}
+    {% macro new_moi_badge(gene) %}
+    {% if gene.has_highlighted_new_moi %}
+        <span class="moi-badge moi-expansion" data-title="At least one association adds a mode of inheritance PanelApp Australia does not curate for its disease, with {{ min_families_for_moi_expansion }} or more independent families">➕ New MoI</span>
     {% endif %}
     {% endmacro %}
-
-    {# Generic badge renderer. `info` is {text, label, css} or falsy (no output).
-       The CSS uses two classes: `{prefix}-badge` for shared layout, and
-       `{prefix}-{css}` for per-variant colors (see gene_report_styles.css). #}
-    {% macro badge(info, prefix) -%}
-    {% if info %}<span class="{{ prefix }}-badge {{ prefix }}-{{ info.css }}" data-title="{{ info.label }}">{{ info.text }}</span>{% endif %}
-    {%- endmacro %}
 
     {# Link to a quote in the report's PDF viewer #}
     {% macro cite(link) -%}
@@ -103,8 +99,6 @@
                 <tr>
                     <td>
                         {{ entity.description }}
-                        {% if entity.mondo_id %}{{ badge(entity | format_mondo_badge, "mondo") }}{% endif %}
-                        {{ badge(entity | format_dispute_badge, "dispute") }}
                     </td>
                     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
                     <td>{{ entity.patient_count }}</td>
@@ -118,82 +112,210 @@
     {% endif %}
     {% endmacro %}
 
-    {# Macro for rendering evidence summary section #}
-    {% macro evidence_summary(gene) %}
-    <div class="evidence-summary-expanded">
-        <h5><strong>Summary</strong></h5>
-        <div class="summary-content">{{ gene.assessment_json.summary | markdown_to_html }}</div>
+    {# A rating badge for a 1-3 PanelApp confidence level #}
+    {% macro rating_badge(rating) -%}
+    <span class="rating-badge rating-{{ rating | confidence_to_color | lower }}">{{ rating | confidence_to_color }}</span>
+    {%- endmacro %}
 
-        <h5><strong>Evidence Details</strong></h5>
-        <ul>
-            <li><strong>Families:</strong> {{ gene.assessment_json.families }}</li>
-            <li><strong>Mode of inheritance:</strong> {{ gene.new_moi | format_inheritance(gene.new_moi_details) }}</li>
-            <li><strong>Variants:</strong> {{ gene.assessment_json.variants }}</li>
-            <li><strong>Population Frequency:</strong> {{ gene.assessment_json.population_freq }}</li>
-            <li><strong>Segregation:</strong> {{ gene.assessment_json.segregation }}</li>
-            <li><strong>Functional Studies:</strong> {{ gene.assessment_json.functional }}</li>
-            <li><strong>Prior Reports:</strong> {{ gene.assessment_json.prior_reports }}</li>
-            {% set published_papers = gene.contributing_papers | rejectattr('preprint') | list %}
-            {% set preprint_papers = gene.contributing_papers | selectattr('preprint') | list %}
-            {% if published_papers %}
-            <li><strong>Publications:</strong> {% for paper in published_papers %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}</li>
-            {% endif %}
-            {% if preprint_papers %}
-            <li><strong>⚠️ Preprints:</strong> {% for paper in preprint_papers %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}</li>
-            {% endif %}
-        </ul>
+    {# The association's MONDO term, with every non-exact or unusual state marked #}
+    {% macro mondo_marker(assoc) %}
+    {% set m = assoc.mondo %}
+    {% if m is none %}
+    <span class="mondo-badge mondo-unmapped" data-title="map-mondo has not mapped this association to a MONDO term yet">No MONDO term yet</span>
+    {% elif m.match == 'panelapp_gencc' %}
+    <a class="mondo-id" href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>
+    <span class="mondo-badge mondo-gencc" data-title="The disease of a PanelApp Australia GenCC row, reused with its MONDO term">PanelApp Australia GenCC</span>
+    {% if m.obsolete %}<span class="mondo-badge mondo-obsolete" data-title="The GenCC row's MONDO term is obsolete in the loaded MONDO release">Obsolete in MONDO{% if m.replaced_by %}: replaced by {{ m.replaced_by | join(', ') }}{% else %}, no replacement named{% endif %}</span>{% endif %}
+    {% elif m.match == 'exact' %}
+    <span class="mondo-badge mondo-exact" data-title="{{ m.rationale }}">MONDO exact</span>
+    <span class="mondo-term">{{ m.label }} (<a href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>)</span>
+    {% else %}
+    <span class="mondo-badge mondo-broader" data-title="No MONDO term names this disease; this is the most specific term that includes it. {{ m.rationale }}">Broader MONDO term</span>
+    <span class="mondo-term mondo-term-broader">{{ m.label }} (<a href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>)</span>
+    {% endif %}
+    {% endmacro %}
 
-        {{ disease_entity_table(gene.assessment_json.disease_entities, gene.hgnc_id, gene.contributing_papers) }}
-
-        {% if gene.moi_comparison %}
-        <p class="moi-transition-note {% if not gene.moi_comparison.highlighted %}moi-not-highlighted{% endif %}">
-            <strong>{{ gene.moi_comparison.icon }} Mode of Inheritance Change:</strong>
-            {{ gene.moi_comparison.existing | format_inheritance }} →
-            {{ gene.moi_comparison.new | format_inheritance(gene.moi_comparison.new_details) }}
-            {% if gene.moi_comparison.reason %}
-            <span class="moi-reason">({{ gene.moi_comparison.reason }})</span>
+    {# The association's relation to PanelApp Australia, then its rating in this corpus #}
+    {% macro association_transition(assoc) %}
+    {% set relation = assoc.assessment.panelapp_relation %}
+    <div class="association-transition">
+        <span class="transition-label">PanelApp Australia:</span>
+        {% if assoc.relation_status == 'existing' %}
+            {% if relation.existing_rating %}
+            <span class="rating-badge rating-{{ relation.existing_rating | lower }}" data-title="{{ relation.basis }}">{{ relation.existing_rating }}</span>
+            {% else %}
+            <span class="rating-badge rating-grey" data-title="{{ relation.basis }}">curated, own rating unknown</span>
             {% endif %}
-        </p>
+        {% elif assoc.relation_status == 'new_disease' %}
+            <span class="relation-badge relation-new" data-title="{{ relation.basis }}">new disease</span>
+        {% elif assoc.new_moi_highlighted %}
+            <span class="moi-badge moi-expansion" data-title="{{ relation.basis }}">➕ new MoI</span>
+        {% else %}
+            <span class="relation-badge relation-new" data-title="Fewer than {{ min_families_for_moi_expansion }} independent families, so not highlighted. {{ relation.basis }}">new MoI</span>
         {% endif %}
-
-        {% set verdicts = gene.contributing_papers | panelapp_verdicts(gene.hgnc_id) %}
-        {% if verdicts %}
-        <div class="panelapp-check-verdicts">
-            <strong>PanelApp check at screening</strong> <em>(context only, not part of the assessment)</em>:
-            <ul>
-                {% for v in verdicts %}
-                <li>{{ paper_link(v.paper) }}: <strong>{{ v.label }}</strong> ({{ v.disease }}) - {{ v.reason }}</li>
-                {% endfor %}
-            </ul>
-        </div>
-        {% endif %}
-
-        {% if gene.assessment_json.quality_concerns %}
-        <div class="quality-concerns">
-            <h5><strong>⚠️ Quality Concerns</strong></h5>
-            <ul>
-                {% for concern in gene.assessment_json.quality_concerns %}
-                <li>
-                    {{ concern.concern }}
-                    {% if concern.citations %}
-                    {% set citation_links = concern.citations | prepare_citation_links(gene.contributing_papers) %}
-                    {% for link in citation_links %}
-                    {{ cite(link) }}
-                    {% endfor %}
-                    {% endif %}
-                </li>
-                {% endfor %}
-            </ul>
-        </div>
+        <span class="rating-arrow">→</span>
+        <span class="transition-label" data-title="Computed from this association's criteria, using only the papers this run read. A lower rating than PanelApp's is not a downgrade recommendation.">Evidence in this corpus:</span>
+        {{ rating_badge(assoc.rating) }}
+        {% if assoc.assessment.dispute_status != 'None' %}
+        <span class="dispute-badge dispute-{{ assoc.assessment.dispute_status | lower }}">{{ assoc.assessment.dispute_status }}</span>
         {% endif %}
     </div>
+    <p class="relation-basis"><strong>Basis:</strong> {{ relation.basis }}</p>
+    {% if assoc.assessment.dispute_status != 'None' %}
+    <div class="association-disputes">
+        {% if assoc.disputes %}
+        <strong>{{ assoc.assessment.dispute_status }} in GenCC by:</strong>
+        <ul>
+            {% for d in assoc.disputes %}
+            <li>{{ d.submitter }} ({{ d.date }}): {{ d.disease_title }} ({{ d.mondo_id }}), {{ d.moi_title }}{% if d.same_term %} <em>(this association's MONDO term)</em>{% endif %}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <strong>{{ assoc.assessment.dispute_status }}:</strong> no {{ assoc.assessment.dispute_status }} GenCC submission was shown to the model for this gene.
+        {% endif %}
+    </div>
+    {% endif %}
+    {% endmacro %}
+
+    {# Linked list of papers #}
+    {% macro paper_links(papers) -%}
+    {% for paper in papers %}{% if paper.preprint %}⚠️ {% endif %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}
+    {%- endmacro %}
+
+    {# The matched panels of one association #}
+    {% macro association_panels(assoc) %}
+    <p class="association-panels"><strong>Matched panels:</strong>
+    {% if assoc.matched_panels is none %}
+        <em class="muted">not matched yet (match-panels has not run for this association)</em>
+    {% elif not assoc.matched_panels %}
+        <em class="muted">none</em>
+    {% else %}
+        {% for panel in assoc.matched_panels %}
+        <a class="panel-chip {{ 'panel-chip-held' if panel.gene_on_panel else 'panel-chip-missing' }}" href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank" data-title="{{ panel.rationale }}">{{ panel.panel_name }}{% if not panel.gene_on_panel %} (gene not on panel){% endif %}</a>
+        {% endfor %}
+    {% endif %}
+    </p>
+    {% endmacro %}
+
+    {# One gene-disease-MoI association #}
+    {% macro association_block(assoc, gene) %}
+    {% set e = assoc.assessment %}
+    <section class="association-block{% if assoc.new_moi_highlighted %} association-new-moi{% endif %}" id="association-{{ assoc.id }}">
+        <header class="association-heading">
+            <span class="association-disease">{{ assoc.disease_label }}</span>
+            {{ mondo_marker(assoc) }}
+            <span class="association-moi">{{ e.inheritance_mode | format_inheritance(e.inheritance_details) }}</span>
+        </header>
+        <div class="association-body">
+            {{ association_transition(assoc) }}
+            {% if e.description | lower != assoc.disease_label | lower %}
+            <p class="association-description"><strong>As described:</strong> {{ e.description }}</p>
+            {% endif %}
+            <div class="summary-content">{{ e.summary | markdown_to_html }}</div>
+            <p class="grouping-rationale"><strong>Grouping:</strong> {{ e.grouping_rationale }}</p>
+            {{ family_counts(e) }}
+            {% if e.disease_mechanism and e.disease_mechanism != 'NR' %}
+            <p class="association-mechanism"><strong>Mechanism:</strong> {{ e.disease_mechanism }}</p>
+            {% endif %}
+            <p class="association-papers"><strong>Papers:</strong> {{ paper_links(e.dois | papers_for_dois(gene.contributing_papers)) }}</p>
+            {{ association_panels(assoc) }}
+            {% if e.citations %}
+            <details class="association-citations">
+                <summary><strong>Cited evidence ({{ e.citations | length }})</strong></summary>
+                <ul>
+                    {% for citation in e.citations %}
+                    <li>{{ citation.commentary }} {% for link in [citation] | prepare_citation_links(gene.contributing_papers) %}{{ cite(link) }}{% endfor %}</li>
+                    {% endfor %}
+                </ul>
+            </details>
+            {% endif %}
+            <details class="association-criteria">
+                <summary><strong>PanelApp criteria</strong></summary>
+                {{ criteria_grid(e, gene.hgnc_id, contributing_papers=gene.contributing_papers) }}
+            </details>
+        </div>
+    </section>
+    {% endmacro %}
+
+    {# Reports below the bar for new associations, and papers whose reports all fall under an exclusion #}
+    {% macro unassessed_reports(gene) %}
+    {% if gene.unassessed_reports %}
+    <div class="unassessed-reports">
+        <h5><strong>Unassessed reports ({{ gene.unassessed_reports | length }})</strong></h5>
+        <p class="muted"><em>Phenotypes the papers report for this gene without a qualifying family, or whose reports fall under an exclusion; they are not associations and have no rating.</em></p>
+        <table class="disease-entity-table">
+            <thead><tr><th>Phenotype</th><th>MoI</th><th>Papers</th><th>Reason</th></tr></thead>
+            <tbody>
+                {% for report in gene.unassessed_reports %}
+                <tr>
+                    <td>{{ report.phenotype }}</td>
+                    <td>{{ report.inheritance_mode | format_inheritance }}</td>
+                    <td>{{ paper_links(report.dois | papers_for_dois(gene.contributing_papers)) }}</td>
+                    <td>{{ report.reason }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    {% endmacro %}
+
+    {# Gene-level quality concerns #}
+    {% macro quality_concerns(gene) %}
+    {% if gene.quality_concerns %}
+    <div class="quality-concerns">
+        <h5><strong>⚠️ Quality Concerns</strong></h5>
+        <ul>
+            {% for concern in gene.quality_concerns %}
+            <li>
+                {{ concern.concern }}
+                {% for link in concern.citations | prepare_citation_links(gene.contributing_papers) %}
+                {{ cite(link) }}
+                {% endfor %}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    {% endmacro %}
+
+    {# The gene's papers that extract-evidence was refused #}
+    {% macro refused_papers(gene) %}
+    {% if gene.refused_papers %}
+    <div class="refused-papers">
+        <h5><strong>⚠️ Papers not read ({{ gene.refused_papers | length }})</strong></h5>
+        <p><em>Evidence extraction was refused for these papers of the gene, so their evidence is missing from the associations above.</em></p>
+        <ul>
+            {% for paper in gene.refused_papers %}
+            <li>{{ paper_link(paper) }}: {{ paper.title }}{% if paper.category %} <span class="muted">(refusal category: {{ paper.category }})</span>{% endif %}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    {% endmacro %}
+
+    {# Verdicts of the relevance-time PanelApp check #}
+    {% macro relevance_verdicts(gene) %}
+    {% set verdicts = gene.contributing_papers | panelapp_verdicts(gene.hgnc_id) %}
+    {% if verdicts %}
+    <div class="panelapp-check-verdicts">
+        <strong>PanelApp check at screening</strong> <em>(context only, not part of the assessment)</em>:
+        <ul>
+            {% for v in verdicts %}
+            <li>{{ paper_link(v.paper) }}: <strong>{{ v.label }}</strong> ({{ v.disease }}) - {{ v.reason }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    {% endmacro %}
+
+    {# Reported, qualifying and independent families of an entity or association #}
+    {% macro family_counts(entity) %}
+    <p class="entity-count-summary"><strong>Patients:</strong> {{ entity.patient_count }}; <strong>Families:</strong> {% if entity.family_count is none %}NR{% else %}{% if entity.reported_family_count is defined %}{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }} reported, {% endif %}{{ entity.family_count }} qualifying{% if entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %} → {{ entity.independent_family_count }} independent{% endif %}{% endif %} <span class="count-note">(A/B/C use the independent count){% if entity.count_reduction_reasoning %}: {{ entity.count_reduction_reasoning }}{% endif %}</span></p>
     {% endmacro %}
 
     {# Macro for rendering criteria assessment grid for a SINGLE disease entity (per-entity criteria). #}
     {% macro criteria_grid(entity, hgnc_id, contributing_papers=none, paper=none) %}
-    {% if entity.family_count is not none %}
-    <p class="entity-count-summary"><strong>Families:</strong> {% if entity.reported_family_count is defined %}{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }} reported, {% endif %}{{ entity.family_count }} qualifying{% if entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %} → {{ entity.independent_family_count }} independent{% endif %} <span class="count-note">(A/B/C use the independent count){% if entity.count_reduction_reasoning %} — {{ entity.count_reduction_reasoning }}{% endif %}</span></p>
-    {% endif %}
     <div class="criteria-grid">
         {% set criteria_meta = {
             'criterion_A': ('Criterion A - Multiple Independent Cases', 'OR'),
@@ -241,42 +363,35 @@
     </div>
     {% endmacro %}
 
-    {# Macro for rendering panel recommendations - used for both novel and known genes #}
+    {# Panels matched by any of the gene's associations, compared with the gene's current panels #}
     {% macro panel_recommendations(gene) %}
-    {% if gene.missing_panels %}
+    {% if gene.missing_panels or gene.unmatched_associations %}
     <details class="panel-recommendations">
         <summary>
             <strong>Suggested panels:</strong>
-            {{ gene.missing_panels|sort(attribute='panel_name')|map(attribute='panel_name')|join(', ') }}
+            {% if gene.missing_panels %}{{ gene.missing_panels | map(attribute='panel_name') | join(', ') }}{% else %}<em>none so far</em>{% endif %}
+            {% if gene.unmatched_associations %} <em class="muted">({{ gene.unmatched_associations }} of {{ gene.associations | length }} associations not matched yet)</em>{% endif %}
         </summary>
         <div class="panel-details">
-            {% set is_novel_gene = not gene.existing_panels %}
-
+            {% for heading, suggestions in [("Panels the gene is not on", gene.missing_panels), ("Panels the gene is already on", gene.existing_panels)] %}
+            {% if suggestions %}
             <div class="panel-section">
-                {% if not is_novel_gene %}
-                <h4>Additional panels</h4>
-                {% endif %}
+                <h4>{{ heading }}</h4>
                 <ul>
-                {% for panel in gene.missing_panels|sort(attribute='panel_name') %}
+                {% for panel in suggestions %}
                     <li>
-                        <a href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank"><strong>{{ panel.panel_name }}</strong></a>: {{ panel.rationale }}
-                    </li>
-                {% endfor %}
-                </ul>
-            </div>
-
-            {% if gene.existing_panels %}
-            <div class="panel-section">
-                <h4>Already in panels</h4>
-                <ul>
-                {% for panel in gene.existing_panels|sort(attribute='panel_name') %}
-                    <li>
-                        <a href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank"><strong>{{ panel.panel_name }}</strong></a>: {{ panel.rationale }}
+                        <a href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank"><strong>{{ panel.panel_name }}</strong></a>
+                        <ul>
+                            {% for reason in panel.reasons %}
+                            <li><em>{{ reason.disease_label }} ({{ reason.inheritance_mode | format_inheritance }}):</em> {{ reason.rationale }}</li>
+                            {% endfor %}
+                        </ul>
                     </li>
                 {% endfor %}
                 </ul>
             </div>
             {% endif %}
+            {% endfor %}
         </div>
     </details>
     {% endif %}
@@ -284,31 +399,25 @@
 
     {# Macro for rendering gene article body - everything below the header #}
     {% macro gene_article_body(gene) %}
-        {{ evidence_summary(gene) }}
+        <div class="association-list">
+            {% for assoc in gene.associations %}
+            {{ association_block(assoc, gene) }}
+            {% endfor %}
+        </div>
 
+        {{ unassessed_reports(gene) }}
+        {{ quality_concerns(gene) }}
+        {{ refused_papers(gene) }}
         {{ panel_recommendations(gene) }}
 
         {% if gene.variant_frequencies %}
         <div class="variant-frequency-section">
             <h5><strong>gnomAD v4 frequencies</strong></h5>
-            {{ variant_frequency_table(gene.variant_frequencies, gene.new_moi, gene.hgnc_id, include_faf=true) }}
+            {{ variant_frequency_table(gene.variant_frequencies, gene.aggregate_moi, gene.hgnc_id, include_faf=true) }}
         </div>
         {% endif %}
 
-        <details>
-            <summary><strong>PanelApp criteria assessment</strong></summary>
-            {% for entity in gene.assessment_json.disease_entities | sort_by_rating_count %}
-            <section class="per-entity-criteria-section">
-                <h5 class="per-entity-criteria-heading">{{ entity.description }}
-                    {% if entity.mondo_id %}{{ badge(entity | format_mondo_badge, "mondo") }}{% endif %}
-                    {{ badge(entity | format_dispute_badge, "dispute") }}
-                </h5>
-                <div class="per-entity-criteria-body">
-                    {{ criteria_grid(entity, gene.hgnc_id, contributing_papers=gene.contributing_papers) }}
-                </div>
-            </section>
-            {% endfor %}
-        </details>
+        {{ relevance_verdicts(gene) }}
 
         <details>
             <summary><strong>Contributing papers ({{ gene.contributing_papers|length }})</strong></summary>
@@ -531,7 +640,7 @@
                 <div class="variant-frequency-section">
                     <h6><strong>gnomAD v4 frequencies</strong></h6>
                     {% if paper.variant_frequencies %}
-                    {{ variant_frequency_table(paper.variant_frequencies, gene.new_moi, gene.hgnc_id, include_faf=false) }}
+                    {{ variant_frequency_table(paper.variant_frequencies, gene.aggregate_moi, gene.hgnc_id, include_faf=false) }}
                     {% else %}
                     <p><em>No variants with frequency data extracted from this paper.</em></p>
                     {% endif %}
@@ -567,7 +676,7 @@
                 <div class="toc-section toc-novel-to-green" data-section-key="novel-green" data-section-label="Novel → GREEN" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in novel_categories.green %}
-                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -580,7 +689,7 @@
                 <div class="toc-section toc-novel-to-amber" data-section-key="novel-amber" data-section-label="Novel → AMBER" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in novel_categories.amber %}
-                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -593,7 +702,7 @@
                 <div class="toc-section toc-novel-to-red" data-section-key="novel-red" data-section-label="Novel → RED" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in novel_categories.red %}
-                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -611,7 +720,7 @@
                 <div class="toc-section toc-red-to-green" data-section-key="red-to-green" data-section-label="RED → GREEN" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.red_to_green %}
-                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -624,7 +733,7 @@
                 <div class="toc-section toc-amber-to-green" data-section-key="amber-to-green" data-section-label="AMBER → GREEN" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.amber_to_green %}
-                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
@@ -637,25 +746,25 @@
                 <div class="toc-section toc-red-to-amber" data-section-key="red-to-amber" data-section-label="RED → AMBER" data-section-default>
                     <ul class="toc-gene-list">
                         {% for gene in known_categories.red_to_amber %}
-                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.moi_comparison and gene.moi_comparison.highlighted %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
+                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
                         {% endfor %}
                     </ul>
                 </div>
                 {% endif %}
 
-                {% set no_change_total = known_categories.no_change_with_moi|length + known_categories.no_change_unreviewed|length + known_categories.no_change_reviewed|length %}
+                {% set no_change_total = known_categories.no_change_new_moi|length + known_categories.no_change_unreviewed|length + known_categories.no_change_reviewed|length %}
                 {% if no_change_total %}
                 <div class="toc-section-header">
                     No Rating Change ({{ no_change_total }})
                 </div>
 
-                {% if known_categories.no_change_with_moi %}
+                {% if known_categories.no_change_new_moi %}
                 <div class="toc-subsection-header">
-                    MoI Expansion ({{ known_categories.no_change_with_moi|length }})
+                    New MoI ({{ known_categories.no_change_new_moi|length }})
                 </div>
-                <div class="toc-section toc-no-change toc-moi-expansion" data-section-key="moi-expansion" data-section-label="MoI Expansion" data-section-default>
+                <div class="toc-section toc-no-change toc-moi-expansion" data-section-key="moi-expansion" data-section-label="New MoI" data-section-default>
                     <ul class="toc-gene-list">
-                        {% for gene in known_categories.no_change_with_moi %}
+                        {% for gene in known_categories.no_change_new_moi %}
                         <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}<span class="moi-expansion-indicator">➕</span></a></li>
                         {% endfor %}
                     </ul>
@@ -721,10 +830,12 @@
                 <li><strong>Potential Upgrades:</strong> {{ statistics.known_genes_upgraded }}</li>
                 <li><strong>Contributing Papers:</strong> {{ statistics.total_contributing_papers }}</li>
                 <li><strong>Panel Suggestions:</strong> {{ statistics.total_panel_suggestions }}</li>
-                <li><strong>Mode of Inheritance Expansions:</strong> {{ statistics.moi_expansions_count }}</li>
-                <li><strong>Mode of Inheritance Contradictions:</strong> {{ statistics.moi_contradictions_count }}</li>
+                <li><strong>Associations:</strong> {{ statistics.total_associations }}</li>
+                <li><strong>Highlighted New-MoI Associations:</strong> {{ statistics.highlighted_new_moi_count }}</li>
                 <li><strong>Unreviewed on Target Panel:</strong> {{ statistics.unreviewed_count }}</li>
                 <li><strong>Preprints with Evidence:</strong> {{ statistics.preprints_relevant }}</li>
+                {% if statistics.refused_papers_count %}<li><strong>Papers Not Read (Extraction Refused):</strong> {{ statistics.refused_papers_count }}</li>{% endif %}
+                {% if refused_genes %}<li><strong>Genes Not Aggregated (assess-genes Refused):</strong> {% for g in refused_genes %}{{ g.hgnc_symbol }} (HGNC:{{ g.hgnc_id }}){% if not loop.last %}, {% endif %}{% endfor %}</li>{% endif %}
                 {% if statistics.papers_filtered %}<li><strong>Papers Excluded (Preprint Family Gate):</strong> {{ statistics.papers_filtered }}</li>{% endif %}
                 <li><strong>Panel Publications Correctly Identified:</strong> {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% ({{ statistics.true_positives_count }}/{{ statistics.true_positives_count + statistics.screen_misses_count + statistics.check_rejections_count }})</li>
             </ul>
@@ -806,8 +917,8 @@
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.moi_expansion,
-                "Contributed to MoI expansions",
-                "Papers whose evidence supports adding a new mode of inheritance to a known gene (no rating change).",
+                "Contributed to new MoI associations",
+                "Papers that contributed to a known gene with a highlighted new-MoI association and no rating change.",
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.unreviewed,
@@ -845,7 +956,8 @@
         {% if novel_categories and novel_categories.total > 0 %}
         <section id="novel-genes" class="novel-section">
             <h2>Novel Gene-Disease Associations</h2>
-            <p><em>Genes not currently in any panel, sorted by potential rating (GREEN candidates first)</em></p>
+            <p><em>Genes not currently in any target panel, sorted by their top association's rating (GREEN candidates first)</em></p>
+            {{ corpus_note() }}
 
             {% for gene in novel_categories.green + novel_categories.amber + novel_categories.red %}
             <article class="gene-assessment" id="novel-gene-{{ gene.hgnc_id }}">
@@ -854,7 +966,7 @@
                     <span class="rating-badge rating-grey">Not in panel</span>
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ new_moi_badge(gene) }}
                     {{ prefill_button(gene, 'add') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -868,7 +980,8 @@
         {% if known_categories and known_categories.total > 0 %}
         <section id="known-genes" class="known-section">
             <h2>Known Gene Evidence Updates</h2>
-            <p><em>Genes already in panels, categorized by type of update</em></p>
+            <p><em>Genes already in target panels, categorized by their current rating and their top association's rating</em></p>
+            {{ corpus_note() }}
 
             {% if known_categories.red_to_green %}
             <div class="subsection-header">
@@ -881,7 +994,7 @@
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ new_moi_badge(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -901,7 +1014,7 @@
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ new_moi_badge(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -921,7 +1034,7 @@
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ new_moi_badge(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -930,24 +1043,24 @@
             {% endfor %}
             {% endif %}
 
-            {% set no_change_total = known_categories.no_change_with_moi|length + known_categories.no_change_unreviewed|length + known_categories.no_change_reviewed|length %}
+            {% set no_change_total = known_categories.no_change_new_moi|length + known_categories.no_change_unreviewed|length + known_categories.no_change_reviewed|length %}
             {% if no_change_total %}
             <div class="subsection-header">
                 <h3>No Rating Change ({{ no_change_total }})</h3>
             </div>
 
-            {% if known_categories.no_change_with_moi %}
+            {% if known_categories.no_change_new_moi %}
             <div class="sub-subsection-header" id="known-no-change-moi">
-                <h4>MoI Expansion ({{ known_categories.no_change_with_moi|length }})</h4>
+                <h4>New MoI ({{ known_categories.no_change_new_moi|length }})</h4>
             </div>
-            {% for gene in known_categories.no_change_with_moi %}
+            {% for gene in known_categories.no_change_new_moi %}
             <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
                 <h3>
                     {{ gene_header(gene) }}
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ new_moi_badge(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -967,14 +1080,13 @@
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ new_moi_badge(gene) }}
                     <span class="unreviewed-badge" title="No expert review on PanelApp for this gene/panel">⚠️ Unreviewed</span>
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
-                {% set panel_id = gene.existing_panel_reviews.panel_id %}
                 <p class="unreviewed-note">
-                    No reviews on {{ target_panel_names.get(panel_id, "Panel " ~ panel_id) }} panel
+                    No reviews on {% for panel_id in gene | unreviewed_target_panels %}{{ target_panel_names.get(panel_id, "Panel " ~ panel_id) }}{% if not loop.last %}, {% endif %}{% endfor %}
                 </p>
                 {{ gene_article_body(gene) }}
             </article>
@@ -992,7 +1104,7 @@
                     <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ moi_comparison_badge(gene.moi_comparison) }}
+                    {{ new_moi_badge(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>

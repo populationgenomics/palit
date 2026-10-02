@@ -101,16 +101,6 @@ def validate_independent_family_counts(entities: list[dict[str, Any]]) -> bool:
     return True
 
 
-# MONDO ID to category information (abbreviation, description)
-# CSS class is derived from abbrev.lower()
-MONDO_CATEGORIES = {
-    "MONDO:0002254": {"abbrev": "Synd", "label": "Syndromic disease"},
-    "MONDO:0003778": {"abbrev": "IEI", "label": "Inborn error of immunity"},
-    "MONDO:0005047": {"abbrev": "IF", "label": "Infertility disorder"},
-    "MONDO:0044970": {"abbrev": "Mito", "label": "Mitochondrial disease"},
-    "MONDO:0700092": {"abbrev": "NDD", "label": "Neurodevelopmental disorder"},
-}
-
 # Canonical mapping from evidence extraction enum to PanelApp long-form MoI
 # Evidence extraction uses: "Monoallelic"|"Biallelic"|"Monoallelic_and_biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR"
 ENUM_TO_PANELAPP_MOI = {
@@ -122,35 +112,6 @@ ENUM_TO_PANELAPP_MOI = {
     "Other": "Other",
     "NR": "",
 }
-
-# Reverse mapping from PanelApp long-form to enum (1:1 from canonical)
-PANELAPP_MOI_TO_ENUM = {v: k for k, v in ENUM_TO_PANELAPP_MOI.items() if v}
-
-# Additional PanelApp long-forms that map to the same enum values
-PANELAPP_MOI_TO_ENUM.update(
-    {
-        "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted": "Monoallelic",
-        "MONOALLELIC, autosomal or pseudoautosomal, maternally imprinted (paternal allele expressed)": "Monoallelic",
-        "MONOALLELIC, autosomal or pseudoautosomal, paternally imprinted (maternal allele expressed)": "Monoallelic",
-        "MONOALLELIC, autosomal or pseudoautosomal, imprinted status unknown": "Monoallelic",
-        "BOTH monoallelic and biallelic (but BIALLELIC mutations cause a more SEVERE disease form), autosomal or pseudoautosomal": "Monoallelic_and_biallelic",
-        "X-LINKED: hemizygous mutation in males, biallelic mutations in females": "X-linked",
-        "Unknown": "Other",
-    }
-)
-
-
-def decompose_moi(moi: str) -> frozenset[str]:
-    """Split an MoI enum into its constituent simple inheritance modes.
-
-    "Monoallelic_and_biallelic" is the only combined enum; every other value
-    (Monoallelic, Biallelic, X-linked, Mitochondrial, Other) is already simple
-    and maps to itself. Lets us compare an aggregate MoI against per-panel MoIs
-    at the mode level, since each PanelApp panel records one mode per gene.
-    """
-    if moi == "Monoallelic_and_biallelic":
-        return frozenset({"Monoallelic", "Biallelic"})
-    return frozenset({moi})
 
 
 @dataclass
@@ -227,61 +188,20 @@ def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> tuple[str, s
     return "Other", combined_details
 
 
-def count_families_by_moi(disease_entities: list[dict[str, Any]]) -> dict[str, int]:
-    """Largest single-entity independent family count per inheritance mode.
-
-    Each disease entity is an independent gene-disease association, so the
-    relevant per-MoI count is the strongest single entity, not the sum. Reads
-    independent_family_count; when that is null (NR) it falls back to
-    patient_count (a pre-existing heuristic for the MoI-expansion highlight only).
-
-    Monoallelic_and_biallelic is a legacy enum value; entries carrying it
-    contribute their count to both Monoallelic and Biallelic.
-
-    Args:
-        disease_entities: List of disease entity dicts
-
-    Returns:
-        Dict mapping inheritance mode to the max single-entity family count
-    """
-    counts: dict[str, int] = {}
-
-    def update_max(moi: str, count: int) -> None:
-        if count > counts.get(moi, 0):
-            counts[moi] = count
-
-    for entity in disease_entities:
-        moi = entity.get("inheritance_mode")
-        if not moi or moi == "NR":
-            continue
-
-        count = entity["independent_family_count"]
-        if count is None:  # NR family count — fall back to patients (highlight heuristic only)
-            count = entity.get("patient_count", 0)
-        if count <= 0:
-            continue
-
-        if moi == "Monoallelic_and_biallelic":
-            update_max("Monoallelic", count)
-            update_max("Biallelic", count)
-        else:
-            update_max(moi, count)
-
-    return counts
-
-
 def prepare_prefill_data(
     hgnc_id: int,
-    assessment_json: dict[str, Any],
+    associations: list[dict[str, Any]],
     form_type: str,
     panel_id: int,
     cited_papers: list[tuple[str, int | None]],
 ) -> PrefillData:
-    """Prepare prefill form data from gene assessment.
+    """Prepare prefill form data from a gene's associations.
 
     Args:
         hgnc_id: HGNC ID (integer) of the gene
-        assessment_json: Assessment JSON with criteria evaluations
+        associations: Each association's assessment JSON with its row's ``mondo_id`` and
+            ``mondo_label`` added (both None while the association has no MONDO term),
+            in report order
         form_type: "add" or "review"
         panel_id: Target panel ID
         cited_papers: List of (doi, pmid) pairs for papers cited in the assessment
@@ -289,33 +209,26 @@ def prepare_prefill_data(
     Returns:
         PrefillData object ready for form rendering
     """
-    # Calculate rating from assessment
-    rating = calculate_gene_rating(assessment_json)
-    rating_str = panelapp_confidence_to_color(rating).upper()
+    rating_str = panelapp_confidence_to_color(calculate_gene_rating(associations)).upper()
 
-    # Get MoI in PanelApp long format (derived from disease_entities)
-    disease_entities = assessment_json.get("disease_entities", [])
-    inheritance_mode, _ = derive_aggregate_moi(disease_entities)
+    inheritance_mode, _ = derive_aggregate_moi(associations)
     moi = ENUM_TO_PANELAPP_MOI[inheritance_mode]
-
-    # Get mode of pathogenicity if present
-    mode_of_pathogenicity = assessment_json.get("mode_of_pathogenicity")
 
     # Format publications: use PMID where available, DOI otherwise
     publications = ";".join(str(pmid) if pmid is not None else doi for doi, pmid in cited_papers)
 
-    # Format phenotypes as semicolon-separated "label, MONDO_ID" pairs
-    disease_entities = assessment_json["disease_entities"]
-    mondo_pairs: set[str] = set()
-    for entity in disease_entities:
-        mondo_id = entity["mondo_id"]
-        category = MONDO_CATEGORIES.get(mondo_id)
-        label = category["label"] if category else entity.get("mondo_label", mondo_id)
-        mondo_pairs.add(f"{label}, {mondo_id}")
-    phenotypes = ";".join(sorted(mondo_pairs))
+    # Semicolon-separated "label, MONDO_ID" pairs; an association without a MONDO term
+    # contributes its proposed disease name alone.
+    phenotype_entries: set[str] = set()
+    for association in associations:
+        mondo_id = association["mondo_id"]
+        if mondo_id is None:
+            phenotype_entries.add(association["proposed_disease_name"])
+        else:
+            phenotype_entries.add(f"{association['mondo_label']}, {mondo_id}")
+    phenotypes = ";".join(sorted(phenotype_entries))
 
-    # Get summary as comments
-    comments = assessment_json.get("summary", "")
+    comments = "\n\n".join(association["summary"] for association in associations)
 
     return PrefillData(
         form_type=form_type,
@@ -323,7 +236,7 @@ def prepare_prefill_data(
         hgnc_id=f"HGNC:{hgnc_id}",
         rating=rating_str,
         moi=moi,
-        mode_of_pathogenicity=mode_of_pathogenicity,
+        mode_of_pathogenicity=None,
         publications=publications,
         phenotypes=phenotypes,
         comments=comments,
@@ -359,20 +272,13 @@ def calculate_association_rating(entity: dict[str, Any]) -> int:
     return 1
 
 
-def calculate_gene_rating(gene_eval: dict[str, Any]) -> int:
+def calculate_gene_rating(associations: list[dict[str, Any]]) -> int:
     """The gene's rating: the highest rating of its associations, RED when it has none.
-
-    Args:
-        gene_eval: Gene evaluation dictionary with disease_entities each carrying their
-            own evidence_assessments (5 criteria) and evidence_weakening_factors.
 
     Returns:
         Confidence level: 3 (GREEN), 2 (AMBER), or 1 (RED)
     """
-    return max(
-        (calculate_association_rating(e) for e in gene_eval.get("disease_entities", [])),
-        default=1,
-    )
+    return max((calculate_association_rating(a) for a in associations), default=1)
 
 
 def panelapp_confidence_to_color(confidence: int | None) -> str:

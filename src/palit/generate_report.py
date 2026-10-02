@@ -541,8 +541,8 @@ def format_gene_with_aliases(gene_assessment: GeneAssessment) -> str:
         if paper.paper_gene_symbol:
             paper_gene_symbols.add(paper.paper_gene_symbol)
 
-    # Remove the HGNC symbol itself
-    paper_gene_symbols.discard(hgnc_symbol)
+    # Paper symbols are uppercased; current symbols such as C9orf72 are not.
+    paper_gene_symbols.discard(hgnc_symbol.upper())
 
     if paper_gene_symbols:
         aliases = sorted(paper_gene_symbols)

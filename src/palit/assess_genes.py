@@ -527,14 +527,8 @@ def prepare_aggregate_assessment_prompt(
             }
         )
 
-    # Extract unique paper gene symbols (aliases) from evidence
-    paper_symbols = set()
-    for evidence in evidence_list:
-        if "paper_gene_symbol" in evidence:
-            paper_symbols.add(evidence["paper_gene_symbol"])
-
-    # Format gene symbol with aliases if they differ from current HGNC symbol
-    aliases = paper_symbols - {hgnc_symbol}
+    # Paper symbols are uppercased; current symbols such as C9orf72 are not.
+    aliases = {evidence["paper_gene_symbol"] for evidence in evidence_list} - {hgnc_symbol.upper()}
     if aliases:
         gene_symbol_with_aliases = (
             f"{hgnc_symbol} (also referred to as: {', '.join(sorted(aliases))} in the papers)"

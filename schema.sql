@@ -47,7 +47,7 @@ CREATE TABLE papers (
 CREATE TABLE gene_mentions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hgnc_id INTEGER NOT NULL,
-    paper_gene_symbol TEXT NOT NULL,     -- Original symbol mentioned in paper (may be alias)
+    paper_gene_symbol TEXT NOT NULL,     -- Symbol as the paper writes it, uppercased (may be a previous or alias symbol); diagnostic only, hgnc_id is the key
     paper_doi TEXT NOT NULL,
     source TEXT CHECK(source IN ('recent_evidence', 'expansion_evidence', 'relevance_assessment')) NOT NULL,
 

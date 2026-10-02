@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
@@ -104,25 +105,58 @@ EVERY_REFUSAL = datetime.min.replace(tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
+# Extraction fields that hold the paper's own text, left untouched by symbol
+# replacement: quotes are checked verbatim against the PDF and keyed into
+# citation_locations, titles of earlier papers are searched on PubMed, and the
+# gene symbol and variant notation are the paper's.
+VERBATIM_FIELDS = frozenset({"gene_symbol", "quote", "title", "variant"})
+
+
+def symbol_pattern(symbols: list[str]) -> re.Pattern[str]:
+    """Match any of ``symbols`` as a whole gene symbol, case-sensitively.
+
+    A symbol is a run of word characters, '@' and hyphens. A match may not be
+    preceded by any of these, so "ND1" stays put inside "MT-ND1". It may not be
+    followed by a word character or '@', nor by a hyphen and a digit, so "AARS"
+    stays put inside "AARS1" and "AARS-1". A hyphen and a letter may follow, so
+    "AARS-related" matches.
+    """
+    alternatives = "|".join(re.escape(s) for s in sorted(symbols, key=len, reverse=True))
+    return re.compile(rf"(?<![\w@-])(?:{alternatives})(?![\w@]|-\d)")
+
+
+def _replace_symbols(node: Any, pattern: re.Pattern[str], replacements: dict[str, str]) -> Any:
+    """Replace symbols in every string of ``node`` outside ``VERBATIM_FIELDS``."""
+    if isinstance(node, str):
+        return pattern.sub(lambda match: replacements[match.group()], node)
+    if isinstance(node, list):
+        return [_replace_symbols(item, pattern, replacements) for item in node]
+    if isinstance(node, dict):
+        return {
+            key: value if key in VERBATIM_FIELDS else _replace_symbols(value, pattern, replacements)
+            for key, value in node.items()
+        }
+    return node
+
+
 def normalize_extraction_genes(
     parsed_json: dict[str, Any],
     hgnc_resolver: HgncResolver,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Normalize gene symbols in extraction JSON to current HGNC.
+    """Resolve each gene evaluation's symbol to HGNC and bring the prose up to date.
 
-    For each unique gene_symbol in gene_evaluations:
-    - Resolve via HgncResolver
-    - If resolved and symbol changed: replace old symbol with current symbol
-      throughout the entire JSON (summary, variant descriptions, etc.)
-    - Resolved: add hgnc_id
-    - Always: rename gene_symbol → paper_gene_symbol (uppercased)
+    Every gene evaluation's ``gene_symbol`` becomes ``paper_gene_symbol``: the
+    symbol as the paper (and the model) wrote it, uppercased. Resolved
+    evaluations gain ``hgnc_id``. Where a resolved symbol is not the current
+    one, it is replaced by the current symbol in every string outside
+    ``VERBATIM_FIELDS``, matching whole symbols only (see ``symbol_pattern``).
 
     Returns:
         (normalized_json, unresolved_symbols)
     """
-    resolved: dict[str, HgncEntry] = {}  # uppercased raw symbol → entry
+    resolved: dict[str, HgncEntry] = {}  # uppercased paper symbol → entry
     unresolved: set[str] = set()
-    for gene_eval in parsed_json.get("gene_evaluations", []):
+    for gene_eval in parsed_json["gene_evaluations"]:
         upper: str = gene_eval["gene_symbol"].upper()
         if upper not in resolved and upper not in unresolved:
             entry = hgnc_resolver.resolve(upper)
@@ -131,24 +165,19 @@ def normalize_extraction_genes(
             else:
                 unresolved.add(upper)
 
-    # Full string replacement across serialized JSON for changed symbols
     replacements = {old: entry.symbol for old, entry in resolved.items() if old != entry.symbol}
     if replacements:
-        json_str = json.dumps(parsed_json)
-        for old in sorted(replacements, key=len, reverse=True):
-            json_str = json_str.replace(old, replacements[old])
-        parsed_json = json.loads(json_str)
+        pattern = symbol_pattern(list(replacements))
+        parsed_json = _replace_symbols(parsed_json, pattern, replacements)
 
-    # Rewrite gene_evaluations: add hgnc_id if resolved, always rename gene_symbol.
     # Gene evaluations without hgnc_id are ignored by all downstream pipeline stages
-    # (aggregation, reporting) — they exist only for diagnostic inspection.
-    by_current_symbol: dict[str, int] = {entry.symbol: entry.hgnc_id for entry in resolved.values()}
-    for gene_eval in parsed_json.get("gene_evaluations", []):
-        gene_symbol: str = gene_eval.pop("gene_symbol")
-        gene_eval["paper_gene_symbol"] = gene_symbol.upper()
-        hgnc_id = by_current_symbol.get(gene_symbol)
-        if hgnc_id is not None:
-            gene_eval["hgnc_id"] = hgnc_id
+    # (aggregation, reporting); they exist only for diagnostic inspection.
+    for gene_eval in parsed_json["gene_evaluations"]:
+        paper_symbol: str = gene_eval.pop("gene_symbol").upper()
+        gene_eval["paper_gene_symbol"] = paper_symbol
+        resolved_entry = resolved.get(paper_symbol)
+        if resolved_entry is not None:
+            gene_eval["hgnc_id"] = resolved_entry.hgnc_id
 
     return parsed_json, sorted(unresolved)
 

@@ -11,6 +11,7 @@ from anthropic.types import Message
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
 from palit.assess_relevance import CHECK_STAGE as RELEVANCE_CHECK_STAGE
 from palit.assess_relevance import STAGE as RELEVANCE_STAGE
+from palit.assess_relevance import Refusal, refused_assessment
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.generate_report import (
@@ -26,13 +27,15 @@ from palit.generate_report import (
     generate_html_report,
     is_highlighted_new_moi,
     known_gene_sort_key,
+    load_low_confidence_irrelevant_papers,
+    load_panel_publications_validation,
     novel_gene_sort_key,
 )
 from palit.hgnc import HgncResolver
 from palit.llm import FALLBACK_MODEL, MODEL
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
-from palit.panelapp_client import AllPanelsData, PanelGeneData
+from palit.panelapp_client import AllPanelsData, PanelGeneData, PanelPublications
 from palit.panelapp_integration import (
     ENUM_TO_PANELAPP_MOI,
     MENDELIOME_PANEL_ID,
@@ -658,8 +661,14 @@ def test_prefill_unions_the_associations_in_report_order(results: GeneAssessment
     assert novel["publications"] == "222"
 
 
-def _render(db_path: Path, results: GeneAssessmentResults) -> str:
-    panel_validation = PanelValidationResult(0, 0, [], [], [], 0.0, 0.0)
+NO_PANEL_VALIDATION = PanelValidationResult(0, 0, [], [], [], [], 0.0, 0.0)
+
+
+def _render(
+    db_path: Path,
+    results: GeneAssessmentResults,
+    panel_validation: PanelValidationResult = NO_PANEL_VALIDATION,
+) -> str:
     return generate_html_report(
         novel_genes=results.novel_genes,
         known_genes=results.known_genes,
@@ -667,7 +676,7 @@ def _render(db_path: Path, results: GeneAssessmentResults) -> str:
         panel_validation=panel_validation,
         low_confidence_papers=[],
         manual_download_papers=[],
-        favorite_journal_papers=FavoriteJournalSections([], [], [], [], [], [], [], [], []),
+        favorite_journal_papers=FavoriteJournalSections([], [], [], [], [], [], [], [], [], []),
         template_dir=ROOT / "templates",
         panel_date="2026-10-01",
         report_id="test",
@@ -759,8 +768,7 @@ def test_gene_without_associations_is_left_out(db_path: Path, hgnc_resolver: Hgn
     results = _load(db_path, hgnc_resolver)
     assert [g.hgnc_id for g in results.novel_genes] == [3]
     assert [g.hgnc_id for g in results.known_genes] == [1]
-    panel_validation = PanelValidationResult(0, 0, [], [], [], 0.0, 0.0)
-    statistics = calculate_comprehensive_statistics(db_path, results, panel_validation)
+    statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
     assert (statistics.total_genes_assessed, statistics.novel_genes_count) == (2, 1)
     html = _render(db_path, results)
     assert 'id="novel-gene-3"' in html
@@ -839,3 +847,64 @@ def test_known_sort_existing_rating_then_corpus_rating_then_highlighted_new_moi(
 def test_known_sort_rejects_a_gene_without_existing_rating() -> None:
     with pytest.raises(ValueError, match="no rating on the target panels"):
         known_gene_sort_key(_sortable("NOVEL", None, 3, False))
+
+
+def _screen(relevant: bool, confidence: str) -> dict[str, Any]:
+    return {
+        "relevant": relevant,
+        "confidence": confidence,
+        "rationale": f"Screen rationale {confidence}.",
+        "associations": [{"gene_symbol": "GENEA", "disease": "d"}] if relevant else [],
+    }
+
+
+def test_papers_both_models_refused_are_neither_passes_nor_rejections(
+    db_path: Path, results: GeneAssessmentResults, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Panel publications: a screen miss, and one paper refused at each relevance level."""
+    assessments = {
+        "10.1/miss": {"relevant": False, "screen": _screen(False, "LOW"), "panelapp_check": None},
+        "10.1/refused-screen": refused_assessment(Refusal("screen", FALLBACK_MODEL, "bio"), None),
+        "10.1/refused-check": refused_assessment(
+            Refusal("panelapp_check", FALLBACK_MODEL, None), _screen(True, "HIGH")
+        ),
+    }
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO papers (doi, pmid, title, source, source_type, relevance_assessment_json)
+            VALUES (?, ?, ?, 'pubmed', 'initial', ?)
+            """,
+            [
+                (doi, 900 + i, f"Title {doi}", json.dumps(assessment))
+                for i, (doi, assessment) in enumerate(assessments.items())
+            ],
+        )
+    monkeypatch.setattr(
+        "palit.generate_report.get_current_panel_publications",
+        lambda panel_ids: PanelPublications(pmids={900, 901, 902}, dois=set()),
+    )
+
+    validation = load_panel_publications_validation(db_path, [MENDELIOME_PANEL_ID])
+    assert [p.doi for p in validation.screen_misses] == ["10.1/miss"]
+    assert sorted(p.doi for p in validation.refused) == [
+        "10.1/refused-check",
+        "10.1/refused-screen",
+    ]
+    assert (validation.true_positives, validation.check_rejections) == ([], [])
+    assert validation.panel_papers_in_db == 3
+    assert validation.screen_sensitivity_pct == 0.0  # of the one assessed paper
+    low_confidence = load_low_confidence_irrelevant_papers(db_path)
+    assert [p.doi for p in low_confidence] == ["10.1/miss"]
+
+    html = _render(db_path, results, validation)
+    assert "Refused by Both Models (2)" in html
+    assert "Refused by both models (left out of the sensitivity): 2" in html
+    assert (
+        "Opus 5.5 and its fallback Sonnet 5.5 both refused the scope screen of this paper "
+        f"({FALLBACK_MODEL}, category: bio)"
+    ) in html
+    assert "both refused the PanelApp check of this paper" in html
+    assert "category: none given" in html
+    # The paper refused at the PanelApp check shows the screen it passed.
+    assert "Screen rationale HIGH." in html

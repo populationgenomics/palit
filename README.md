@@ -54,6 +54,15 @@ Palit reads the profile name from `PALIT_ANTHROPIC_PROFILE`, set either in the e
 
 Requests go to Claude Opus 5.5 (`MODEL` in `src/palit/llm.py`). When Opus 5.5 refuses a paper, gene or association in a stage, the stage's next attempt sends that subject to Claude Sonnet 5.5 (`FALLBACK_MODEL`) with the same prompt, schema, effort and token limit. The multi-round stages (`extract-evidence`, `map-mondo`) restart the subject's conversation from round 1 on Sonnet 5.5, since thinking blocks cannot be replayed to another model, and the tournament resends a refused prompt on Sonnet 5.5 within its round. A subject is refused for good only when Sonnet 5.5 refuses it too; this is what "refused" means in the stage summaries and the report, and stages skip such subjects. The fallback attempt runs in the same invocation and counts toward `--max-retries`. With `--limit`, a stage runs one attempt, so the fallback waits for the next invocation. `--retry-refused` on `assess-relevance` and `extract-evidence` sends the subjects refused for good in earlier invocations through both models once more. The report marks the relevance assessments, extractions and aggregations that came from Sonnet 5.5. The fallback is palit's own because the Batches API rejects the server-side `fallbacks` parameter.
 
+`assess-relevance` settles a paper refused for good as not relevant, so that `ledger writeback` marks it settled and later runs do not ingest it again. Its `relevance_assessment_json` keeps the usual two-level shape and records the refusal:
+
+```json
+{"relevant": false, "screen": null, "panelapp_check": null,
+ "refused": {"level": "screen", "model": "claude-sonnet-5-5", "category": "bio"}}
+```
+
+`level` is `screen` or `panelapp_check`. For a refusal at the PanelApp check, `screen` holds the scope screen the paper passed, and the paper's genes stay in `gene_mentions` like those of any paper the screen passed. Every invocation first settles the papers refused for good that still have no result, since a run database's recorded refusals may lack one. With `--retry-refused`, it reopens the settled papers instead, and any that both models refuse again are settled again. The report shows these papers as refused by both models: they are kept out of the screen misses, the PanelApp-check rejections and the low-confidence review list, and the panel-publication sensitivity leaves them out.
+
 `uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, tokens, and USD cost per stage, model and service tier for a run database. Every stage prints the same summary for itself when it finishes, listing each refused request; `uv run palit llm refusals --db-path data/db.sqlite` lists all refusals with their safety-classifier category and the subject's outcome: recovered (answered after the refusal), refused for good (Sonnet 5.5 refused it last), or not answered yet. `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API for both models (it needs the profile above).
 
 ### External Services
@@ -104,7 +113,7 @@ uv run palit ingest-pubmed --ledger $LEDGER $START_DATE $END_DATE
 #    if a gene is new, has a new disease or inheritance mode, or the association
 #    is still amber or red. Safe to interrupt and re-run: it re-attaches to
 #    batches still in flight. Papers Opus 5.5 refuses go to Sonnet 5.5 (see
-#    "Claude API" above); papers both refuse stay unassessed, and
+#    "Claude API" above); papers both refuse are settled as not relevant, and
 #    --retry-refused sends them once more.
 uv run palit assess-relevance --panel-date $PANEL_DATE
 
@@ -240,8 +249,8 @@ Two sources feed it, complementary by recency:
 - **Thin live efetch** over the current window — the freshest view of the newest
   papers, where the FTP files can briefly lag.
 
-Each run partitions previously-seen DOIs into **settled** (assessed not relevant, or
-downloaded — never reconsidered) and **actionable** (never assessed, or
+Each run partitions previously-seen DOIs into **settled** (assessed not relevant,
+including papers both models refused to assess, or downloaded — never reconsidered) and **actionable** (never assessed, or
 relevant-but-not-downloaded — re-emitted into the run). A CRDT month is finalised and
 dropped from the actionable set after a 6-month **closure horizon**, which bounds the
 work set.

@@ -255,6 +255,7 @@ class FavoriteJournalSections:
     already_reviewed: list[FavoriteJournalPaper]
     filtered: list[FavoriteJournalPaper]
     manual_download: list[FavoriteJournalPaper]
+    refused: list[FavoriteJournalPaper]  # both models refused its relevance assessment
     not_relevant: list[FavoriteJournalPaper]
     off_panel: list[FavoriteJournalPaper]
 
@@ -268,6 +269,7 @@ class FavoriteJournalSections:
             + len(self.already_reviewed)
             + len(self.filtered)
             + len(self.manual_download)
+            + len(self.refused)
             + len(self.not_relevant)
             + len(self.off_panel)
         )
@@ -460,12 +462,13 @@ class PanelValidationResult:
     """Panel publication validation results."""
 
     total_panel_papers: int
-    panel_papers_in_db: int
+    panel_papers_in_db: int  # with a relevance result, including the refused ones
     true_positives: list[DetailedPaper]
     screen_misses: list[DetailedPaper]  # rejected by the scope screen
     check_rejections: list[DetailedPaper]  # passed the screen, judged curated by the PanelApp check
-    sensitivity_pct: float  # share assessed relevant
-    screen_sensitivity_pct: float  # share that passed the scope screen
+    refused: list[DetailedPaper]  # both models refused a level; left out of the sensitivity
+    sensitivity_pct: float  # share of the assessed (not refused) ones assessed relevant
+    screen_sensitivity_pct: float  # share of the assessed (not refused) ones that passed the screen
 
 
 @dataclass
@@ -486,6 +489,7 @@ class ComprehensiveStats:
     screen_misses_count: int
     check_rejections_count: int
     true_positives_count: int
+    panel_refused_count: int  # relevance refused by both models, not in the sensitivity
 
     # Source breakdown
     initial_papers: int
@@ -1338,6 +1342,7 @@ def load_panel_publications_validation(
                 true_positives=[],
                 screen_misses=[],
                 check_rejections=[],
+                refused=[],
                 sensitivity_pct=0.0,
                 screen_sensitivity_pct=0.0,
             )
@@ -1396,6 +1401,7 @@ def load_panel_publications_validation(
         true_positives: list[DetailedPaper] = []
         screen_misses: list[DetailedPaper] = []
         check_rejections: list[DetailedPaper] = []
+        refused: list[DetailedPaper] = []
 
         for row in all_panel_papers:
             relevance_assessment = None
@@ -1431,7 +1437,9 @@ def load_panel_publications_validation(
                 pmid=row["pmid"],
             )
 
-            if relevance_assessment["relevant"]:
+            if relevance_assessment.get("refused") is not None:
+                refused.append(detailed_paper)
+            elif relevance_assessment["relevant"]:
                 true_positives.append(detailed_paper)
             elif relevance_assessment["screen"]["relevant"]:
                 check_rejections.append(detailed_paper)
@@ -1447,16 +1455,18 @@ def load_panel_publications_validation(
         screen_sensitivity_pct = pct(len(true_positives) + len(check_rejections))
         logger.info(
             f"Panel validation: {len(true_positives)} relevant, {len(screen_misses)} missed by "
-            f"the screen, {len(check_rejections)} judged curated by the PanelApp check"
+            f"the screen, {len(check_rejections)} judged curated by the PanelApp check, "
+            f"{len(refused)} refused by both models"
         )
         logger.info(f"Sensitivity: {sensitivity_pct:.1f}% (screen: {screen_sensitivity_pct:.1f}%)")
 
         return PanelValidationResult(
             total_panel_papers=total_panel_refs,
-            panel_papers_in_db=total_assessed,
+            panel_papers_in_db=total_assessed + len(refused),
             true_positives=true_positives,
             screen_misses=screen_misses,
             check_rejections=check_rejections,
+            refused=refused,
             sensitivity_pct=sensitivity_pct,
             screen_sensitivity_pct=screen_sensitivity_pct,
         )
@@ -1498,7 +1508,10 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                 logger.warning(f"Failed to parse relevance assessment for DOI {row['doi']}")
                 continue
 
-            # Screen rejections the screen itself was unsure about
+            # Screen rejections the screen itself was unsure about. A paper both models
+            # refused has no rejection to review.
+            if relevance_assessment.get("refused") is not None:
+                continue
             screen = relevance_assessment["screen"]
             if not screen["relevant"] and screen["confidence"] == "LOW":
                 evidence_extraction = None
@@ -1643,8 +1656,9 @@ def load_favorite_journal_papers(
     kind of contribution it made — mirroring the report's gene structure
     (novel / rating upgrade / MoI expansion / unreviewed / already reviewed)
     and the reasons a paper did not contribute (filtered out of aggregate /
-    requiring manual download / screened out by relevance / off-panel
-    evidence). Expansion papers are excluded entirely."""
+    requiring manual download / relevance refused by both models / screened
+    out by relevance / off-panel evidence). Expansion papers are excluded
+    entirely."""
     gene_anchors: dict[int, FavoriteJournalGeneLink] = {}
     gene_buckets: dict[int, str] = {}
     for gene in novel_genes:
@@ -1700,6 +1714,7 @@ def load_favorite_journal_papers(
         already_reviewed=[],
         filtered=[],
         manual_download=[],
+        refused=[],
         not_relevant=[],
         off_panel=[],
     )
@@ -1750,6 +1765,9 @@ def load_favorite_journal_papers(
             continue
 
         assessment = json.loads(row["relevance_assessment_json"])
+        if assessment.get("refused") is not None:
+            sections.refused.append(paper)
+            continue
         if not assessment["relevant"]:
             sections.not_relevant.append(paper)
             continue
@@ -1762,7 +1780,7 @@ def load_favorite_journal_papers(
 
     logger.info(
         "Featured journals: %d total — novel=%d, rating_upgrade=%d, moi_expansion=%d, "
-        "unreviewed=%d, already_reviewed=%d, filtered=%d, manual_download=%d, "
+        "unreviewed=%d, already_reviewed=%d, filtered=%d, manual_download=%d, refused=%d, "
         "not_relevant=%d, off_panel=%d",
         sections.total,
         len(sections.novel),
@@ -1772,6 +1790,7 @@ def load_favorite_journal_papers(
         len(sections.already_reviewed),
         len(sections.filtered),
         len(sections.manual_download),
+        len(sections.refused),
         len(sections.not_relevant),
         len(sections.off_panel),
     )
@@ -1852,6 +1871,7 @@ def calculate_comprehensive_statistics(
             screen_misses_count=len(panel_validation.screen_misses),
             check_rejections_count=len(panel_validation.check_rejections),
             true_positives_count=len(panel_validation.true_positives),
+            panel_refused_count=len(panel_validation.refused),
             # Source breakdown
             initial_papers=source_counts.get("initial", 0),
             expansion_papers=source_counts.get("expansion", 0),

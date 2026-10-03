@@ -18,6 +18,19 @@ the check. Gene mentions record the screen's genes for every paper it passes.
 
 Each level falls back on its own: a paper MODEL refused at a level goes to
 FALLBACK_MODEL at that level in the next attempt (see :mod:`palit.llm`).
+
+A paper FALLBACK_MODEL refuses too is settled as not relevant, so that the
+ledger does not ingest it again. Its result keeps the two-level shape and
+records the refusal (see :func:`refused_assessment`)::
+
+    {"relevant": false, "screen": null, "panelapp_check": null,
+     "refused": {"level": "screen", "model": "claude-sonnet-5-5", "category": "bio"}}
+
+``screen`` holds the scope screen when the refusal came at the PanelApp check.
+Each invocation first settles the papers refused for good that still have no
+result, as a run database's recorded refusals may lack one. ``--retry-refused``
+instead reopens every settled refusal, and the papers both models refuse
+again are settled again.
 """
 
 import asyncio
@@ -25,10 +38,11 @@ import json
 import logging
 import re
 import sqlite3
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jsonschema
 import typer
@@ -38,6 +52,7 @@ from palit.gencc import fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
     EVERY_REFUSAL,
+    FALLBACK_MODEL,
     BatchTransport,
     Effort,
     ImmediateTransport,
@@ -85,6 +100,29 @@ MAX_ABSTRACT_CHARS = 10000
 # holding the {title} and {abstract} placeholders. Everything before it is the
 # shared, cacheable system prompt.
 _INPUT_HEADING = re.compile(r"^\*\*\s*Input Paper\s*\*\*\s*$", re.MULTILINE)
+
+
+RefusalLevel = Literal["screen", "panelapp_check"]
+_LEVEL_STAGES: dict[RefusalLevel, str] = {"screen": STAGE, "panelapp_check": CHECK_STAGE}
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """The refusal by FALLBACK_MODEL that settled a paper at one relevance level."""
+
+    level: RefusalLevel
+    model: str
+    category: str | None  # the safety classifier's category, if the refusal names one
+
+
+def refused_assessment(refusal: Refusal, screen: dict[str, Any] | None) -> dict[str, Any]:
+    """The settled result of a paper both models refused: not relevant, without a verdict.
+
+    *screen* is the paper's scope screen for a refusal at the PanelApp check,
+    None for a refusal at the screen itself.
+    """
+    assert (screen is None) == (refusal.level == "screen")
+    return {"relevant": False, "screen": screen, "panelapp_check": None, "refused": asdict(refusal)}
 
 
 @dataclass(frozen=True)
@@ -238,6 +276,7 @@ class StoreOutcome:
     stored: int = 0
     refused: int = 0
     to_fallback: int = 0  # the refusals by MODEL: these papers go to FALLBACK_MODEL next
+    settled: int = 0  # the refusals by FALLBACK_MODEL: these papers are settled as not relevant
     failed: int = 0
 
 
@@ -246,11 +285,14 @@ def _parsed_outputs(
     results: list[LlmResult],
     validator: jsonschema.protocols.Validator,
     outcome: StoreOutcome,
+    level: RefusalLevel,
+    resolver: HgncResolver,
 ) -> list[tuple[LlmResult, dict[str, Any]]]:
     """Record every result; return the valid outputs and count the rest in *outcome*.
 
-    A request that failed or produced invalid output leaves its paper unchanged,
-    so the next attempt selects it again. Invalid requests are a bug and raise.
+    A refusal by FALLBACK_MODEL settles its paper at *level*. A request that
+    failed or produced invalid output leaves its paper unchanged, so the next
+    attempt selects it again. Invalid requests are a bug and raise.
     """
     valid: list[tuple[LlmResult, dict[str, Any]]] = []
     invalid_requests: list[str] = []
@@ -260,6 +302,10 @@ def _parsed_outputs(
             outcome.refused += 1
             outcome.to_fallback += result.goes_to_fallback
             log_refusal(result, result.subject)
+            if result.refused_for_good:
+                refusal = Refusal(level, result.model, result.refusal_category)
+                _store_refused(conn, result.subject, refusal, resolver)
+                outcome.settled += 1
             continue
         if result.status != ResultStatus.SUCCEEDED:
             outcome.failed += 1
@@ -294,7 +340,9 @@ def store_screens(
     """Store each valid screen; finalise the papers that need no PanelApp check."""
     outcome = StoreOutcome()
     with sqlite3.connect(db_path) as conn:
-        for result, screen in _parsed_outputs(conn, results, validator, outcome):
+        for result, screen in _parsed_outputs(
+            conn, results, validator, outcome, "screen", resolver
+        ):
             assert result.message is not None
             doi = result.subject
             raw = result.message.to_json()
@@ -307,10 +355,12 @@ def store_screens(
                 _store_final(
                     conn,
                     doi,
-                    relevant=screen["relevant"],
-                    screen=screen,
+                    assessment={
+                        "relevant": screen["relevant"],
+                        "screen": screen,
+                        "panelapp_check": None,
+                    },
                     raw={"screen": json.loads(raw), "panelapp_check": None},
-                    check=None,
                     resolver=resolver,
                 )
             outcome.stored += 1
@@ -321,17 +371,16 @@ def store_checks(db_path: Path, results: list[LlmResult], check: CheckSettings) 
     """Finalise each paper whose PanelApp check came back valid."""
     outcome = StoreOutcome()
     with sqlite3.connect(db_path) as conn:
-        for result, parsed in _parsed_outputs(conn, results, check.validator, outcome):
+        for result, parsed in _parsed_outputs(
+            conn, results, check.validator, outcome, "panelapp_check", check.resolver
+        ):
             assert result.message is not None
             doi = result.subject
             if not parsed["associations"]:
                 logger.warning("PanelApp check for %s returned no associations", doi)
                 outcome.failed += 1
                 continue
-            screen_json, screen_raw = conn.execute(
-                "SELECT relevance_screen_json, relevance_screen_raw FROM papers WHERE doi = ?",
-                (doi,),
-            ).fetchone()
+            screen, screen_raw = _stored_screen(conn, doi)
             associations = with_hgnc_ids(parsed["associations"], check.resolver)
             panelapp_check = {
                 "panel_date": check.record.panel_date,
@@ -342,30 +391,57 @@ def store_checks(db_path: Path, results: list[LlmResult], check: CheckSettings) 
             _store_final(
                 conn,
                 doi,
-                relevant=is_relevant(associations),
-                screen=json.loads(screen_json),
+                assessment={
+                    "relevant": is_relevant(associations),
+                    "screen": screen,
+                    "panelapp_check": panelapp_check,
+                },
                 raw={
-                    "screen": json.loads(screen_raw),
+                    "screen": screen_raw,
                     "panelapp_check": json.loads(result.message.to_json()),
                 },
-                check=panelapp_check,
                 resolver=check.resolver,
             )
             outcome.stored += 1
     return outcome
 
 
+def _stored_screen(conn: sqlite3.Connection, doi: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The parsed screen and its message of a paper awaiting the PanelApp check."""
+    screen_json, screen_raw = conn.execute(
+        "SELECT relevance_screen_json, relevance_screen_raw FROM papers WHERE doi = ?", (doi,)
+    ).fetchone()
+    return json.loads(screen_json), json.loads(screen_raw)
+
+
+def _store_refused(
+    conn: sqlite3.Connection, doi: str, refusal: Refusal, resolver: HgncResolver
+) -> None:
+    """Settle a paper both models refused at *refusal*'s level."""
+    screen: dict[str, Any] | None = None
+    screen_raw: dict[str, Any] | None = None
+    if refusal.level == "panelapp_check":
+        screen, screen_raw = _stored_screen(conn, doi)
+    _store_final(
+        conn,
+        doi,
+        assessment=refused_assessment(refusal, screen),
+        raw={"screen": screen_raw, "panelapp_check": None},
+        resolver=resolver,
+    )
+
+
 def _store_final(
     conn: sqlite3.Connection,
     doi: str,
     *,
-    relevant: bool,
-    screen: dict[str, Any],
+    assessment: dict[str, Any],
     raw: dict[str, Any],
-    check: dict[str, Any] | None,
     resolver: HgncResolver,
 ) -> None:
-    assessment = {"relevant": relevant, "screen": screen, "panelapp_check": check}
+    """Store a paper's final result and the gene mentions of a screen that passed it."""
+    relevant: bool = assessment["relevant"]
+    screen: dict[str, Any] | None = assessment["screen"]
     conn.execute(
         """
         UPDATE papers
@@ -381,7 +457,7 @@ def _store_final(
         """,
         (json.dumps(raw), json.dumps(assessment), 1 if relevant else 0, doi),
     )
-    if not screen["relevant"]:
+    if screen is None or not screen["relevant"]:
         return
     for association in screen["associations"]:
         paper_gene_symbol: str = association["gene_symbol"]
@@ -396,6 +472,96 @@ def _store_final(
             """,
             (entry.hgnc_id, paper_gene_symbol.upper(), doi),
         )
+
+
+@dataclass(frozen=True)
+class SettledRefusals:
+    """The papers one settle step settled as not relevant, by the level refused."""
+
+    screen: int
+    panelapp_check: int
+
+
+def settle_refused(db_path: Path, resolver: HgncResolver) -> SettledRefusals:
+    """Settle the papers refused for good that have no result yet, without API calls.
+
+    These are the papers that selection skips at a level because FALLBACK_MODEL
+    refused them there (see :func:`palit.llm.stage_refusals`), and that are not
+    in flight. Each settled result carries the category of FALLBACK_MODEL's
+    latest refusal of the paper at that level.
+    """
+    with sqlite3.connect(db_path) as conn:
+        settled = SettledRefusals(
+            screen=_settle_level(conn, "screen", resolver),
+            panelapp_check=_settle_level(conn, "panelapp_check", resolver),
+        )
+    logger.info(
+        "Settled %d papers both models refused as not relevant: %d at the scope screen, "
+        "%d at the PanelApp check",
+        settled.screen + settled.panelapp_check,
+        settled.screen,
+        settled.panelapp_check,
+    )
+    return settled
+
+
+def _settle_level(conn: sqlite3.Connection, level: RefusalLevel, resolver: HgncResolver) -> int:
+    awaiting = "IS NULL" if level == "screen" else "IS NOT NULL"
+    rows = conn.execute(
+        f"""
+        SELECT r.subject, r.model, r.refusal_category
+        FROM llm_requests r
+        JOIN papers p ON p.doi = r.subject
+        WHERE r.stage = ? AND r.status = 'refused' AND r.model = ?
+          AND p.relevance_assessment_json IS NULL
+          AND p.relevance_screen_json {awaiting}
+          AND NOT EXISTS (
+              SELECT 1 FROM llm_requests q
+              WHERE q.stage = r.stage AND q.subject = r.subject AND q.status = 'pending'
+          )
+        ORDER BY r.completed_at
+        """,
+        (_LEVEL_STAGES[level], FALLBACK_MODEL),
+    ).fetchall()
+    # Later rows overwrite earlier ones, so each paper keeps its latest refusal.
+    latest = {doi: Refusal(level, model, category) for doi, model, category in rows}
+    for doi, refusal in latest.items():
+        _store_refused(conn, doi, refusal, resolver)
+    return len(latest)
+
+
+def reopen_refused(db_path: Path) -> int:
+    """Remove the settled results of refused papers, so that selection includes them again.
+
+    A paper refused at the PanelApp check gets its scope screen back and awaits
+    the check; a paper refused at the screen awaits the screen.
+    """
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT doi, relevance_assessment_json, relevance_assessment_raw FROM papers
+            WHERE json_extract(relevance_assessment_json, '$.refused') IS NOT NULL
+            """
+        ).fetchall()
+        for doi, assessment_json, raw_json in rows:
+            assessment = json.loads(assessment_json)
+            screen_json = screen_raw = None
+            if assessment["refused"]["level"] == "panelapp_check":
+                screen_json = json.dumps(assessment["screen"])
+                screen_raw = json.dumps(json.loads(raw_json)["screen"])
+            conn.execute(
+                """
+                UPDATE papers
+                SET relevance_assessment_json = NULL,
+                    relevance_assessment_raw = NULL,
+                    relevance_screen_json = ?,
+                    relevance_screen_raw = ?
+                WHERE doi = ?
+                """,
+                (screen_json, screen_raw, doi),
+            )
+    logger.info("Reopened %d papers both models refused, to send them again", len(rows))
+    return len(rows)
 
 
 def count_remaining(db_path: Path) -> int:
@@ -419,7 +585,7 @@ async def _process_relevance(
     check: CheckSettings | None,
     limit: int | None,
     max_retries: int,
-    refusals_since: datetime,
+    retry_refused: bool,
 ) -> None:
     """Screen and check papers; *check* None means the screen decides alone.
 
@@ -427,7 +593,12 @@ async def _process_relevance(
     attempt makes progress when it stores a result or sends a paper on to
     FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
     that sends those papers to FALLBACK_MODEL.
+
+    With *retry_refused*, only refusals during this invocation count, and the
+    settled refusals are reopened first. The settle step at the end settles
+    the reopened papers this invocation did not get to.
     """
+    refusals_since = datetime.now(UTC) if retry_refused else EVERY_REFUSAL
     validator = jsonschema.Draft202012Validator(schema)
     output_config = json_output_config(schema, EFFORT)
     screen_only = check is None
@@ -449,6 +620,37 @@ async def _process_relevance(
             "Collected %d earlier checks: %s", len(resumed), store_checks(db_path, resumed, check)
         )
 
+    if retry_refused:
+        reopen_refused(db_path)
+    else:
+        settle_refused(db_path, resolver)
+    await _attempts(
+        transport=transport,
+        db_path=db_path,
+        prompt=prompt,
+        output_config=output_config,
+        store=store,
+        check=check,
+        limit=limit,
+        max_retries=max_retries,
+        refusals_since=refusals_since,
+    )
+    settle_refused(db_path, resolver)
+
+
+async def _attempts(
+    *,
+    transport: Transport,
+    db_path: Path,
+    prompt: RelevancePrompt,
+    output_config: OutputConfigParam,
+    store: Callable[[list[LlmResult]], StoreOutcome],
+    check: CheckSettings | None,
+    limit: int | None,
+    max_retries: int,
+    refusals_since: datetime,
+) -> None:
+    """Up to *max_retries* attempts at both levels; see :func:`_process_relevance`."""
     for attempt in range(1, max_retries + 1):
         progress = 0
         refusals = load_refusals(db_path, STAGE, refusals_since)
@@ -461,7 +663,7 @@ async def _process_relevance(
             ]
             outcome = store(await transport.run(STAGE, 1, requests))
             logger.info("Attempt %d screen: %s", attempt, outcome)
-            progress += outcome.stored + outcome.to_fallback
+            progress += outcome.stored + outcome.to_fallback + outcome.settled
         screened: list[dict[str, Any]] = []
         if check is not None:
             refusals = load_refusals(db_path, CHECK_STAGE, refusals_since)
@@ -474,7 +676,7 @@ async def _process_relevance(
             ]
             outcome = store_checks(db_path, await transport.run(CHECK_STAGE, 2, requests), check)
             logger.info("Attempt %d PanelApp check: %s", attempt, outcome)
-            progress += outcome.stored + outcome.to_fallback
+            progress += outcome.stored + outcome.to_fallback + outcome.settled
         if not papers and not screened:
             logger.info("No papers left to assess")
             return
@@ -556,15 +758,14 @@ def main(
         False,
         "--retry-refused",
         help="Send papers that both models refused in earlier invocations again, once each, "
-        "starting with the primary model (refusals vary between calls)",
+        "starting with the primary model (refusals vary between calls); papers both refuse "
+        "again stay settled as not relevant",
     ),
 ) -> None:
     """Assess the relevance of every paper that has no assessment yet."""
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
-    # With --retry-refused, only refusals during this invocation count.
-    refusals_since = datetime.now(UTC) if retry_refused else EVERY_REFUSAL
     if scope_panel_id is not None and target_panel_ids:
         logger.error("--scope-panel-id and --target-panel-id are mutually exclusive")
         raise typer.Exit(1)
@@ -625,7 +826,7 @@ def main(
             check=check,
             limit=limit,
             max_retries=max_retries,
-            refusals_since=refusals_since,
+            retry_refused=retry_refused,
         )
 
     asyncio.run(run())

@@ -12,6 +12,8 @@ import httpx2
 import pytest
 
 from palit import ledger, pubmed_ftp
+from palit.assess_relevance import Refusal, refused_assessment
+from palit.llm import FALLBACK_MODEL
 from palit.papers import Paper, PubmedMetadata
 from palit.pubmed_ftp import RemoteFile
 
@@ -298,6 +300,45 @@ def test_writeback_updates_existing_and_inserts_expansion(tmp_path: Path) -> Non
         assert exp == (1, "downloaded", "crossref", "Exp")  # inserted with metadata
     finally:
         conn.close()
+
+
+def test_writeback_settles_a_paper_both_models_refused(tmp_path: Path) -> None:
+    ledger_path = _new_ledger(tmp_path)
+    settled = json.dumps(refused_assessment(Refusal("screen", FALLBACK_MODEL, "bio"), None))
+    run_db = _new_run_db(tmp_path)
+    run = sqlite3.connect(run_db)
+    try:
+        run.execute(
+            "INSERT INTO papers (doi, pmid, title, source, source_type, source_date, "
+            "relevance_assessment_json) "
+            "VALUES ('10.1/refused', 1, 'R', 'pubmed', 'initial', '2026-09-10', ?)",
+            (settled,),
+        )
+        run.commit()
+    finally:
+        run.close()
+
+    assert ledger.writeback(ledger_path, run_db, run_id="run_x") == 1
+
+    conn = ledger.connect(ledger_path)
+    try:
+        relevant, assessment = conn.execute(
+            "SELECT relevant, relevance_assessment_json FROM ledger WHERE doi='10.1/refused'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert relevant == 0
+    assert json.loads(assessment)["refused"] == {
+        "level": "screen",
+        "model": FALLBACK_MODEL,
+        "category": "bio",
+    }
+    assert ledger.settled_dois(ledger_path) == {"10.1/refused"}
+    next_run = _new_run_db(tmp_path, "next.sqlite")
+    seeded = ledger.seed_run_db_from_ledger(
+        ledger_path, next_run, horizon_floor="2026-04-01", end_date="2026-10-15"
+    )
+    assert seeded == 0
 
 
 # --- seed from existing run databases ---------------------------------------

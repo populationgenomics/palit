@@ -201,17 +201,26 @@ class LlmResult:
         """Whether MODEL refused it, so the subject's next request goes to FALLBACK_MODEL."""
         return self.status == ResultStatus.REFUSED and self.model == MODEL
 
+    @property
+    def refused_for_good(self) -> bool:
+        """Whether FALLBACK_MODEL refused it, so the stage skips the subject from now on."""
+        return self.status == ResultStatus.REFUSED and self.model == FALLBACK_MODEL
+
+    @property
+    def refusal_category(self) -> str | None:
+        """The safety classifier's category of a refusal, if the message names one."""
+        stop_details = self.message.stop_details if self.message is not None else None
+        return stop_details.category if stop_details is not None else None
+
 
 def log_refusal(result: LlmResult, label: str) -> None:
     """Warn about a refused *result*; *label* names its subject, e.g. ``"HGNC:1100"``."""
-    assert result.message is not None
-    stop_details = result.message.stop_details
     logger.warning(
         "%s: %s refused %s (%s); %s",
         result.stage,
         result.model,
         label,
-        stop_details.category if stop_details is not None else "no category",
+        result.refusal_category or "no category",
         f"the next attempt goes to {FALLBACK_MODEL}"
         if result.goes_to_fallback
         else "refused for good",
@@ -292,8 +301,6 @@ def record_result(conn: sqlite3.Connection, result: LlmResult) -> None:
     """
     usage = result.message.usage if result.message is not None else None
     cache_creation = usage.cache_creation if usage is not None else None
-    stop_details = result.message.stop_details if result.message is not None else None
-    refusal_category = stop_details.category if stop_details is not None else None
     conn.execute(
         """
         INSERT INTO llm_requests (
@@ -323,7 +330,7 @@ def record_result(conn: sqlite3.Connection, result: LlmResult) -> None:
             result.model,
             result.status.value,
             result.message.stop_reason if result.message is not None else None,
-            refusal_category,
+            result.refusal_category,
             result.error_type,
             usage.service_tier if usage is not None else None,
             usage.input_tokens if usage is not None else None,

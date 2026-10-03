@@ -52,7 +52,10 @@ def extract(
 
     for doi, json_str in cursor.fetchall():
         total_assessed += 1
-        if json.loads(json_str)["screen"]["relevant"]:
+        # A paper both models refused at the screen has no screen; one refused at the
+        # PanelApp check passed the screen and counts as a positive.
+        screen = json.loads(json_str)["screen"]
+        if screen is not None and screen["relevant"]:
             positive_dois.append(doi)
 
     conn.close()

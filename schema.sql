@@ -35,8 +35,11 @@ CREATE TABLE papers (
     -- then a check of the screen's genes against PanelApp (see assess_relevance.py)
     relevance_screen_raw JSON,  -- The Claude message of the scope screen
     relevance_screen_json JSON,  -- The parsed screen, kept until the PanelApp check is done
-    relevance_assessment_raw JSON,  -- {"screen": message, "panelapp_check": message or null}
-    relevance_assessment_json JSON,  -- Final: {"relevant", "screen", "panelapp_check"}
+    relevance_assessment_raw JSON,  -- {"screen": message or null, "panelapp_check": message or null}
+    relevance_assessment_json JSON,  -- Final: {"relevant", "screen", "panelapp_check"}, plus
+                                     -- "refused" {"level", "model", "category"} when both models
+                                     -- refused a level (then relevant is false; screen is null
+                                     -- for a refused screen)
     evidence_extraction_raw TEXT,  -- The final Claude message of the extraction conversation
     evidence_extraction_json JSON
 );

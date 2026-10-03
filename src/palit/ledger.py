@@ -407,7 +407,9 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
     """Fold a finished run's dispositions back into the ledger.
 
     Upserts every run-DB paper's relevance_assessment_json + derived `relevant` +
-    download_status + reported_run. Papers absent from the ledger (expansion /
+    download_status + reported_run. A paper both models refused carries a
+    not-relevant result with a `refused` marker, so it is settled like any
+    other paper assessed not relevant. Papers absent from the ledger (expansion /
     discovered-citation papers, keyed by DOI) are inserted with their metadata so
     a later PubMed fetch recognises them as already-processed. Papers already in
     the ledger keep their fetched metadata (canonical/fresher) and only have
@@ -427,6 +429,13 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
             WHERE title IS NOT NULL
             """
         ).fetchall()
+        (refused,) = run_conn.execute(
+            """
+            SELECT COUNT(*) FROM papers
+            WHERE title IS NOT NULL
+              AND json_extract(relevance_assessment_json, '$.refused') IS NOT NULL
+            """
+        ).fetchone()
     finally:
         run_conn.close()
 
@@ -481,7 +490,14 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
             )
             written += 1
         ledger_conn.commit()
-        logger.info("Wrote back %d dispositions from %s (run-id %s)", written, run_db_path, run_id)
+        logger.info(
+            "Wrote back %d dispositions from %s (run-id %s); %d of them settled as not "
+            "relevant because both models refused their relevance assessment",
+            written,
+            run_db_path,
+            run_id,
+            refused,
+        )
         return written
     finally:
         ledger_conn.close()

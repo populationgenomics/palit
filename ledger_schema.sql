@@ -34,8 +34,8 @@ CREATE TABLE ledger (
 
     -- Disposition, owned by the run and folded back at run end. Untouched by the
     -- fetch-upsert step.
-    relevance_assessment_json JSON,   -- array of 3 parsed assessments; NULL = never assessed
-    relevant INTEGER,                 -- derived majority vote: NULL = unassessed, else 0/1
+    relevance_assessment_json JSON,   -- the run's final relevance result (schema.sql); NULL = never assessed
+    relevant INTEGER,                 -- its `relevant` flag: NULL = unassessed, else 0/1
     download_status TEXT CHECK(download_status IN
                               ('scheduled', 'manual_required', 'downloaded')),
     reported_run TEXT,                -- run/report id that consumed it (traceability)

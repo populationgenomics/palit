@@ -1,16 +1,21 @@
 """Tests for extraction helpers that need no network or PDFs."""
 
 import asyncio
+import hashlib
+import io
 import json
+import logging
 import sqlite3
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx2
+import pypdfium2 as pdfium
 import pytest
 import tenacity
+from anthropic import AsyncAnthropic
 from anthropic.types import Message
 
 from palit.extract_evidence import (
@@ -21,6 +26,7 @@ from palit.extract_evidence import (
     Remaining,
     RequestSettings,
     RoundOutcome,
+    _process_evidence,
     count_remaining,
     extraction_quotes,
     normalize_extraction_genes,
@@ -29,6 +35,7 @@ from palit.extract_evidence import (
     start_conversation,
     structural_problems,
     symbol_pattern,
+    unselected_reasons,
     variant_lookup_results,
 )
 from palit.hgnc import HgncEntry, HgncResolver
@@ -377,7 +384,8 @@ def test_select_papers_skips_only_papers_refused_for_good(tmp_path: Path) -> Non
         with sqlite3.connect(db_path) as conn:
             refusals = stage_refusals(conn, STAGE, since)
         return {
-            p["doi"]: refusals.model_for(p["doi"]) for p in select_papers(db_path, None, refusals)
+            p["doi"]: refusals.model_for(p["doi"])
+            for p in select_papers(db_path, None, None, refusals)
         }
 
     assert selected(EVERY_REFUSAL) == {"10.1/new": MODEL, "10.1/to-fallback": FALLBACK_MODEL}
@@ -408,11 +416,62 @@ def test_select_papers_skips_initial_papers_not_assessed_relevant(tmp_path: Path
         )
         refusals = stage_refusals(conn, STAGE)
 
-    assert [p["doi"] for p in select_papers(db_path, None, refusals)] == [
+    assert [p["doi"] for p in select_papers(db_path, None, None, refusals)] == [
         "10.1/expansion",
         "10.1/relevant",
     ]
     assert count_remaining(db_path) == Remaining(due=2, outside_corpus=2)
+
+
+def test_select_papers_restricts_to_requested_dois_and_explains_the_rest(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "run.sqlite"
+    relevant = json.dumps({"relevant": True})
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, title, source, source_type, download_status, "
+            "relevance_assessment_json, evidence_extraction_json) "
+            "VALUES (?, 't', 'pubmed', ?, ?, ?, ?)",
+            [
+                ("10.1/due", "initial", "downloaded", relevant, None),
+                ("10.1/other", "expansion", "downloaded", None, None),
+                ("10.1/scheduled", "initial", "scheduled", relevant, None),
+                ("10.1/extracted", "initial", "downloaded", relevant, "{}"),
+                ("10.1/not-relevant", "initial", "downloaded", None, None),
+                ("10.1/pending", "initial", "downloaded", relevant, None),
+                ("10.1/refused", "initial", "downloaded", relevant, None),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, "
+            "completed_at) VALUES (?, ?, ?, 1, ?, ?, ?)",
+            [
+                ("a", STAGE, "10.1/pending", MODEL, "pending", None),
+                ("b", STAGE, "10.1/refused", FALLBACK_MODEL, "refused", "2026-09-01T00:00:00"),
+            ],
+        )
+        refusals = stage_refusals(conn, STAGE)
+    requested = [
+        "10.1/due",
+        "10.1/missing",
+        "10.1/scheduled",
+        "10.1/extracted",
+        "10.1/not-relevant",
+        "10.1/pending",
+        "10.1/refused",
+    ]
+
+    assert [p["doi"] for p in select_papers(db_path, requested, None, refusals)] == ["10.1/due"]
+    assert unselected_reasons(db_path, requested, refusals) == {
+        "10.1/missing": "not in the database",
+        "10.1/scheduled": "not downloaded (download status scheduled)",
+        "10.1/extracted": "already extracted",
+        "10.1/not-relevant": "an initial paper not assessed relevant",
+        "10.1/pending": "a request for it is still pending",
+        "10.1/refused": "refused by both models (see --retry-refused)",
+    }
 
 
 def _message(stop_reason: str, content: list[dict[str, Any]], model: str) -> Message:
@@ -559,6 +618,85 @@ def test_a_refusal_in_round_two_restarts_the_conversation_on_the_fallback_model(
     with sqlite3.connect(db_path) as conn:
         refusals = stage_refusals(conn, STAGE)
     assert refusals.refused_for_good("10.1/a")
+
+
+def test_a_doi_run_takes_only_that_paper_through_its_attempts(
+    tmp_path: Path, hgnc_resolver: HgncResolver, caplog: pytest.LogCaptureFixture
+) -> None:
+    """--doi sends only the requested paper, on to the fallback model; others wait.
+
+    A requested paper that is not due an extraction is logged with the reason.
+    """
+    document = pdfium.PdfDocument.new()
+    document.new_page(595, 842)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    pdf = buffer.getvalue()
+    expires_at = (datetime.now(UTC) + timedelta(days=30)).isoformat()
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, title, source, source_type, download_status, "
+            "evidence_extraction_json) VALUES (?, 't', 'pubmed', 'expansion', 'downloaded', ?)",
+            [("10.1/a", None), ("10.1/b", None), ("10.1/done", "{}")],
+        )
+        for doi in ("10.1/a", "10.1/b"):
+            doi_to_path(doi, tmp_path, ".pdf").write_bytes(pdf)
+            conn.execute(
+                "INSERT INTO uploaded_files (doi, file_id, sha256, uploaded_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (doi, f"file-{doi}", hashlib.sha256(pdf).hexdigest(), expires_at, expires_at),
+            )
+    schema = {"type": "object"}
+    settings = RequestSettings(
+        system="s", output_config=json_output_config(schema, "medium"), cache_pdf=False
+    )
+    transport = RoundTwoRefuser()
+
+    async def run() -> None:
+        variants = VariantLookupClient(
+            VariantLookupSettings(
+                VARIANT_LOOKUP_BASE_URL="http://unused.invalid", VARIANT_LOOKUP_API_KEY="x"
+            )
+        )
+        try:
+            await _process_evidence(
+                client=AsyncAnthropic(api_key="unused"),
+                runner=ExtractionRunner(
+                    transport=transport,
+                    db_path=db_path,
+                    papers_dir=tmp_path,
+                    settings=settings,
+                    schema=schema,
+                    hgnc_resolver=hgnc_resolver,
+                    lookups=LookupRunner(variants, hgnc_resolver),
+                ),
+                transport=transport,
+                db_path=db_path,
+                papers_dir=tmp_path,
+                settings=settings,
+                only=["10.1/a", "10.1/done"],
+                limit=None,
+                max_retries=5,
+                refusals_since=EVERY_REFUSAL,
+            )
+        finally:
+            await variants.aclose()
+
+    with caplog.at_level(logging.WARNING, logger="palit.extract_evidence"):
+        asyncio.run(run())
+
+    sent = [
+        (round_no, request.subject, request.params["model"]) for round_no, request in transport.sent
+    ]
+    assert sent == [
+        (1, "10.1/a", MODEL),
+        (2, "10.1/a", MODEL),
+        (1, "10.1/a", FALLBACK_MODEL),
+        (2, "10.1/a", FALLBACK_MODEL),
+    ]
+    assert "Not extracting 10.1/done: already extracted" in caplog.messages
 
 
 # ---------------------------------------------------------------------------

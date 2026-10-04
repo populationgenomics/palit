@@ -355,11 +355,12 @@ def variant_lookup_results(messages: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def select_papers(
-    db_path: Path, limit: int | None, refusals: StageRefusals
+    db_path: Path, only: list[str] | None, limit: int | None, refusals: StageRefusals
 ) -> list[dict[str, Any]]:
     """Downloaded corpus papers without an extraction, except ones in flight and ones refused for good.
 
     An initial paper is in the corpus only when assessed relevant (see :mod:`palit.run_corpus`).
+    ``only`` restricts the result to these DOIs.
     """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -379,7 +380,46 @@ def select_papers(
             (STAGE,),
         ).fetchall()
     papers = [dict(row) for row in rows if not refusals.refused_for_good(row["doi"])]
+    if only is not None:
+        wanted = set(only)
+        papers = [paper for paper in papers if paper["doi"] in wanted]
     return papers if limit is None else papers[:limit]
+
+
+def unselected_reasons(db_path: Path, dois: list[str], refusals: StageRefusals) -> dict[str, str]:
+    """The reason :func:`select_papers` leaves out each of *dois* that it leaves out."""
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT doi, download_status, evidence_extraction_json IS NOT NULL, {CORPUS_PAPER},
+                EXISTS (
+                    SELECT 1 FROM llm_requests r
+                    WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'pending'
+                )
+            FROM papers p
+            WHERE doi IN ({",".join("?" * len(dois))})
+            """,
+            (STAGE, *dois),
+        ).fetchall()
+    known = {row[0]: row[1:] for row in rows}
+    reasons: dict[str, str] = {}
+    for doi in dois:
+        flags = known.get(doi)
+        if flags is None:
+            reasons[doi] = "not in the database"
+            continue
+        download_status, extracted, in_corpus, pending = flags
+        if download_status != "downloaded":
+            reasons[doi] = f"not downloaded (download status {download_status or 'not set'})"
+        elif extracted:
+            reasons[doi] = "already extracted"
+        elif not in_corpus:
+            reasons[doi] = "an initial paper not assessed relevant"
+        elif pending:
+            reasons[doi] = "a request for it is still pending"
+        elif refusals.refused_for_good(doi):
+            reasons[doi] = "refused by both models (see --retry-refused)"
+    return reasons
 
 
 async def upload_pdfs(
@@ -825,15 +865,18 @@ async def _process_evidence(
     db_path: Path,
     papers_dir: Path,
     settings: RequestSettings,
+    only: list[str] | None,
     limit: int | None,
     max_retries: int,
     refusals_since: datetime,
 ) -> None:
     """Extract every paper due an extraction, in attempts of whole conversations.
 
-    An attempt makes progress when it stores an extraction or sends a paper on
-    to FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
-    that restarts those papers on FALLBACK_MODEL.
+    ``only`` restricts the run to these DOIs; requested papers that are not due
+    an extraction are logged with the reason. An attempt makes progress when it
+    stores an extraction or sends a paper on to FALLBACK_MODEL, so a round of
+    refusals by MODEL is followed by the attempt that restarts those papers on
+    FALLBACK_MODEL.
     """
     resumed = await transport.resume(STAGE)
     if resumed:
@@ -848,10 +891,16 @@ async def _process_evidence(
         continued = await runner.advance(outcome.next_round)
         logger.info("Finished resumed conversations: stored %d", continued.stored)
 
+    if only is not None:
+        with sqlite3.connect(db_path) as conn:
+            refusals = stage_refusals(conn, STAGE, refusals_since)
+        for doi, reason in unselected_reasons(db_path, only, refusals).items():
+            logger.warning("Not extracting %s: %s", doi, reason)
+
     for attempt in range(1, max_retries + 1):
         with sqlite3.connect(db_path) as conn:
             refusals = stage_refusals(conn, STAGE, refusals_since)
-        papers = select_papers(db_path, limit, refusals)
+        papers = select_papers(db_path, only, limit, refusals)
         if not papers:
             logger.info("No papers left to extract")
             return
@@ -924,6 +973,12 @@ def main(
         "--immediate",
         help="Send requests immediately instead of as Message Batches (for prompt development)",
     ),
+    dois: list[str] | None = typer.Option(
+        None,
+        "--doi",
+        help="Extract only this paper, if it is due an extraction (repeatable; for prompt "
+        "development)",
+    ),
     limit: int | None = typer.Option(
         None,
         "--limit",
@@ -991,6 +1046,7 @@ def main(
                 db_path=db_path,
                 papers_dir=papers_dir,
                 settings=settings,
+                only=dois,
                 limit=limit,
                 max_retries=max_retries,
                 refusals_since=refusals_since,

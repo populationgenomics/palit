@@ -347,8 +347,10 @@ def seed_run_db_from_ledger(
 ) -> int:
     """Copy the actionable set within [horizon_floor, end_date] into a run DB.
 
-    Never-assessed papers arrive without a relevance result and get assessed;
-    relevant-not-downloaded carry-overs arrive with their assessment +
+    Never-assessed papers arrive without a disposition and get assessed. This
+    includes expansion papers an earlier run wrote back with a download_status:
+    they arrive without it, so assess-relevance schedules them only if relevant.
+    Relevant-not-downloaded carry-overs arrive with their assessment +
     download_status so they resume directly at the download stage -- even if they
     were not in this run's fetch window. Uses INSERT OR IGNORE so rows already in
     the run database (e.g. preprints ingested first) are preserved, then
@@ -366,7 +368,8 @@ def seed_run_db_from_ledger(
                  source_metadata, source_type, source_details, download_status,
                  relevance_assessment_json)
             SELECT doi, pmid, title, abstract, authors, journal, source, source_date,
-                   source_metadata, 'initial', 'ledger', download_status,
+                   source_metadata, 'initial', 'ledger',
+                   CASE WHEN relevant IS 1 THEN download_status END,
                    relevance_assessment_json
             FROM ledger.ledger
             WHERE source_date >= ? AND source_date <= ?

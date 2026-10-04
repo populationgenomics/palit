@@ -433,9 +433,54 @@ def test_a_downloaded_expansion_paper_is_settled_without_a_relevance_result(
     finally:
         run.close()
     assert rows == [
-        ("10.1/expansion-due", None, "manual_required"),
+        ("10.1/expansion-due", None, None),
         ("10.1/never", None, None),
         ("10.1/relevant-due", 1, "manual_required"),
+    ]
+
+
+def test_seed_run_db_keeps_download_status_only_for_relevant_papers(tmp_path: Path) -> None:
+    """A never-assessed paper arrives without its earlier download status.
+
+    The relevance stage then schedules it only if relevant. A relevant carry-over
+    keeps its status for the download retry.
+    """
+    ledger_path = _new_ledger(tmp_path)
+    conn = ledger.connect(ledger_path)
+    try:
+        ledger.upsert_papers(
+            conn,
+            [
+                _make_paper("10.1/never-manual", 1, "2026-08-10"),
+                _make_paper("10.1/relevant-manual", 2, "2026-08-11"),
+            ],
+            "2026-08-20",
+        )
+        conn.execute(
+            "UPDATE ledger SET download_status = 'manual_required' WHERE doi = '10.1/never-manual'"
+        )
+        conn.execute(
+            "UPDATE ledger SET relevance_assessment_json = ?, relevant = 1, "
+            "download_status = 'manual_required' WHERE doi = '10.1/relevant-manual'",
+            (_assessment(True),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    run_db = _new_run_db(tmp_path)
+    seeded = ledger.seed_run_db_from_ledger(
+        ledger_path, run_db, horizon_floor="2026-04-01", end_date="2026-10-15"
+    )
+    assert seeded == 2
+    run = sqlite3.connect(run_db)
+    try:
+        rows = run.execute("SELECT doi, download_status FROM papers ORDER BY doi").fetchall()
+    finally:
+        run.close()
+    assert rows == [
+        ("10.1/never-manual", None),
+        ("10.1/relevant-manual", "manual_required"),
     ]
 
 

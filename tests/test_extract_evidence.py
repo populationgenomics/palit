@@ -8,7 +8,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import pytest
+import tenacity
 from anthropic.types import Message
 
 from palit.extract_evidence import (
@@ -39,6 +41,7 @@ from palit.llm import (
     stage_refusals,
 )
 from palit.lookup_tools import (
+    MAX_ATTEMPTS,
     LookupRunner,
     VariantLookupClient,
     VariantLookupSettings,
@@ -716,6 +719,46 @@ def test_a_round_handles_papers_concurrently_and_counts_every_outcome(
         assert extracted.fetchall() == [("10.1/e",)]
         frequencies = conn.execute("SELECT paper_doi, variant_id FROM variant_frequencies")
         assert frequencies.fetchall() == [("10.1/e", "vcf:c.1A>G")]
+
+
+def test_a_variant_lookup_failing_every_attempt_becomes_a_lookup_failed_result(
+    tmp_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """The service answers 503 to every attempt; the paper still moves on to round 2."""
+    attempts = 0
+
+    def unavailable(request: httpx2.Request) -> httpx2.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx2.Response(503)
+
+    results = [_round_one_result("10.1/a", ResultStatus.SUCCEEDED, _variant_lookup("c.1A>G"))]
+    db_path = _round_one_db(tmp_path, ["10.1/a"])
+
+    async def run() -> RoundOutcome:
+        variants = VariantLookupClient(
+            VariantLookupSettings(
+                VARIANT_LOOKUP_BASE_URL="http://unused.invalid", VARIANT_LOOKUP_API_KEY="x"
+            ),
+            retry_wait=tenacity.wait_none(),
+            transport=httpx2.MockTransport(unavailable),
+        )
+        try:
+            return await _runner(tmp_path, db_path, hgnc_resolver, variants).handle(results)
+        finally:
+            await variants.aclose()
+
+    outcome = asyncio.run(run())
+    assert attempts == MAX_ATTEMPTS
+    (conversation,) = outcome.next_round
+    tool_result = conversation.messages[-1]["content"][0]
+    assert not tool_result["is_error"]
+    (item,) = json.loads(tool_result["content"])["results"]
+    assert (item["variant"], item["status"], item["error_code"]) == (
+        "c.1A>G",
+        "error",
+        "LOOKUP_FAILED",
+    )
 
 
 def test_invalid_requests_raise_once_every_result_is_recorded(

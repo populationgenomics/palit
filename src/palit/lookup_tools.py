@@ -105,6 +105,9 @@ _REQUEST_TIMEOUT_S = 180.0
 # staying at parity avoids burning retries on 429s in the common case.
 MAX_IN_FLIGHT = 8
 
+# Attempts per request when the service answers 5xx or the connection fails.
+MAX_ATTEMPTS = 7
+
 
 class VariantLookupSettings(BaseSettings):
     """Loaded from environment + .env."""
@@ -127,29 +130,46 @@ class VariantLookupClient:
     """Async wrapper around ``POST /v1/variant``.
 
     Concurrency: ``max_in_flight`` semaphore. 429s honour ``Retry-After``
-    (handled in-band); 5xx and transport errors retry via tenacity.
+    (handled in-band); 5xx and transport errors are retried up to
+    MAX_ATTEMPTS times. ``transport`` replaces the HTTP transport (tests).
     """
 
-    def __init__(self, settings: VariantLookupSettings, max_in_flight: int = MAX_IN_FLIGHT) -> None:
+    def __init__(
+        self,
+        settings: VariantLookupSettings,
+        max_in_flight: int = MAX_IN_FLIGHT,
+        retry_wait: tenacity.wait.wait_base = tenacity.wait_exponential_jitter(initial=1, max=30),
+        transport: httpx2.AsyncBaseTransport | None = None,
+    ) -> None:
         self._endpoint = f"{settings.base_url.rstrip('/')}/v1/variant"
         self._headers = {"Authorization": f"Bearer {settings.api_key}"}
         self._semaphore = asyncio.Semaphore(max_in_flight)
-        self._http = httpx2.AsyncClient(timeout=_REQUEST_TIMEOUT_S, follow_redirects=True)
+        self._retry_wait = retry_wait
+        self._http = httpx2.AsyncClient(
+            timeout=_REQUEST_TIMEOUT_S, follow_redirects=True, transport=transport
+        )
 
     async def aclose(self) -> None:
         await self._http.aclose()
 
     async def lookup_one(self, body: dict[str, Any]) -> dict[str, Any]:
-        async with self._semaphore:
-            return await self._post_with_retries(body)
+        """The service's response to *body*.
 
-    @tenacity.retry(
-        stop=tenacity.stop_after_attempt(7),
-        wait=tenacity.wait_exponential_jitter(initial=1, max=30),
-        retry=tenacity.retry_if_exception(_is_5xx_or_transport),
-        before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
-    )
-    async def _post_with_retries(self, body: dict[str, Any]) -> dict[str, Any]:
+        Raises the last ``httpx2.HTTPError`` once retries are spent.
+        """
+        async with self._semaphore:
+            async for attempt in tenacity.AsyncRetrying(
+                stop=tenacity.stop_after_attempt(MAX_ATTEMPTS),
+                wait=self._retry_wait,
+                retry=tenacity.retry_if_exception(_is_5xx_or_transport),
+                before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
+                reraise=True,
+            ):
+                with attempt:
+                    return await self._post(body)
+        raise AssertionError("tenacity returns or re-raises")
+
+    async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         # Inner 429 loop: nginx limit_conn returns 429 + Retry-After when the
         # cluster cap is exceeded; honour the header rather than backing off
         # blindly. Bounded so a misbehaving service doesn't spin forever.

@@ -20,9 +20,9 @@ WORKFLOW (one lookup round):
 
 CITATION REQUIREMENTS:
 For each criterion that evaluates to TRUE, you MUST provide specific citations. Each citation has:
-- `quote`: text copied VERBATIM from the PDF — contiguous, at least 30 characters, usually one full sentence. No ellipses, no paraphrase, no merging of separate passages, no added words. Keep the paper's own spelling, symbols, and capitalisation. For a table, quote one complete row as it reads left to right. Software highlights the quote in the PDF by matching it character by character, so an inexact quote cannot be shown to the curator.
+- `quote`: a contiguous passage copied VERBATIM from the PDF: usually one full sentence; for a table, one complete row as it reads left to right; for text printed in a figure (e.g., a variant name beside a pedigree or chromatogram), that text as printed. Keep it as short as the evidence allows, but specific enough to point to one place in the paper: a bare variant notation or a lone number is not. No ellipses, no paraphrase, no merging of separate passages, no added words. Keep the paper's own spelling, symbols, and capitalisation. Software highlights the quote in the PDF by matching it character by character, so an inexact quote cannot be shown to the curator.
 - `commentary`: brief statement of what this passage shows.
-For evidence visible only in a figure (pedigree, image, gel, raster table), quote the figure caption starting with its label (e.g., "Figure 2. Pedigrees of families 1–4 ...").
+For evidence a figure shows without printed text to quote (pedigree symbols, image, gel, raster table), quote the figure caption starting with its label (e.g., "Figure 2. Pedigrees of families 1–4 ...").
 
 Example citation format:
 {% raw %}
@@ -312,7 +312,7 @@ For each gene, extract variants following these strict guidelines:
    - Output variants as "NM_XXXXXX.X:c.123A>G" not just "c.123A>G"
    - Use "NR" for transcript if none is specified for the gene
 
-2. VARIANTS ARRAY (for automated processing): Extract UNIQUE variants with citations. Each `quote` is the full sentence or complete table row in which the notation appears, not the bare notation, so that it can be located in the PDF.
+2. VARIANTS ARRAY (for automated processing): Extract UNIQUE variants with citations. Each `quote` is the full sentence, complete table row, or figure text in which the notation appears, not the bare notation, so that it can be located in the PDF.
 
    Structure: {% raw %}[{"variant": "NM_000123.4:c.1234A>T", "quote": "<verbatim passage containing the variant>"}, {"variant": "NM_000123.4:c.5678G>C", "quote": "<verbatim passage containing the variant>"}]{% endraw %}
 

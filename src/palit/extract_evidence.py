@@ -220,8 +220,9 @@ def extraction_quotes(extraction: dict[str, Any]) -> list[str]:
 def prune_citations(extraction: dict[str, Any], rejected: set[str]) -> int:
     """Remove entity, criterion, and concern citations whose quote is in *rejected*.
 
-    Variant quotes stay: a variant's notation is real even when its quote (often
-    a short table cell) can't be placed. Returns the number of citations removed.
+    Variant quotes stay: a variant's notation is real even when its quote can't
+    be placed (e.g. a row of a table printed as an image). Returns the number of
+    citations removed.
     """
     removed = 0
 

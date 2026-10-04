@@ -15,8 +15,6 @@ import pypdfium2 as pdfium
 
 logger = logging.getLogger(__name__)
 
-MIN_QUOTE_CHARS = 30
-
 # Share of a quote's normalised characters that must align to the PDF text.
 # Verbatim quotes reach ~1.0; the margin absorbs text-layer quirks.
 MIN_QUOTE_COVERAGE = 0.9
@@ -54,19 +52,20 @@ class PaperQuotes:
         return len(self._text.strip()) >= MIN_TEXT_LAYER_CHARS
 
     def check(self, quotes: list[str]) -> QuoteCheck:
-        """Quotes that are too short or don't appear verbatim in the PDF."""
-        too_short = [q for q in quotes if len(q.strip()) < MIN_QUOTE_CHARS]
+        """Quotes that don't appear verbatim in the PDF.
+
+        Without a usable text layer nothing can be checked, so nothing is rejected.
+        """
         if not self.has_text_layer:
-            return QuoteCheck(rejected=too_short, text_layer=False)
+            return QuoteCheck(rejected=[], text_layer=False)
         ungrounded = [
             q
             for q in quotes
-            if len(q.strip()) >= MIN_QUOTE_CHARS
-            and not anchorite.is_quote_grounded(
+            if not anchorite.is_quote_grounded(
                 self._text, q, fail_coverage=MIN_QUOTE_COVERAGE, strip_html=False
             )
         ]
-        return QuoteCheck(rejected=too_short + ungrounded, text_layer=True)
+        return QuoteCheck(rejected=ungrounded, text_layer=True)
 
     def locate(self, quotes: list[str]) -> dict[str, list[dict[str, Any]]]:
         """Highlight boxes per quote: 1-based page and 0-1000 page coordinates.

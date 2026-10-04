@@ -18,8 +18,10 @@ from palit.extract_evidence import (
     STAGE,
     Conversation,
     ExtractionRunner,
+    Remaining,
     RequestSettings,
     RoundOutcome,
+    count_remaining,
     extraction_quotes,
     normalize_extraction_genes,
     prune_citations,
@@ -348,7 +350,8 @@ def test_select_papers_skips_only_papers_refused_for_good(tmp_path: Path) -> Non
         conn.executescript(SCHEMA_SQL.read_text())
         conn.executemany(
             "INSERT INTO papers (doi, title, source, source_type, download_status, "
-            "evidence_extraction_json) VALUES (?, 't', 'pubmed', 'initial', 'downloaded', ?)",
+            "relevance_assessment_json, evidence_extraction_json) "
+            "VALUES (?, 't', 'pubmed', 'initial', 'downloaded', '{\"relevant\": true}', ?)",
             [
                 ("10.1/new", None),
                 ("10.1/to-fallback", None),
@@ -383,6 +386,33 @@ def test_select_papers_skips_only_papers_refused_for_good(tmp_path: Path) -> Non
         "10.1/to-fallback": FALLBACK_MODEL,
         "10.1/refused-before": MODEL,
     }
+
+
+def test_select_papers_skips_initial_papers_not_assessed_relevant(tmp_path: Path) -> None:
+    """A downloaded initial paper is extracted only when assessed relevant.
+
+    Expansion papers are never assessed for relevance and are always extracted.
+    """
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, title, source, source_type, download_status, "
+            "relevance_assessment_json) VALUES (?, 't', 'pubmed', ?, 'downloaded', ?)",
+            [
+                ("10.1/relevant", "initial", json.dumps({"relevant": True})),
+                ("10.1/not-relevant", "initial", json.dumps({"relevant": False})),
+                ("10.1/unassessed", "initial", None),
+                ("10.1/expansion", "expansion", None),
+            ],
+        )
+        refusals = stage_refusals(conn, STAGE)
+
+    assert [p["doi"] for p in select_papers(db_path, None, refusals)] == [
+        "10.1/expansion",
+        "10.1/relevant",
+    ]
+    assert count_remaining(db_path) == Remaining(due=2, outside_corpus=2)
 
 
 def _message(stop_reason: str, content: list[dict[str, Any]], model: str) -> Message:

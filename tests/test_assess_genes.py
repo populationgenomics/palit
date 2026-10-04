@@ -41,6 +41,10 @@ ROOT = Path(__file__).resolve().parents[1]
 AARS1 = 20
 
 
+def _relevance(relevant: bool) -> str:
+    return json.dumps({"relevant": relevant, "screen": None, "panelapp_check": None})
+
+
 def _extraction(hgnc_id: int, paper_gene_symbol: str) -> str:
     return json.dumps(
         {
@@ -583,8 +587,9 @@ def test_genes_refused_by_model_go_to_the_fallback_and_refused_for_good_ones_sta
     with sqlite3.connect(db_path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
         conn.execute(
-            "INSERT INTO papers (doi, title, source, source_type) "
-            "VALUES ('10.1/a', 't', 'pubmed', 'initial')"
+            "INSERT INTO papers (doi, title, source, source_type, relevance_assessment_json) "
+            "VALUES ('10.1/a', 't', 'pubmed', 'initial', ?)",
+            (_relevance(True),),
         )
         conn.executemany(
             "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
@@ -612,3 +617,44 @@ def test_genes_refused_by_model_go_to_the_fallback_and_refused_for_good_ones_sta
     fallback = build_request(item, output_config, FALLBACK_MODEL)
     assert fallback.params["model"] == FALLBACK_MODEL
     assert {**fallback.params, "model": MODEL} == primary.params
+
+
+def test_only_genes_with_recent_evidence_from_a_relevant_paper_are_assessed(
+    tmp_path: Path,
+) -> None:
+    """A gene whose recent papers were all assessed not relevant is not one of the run's genes.
+
+    A not-relevant paper with an extraction still counts as evidence for a gene of the run.
+    """
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, title, source, source_type, relevance_assessment_json, "
+            "evidence_extraction_json) VALUES (?, 't', 'pubmed', ?, ?, ?)",
+            [
+                ("10.1/relevant", "initial", _relevance(True), _extraction(1, "G1")),
+                ("10.1/not-relevant", "initial", _relevance(False), _extraction(1, "G1")),
+                ("10.1/expansion", "expansion", None, _extraction(4, "G4")),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (?, 'G', ?, ?)",
+            [
+                (1, "10.1/relevant", "recent_evidence"),
+                (1, "10.1/not-relevant", "recent_evidence"),
+                (2, "10.1/not-relevant", "recent_evidence"),
+                (3, "10.1/not-relevant", "relevance_assessment"),
+                (4, "10.1/expansion", "expansion_evidence"),
+            ],
+        )
+        refusals = stage_refusals(conn, STAGE)
+
+    assert genes_to_assess(db_path, None, refusals) == [1]
+    processor = PaperBatchProcessor(db_path)
+    assert processor.count_remaining() == 1
+    assert [e["doi"] for e in processor.get_evidence_for_gene(1)] == [
+        "10.1/not-relevant",
+        "10.1/relevant",
+    ]

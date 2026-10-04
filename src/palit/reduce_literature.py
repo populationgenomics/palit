@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Tournament-based literature reduction to minimize manual download burden."""
+"""Tournament-based literature reduction to minimize manual download burden.
+
+Only papers assessed relevant take part: they are the ones scheduled for
+download (see :mod:`palit.run_corpus`).
+"""
 
 import asyncio
 import json
@@ -15,6 +19,7 @@ from palit.hgnc import HgncResolver
 from palit.llm import BatchTransport, ImmediateTransport, Transport, make_client
 from palit.llm_usage import print_stage_summary
 from palit.papers import Paper, deserialize_source_metadata
+from palit.run_corpus import RELEVANT_PAPER
 from palit.tournament import TournamentEntry, TournamentOutcome, record_abandoned, run_tournaments
 
 app = typer.Typer(help="Reduce literature using tournament selection to minimize manual downloads")
@@ -24,7 +29,7 @@ STAGE = "reduce_literature"
 
 
 def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
-    """Fetch all papers for a gene, regardless of download status.
+    """Fetch the relevant papers for a gene, regardless of download status.
 
     Args:
         db_path: Path to SQLite database
@@ -32,18 +37,18 @@ def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
         limit: Maximum number of papers to return
 
     Returns:
-        List of up to `limit` newest papers mentioning this gene
+        List of up to `limit` newest relevant papers mentioning this gene
     """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT DISTINCT p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
                    p.source, p.source_date, p.source_metadata
             FROM papers p
             JOIN gene_mentions gm ON p.doi = gm.paper_doi
-            WHERE gm.hgnc_id = ?
+            WHERE gm.hgnc_id = ? AND {RELEVANT_PAPER}
             ORDER BY p.source_date DESC, p.doi DESC
             LIMIT ?
             """,
@@ -150,6 +155,51 @@ def clear_unselected_papers(db_path: Path, all_selected_dois: set[str]) -> dict[
         return result
 
 
+def papers_of_small_genes(db_path: Path, max_papers: int) -> set[str]:
+    """The relevant papers of genes with at most *max_papers* relevant papers."""
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            WITH gene_papers AS (
+                SELECT DISTINCT gm.hgnc_id, gm.paper_doi
+                FROM gene_mentions gm
+                JOIN papers p ON p.doi = gm.paper_doi
+                WHERE {RELEVANT_PAPER}
+            )
+            SELECT DISTINCT paper_doi FROM gene_papers
+            WHERE hgnc_id IN (
+                SELECT hgnc_id FROM gene_papers
+                GROUP BY hgnc_id
+                HAVING COUNT(*) <= ?
+            )
+            """,
+            (max_papers,),
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def genes_to_reduce(db_path: Path, max_papers: int) -> list[tuple[int, int]]:
+    """(HGNC ID, relevant paper count) of genes above *max_papers* without a tournament yet.
+
+    Most papers first.
+    """
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT gm.hgnc_id, COUNT(DISTINCT gm.paper_doi) AS paper_count
+            FROM gene_mentions gm
+            JOIN papers p ON p.doi = gm.paper_doi
+            WHERE {RELEVANT_PAPER}
+              AND gm.hgnc_id NOT IN (SELECT hgnc_id FROM tournament_results)
+            GROUP BY gm.hgnc_id
+            HAVING paper_count > ?
+            ORDER BY paper_count DESC
+            """,
+            (max_papers,),
+        ).fetchall()
+    return [(int(hgnc_id), int(count)) for hgnc_id, count in rows]
+
+
 def _record_reduction_completion(db_path: Path, hgnc_id: int, outcome: TournamentOutcome) -> None:
     """Persist tournament results for resumability."""
     with sqlite3.connect(db_path) as conn:
@@ -193,26 +243,9 @@ async def _process_reduction(
     record_abandoned(db_path, await transport.resume(STAGE))
     # Phase 1a: Collect DOIs for genes that don't need reduction (≤max_papers)
     all_selected_dois: set[str] = set()
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT DISTINCT gm.paper_doi
-            FROM gene_mentions gm
-            WHERE gm.hgnc_id IN (
-                SELECT hgnc_id
-                FROM gene_mentions
-                GROUP BY hgnc_id
-                HAVING COUNT(DISTINCT paper_doi) <= ?
-            )
-            """,
-            (max_papers,),
-        )
-        small_gene_dois = {row[0] for row in cursor.fetchall()}
-        all_selected_dois.update(small_gene_dois)
-        logger.info(
-            f"Auto-selected {len(small_gene_dois)} papers from genes with ≤{max_papers} papers"
-        )
+    small_gene_dois = papers_of_small_genes(db_path, max_papers)
+    all_selected_dois.update(small_gene_dois)
+    logger.info(f"Auto-selected {len(small_gene_dois)} papers from genes with ≤{max_papers} papers")
 
     # Phase 1b: Run tournament selection for genes with many papers
     entries = []
@@ -324,24 +357,8 @@ def main(
     template = prompt_path.read_text()
     schema: dict[str, Any] = json.loads(schema_path.read_text())
 
-    # Find genes that need reduction (have papers but no tournament results yet)
     logger.info("Finding genes to reduce...")
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT gm.hgnc_id, COUNT(DISTINCT gm.paper_doi) as paper_count
-            FROM gene_mentions gm
-            LEFT JOIN tournament_results er
-              ON gm.hgnc_id = er.hgnc_id
-            WHERE er.hgnc_id IS NULL
-            GROUP BY gm.hgnc_id
-            HAVING paper_count > ?
-            ORDER BY paper_count DESC
-            """,
-            (max_papers,),
-        )
-        genes_with_counts = cursor.fetchall()
+    genes_with_counts = genes_to_reduce(db_path, max_papers)
 
     if not genes_with_counts:
         logger.info("No genes require reduction")

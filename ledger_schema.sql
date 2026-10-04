@@ -5,8 +5,8 @@
 -- refreshed bibliographic metadata needed to re-seed a run database. This is the
 -- dedup/disposition memory that replaces the per-run buffer window and the
 -- single --previous-db set-difference: papers already settled (not relevant, or
--- downloaded) are skipped, while actionable papers (never assessed, or relevant
--- but not yet downloaded) are re-emitted into each new run.
+-- downloaded) are skipped, while actionable papers (not downloaded, and either
+-- never assessed or relevant) are re-emitted into each new run.
 --
 -- This is intentionally a different schema from the per-run schema.sql; run
 -- databases never carry the ledger table.
@@ -46,10 +46,11 @@ CREATE TABLE ledger (
 );
 
 -- The denormalized `relevant` flag makes settled/actionable a pure indexed
--- filter:
---   settled (never reconsider):  relevant = 0 OR download_status = 'downloaded'
---   actionable (re-include):     relevant IS NULL
---                                OR (relevant = 1 AND COALESCE(download_status,'') <> 'downloaded')
+-- filter (ledger.py holds the predicates). A downloaded paper is settled even
+-- with a NULL `relevant`, as an expansion paper is never assessed:
+--   settled (never reconsider):  relevant IS 0 OR download_status IS 'downloaded'
+--   actionable (re-include):     NOT (settled), i.e. not downloaded, and relevant
+--                                IS NULL or 1
 CREATE INDEX idx_ledger_pmid ON ledger(pmid) WHERE pmid IS NOT NULL;
 CREATE INDEX idx_ledger_relevant ON ledger(relevant);
 -- The actionable query bounds by source_date (the closure horizon), so index it.

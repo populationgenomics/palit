@@ -142,6 +142,10 @@ uv run palit download-papers register
 #    origin; criteria A to C use it. For registries and case series without
 #    family structure, the qualifying and independent counts are derived from
 #    the patients who carry a qualifying genotype.
+#    An initial paper is extracted only when assess-relevance found it relevant,
+#    even if a PDF is on file; expansion papers are always extracted. The genes
+#    with evidence from a relevant paper are this run's genes: steps 5, 6 and 9
+#    work on them alone.
 uv run palit extract-evidence
 
 # 5. Discover papers referenced in evidence (citation-based expansion)
@@ -250,10 +254,12 @@ Two sources feed it, complementary by recency:
   papers, where the FTP files can briefly lag.
 
 Each run partitions previously-seen DOIs into **settled** (assessed not relevant,
-including papers both models refused to assess, or downloaded — never reconsidered) and **actionable** (never assessed, or
-relevant-but-not-downloaded — re-emitted into the run). A CRDT month is finalised and
-dropped from the actionable set after a 6-month **closure horizon**, which bounds the
-work set.
+including papers both models refused to assess, or downloaded — never reconsidered)
+and **actionable** (not downloaded, and either never assessed or relevant —
+re-emitted into the run). A downloaded paper is settled whatever its relevance: the
+expansion papers a run writes back are never assessed for relevance, and they must
+not return as new papers. A CRDT month is finalised and dropped from the actionable
+set after a 6-month **closure horizon**, which bounds the work set.
 
 ```bash
 LEDGER=data/pubmed_ingestion_ledger.sqlite
@@ -409,7 +415,8 @@ uv run palit assess-relevance \
 
 # 3. (Optional) Reduce literature for well-researched genes
 # Genes with hundreds of papers make the aggregation prompt long and slow. For panels with well-researched genes (e.g., POLG
-# with 200+ papers), use tournament selection to keep only the most informative:
+# with 200+ papers), use tournament selection to keep only the most informative.
+# It counts and selects among the papers step 2 assessed relevant:
 uv run palit reduce-literature --db-path data/$PANEL_NAME.sqlite
 
 # 4. Download full-text papers (now reduced set if step 3 was run)

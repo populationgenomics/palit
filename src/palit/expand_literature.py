@@ -17,6 +17,7 @@ from palit.llm_usage import print_stage_summary
 from palit.panelapp_client import PanelAppClient
 from palit.panelapp_publications import seed_panelapp_publications
 from palit.papers import Paper, deserialize_source_metadata, serialize_source_metadata
+from palit.run_corpus import RUN_GENES
 from palit.tournament import TournamentEntry, TournamentOutcome, record_abandoned, run_tournaments
 
 app = typer.Typer(help="Tournament-based literature expansion using hierarchical LLM filtering")
@@ -131,6 +132,23 @@ def store_expansion_papers(db_path: Path, papers: list[Paper], gene_symbol: str)
 
         conn.commit()
         logger.info(f"Added {new_papers} new expansion papers")
+
+
+def genes_to_expand(db_path: Path) -> list[int]:
+    """The run's genes without a tournament result, in HGNC ID order.
+
+    The run's genes have recent evidence from a relevant paper (see
+    :mod:`palit.run_corpus`).
+    """
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT hgnc_id FROM ({RUN_GENES})
+            WHERE hgnc_id NOT IN (SELECT hgnc_id FROM tournament_results)
+            ORDER BY hgnc_id
+            """
+        ).fetchall()
+    return [row[0] for row in rows]
 
 
 def _record_expansion_completion(db_path: Path, hgnc_id: int, outcome: TournamentOutcome) -> None:
@@ -281,7 +299,7 @@ def main(
         help="Maximum number of papers to consider per gene",
     ),
 ) -> None:
-    """Expand literature for all genes with evidence, from two sources.
+    """Expand literature for the run's genes, from two sources.
 
     Tournament selection picks a minimal, non-redundant set from the screened
     baseline. Seeding then adds, unconditionally, every publication PanelApp
@@ -331,18 +349,7 @@ def main(
             )
             conn.commit()
 
-        cursor.execute(
-            """
-            SELECT DISTINCT gm.hgnc_id
-            FROM gene_mentions gm
-            LEFT JOIN tournament_results er
-              ON gm.hgnc_id = er.hgnc_id
-            WHERE gm.source = 'recent_evidence'
-              AND er.hgnc_id IS NULL
-            ORDER BY gm.hgnc_id
-            """
-        )
-        genes = [row[0] for row in cursor.fetchall()]
+    genes = genes_to_expand(db_path)
 
     # Load HGNC resolver for gene symbol lookup
     hgnc_resolver = HgncResolver.from_file()

@@ -27,6 +27,7 @@ from palit.papers import (
     strip_xml_tags,
 )
 from palit.pubmed_xml import extract_papers_from_xml
+from palit.run_corpus import RUN_GENES
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 
@@ -56,7 +57,11 @@ class ReferencedSource:
 
 
 def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
-    """Extract all previously reported sources from disease entities in the database.
+    """Extract the previously reported sources of the run's genes from their disease entities.
+
+    The run's genes have recent evidence from a relevant paper (see
+    :mod:`palit.run_corpus`). A source an extraction reports for another gene is
+    left out, as that gene is not assessed.
 
     Args:
         db_path: Path to SQLite database
@@ -71,9 +76,8 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        # Get all papers with evidence extraction
         cursor.execute(
-            """
+            f"""
             SELECT DISTINCT
                 p.doi,
                 gm.hgnc_id,
@@ -81,6 +85,7 @@ def extract_referenced_sources_from_db(db_path: Path) -> list[ReferencedSource]:
             FROM papers p
             JOIN gene_mentions gm ON p.doi = gm.paper_doi
             WHERE p.evidence_extraction_json IS NOT NULL
+              AND gm.hgnc_id IN ({RUN_GENES})
             """
         )
 
@@ -378,7 +383,7 @@ def discover(
 ) -> None:
     """Discover and schedule referenced papers for download.
 
-    Scans all genes with evidence, extracts previously_reported_sources from
+    Scans the run's genes, extracts previously_reported_sources from their
     disease entities, searches PubMed for the papers, and adds missing papers
     as expansion papers.
     """

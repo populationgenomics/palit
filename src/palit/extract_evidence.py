@@ -78,6 +78,7 @@ from palit.panelapp_integration import (
 )
 from palit.papers import doi_to_path
 from palit.quotes import PaperQuotes
+from palit.run_corpus import CORPUS_PAPER
 
 app = typer.Typer(help="Extract structured evidence from full-text PDFs")
 logger = logging.getLogger(__name__)
@@ -355,15 +356,19 @@ def variant_lookup_results(messages: list[dict[str, Any]]) -> list[dict[str, Any
 def select_papers(
     db_path: Path, limit: int | None, refusals: StageRefusals
 ) -> list[dict[str, Any]]:
-    """Downloaded papers without an extraction, except ones in flight and ones refused for good."""
+    """Downloaded corpus papers without an extraction, except ones in flight and ones refused for good.
+
+    An initial paper is in the corpus only when assessed relevant (see :mod:`palit.run_corpus`).
+    """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            """
+            f"""
             SELECT doi, source_date, title, abstract
             FROM papers p
             WHERE download_status = 'downloaded'
               AND evidence_extraction_json IS NULL
+              AND {CORPUS_PAPER}
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
                   WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'pending'
@@ -781,15 +786,34 @@ def _store_extraction(
 # ---------------------------------------------------------------------------
 
 
-def count_remaining(db_path: Path) -> int:
+@dataclass(frozen=True)
+class Remaining:
+    """Downloaded papers without an extraction."""
+
+    due: int  # corpus papers, which extract-evidence extracts
+    outside_corpus: int  # initial papers not assessed relevant, which it leaves out
+
+
+def count_remaining(db_path: Path) -> Remaining:
     with sqlite3.connect(db_path) as conn:
-        (remaining,) = conn.execute(
-            """
-            SELECT COUNT(*) FROM papers
+        due, outside_corpus = conn.execute(
+            f"""
+            SELECT COALESCE(SUM({CORPUS_PAPER}), 0), COALESCE(SUM(NOT {CORPUS_PAPER}), 0)
+            FROM papers p
             WHERE download_status = 'downloaded' AND evidence_extraction_json IS NULL
             """
         ).fetchone()
-    return int(remaining)
+    return Remaining(due=int(due), outside_corpus=int(outside_corpus))
+
+
+def log_remaining(db_path: Path) -> None:
+    remaining = count_remaining(db_path)
+    logger.info(
+        "%s downloaded papers without an extraction; %s more are initial papers "
+        "not assessed relevant, which are not extracted",
+        f"{remaining.due:,}",
+        f"{remaining.outside_corpus:,}",
+    )
 
 
 async def _process_evidence(
@@ -941,7 +965,7 @@ def main(
         system=system, output_config=json_output_config(schema, EFFORT), cache_pdf=immediate
     )
 
-    logger.info(f"{count_remaining(db_path):,} downloaded papers without an extraction")
+    log_remaining(db_path)
 
     async def run() -> None:
         client = make_client()
@@ -974,7 +998,7 @@ def main(
             await variant_client.aclose()
 
     asyncio.run(run())
-    logger.info(f"{count_remaining(db_path):,} downloaded papers still without an extraction")
+    log_remaining(db_path)
     print_stage_summary(db_path, STAGE)
 
 

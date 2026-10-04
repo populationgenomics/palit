@@ -254,6 +254,41 @@ def test_settled_dois(tmp_path: Path) -> None:
     assert ledger.settled_dois(ledger_path) == {"10.1/a", "10.1/b"}
 
 
+def test_settled_and_actionable_partition_every_disposition(tmp_path: Path) -> None:
+    """Each combination of relevance and download status is in exactly one of the two sets."""
+    ledger_path = _new_ledger(tmp_path)
+    dispositions = [
+        (relevant, status)
+        for relevant in (None, 0, 1)
+        for status in (None, "scheduled", "manual_required", "downloaded")
+    ]
+    conn = ledger.connect(ledger_path)
+    try:
+        ledger.upsert_papers(
+            conn,
+            [_make_paper(f"10.1/{i}", i, "2026-01-10") for i in range(len(dispositions))],
+            "2026-01-20",
+        )
+        conn.executemany(
+            "UPDATE ledger SET relevant = ?, download_status = ? WHERE doi = ?",
+            [(r, s, f"10.1/{i}") for i, (r, s) in enumerate(dispositions)],
+        )
+        conn.commit()
+        settled = {
+            r[0] for r in conn.execute(f"SELECT doi FROM ledger WHERE {ledger.SETTLED_WHERE}")
+        }
+        actionable = {
+            r[0] for r in conn.execute(f"SELECT doi FROM ledger WHERE {ledger.ACTIONABLE_WHERE}")
+        }
+    finally:
+        conn.close()
+    expected_actionable = {
+        f"10.1/{i}" for i, (r, s) in enumerate(dispositions) if r != 0 and s != "downloaded"
+    }
+    assert actionable == expected_actionable
+    assert settled == {f"10.1/{i}" for i in range(len(dispositions))} - expected_actionable
+
+
 # --- write-back -------------------------------------------------------------
 
 
@@ -339,6 +374,69 @@ def test_writeback_settles_a_paper_both_models_refused(tmp_path: Path) -> None:
         ledger_path, next_run, horizon_floor="2026-04-01", end_date="2026-10-15"
     )
     assert seeded == 0
+
+
+def test_a_downloaded_expansion_paper_is_settled_without_a_relevance_result(
+    tmp_path: Path,
+) -> None:
+    """Expansion papers are never assessed; once downloaded they do not return as new papers.
+
+    Papers that still need a download come back: an initial paper assessed relevant,
+    a never-assessed initial paper, and an expansion paper not yet downloaded.
+    """
+    ledger_path = _new_ledger(tmp_path)
+    run_db = _new_run_db(tmp_path)
+    run = sqlite3.connect(run_db)
+    try:
+        run.executemany(
+            "INSERT INTO papers (doi, title, source, source_type, source_date, "
+            "relevance_assessment_json, download_status) VALUES (?, 't', 'pubmed', ?, ?, ?, ?)",
+            [
+                ("10.1/expansion-done", "expansion", "2026-08-20", None, "downloaded"),
+                ("10.1/expansion-due", "expansion", "2026-08-21", None, "manual_required"),
+                (
+                    "10.1/relevant-due",
+                    "initial",
+                    "2026-08-22",
+                    _assessment(True),
+                    "manual_required",
+                ),
+                ("10.1/never", "initial", "2026-08-23", None, None),
+            ],
+        )
+        run.commit()
+    finally:
+        run.close()
+
+    assert ledger.writeback(ledger_path, run_db, run_id="report_august") == 4
+
+    conn = ledger.connect(ledger_path)
+    try:
+        assert conn.execute(
+            "SELECT relevant, download_status FROM ledger WHERE doi = '10.1/expansion-done'"
+        ).fetchone() == (None, "downloaded")
+    finally:
+        conn.close()
+    assert ledger.settled_dois(ledger_path) == {"10.1/expansion-done"}
+
+    next_run = _new_run_db(tmp_path, "next.sqlite")
+    seeded = ledger.seed_run_db_from_ledger(
+        ledger_path, next_run, horizon_floor="2026-04-01", end_date="2026-10-15"
+    )
+    assert seeded == 3
+    run = sqlite3.connect(next_run)
+    try:
+        rows = run.execute(
+            "SELECT doi, json_extract(relevance_assessment_json, '$.relevant'), download_status "
+            "FROM papers ORDER BY doi"
+        ).fetchall()
+    finally:
+        run.close()
+    assert rows == [
+        ("10.1/expansion-due", None, "manual_required"),
+        ("10.1/never", None, None),
+        ("10.1/relevant-due", 1, "manual_required"),
+    ]
 
 
 # --- seed from existing run databases ---------------------------------------

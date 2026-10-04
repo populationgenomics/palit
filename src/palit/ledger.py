@@ -6,8 +6,10 @@ The ledger is a single canonical database (default
 fetched, with refreshed bibliographic metadata and the terminal disposition the
 owning run wrote back. It replaces the old per-run buffer window + single
 ``--previous-db`` set-difference: papers already *settled* (assessed not relevant,
-or downloaded) are never reconsidered, while *actionable* papers (never assessed,
-or relevant-but-not-downloaded) are re-emitted into each new run's database.
+or downloaded) are never reconsidered, while *actionable* papers (not downloaded,
+and either never assessed or assessed relevant) are re-emitted into each new run's
+database. A downloaded paper is settled whatever its relevance, including an
+expansion paper, which is never assessed for relevance.
 
 Operations (§10.3 of specs/pubmed_robust_ingestion.md):
 
@@ -51,11 +53,11 @@ DEFAULT_CLOSURE_HORIZON_MONTHS = 6
 # A previously-seen DOI is either settled (never reconsider) or actionable
 # (re-include in the next run). The denormalized `relevant` flag makes both a
 # pure indexed filter. These predicates are the single source of truth for the
-# partition and are shared by seed-run-db and the dedup queries.
-SETTLED_WHERE = "relevant = 0 OR download_status = 'downloaded'"
-ACTIONABLE_WHERE = (
-    "relevant IS NULL OR (relevant = 1 AND COALESCE(download_status, '') <> 'downloaded')"
-)
+# partition and are shared by seed-run-db and the dedup queries. `IS` compares
+# NULL as a value (NULL IS 0 is false, not NULL), so ACTIONABLE_WHERE is the
+# exact complement of SETTLED_WHERE: every row is in exactly one of the two.
+SETTLED_WHERE = "relevant IS 0 OR download_status IS 'downloaded'"
+ACTIONABLE_WHERE = f"NOT ({SETTLED_WHERE})"
 
 
 # --- date helpers -----------------------------------------------------------
@@ -123,8 +125,8 @@ def relevant_from_assessment(assessment_json: str | None) -> int | None:
 def settled_dois(ledger_path: Path) -> set[str]:
     """Return the DOIs the ledger has settled (never reconsider).
 
-    A DOI is settled if it was assessed not relevant, or already
-    downloaded. ingest-preprints uses this to skip re-fetching preprints whose
+    A DOI is settled if it was assessed not relevant, or already downloaded
+    (assessed or not). ingest-preprints uses this to skip re-fetching preprints whose
     disposition is final; relevant-not-downloaded carry-overs come back through
     seed-run-db instead (it is source-agnostic).
     """
@@ -345,7 +347,7 @@ def seed_run_db_from_ledger(
 ) -> int:
     """Copy the actionable set within [horizon_floor, end_date] into a run DB.
 
-    New papers (relevance NULL) arrive without a disposition and get assessed;
+    Never-assessed papers arrive without a relevance result and get assessed;
     relevant-not-downloaded carry-overs arrive with their assessment +
     download_status so they resume directly at the download stage -- even if they
     were not in this run's fetch window. Uses INSERT OR IGNORE so rows already in
@@ -411,7 +413,8 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
     not-relevant result with a `refused` marker, so it is settled like any
     other paper assessed not relevant. Papers absent from the ledger (expansion /
     discovered-citation papers, keyed by DOI) are inserted with their metadata so
-    a later PubMed fetch recognises them as already-processed. Papers already in
+    a later PubMed fetch recognises them as already-processed. Such a paper has
+    no relevance result; once downloaded it is settled. Papers already in
     the ledger keep their fetched metadata (canonical/fresher) and only have
     their disposition updated.
 

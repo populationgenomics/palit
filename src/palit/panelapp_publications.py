@@ -28,6 +28,7 @@ from palit.panelapp_client import (
     find_gene_panel,
 )
 from palit.progress import LoggingProgress as Progress
+from palit.run_corpus import run_genes
 
 logger = logging.getLogger(__name__)
 
@@ -60,21 +61,6 @@ class SeedStats:
     already_present: int
     added: int
     unresolved: int
-
-
-def _genes_under_assessment(db_path: Path) -> list[int]:
-    """Genes this run is assessing, i.e. those with papers from the recent window."""
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT DISTINCT hgnc_id
-            FROM gene_mentions
-            WHERE source = 'recent_evidence'
-            ORDER BY hgnc_id
-            """
-        )
-        return [row[0] for row in cursor.fetchall()]
 
 
 def _existing_identifiers(db_path: Path) -> tuple[set[int], set[str]]:
@@ -218,7 +204,8 @@ def seed_panelapp_publications(
     Seeded papers are stored as expansion papers scheduled for download, so they
     flow through the existing download and extraction steps unchanged.
     """
-    hgnc_ids = _genes_under_assessment(db_path)
+    with sqlite3.connect(db_path) as conn:
+        hgnc_ids = run_genes(conn)
     logger.info(f"Seeding PanelApp publications for {len(hgnc_ids)} gene(s)")
 
     missing = collect_missing_publications(db_path, panelapp_client, panel_data, hgnc_ids)

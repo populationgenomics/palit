@@ -59,6 +59,7 @@ from palit.panelapp_integration import (
     validate_independent_family_counts,
 )
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
+from palit.run_corpus import RUN_GENES
 
 app = typer.Typer(help="Aggregate evidence across papers into gene-disease-MoI associations")
 logger = logging.getLogger(__name__)
@@ -307,13 +308,12 @@ class PaperBatchProcessor:
             return evidence_list
 
     def count_remaining(self) -> int:
-        """Genes with recent evidence that have no aggregation yet."""
+        """The run's genes that have no aggregation yet."""
         with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             (remaining,) = conn.execute(
-                """
-                SELECT COUNT(DISTINCT hgnc_id) FROM gene_mentions
-                WHERE source = 'recent_evidence'
-                  AND hgnc_id NOT IN (SELECT hgnc_id FROM gene_aggregations)
+                f"""
+                SELECT COUNT(DISTINCT hgnc_id) FROM ({RUN_GENES})
+                WHERE hgnc_id NOT IN (SELECT hgnc_id FROM gene_aggregations)
                 """
             ).fetchone()
         return int(remaining)
@@ -623,22 +623,22 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
 
 
 def genes_to_assess(db_path: Path, only: list[int] | None, refusals: StageRefusals) -> list[int]:
-    """Genes with recent evidence and no aggregation, except ones refused for good and in flight.
+    """The run's genes without an aggregation, except ones refused for good and in flight.
 
-    ``only`` restricts the result to these HGNC IDs.
+    The run's genes have recent evidence from a relevant paper (see
+    :mod:`palit.run_corpus`). ``only`` restricts the result to these HGNC IDs.
     """
     with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
         rows = conn.execute(
-            """
-            SELECT DISTINCT gm.hgnc_id FROM gene_mentions gm
-            WHERE gm.source = 'recent_evidence'
-              AND gm.hgnc_id NOT IN (SELECT hgnc_id FROM gene_aggregations)
+            f"""
+            SELECT DISTINCT g.hgnc_id FROM ({RUN_GENES}) g
+            WHERE g.hgnc_id NOT IN (SELECT hgnc_id FROM gene_aggregations)
               AND NOT EXISTS (
                   SELECT 1 FROM llm_requests r
-                  WHERE r.stage = ? AND r.subject = CAST(gm.hgnc_id AS TEXT)
+                  WHERE r.stage = ? AND r.subject = CAST(g.hgnc_id AS TEXT)
                     AND r.status = 'pending'
               )
-            ORDER BY gm.hgnc_id
+            ORDER BY g.hgnc_id
             """,
             (STAGE,),
         ).fetchall()
@@ -1103,7 +1103,7 @@ def main(
         logger.info(f"  Panel-scoped mode: {panel_info.get('name', 'Unknown')}")
 
     db_processor = PaperBatchProcessor(db_path)
-    logger.info(f"{db_processor.count_remaining():,} genes with recent evidence and no assessment")
+    logger.info(f"{db_processor.count_remaining():,} genes of this run without an assessment")
     prep = _GenePreparation(
         db_processor=db_processor,
         hgnc_resolver=hgnc_resolver,

@@ -12,6 +12,7 @@ import pytest
 from anthropic.types import Message
 
 from palit.extract_evidence import (
+    MAX_CONCURRENT_PAPERS,
     STAGE,
     Conversation,
     ExtractionRunner,
@@ -45,6 +46,8 @@ from palit.lookup_tools import (
     summarise_variant_response,
 )
 from palit.panelapp_integration import criteria_object_to_list
+from palit.papers import doi_to_path
+from palit.quotes import QuoteCheck
 
 CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
@@ -523,3 +526,213 @@ def test_a_refusal_in_round_two_restarts_the_conversation_on_the_fallback_model(
     with sqlite3.connect(db_path) as conn:
         refusals = stage_refusals(conn, STAGE)
     assert refusals.refused_for_good("10.1/a")
+
+
+# ---------------------------------------------------------------------------
+# Handling one round's results
+# ---------------------------------------------------------------------------
+
+
+class GatedVariantClient(VariantLookupClient):
+    """Holds every lookup until *expected* lookups are in flight at once.
+
+    Handling papers one at a time therefore times out. Released lookups finish
+    in reverse order of arrival, so the first paper to ask is the last served.
+    """
+
+    def __init__(self, expected: int) -> None:
+        self._expected = expected
+        self._arrivals = 0
+        self._all_in = asyncio.Event()
+
+    async def lookup_one(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._arrivals += 1
+        arrival = self._arrivals
+        if arrival == self._expected:
+            self._all_in.set()
+        await asyncio.wait_for(self._all_in.wait(), timeout=2)
+        await asyncio.sleep(0.01 * (self._expected - arrival))
+        return {
+            "normalized": [
+                {
+                    "hgvs_c": body["variant"],
+                    "hgvs_p": None,
+                    "pseudo_vcf": f"vcf:{body['variant']}",
+                    "frequency": {"ac": 1, "an": 10},
+                }
+            ]
+        }
+
+    async def aclose(self) -> None:
+        pass
+
+
+class GroundedQuotes:
+    """Stands in for PaperQuotes: every quote is in the PDF."""
+
+    def __init__(self, pdf_bytes: bytes) -> None:
+        pass
+
+    def check(self, quotes: list[str]) -> QuoteCheck:
+        return QuoteCheck(rejected=[], text_layer=True)
+
+    def locate(self, quotes: list[str]) -> dict[str, list[dict[str, Any]]]:
+        return {quote: [] for quote in quotes}
+
+
+def _round_one_db(tmp_path: Path, dois: list[str]) -> Path:
+    """A run database with each paper's round-1 conversation, and an empty PDF file each."""
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, title, source, source_type, download_status) "
+            "VALUES (?, 't', 'pubmed', 'initial', 'downloaded')",
+            [(doi,) for doi in dois],
+        )
+        for doi in dois:
+            start_conversation(
+                conn,
+                Conversation(
+                    doi=doi, round=1, messages=[{"role": "user", "content": "paper"}], model=MODEL
+                ),
+            )
+    for doi in dois:
+        doi_to_path(doi, tmp_path, ".pdf").write_bytes(b"")
+    return db_path
+
+
+def _runner(
+    tmp_path: Path, db_path: Path, hgnc_resolver: HgncResolver, variants: VariantLookupClient
+) -> ExtractionRunner:
+    schema = {"type": "object"}
+    return ExtractionRunner(
+        transport=RoundTwoRefuser(),
+        db_path=db_path,
+        papers_dir=tmp_path,
+        settings=RequestSettings(
+            system="s", output_config=json_output_config(schema, "medium"), cache_pdf=False
+        ),
+        schema=schema,
+        hgnc_resolver=hgnc_resolver,
+        lookups=LookupRunner(variants, hgnc_resolver),
+    )
+
+
+def _round_one_result(
+    doi: str, status: ResultStatus, message: Message | None, error_type: str | None = None
+) -> LlmResult:
+    return LlmResult(
+        custom_id=f"{STAGE}-1-{doi}",
+        batch_id=None,
+        stage=STAGE,
+        subject=doi,
+        round=1,
+        model=MODEL,
+        status=status,
+        message=message,
+        error_type=error_type,
+    )
+
+
+def _variant_lookup(variant: str) -> Message:
+    return _message(
+        "tool_use",
+        [
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "lookup_variants",
+                "input": {
+                    "variants": [
+                        {"gene_symbol": "GENEA", "variant": variant, "genome_build": "GRCh38"}
+                    ]
+                },
+            }
+        ],
+        MODEL,
+    )
+
+
+def test_a_round_handles_papers_concurrently_and_counts_every_outcome(
+    tmp_path: Path, hgnc_resolver: HgncResolver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two papers look up a variant in round 1, and one more in its final answer.
+
+    The gated client releases those three lookups only once all are in flight,
+    so the round must be handled concurrently. The next round keeps result order.
+    """
+    monkeypatch.setattr("palit.extract_evidence.PaperQuotes", GroundedQuotes)
+    entity = {
+        **_entity(1, 1),
+        "evidence_assessments": {
+            name: {"result": False, "rationale": "r", "confidence": "LOW", "citations": []}
+            for name in CRITERIA
+        },
+    }
+    extraction = {"genome_build": "GRCh38", "gene_evaluations": [_gene("GENEA", [entity])]}
+    results = [
+        _round_one_result("10.1/a", ResultStatus.SUCCEEDED, _variant_lookup("c.1A>G")),
+        _round_one_result("10.1/b", ResultStatus.SUCCEEDED, _variant_lookup("c.2A>G")),
+        _round_one_result("10.1/c", ResultStatus.REFUSED, _message("refusal", [], MODEL)),
+        _round_one_result("10.1/d", ResultStatus.ERRORED, None, "api_error"),
+        _round_one_result(
+            "10.1/e",
+            ResultStatus.SUCCEEDED,
+            _message("end_turn", [{"type": "text", "text": json.dumps(extraction)}], MODEL),
+        ),
+        _round_one_result("10.1/f", ResultStatus.SUCCEEDED, _message("max_tokens", [], MODEL)),
+    ]
+    assert MAX_CONCURRENT_PAPERS >= 3
+    db_path = _round_one_db(tmp_path, [result.subject for result in results])
+
+    async def run() -> RoundOutcome:
+        runner = _runner(tmp_path, db_path, hgnc_resolver, GatedVariantClient(3))
+        return await runner.handle(results)
+
+    outcome = asyncio.run(run())
+    assert (outcome.stored, outcome.refused, outcome.to_fallback, outcome.failed) == (1, 1, 1, 2)
+    assert [(c.doi, c.round) for c in outcome.next_round] == [("10.1/a", 2), ("10.1/b", 2)]
+    looked_up = [
+        json.loads(c.messages[-1]["content"][0]["content"])["results"][0]["variant"]
+        for c in outcome.next_round
+    ]
+    assert looked_up == ["c.1A>G", "c.2A>G"]
+    with sqlite3.connect(db_path) as conn:
+        recorded = conn.execute("SELECT subject, status FROM llm_requests ORDER BY subject")
+        assert recorded.fetchall() == [
+            ("10.1/a", "succeeded"),
+            ("10.1/b", "succeeded"),
+            ("10.1/c", "refused"),
+            ("10.1/d", "errored"),
+            ("10.1/e", "succeeded"),
+            ("10.1/f", "succeeded"),
+        ]
+        rounds = conn.execute(
+            "SELECT subject, round FROM llm_conversations WHERE round > 1 ORDER BY subject"
+        )
+        assert rounds.fetchall() == [("10.1/a", 2), ("10.1/b", 2)]
+        extracted = conn.execute("SELECT doi FROM papers WHERE evidence_extraction_json NOT NULL")
+        assert extracted.fetchall() == [("10.1/e",)]
+        frequencies = conn.execute("SELECT paper_doi, variant_id FROM variant_frequencies")
+        assert frequencies.fetchall() == [("10.1/e", "vcf:c.1A>G")]
+
+
+def test_invalid_requests_raise_once_every_result_is_recorded(
+    tmp_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    results = [
+        _round_one_result("10.1/x", ResultStatus.ERRORED, None, "invalid_request_error"),
+        _round_one_result("10.1/y", ResultStatus.REFUSED, _message("refusal", [], MODEL)),
+    ]
+    db_path = _round_one_db(tmp_path, [result.subject for result in results])
+
+    async def run() -> RoundOutcome:
+        runner = _runner(tmp_path, db_path, hgnc_resolver, GatedVariantClient(0))
+        return await runner.handle(results)
+
+    with pytest.raises(RuntimeError, match=r"1 extraction requests were invalid \(first: 10.1/x\)"):
+        asyncio.run(run())
+    with sqlite3.connect(db_path) as conn:
+        recorded = conn.execute("SELECT subject, status FROM llm_requests ORDER BY subject")
+        assert recorded.fetchall() == [("10.1/x", "errored"), ("10.1/y", "refused")]

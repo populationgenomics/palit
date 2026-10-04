@@ -25,7 +25,9 @@ import logging
 import re
 import sqlite3
 from collections import defaultdict
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator
+from contextlib import closing, contextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -61,6 +63,7 @@ from palit.llm import (
 from palit.llm_usage import print_stage_summary
 from palit.lookup_tools import (
     LOOKUP_VARIANTS_TOOL,
+    MAX_IN_FLIGHT,
     TOOLS,
     LookupRunner,
     VariantLookupClient,
@@ -90,6 +93,14 @@ FILE_EXPIRY_MARGIN = timedelta(days=3)
 MAX_CONCURRENT_UPLOADS = 8
 # Claude's PDF input limit.
 MAX_PDF_PAGES = 600
+
+# Papers whose results one round handles at once. VariantLookupClient caps the
+# requests in flight to the variant-lookup service at the service's own limit;
+# this cap only bounds the papers waiting on it. Matching the two keeps the
+# service busy even when each paper has a single variant to look up. Beyond
+# that, more papers would only hold more PDF quote indexes in memory and
+# delay the moment each paper's result is stored.
+MAX_CONCURRENT_PAPERS = MAX_IN_FLIGHT
 
 FINALISE_TEXT = (
     "These are all the lookup results. Write the final JSON answer now. "
@@ -436,13 +447,37 @@ async def upload_pdfs(
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _transaction(db_path: Path) -> Iterator[sqlite3.Connection]:
+    """A connection that commits on success, rolls back on error, and is closed on exit.
+
+    A round's results are handled concurrently on the event loop, so no
+    connection may outlive the synchronous code that uses it: every
+    transaction ends before the handler reaches its next ``await``.
+    """
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        yield conn
+
+
 @dataclass
 class RoundOutcome:
-    next_round: list[Conversation]
+    next_round: list[Conversation] = field(default_factory=list)
     stored: int = 0
     refused: int = 0
     to_fallback: int = 0  # the refusals by MODEL: these papers restart on FALLBACK_MODEL
     failed: int = 0
+
+    @classmethod
+    def combine(cls, outcomes: Iterable["RoundOutcome"]) -> "RoundOutcome":
+        """The counts summed and the next-round conversations concatenated, in order."""
+        total = cls()
+        for outcome in outcomes:
+            total.next_round += outcome.next_round
+            total.stored += outcome.stored
+            total.refused += outcome.refused
+            total.to_fallback += outcome.to_fallback
+            total.failed += outcome.failed
+        return total
 
 
 class ExtractionRunner:
@@ -467,7 +502,7 @@ class ExtractionRunner:
 
     async def advance(self, conversations: list[Conversation]) -> RoundOutcome:
         """Run conversations round by round until each has ended."""
-        total = RoundOutcome(next_round=[])
+        total = RoundOutcome()
         while conversations:
             by_round: dict[int, list[Conversation]] = defaultdict(list)
             for conversation in conversations:
@@ -485,41 +520,21 @@ class ExtractionRunner:
         return total
 
     async def handle(self, results: list[LlmResult]) -> RoundOutcome:
-        outcome = RoundOutcome(next_round=[])
-        invalid_requests: list[str] = []
-        for result in results:
-            with sqlite3.connect(self._db_path) as conn:
-                messages = load_conversation(conn, result.subject, result.round)
-            message = result.message
-            if result.status == ResultStatus.REFUSED:
-                outcome.refused += 1
-                outcome.to_fallback += result.goes_to_fallback
-                log_refusal(result, f"{result.subject} in round {result.round}")
-                self._record(result)
-            elif result.status != ResultStatus.SUCCEEDED:
-                outcome.failed += 1
-                if result.error_type == "invalid_request_error":
-                    invalid_requests.append(result.subject)
-                self._record(result)
-            elif message is None:
-                raise AssertionError("succeeded result without a message")
-            elif message.stop_reason == "tool_use" and result.round < LAST_ROUND:
-                next_conversation = await self._next_round(result, messages, message)
-                with sqlite3.connect(self._db_path) as conn:
-                    record_result(conn, result)
-                    save_conversation(conn, next_conversation)
-                outcome.next_round.append(next_conversation)
-            elif message.stop_reason == "end_turn":
-                if await self._store_final(result, messages, message):
-                    outcome.stored += 1
-                else:
-                    outcome.failed += 1
-            else:
-                logger.warning(
-                    "%s round %d stopped with %s", result.subject, result.round, message.stop_reason
-                )
-                outcome.failed += 1
-                self._record(result)
+        """Record every result and act on it, for up to MAX_CONCURRENT_PAPERS papers at once.
+
+        The next round's conversations follow the order of *results*. Invalid
+        requests are a bug: they raise once every result is recorded.
+        """
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAPERS)
+
+        async def handle_one(result: LlmResult) -> RoundOutcome:
+            async with semaphore:
+                return await self._handle_result(result)
+
+        outcome = RoundOutcome.combine(await asyncio.gather(*map(handle_one, results)))
+        invalid_requests = [
+            result.subject for result in results if result.error_type == "invalid_request_error"
+        ]
         if invalid_requests:
             raise RuntimeError(
                 f"{len(invalid_requests)} extraction requests were invalid "
@@ -527,8 +542,41 @@ class ExtractionRunner:
             )
         return outcome
 
+    async def _handle_result(self, result: LlmResult) -> RoundOutcome:
+        """Record *result* with its paper's next conversation or extraction, if any."""
+        message = result.message
+        if result.status == ResultStatus.REFUSED:
+            log_refusal(result, f"{result.subject} in round {result.round}")
+            self._record(result)
+            return RoundOutcome(refused=1, to_fallback=int(result.goes_to_fallback))
+        if result.status != ResultStatus.SUCCEEDED:
+            self._record(result)
+            return RoundOutcome(failed=1)
+        if message is None:
+            raise AssertionError("succeeded result without a message")
+        if message.stop_reason == "tool_use" and result.round < LAST_ROUND:
+            next_conversation = await self._next_round(result, self._messages(result), message)
+            with _transaction(self._db_path) as conn:
+                record_result(conn, result)
+                save_conversation(conn, next_conversation)
+            return RoundOutcome(next_round=[next_conversation])
+        if message.stop_reason == "end_turn":
+            if await self._store_final(result, self._messages(result), message):
+                return RoundOutcome(stored=1)
+            return RoundOutcome(failed=1)
+        logger.warning(
+            "%s round %d stopped with %s", result.subject, result.round, message.stop_reason
+        )
+        self._record(result)
+        return RoundOutcome(failed=1)
+
+    def _messages(self, result: LlmResult) -> list[dict[str, Any]]:
+        """The input messages of the round *result* answers."""
+        with _transaction(self._db_path) as conn:
+            return load_conversation(conn, result.subject, result.round)
+
     def _record(self, result: LlmResult) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with _transaction(self._db_path) as conn:
             record_result(conn, result)
 
     async def _next_round(
@@ -621,7 +669,7 @@ class ExtractionRunner:
         if unresolved:
             logger.warning("%s: unresolved gene symbols: %s", doi, unresolved)
 
-        with sqlite3.connect(self._db_path) as conn:
+        with _transaction(self._db_path) as conn:
             record_result(conn, result)
             _store_extraction(conn, doi, message, normalized, locations, frequencies, self._hgnc)
         return True

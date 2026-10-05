@@ -50,6 +50,7 @@ from palit.extract_evidence import (
     save_conversation,
     select_papers,
     select_unsent_conversations,
+    sent_pdf,
     start_conversation,
     structural_problems,
     symbol_pattern,
@@ -2081,3 +2082,51 @@ def test_frequency_rows_look_up_transient_failures_again(
     assert by_variant["c.3A>G"]["candidates"][0]["vcf"] == "vcf:c.3A>G"
     assert by_variant["c.4A>G"]["candidates"][0]["vcf"] == "vcf:c.4A>G"
     assert {quote for _, _, quote, _ in rows} == {f"quote c.{n}A>G" for n in range(1, 5)}
+
+
+def _two_page_pdf(text_pdf: Callable[[list[str]], bytes], first: str, second: str) -> bytes:
+    writer = pypdf.PdfWriter()
+    for text in (first, second):
+        writer.add_page(pypdf.PdfReader(io.BytesIO(text_pdf([text]))).pages[0])
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def test_quotes_of_a_truncated_pdf_are_located_in_the_pages_sent(
+    tmp_path: Path, text_pdf: Callable[[list[str]], bytes]
+) -> None:
+    first = "The proband carried a homozygous frameshift variant in the gene."
+    second = "Supplementary table listing every variant called in the exome."
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(_two_page_pdf(text_pdf, first, second))
+    db_path = tmp_path / "run.sqlite"
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        conn.execute(
+            "INSERT INTO papers (doi, title, source, source_type) "
+            "VALUES ('10.1/t', 't', 'pubmed', 'expansion')"
+        )
+        conn.execute(
+            "INSERT INTO pdf_page_limits "
+            "(doi, sha256, total_pages, pages, input_tokens, counted_at) "
+            "VALUES ('10.1/t', ?, 2, 1, 900000, '2026-10-06')",
+            (hashlib.sha256(pdf_path.read_bytes()).hexdigest(),),
+        )
+
+    locations = PaperQuotes(sent_pdf(db_path, "10.1/t", pdf_path)).locate([first, second])
+
+    assert [box["page"] for box in locations[first]] == [1]
+    assert locations[second] == []
+
+
+def test_an_untruncated_pdf_is_used_whole(
+    tmp_path: Path, text_pdf: Callable[[list[str]], bytes]
+) -> None:
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(_two_page_pdf(text_pdf, "a", "b"))
+    db_path = tmp_path / "run.sqlite"
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+
+    assert sent_pdf(db_path, "10.1/t", pdf_path) == pdf_path.read_bytes()

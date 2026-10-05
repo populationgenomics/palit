@@ -685,6 +685,27 @@ def page_copy(pdf_bytes: bytes, start: int, end: int) -> bytes:
     return buffer.getvalue()
 
 
+def sent_pdf(db_path: Path, doi: str, pdf_path: Path) -> bytes:
+    """The pages of the paper's PDF that its extraction requests held.
+
+    A PDF truncated to fit the context window was sent as its leading pages, so
+    its quotes can only come from them. Pages 1..N are the same in both files,
+    so locating quotes in the copy gives the original's page numbers, without
+    indexing pages the model never saw.
+    """
+    pdf_bytes = pdf_path.read_bytes()
+    with closing(sqlite3.connect(db_path)) as conn:
+        limit = conn.execute(
+            "SELECT sha256, pages, total_pages FROM pdf_page_limits WHERE doi = ?", (doi,)
+        ).fetchone()
+    if limit is None:
+        return pdf_bytes
+    sha256, pages, total_pages = limit
+    if pages >= total_pages or sha256 != hashlib.sha256(pdf_bytes).hexdigest():
+        return pdf_bytes
+    return page_copy(pdf_bytes, 0, pages)
+
+
 def countable_range(pdf_bytes: bytes, start: int, end: int) -> tuple[int, bytes]:
     """The end of a range of pages from *start*, up to *end*, small enough to count, and its copy.
 
@@ -1287,7 +1308,9 @@ class ExtractionRunner:
 
         placeholders = drop_placeholder_citations(extraction)
         quotes = {quote for quote in extraction_quotes(extraction) if not is_placeholder(quote)}
-        pdf_quotes = PaperQuotes(doi_to_path(doi, self._papers_dir, ".pdf").read_bytes())
+        pdf_quotes = PaperQuotes(
+            sent_pdf(self._db_path, doi, doi_to_path(doi, self._papers_dir, ".pdf"))
+        )
         if not pdf_quotes.can_locate:
             logger.warning(
                 "%s: the PDF's text layer has undecodable characters; no quote can be highlighted",

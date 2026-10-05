@@ -13,6 +13,10 @@ A final answer is stored only when it passes the schema, the structural checks,
 and the quote check (every quote verbatim in the PDF). Otherwise the paper stays
 unextracted and the next attempt starts a fresh conversation.
 
+An interrupted run loses no paid round: a restart handles the results of its
+uncollected batches, then continues every saved conversation whose latest round
+was never sent, before it starts any paper from round 1.
+
 A conversation stays on the model it started on. When MODEL refuses a paper in
 any round, the next attempt starts the paper's conversation afresh from round 1
 on FALLBACK_MODEL: thinking blocks cannot be replayed to another model.
@@ -356,41 +360,152 @@ def variant_lookup_results(messages: list[dict[str, Any]]) -> list[dict[str, Any
 # ---------------------------------------------------------------------------
 
 
-def select_papers(
-    db_path: Path, only: list[str] | None, limit: int | None, refusals: StageRefusals
+@dataclass(frozen=True)
+class UnsentRound:
+    """A paper's latest saved conversation round, for which no request was sent."""
+
+    round: int
+    model: str  # of the request that led to the round, which the conversation stays on
+
+
+def unsent_rounds(conn: sqlite3.Connection) -> dict[str, UnsentRound]:
+    """Every paper whose latest saved conversation round was never sent, by DOI.
+
+    Round N + 1 is saved in the transaction that records the round-N request
+    that led to it, which is the paper's latest round-N request: a later attempt
+    starts with :func:`start_conversation`, which deletes the saved rounds. A
+    round-N + 1 request sent after the save is pending or completed after that
+    round-N request; one from an earlier attempt completed before it.
+
+    A saved round 1 without a request is left to the next attempt, which starts
+    the paper afresh: no request has been paid for in that conversation.
+
+    Raises RuntimeError when the request that led to an unsent round is missing
+    or did not end with a tool call: the two are written together.
+    """
+    rows = conn.execute(
+        """
+        WITH latest AS (
+            SELECT subject, MAX(round) AS round FROM llm_conversations
+            WHERE stage = :stage
+            GROUP BY subject
+        ),
+        led_by AS (
+            SELECT l.subject, l.round, (
+                SELECT r.custom_id FROM llm_requests r
+                WHERE r.stage = :stage AND r.subject = l.subject AND r.round = l.round - 1
+                  AND r.completed_at IS NOT NULL
+                ORDER BY r.completed_at DESC
+                LIMIT 1
+            ) AS custom_id
+            FROM latest l
+            WHERE l.round > 1
+        )
+        SELECT b.subject, b.round, r.model, r.status, r.stop_reason
+        FROM led_by b
+        LEFT JOIN llm_requests r ON r.custom_id = b.custom_id
+        WHERE NOT EXISTS (
+            SELECT 1 FROM llm_requests s
+            WHERE s.stage = :stage AND s.subject = b.subject AND s.round = b.round
+              AND (s.completed_at IS NULL OR r.completed_at IS NULL
+                   OR s.completed_at > r.completed_at)
+        )
+        """,
+        {"stage": STAGE},
+    ).fetchall()
+    inconsistent = [
+        subject
+        for subject, _, _, status, stop_reason in rows
+        if (status, stop_reason) != (ResultStatus.SUCCEEDED.value, "tool_use")
+    ]
+    if inconsistent:
+        raise RuntimeError(
+            f"{len(inconsistent)} saved extraction conversations (first: {inconsistent[0]}) "
+            "follow no round that ended with a tool call; see llm_conversations"
+        )
+    return {
+        subject: UnsentRound(round=round_no, model=model) for subject, round_no, model, _, _ in rows
+    }
+
+
+def _due_papers(
+    conn: sqlite3.Connection, only: list[str] | None, refusals: StageRefusals
 ) -> list[dict[str, Any]]:
     """Downloaded corpus papers without an extraction, except ones in flight and ones refused for good.
 
     An initial paper is in the corpus only when assessed relevant (see :mod:`palit.run_corpus`).
     ``only`` restricts the result to these DOIs.
     """
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"""
-            SELECT doi, source_date, title, abstract
-            FROM papers p
-            WHERE download_status = 'downloaded'
-              AND evidence_extraction_json IS NULL
-              AND {CORPUS_PAPER}
-              AND NOT EXISTS (
-                  SELECT 1 FROM llm_requests r
-                  WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'pending'
-              )
-            ORDER BY doi
-            """,
-            (STAGE,),
-        ).fetchall()
+    cursor = conn.cursor()
+    cursor.row_factory = sqlite3.Row
+    rows = cursor.execute(
+        f"""
+        SELECT doi, source_date, title, abstract
+        FROM papers p
+        WHERE download_status = 'downloaded'
+          AND evidence_extraction_json IS NULL
+          AND {CORPUS_PAPER}
+          AND NOT EXISTS (
+              SELECT 1 FROM llm_requests r
+              WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'pending'
+          )
+        ORDER BY doi
+        """,
+        (STAGE,),
+    ).fetchall()
     papers = [dict(row) for row in rows if not refusals.refused_for_good(row["doi"])]
     if only is not None:
         wanted = set(only)
         papers = [paper for paper in papers if paper["doi"] in wanted]
+    return papers
+
+
+def select_papers(
+    db_path: Path, only: list[str] | None, limit: int | None, refusals: StageRefusals
+) -> list[dict[str, Any]]:
+    """The papers due an extraction that start from round 1.
+
+    These are the papers of :func:`_due_papers` without an unsent round (see
+    :func:`unsent_rounds`), which :func:`select_unsent_conversations` continues.
+    """
+    with closing(sqlite3.connect(db_path)) as conn:
+        unsent = unsent_rounds(conn)
+        papers = [
+            paper for paper in _due_papers(conn, only, refusals) if paper["doi"] not in unsent
+        ]
     return papers if limit is None else papers[:limit]
+
+
+def select_unsent_conversations(
+    db_path: Path, only: list[str] | None, limit: int | None, refusals: StageRefusals
+) -> list[Conversation]:
+    """The saved conversations of the papers due an extraction that have an unsent round.
+
+    Each continues from its unsent round on the model it is on. ``only`` and
+    ``limit`` restrict the papers as in :func:`select_papers`.
+    """
+    with closing(sqlite3.connect(db_path)) as conn:
+        unsent = unsent_rounds(conn)
+        dois = [
+            paper["doi"] for paper in _due_papers(conn, only, refusals) if paper["doi"] in unsent
+        ]
+        if limit is not None:
+            dois = dois[:limit]
+        return [
+            Conversation(
+                doi=doi,
+                round=unsent[doi].round,
+                messages=load_conversation(conn, doi, unsent[doi].round),
+                model=unsent[doi].model,
+            )
+            for doi in dois
+        ]
 
 
 def unselected_reasons(db_path: Path, dois: list[str], refusals: StageRefusals) -> dict[str, str]:
     """The reason :func:`select_papers` leaves out each of *dois* that it leaves out."""
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
+        unsent = unsent_rounds(conn)
         rows = conn.execute(
             f"""
             SELECT doi, download_status, evidence_extraction_json IS NOT NULL, {CORPUS_PAPER},
@@ -421,6 +536,10 @@ def unselected_reasons(db_path: Path, dois: list[str], refusals: StageRefusals) 
             reasons[doi] = "a request for it is still pending"
         elif refusals.refused_for_good(doi):
             reasons[doi] = "refused by both models (see --retry-refused)"
+        elif (unsent_round := unsent.get(doi)) is not None:
+            reasons[doi] = (
+                f"its saved round-{unsent_round.round} conversation waits to be continued"
+            )
     return reasons
 
 
@@ -884,11 +1003,17 @@ async def _process_evidence(
 ) -> None:
     """Extract every paper due an extraction, in attempts of whole conversations.
 
+    First, the results of earlier batches are handled, and every saved
+    conversation whose latest round was never sent is continued: the ones those
+    results lead on to, and the ones an interrupted run saved but did not send.
+    Then come the attempts, which start papers from round 1.
+
     ``only`` restricts the run to these DOIs; requested papers that are not due
-    an extraction are logged with the reason. An attempt makes progress when it
-    stores an extraction or sends a paper on to FALLBACK_MODEL, so a round of
-    refusals by MODEL is followed by the attempt that restarts those papers on
-    FALLBACK_MODEL.
+    an extraction are logged with the reason. ``limit`` caps the papers this run
+    sends requests for, continued conversations first. An attempt makes progress
+    when it stores an extraction or sends a paper on to FALLBACK_MODEL, so a
+    round of refusals by MODEL is followed by the attempt that restarts those
+    papers on FALLBACK_MODEL.
     """
     resumed = await transport.resume(STAGE)
     if resumed:
@@ -900,14 +1025,33 @@ async def _process_evidence(
             outcome.refused,
             outcome.failed,
         )
-        continued = await runner.advance(outcome.next_round)
-        logger.info("Finished resumed conversations: stored %d", continued.stored)
+
+    with sqlite3.connect(db_path) as conn:
+        refusals = stage_refusals(conn, STAGE, refusals_since)
+    unsent = select_unsent_conversations(db_path, only, limit, refusals)
+    if unsent:
+        logger.info("Continuing %d saved conversations from their unsent round", len(unsent))
+        continued = await runner.advance(unsent)
+        logger.info(
+            "Continued conversations: stored %d, refused %d (%d go to the fallback model), "
+            "failed %d",
+            continued.stored,
+            continued.refused,
+            continued.to_fallback,
+            continued.failed,
+        )
 
     if only is not None:
         with sqlite3.connect(db_path) as conn:
             refusals = stage_refusals(conn, STAGE, refusals_since)
         for doi, reason in unselected_reasons(db_path, only, refusals).items():
             logger.warning("Not extracting %s: %s", doi, reason)
+
+    if limit is not None:
+        limit -= len(unsent)
+        if limit == 0:
+            logger.info("The continued conversations reached --limit; no new papers")
+            return
 
     for attempt in range(1, max_retries + 1):
         with sqlite3.connect(db_path) as conn:
@@ -994,7 +1138,8 @@ def main(
     limit: int | None = typer.Option(
         None,
         "--limit",
-        help="Extract at most this many papers, in one attempt (for prompt development)",
+        help="Extract at most this many papers: saved conversations to continue first, then "
+        "new papers in one attempt (for prompt development)",
     ),
     max_retries: int = typer.Option(
         5,

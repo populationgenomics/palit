@@ -32,6 +32,7 @@ from palit.extract_evidence import (
     normalize_extraction_genes,
     prune_citations,
     select_papers,
+    select_unsent_conversations,
     start_conversation,
     structural_problems,
     symbol_pattern,
@@ -947,3 +948,337 @@ def test_invalid_requests_raise_once_every_result_is_recorded(
     with sqlite3.connect(db_path) as conn:
         recorded = conn.execute("SELECT subject, status FROM llm_requests ORDER BY subject")
         assert recorded.fetchall() == [("10.1/x", "errored"), ("10.1/y", "refused")]
+
+
+# ---------------------------------------------------------------------------
+# Continuing saved conversations after an interruption
+# ---------------------------------------------------------------------------
+
+
+def test_unsent_rounds_are_the_latest_saved_rounds_no_request_followed(tmp_path: Path) -> None:
+    """A round counts as sent only by a request after the one that led to it.
+
+    A saved round 1 alone starts afresh. Papers with an unsent round are continued
+    on their conversation's model, not started from round 1.
+    """
+    db_path = tmp_path / "run.sqlite"
+    conversations = {
+        "10.1/unsent": 2,  # an earlier attempt's round 2 errored before this round 1
+        "10.1/sent": 2,
+        "10.1/in-flight": 2,
+        "10.1/fresh": 1,
+        "10.1/fallback": 2,
+        "10.1/round3": 3,
+    }
+    requests = [
+        ("10.1/unsent", 2, MODEL, "errored", None, "2026-10-01T00:00:01+00:00"),
+        ("10.1/unsent", 1, MODEL, "succeeded", "tool_use", "2026-10-01T00:00:02+00:00"),
+        ("10.1/sent", 1, MODEL, "succeeded", "tool_use", "2026-10-01T00:00:01+00:00"),
+        ("10.1/sent", 2, MODEL, "succeeded", "max_tokens", "2026-10-01T00:00:02+00:00"),
+        ("10.1/in-flight", 1, MODEL, "succeeded", "tool_use", "2026-10-01T00:00:01+00:00"),
+        ("10.1/in-flight", 2, MODEL, "pending", None, None),
+        ("10.1/fallback", 2, MODEL, "refused", "refusal", "2026-10-01T00:00:01+00:00"),
+        ("10.1/fallback", 1, FALLBACK_MODEL, "succeeded", "tool_use", "2026-10-01T00:00:02+00:00"),
+        ("10.1/round3", 1, MODEL, "succeeded", "tool_use", "2026-10-01T00:00:01+00:00"),
+        ("10.1/round3", 2, MODEL, "succeeded", "tool_use", "2026-10-01T00:00:02+00:00"),
+    ]
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, title, source, source_type, download_status) "
+            "VALUES (?, 't', 'pubmed', 'expansion', 'downloaded')",
+            [(doi,) for doi in conversations],
+        )
+        conn.executemany(
+            "INSERT INTO llm_conversations (stage, subject, round, messages_json) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                (
+                    STAGE,
+                    doi,
+                    round_no,
+                    json.dumps([{"role": "user", "content": f"round {round_no}"}]),
+                )
+                for doi, latest in conversations.items()
+                for round_no in range(1, latest + 1)
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, "
+            "stop_reason, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(f"r{i}", STAGE, *request) for i, request in enumerate(requests)],
+        )
+        refusals = stage_refusals(conn, STAGE)
+
+    assert [p["doi"] for p in select_papers(db_path, None, None, refusals)] == [
+        "10.1/fresh",
+        "10.1/sent",
+    ]
+    continued = select_unsent_conversations(db_path, None, None, refusals)
+    assert [(c.doi, c.round, c.model, c.messages) for c in continued] == [
+        ("10.1/fallback", 2, FALLBACK_MODEL, [{"role": "user", "content": "round 2"}]),
+        ("10.1/round3", 3, MODEL, [{"role": "user", "content": "round 3"}]),
+        ("10.1/unsent", 2, MODEL, [{"role": "user", "content": "round 2"}]),
+    ]
+    assert [c.doi for c in select_unsent_conversations(db_path, None, 1, refusals)] == [
+        "10.1/fallback"
+    ]
+    only = ["10.1/unsent", "10.1/in-flight"]
+    assert [c.doi for c in select_unsent_conversations(db_path, only, None, refusals)] == [
+        "10.1/unsent"
+    ]
+    assert select_papers(db_path, only, None, refusals) == []
+    assert unselected_reasons(db_path, only, refusals) == {
+        "10.1/unsent": "its saved round-2 conversation waits to be continued",
+        "10.1/in-flight": "a request for it is still pending",
+    }
+
+    # A saved round after a round that did not end in a tool call breaks the protocol.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO llm_conversations (stage, subject, round, messages_json) "
+            "VALUES (?, '10.1/fresh', 2, '[]')",
+            (STAGE,),
+        )
+        conn.execute(
+            "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, "
+            "stop_reason, completed_at) VALUES ('broken', ?, '10.1/fresh', 1, ?, 'refused', "
+            "'refusal', '2026-10-01T00:00:01+00:00')",
+            (STAGE, MODEL),
+        )
+    with pytest.raises(
+        RuntimeError, match=r"1 saved extraction conversations \(first: 10.1/fresh\)"
+    ):
+        select_papers(db_path, None, None, refusals)
+
+
+class ScriptedBatches:
+    """Keeps pending requests in ``llm_requests`` as BatchTransport does, and answers them.
+
+    Round 1 looks up the paper's variant; round 2 is the final answer.
+    """
+
+    def __init__(self, db_path: Path, variants: dict[str, str], final_answer: str) -> None:
+        self._db_path = db_path
+        self._variants = variants
+        self._final_answer = final_answer
+        self.sent: list[tuple[int, str, str]] = []  # (round, subject, model)
+        self.requests: list[LlmRequest] = []
+
+    async def run(
+        self, stage: str, round_no: int, requests: Sequence[LlmRequest]
+    ) -> list[LlmResult]:
+        rows = [
+            (f"{stage}-{round_no}-{request.subject}", request.subject, request.params["model"])
+            for request in requests
+        ]
+        with sqlite3.connect(self._db_path) as conn:
+            conn.executemany(
+                "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status) "
+                "VALUES (?, ?, ?, ?, ?, 'pending')",
+                [
+                    (custom_id, stage, subject, round_no, model)
+                    for custom_id, subject, model in rows
+                ],
+            )
+        self.sent += [(round_no, subject, model) for _, subject, model in rows]
+        self.requests += requests
+        return [self._result(stage, round_no, *row) for row in rows]
+
+    async def resume(self, stage: str) -> list[LlmResult]:
+        with sqlite3.connect(self._db_path) as conn:
+            pending = conn.execute(
+                "SELECT round, custom_id, subject, model FROM llm_requests "
+                "WHERE stage = ? AND status = 'pending' ORDER BY custom_id",
+                (stage,),
+            ).fetchall()
+        return [self._result(stage, *row) for row in pending]
+
+    def _result(
+        self, stage: str, round_no: int, custom_id: str, subject: str, model: str
+    ) -> LlmResult:
+        message = (
+            _variant_lookup(self._variants[subject])
+            if round_no == 1
+            else _message("end_turn", [{"type": "text", "text": self._final_answer}], model)
+        )
+        return LlmResult(
+            custom_id=custom_id,
+            batch_id=None,
+            stage=stage,
+            subject=subject,
+            round=round_no,
+            model=model,
+            status=ResultStatus.SUCCEEDED,
+            message=message,
+            error_type=None,
+        )
+
+
+class HangingVariantClient(VariantLookupClient):
+    """Answers every variant lookup, except that the ones for *hanging* never return."""
+
+    def __init__(self, hanging: set[str]) -> None:
+        self._hanging = hanging
+
+    async def lookup_one(self, body: dict[str, Any]) -> dict[str, Any]:
+        if body["variant"] in self._hanging:
+            await asyncio.Event().wait()
+        return {
+            "normalized": [
+                {
+                    "hgvs_c": body["variant"],
+                    "hgvs_p": None,
+                    "pseudo_vcf": f"vcf:{body['variant']}",
+                    "frequency": {"ac": 1, "an": 10},
+                }
+            ]
+        }
+
+    async def aclose(self) -> None:
+        pass
+
+
+def test_a_restart_continues_the_conversations_an_interrupted_run_saved(
+    tmp_path: Path,
+    hgnc_resolver: HgncResolver,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Handling round 1 stops while one paper's lookup hangs; a restart pays no round 1 again.
+
+    The two papers handled before the stop continue from their saved round 2, and
+    the third from the resumed batch, all in one round-2 batch.
+    """
+    monkeypatch.setattr("palit.extract_evidence.PaperQuotes", GroundedQuotes)
+    document = pdfium.PdfDocument.new()
+    document.new_page(595, 842)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    pdf = buffer.getvalue()
+    expires_at = (datetime.now(UTC) + timedelta(days=30)).isoformat()
+    variants = {"10.1/a": "c.1A>G", "10.1/b": "c.2A>G", "10.1/c": "c.3A>G"}
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        for doi in variants:
+            conn.execute(
+                "INSERT INTO papers (doi, title, source, source_type, download_status) "
+                "VALUES (?, 't', 'pubmed', 'expansion', 'downloaded')",
+                (doi,),
+            )
+            doi_to_path(doi, tmp_path, ".pdf").write_bytes(pdf)
+            conn.execute(
+                "INSERT INTO uploaded_files (doi, file_id, sha256, uploaded_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (doi, f"file-{doi}", hashlib.sha256(pdf).hexdigest(), expires_at, expires_at),
+            )
+    entity = {
+        **_entity(1, 1),
+        "evidence_assessments": {
+            name: {"result": False, "rationale": "r", "confidence": "LOW", "citations": []}
+            for name in CRITERIA
+        },
+    }
+    final_answer = json.dumps(
+        {"genome_build": "GRCh38", "gene_evaluations": [_gene("GENEA", [entity])]}
+    )
+    schema = {"type": "object"}
+    settings = RequestSettings(
+        system="s", output_config=json_output_config(schema, "medium"), cache_pdf=False
+    )
+
+    async def invocation(transport: ScriptedBatches, lookups: VariantLookupClient) -> None:
+        await _process_evidence(
+            client=AsyncAnthropic(api_key="unused"),
+            runner=ExtractionRunner(
+                transport=transport,
+                db_path=db_path,
+                papers_dir=tmp_path,
+                settings=settings,
+                schema=schema,
+                hgnc_resolver=hgnc_resolver,
+                lookups=LookupRunner(lookups, hgnc_resolver),
+            ),
+            transport=transport,
+            db_path=db_path,
+            papers_dir=tmp_path,
+            settings=settings,
+            only=None,
+            limit=None,
+            max_retries=5,
+            refusals_since=EVERY_REFUSAL,
+        )
+
+    interrupted = ScriptedBatches(db_path, variants, final_answer)
+
+    async def interrupted_run() -> None:
+        await asyncio.wait_for(
+            invocation(interrupted, HangingVariantClient({"c.2A>G"})), timeout=0.5
+        )
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(interrupted_run())
+    assert interrupted.sent == [(1, doi, MODEL) for doi in variants]
+    with sqlite3.connect(db_path) as conn:
+        statuses = conn.execute("SELECT subject, status FROM llm_requests ORDER BY subject")
+        assert statuses.fetchall() == [
+            ("10.1/a", "succeeded"),
+            ("10.1/b", "pending"),
+            ("10.1/c", "succeeded"),
+        ]
+
+    restarted = ScriptedBatches(db_path, variants, final_answer)
+    with caplog.at_level(logging.INFO, logger="palit.extract_evidence"):
+        asyncio.run(invocation(restarted, HangingVariantClient(set())))
+
+    assert restarted.sent == [(2, doi, MODEL) for doi in variants]
+    assert "Continuing 3 saved conversations from their unsent round" in caplog.messages
+    with sqlite3.connect(db_path) as conn:
+        extracted = conn.execute(
+            "SELECT doi FROM papers WHERE evidence_extraction_json IS NOT NULL ORDER BY doi"
+        )
+        assert [doi for (doi,) in extracted] == list(variants)
+        rounds = conn.execute(
+            "SELECT round, status, COUNT(*) FROM llm_requests GROUP BY round, status"
+        )
+        assert rounds.fetchall() == [(1, "succeeded", 3), (2, "succeeded", 3)]
+    # Each round-2 request carries the paper's own round-1 lookup.
+    assert {
+        request.subject: variant_lookup_results(
+            json.loads(json.dumps(list(request.params["messages"])))
+        )[0]["variant"]
+        for request in restarted.requests
+    } == variants
+
+
+def test_a_retried_variant_lookup_is_logged_with_its_gene_and_variant(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    attempts = 0
+
+    def time_out_once(request: httpx2.Request) -> httpx2.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx2.ReadTimeout("timed out", request=request)
+        return httpx2.Response(200, json={"normalized": []})
+
+    async def run() -> dict[str, Any]:
+        client = VariantLookupClient(
+            VariantLookupSettings(
+                VARIANT_LOOKUP_BASE_URL="http://unused.invalid", VARIANT_LOOKUP_API_KEY="x"
+            ),
+            retry_wait=tenacity.wait_none(),
+            transport=httpx2.MockTransport(time_out_once),
+        )
+        try:
+            return await client.lookup_one({"gene": "GATA2", "variant": "c.1061C>T"})
+        finally:
+            await client.aclose()
+
+    with caplog.at_level(logging.WARNING, logger="palit.lookup_tools"):
+        assert asyncio.run(run()) == {"normalized": []}
+    assert caplog.messages == [
+        f"Variant lookup GATA2 c.1061C>T: ReadTimeout; attempt 2/{MAX_ATTEMPTS} in 0.0 s"
+    ]

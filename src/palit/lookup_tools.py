@@ -13,6 +13,7 @@ compiled-grammar limit, so inputs are validated here instead.
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -126,6 +127,35 @@ def _is_5xx_or_transport(exc: BaseException) -> bool:
     return False
 
 
+def _failure(exc: BaseException) -> str:
+    """A short name for a failed request: the HTTP status, or the exception type."""
+    if isinstance(exc, httpx2.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return type(exc).__name__
+
+
+def _log_retry(body: dict[str, Any]) -> Callable[[tenacity.RetryCallState], None]:
+    """A ``before_sleep`` callback that names the variant whose lookup is retried."""
+
+    def log(state: tenacity.RetryCallState) -> None:
+        if state.outcome is None:
+            raise AssertionError("before_sleep runs after an attempt")
+        exc = state.outcome.exception()
+        if exc is None:
+            raise AssertionError("only failed lookups are retried")
+        logger.warning(
+            "Variant lookup %s %s: %s; attempt %d/%d in %.1f s",
+            body["gene"],
+            body["variant"],
+            _failure(exc),
+            state.attempt_number + 1,
+            MAX_ATTEMPTS,
+            state.upcoming_sleep,
+        )
+
+    return log
+
+
 class VariantLookupClient:
     """Async wrapper around ``POST /v1/variant``.
 
@@ -162,7 +192,7 @@ class VariantLookupClient:
                 stop=tenacity.stop_after_attempt(MAX_ATTEMPTS),
                 wait=self._retry_wait,
                 retry=tenacity.retry_if_exception(_is_5xx_or_transport),
-                before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
+                before_sleep=_log_retry(body),
                 reraise=True,
             ):
                 with attempt:

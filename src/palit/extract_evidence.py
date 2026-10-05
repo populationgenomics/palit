@@ -39,6 +39,7 @@ from anthropic import AsyncAnthropic
 from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
 from jinja2 import Environment, FileSystemLoader
+from rich.progress import TaskID
 
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import (
@@ -77,6 +78,7 @@ from palit.panelapp_integration import (
     validate_independent_family_counts,
 )
 from palit.papers import doi_to_path
+from palit.progress import LoggingProgress as Progress
 from palit.quotes import PaperQuotes
 from palit.run_corpus import CORPUS_PAPER
 
@@ -459,32 +461,37 @@ async def upload_pdfs(
         else:
             to_upload.append((doi, pdf_path, sha256))
 
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
+    if not to_upload:
+        return file_ids
 
-    async def upload(doi: str, pdf_path: Path, sha256: str) -> tuple[str, str, str]:
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
+    expires_at = (now + FILE_TTL).isoformat()
+
+    async def upload(
+        doi: str, pdf_path: Path, sha256: str, progress: Progress, task: TaskID
+    ) -> None:
         async with semaphore:
             meta = await client.files.upload(
                 file=(pdf_path.name, pdf_path.read_bytes(), "application/pdf"),
                 expires_in_seconds=int(FILE_TTL.total_seconds()),
             )
-        return doi, meta.id, sha256
+        # Recorded as soon as it completes, so an interrupted run keeps its uploads.
+        with _transaction(db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO uploaded_files
+                    (doi, file_id, sha256, uploaded_at, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (doi, meta.id, sha256, now.isoformat(), expires_at),
+            )
+        file_ids[doi] = meta.id
+        progress.advance(task)
 
-    if to_upload:
-        logger.info("Uploading %d PDFs to the Files API", len(to_upload))
-    uploaded = await asyncio.gather(*(upload(*item) for item in to_upload))
-    expires_at = (now + FILE_TTL).isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO uploaded_files (doi, file_id, sha256, uploaded_at, expires_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            [
-                (doi, file_id, sha256, now.isoformat(), expires_at)
-                for doi, file_id, sha256 in uploaded
-            ],
-        )
-    file_ids.update({doi: file_id for doi, file_id, _ in uploaded})
+    logger.info("Uploading %d PDFs to the Files API", len(to_upload))
+    with Progress() as progress:
+        task = progress.add_task("Uploading PDFs", total=len(to_upload))
+        await asyncio.gather(*(upload(*item, progress, task) for item in to_upload))
     return file_ids
 
 

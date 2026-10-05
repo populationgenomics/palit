@@ -271,20 +271,18 @@ def extraction_quotes(extraction: dict[str, Any]) -> list[str]:
     return quotes
 
 
-def prune_citations(extraction: dict[str, Any], rejected: set[str]) -> int:
+def prune_citations(extraction: dict[str, Any], rejected: set[str]) -> list[str]:
     """Remove entity, criterion, and concern citations whose quote is in *rejected*.
 
     Variant quotes stay: a variant's notation is real even when its quote can't
-    be placed (e.g. a row of a table printed as an image). Returns the number of
-    citations removed.
+    be placed (e.g. a row of a table printed as an image). Returns the quotes of
+    the removed citations, one per citation.
     """
-    removed = 0
+    removed: list[str] = []
 
     def keep(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        nonlocal removed
-        kept = [c for c in citations if c["quote"] not in rejected]
-        removed += len(citations) - len(kept)
-        return kept
+        removed.extend(c["quote"] for c in citations if c["quote"] in rejected)
+        return [c for c in citations if c["quote"] not in rejected]
 
     for gene in extraction["gene_evaluations"]:
         for entity in gene["disease_entities"]:
@@ -294,6 +292,11 @@ def prune_citations(extraction: dict[str, Any], rejected: set[str]) -> int:
         for concern in gene["quality_concerns"]:
             concern["citations"] = keep(concern["citations"])
     return removed
+
+
+def quote_sample(quotes: list[str]) -> str:
+    """The first few distinct *quotes*, shortened, for a log message."""
+    return "; ".join(repr(quote[:60]) for quote in list(dict.fromkeys(quotes))[:3])
 
 
 def structural_problems(extraction: dict[str, Any]) -> list[str]:
@@ -1302,14 +1305,24 @@ class ExtractionRunner:
             self._record(result)
             return False
         if check.rejected:
-            removed = prune_citations(extraction, set(check.rejected))
-            logger.info(
-                "%s: dropped %d citations whose quote isn't in the PDF: %s",
-                doi,
-                removed,
-                "; ".join(repr(q[:60]) for q in check.rejected[:3]),
-            )
+            dropped = prune_citations(extraction, set(check.rejected))
             quotes = extraction_quotes(extraction)
+            if dropped:
+                logger.info(
+                    "%s: dropped %d citations whose quote isn't in the PDF: %s",
+                    doi,
+                    len(dropped),
+                    quote_sample(dropped),
+                )
+            remaining = set(quotes)
+            kept = [quote for quote in check.rejected if quote in remaining]
+            if kept:
+                logger.info(
+                    "%s: kept %d variant quotes not found in the PDF: %s",
+                    doi,
+                    len(set(kept)),
+                    quote_sample(kept),
+                )
 
         locations = pdf_quotes.locate(quotes)
         frequencies = await self._frequency_rows(extraction, messages)

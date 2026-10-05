@@ -5,7 +5,9 @@ Stages build their own ``MessageCreateParamsNonStreaming`` and hand a list of
 
 * :class:`BatchTransport` (production) submits Message Batches, persists every
   batch and request in ``llm_batches`` / ``llm_requests`` before polling, and
-  re-attaches to uncollected batches on :meth:`BatchTransport.resume`.
+  re-attaches to uncollected batches on :meth:`BatchTransport.resume`. A model's
+  requests go out immediately instead when there are fewer than
+  :data:`MIN_BATCH_REQUESTS` of them.
 * :class:`ImmediateTransport` (prompt development, single-item debugging) sends
   requests concurrently through a fixed pool of workers.
 
@@ -63,6 +65,9 @@ MAX_BATCH_REQUESTS = 100_000
 MAX_BATCH_BYTES = 256_000_000
 # Headroom for the JSON envelope around each request's params.
 _BATCH_BYTES_BUDGET = int(MAX_BATCH_BYTES * 0.95)
+# Fewer requests than this for one model are sent immediately: a batch can take
+# hours however few requests it holds, and halving the price of a few saves little.
+MIN_BATCH_REQUESTS = 10
 
 DEFAULT_POLL_SECONDS = 60.0
 DEFAULT_IMMEDIATE_WORKERS = 50
@@ -442,31 +447,61 @@ def chunk_for_batches(
 
 
 class BatchTransport:
-    """Message Batches with request bookkeeping in the stage's SQLite database."""
+    """Message Batches with request bookkeeping in the stage's SQLite database.
+
+    A model's requests go through an :class:`ImmediateTransport` instead when
+    there are fewer than *min_batch_requests* of them. Like any immediate
+    request, they get no ``llm_requests`` row until the stage records the
+    result, so an interrupted run leaves their subjects due again rather than
+    pending, and :meth:`resume` never returns them.
+    """
 
     def __init__(
-        self, client: AsyncAnthropic, db_path: Path, poll_seconds: float = DEFAULT_POLL_SECONDS
+        self,
+        client: AsyncAnthropic,
+        db_path: Path,
+        poll_seconds: float = DEFAULT_POLL_SECONDS,
+        min_batch_requests: int = MIN_BATCH_REQUESTS,
     ) -> None:
         self._client = client
         self._db_path = db_path
         self._poll_seconds = poll_seconds
+        self._min_batch_requests = min_batch_requests
+        self._immediate = ImmediateTransport(client)
 
     async def run(
         self, stage: str, round_no: int, requests: Sequence[LlmRequest]
     ) -> list[LlmResult]:
-        """Submit *requests* in batches of one model each, as ``llm_batches`` records it."""
+        """Send *requests* in batches of one model each, as ``llm_batches`` records it.
+
+        A model with fewer than *min_batch_requests* requests has them sent
+        immediately, while the batches run.
+        """
         by_model: dict[str, list[LlmRequest]] = defaultdict(list)
         for request in requests:
             by_model[request.params["model"]].append(request)
-        batch_ids = [
-            await self._submit(stage, round_no, chunk)
-            for group in by_model.values()
-            for chunk in chunk_for_batches(group)
-        ]
-        results: list[LlmResult] = []
-        for batch_id in batch_ids:
-            results += await self._collect(batch_id)
-        return results
+        immediate: list[LlmRequest] = []
+        batch_ids: list[str] = []
+        for model, group in by_model.items():
+            if len(group) < self._min_batch_requests:
+                logger.info(
+                    "%s round %d: sending %d %s requests immediately, below the batch minimum of %d",
+                    stage,
+                    round_no,
+                    len(group),
+                    model,
+                    self._min_batch_requests,
+                )
+                immediate += group
+                continue
+            for chunk in chunk_for_batches(group):
+                batch_ids.append(await self._submit(stage, round_no, chunk))
+        # Every batch is recorded before the immediate requests start: an invalid
+        # immediate request raises, and must not interrupt a batch submission.
+        batched, sent = await asyncio.gather(
+            self._collect_all(batch_ids), self._immediate.run(stage, round_no, immediate)
+        )
+        return batched + sent
 
     async def resume(self, stage: str) -> list[LlmResult]:
         with sqlite3.connect(self._db_path) as conn:
@@ -480,6 +515,12 @@ class BatchTransport:
         results: list[LlmResult] = []
         for batch_id in batch_ids:
             logger.info("%s: re-attaching to uncollected batch %s", stage, batch_id)
+            results += await self._collect(batch_id)
+        return results
+
+    async def _collect_all(self, batch_ids: Sequence[str]) -> list[LlmResult]:
+        results: list[LlmResult] = []
+        for batch_id in batch_ids:
             results += await self._collect(batch_id)
         return results
 

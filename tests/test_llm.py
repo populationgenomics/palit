@@ -18,6 +18,7 @@ from anthropic.types.messages import MessageBatchIndividualResponse
 from palit.llm import (
     FALLBACK_MODEL,
     MID_STREAM_ATTEMPTS,
+    MIN_BATCH_REQUESTS,
     MODEL,
     BatchTransport,
     ImmediateTransport,
@@ -115,8 +116,9 @@ def db_path(tmp_path: Path) -> Path:
 
 
 def _transport(db_path: Path, batches: FakeBatches) -> BatchTransport:
+    """A transport that batches every request, however few."""
     client = SimpleNamespace(messages=SimpleNamespace(batches=batches))
-    return BatchTransport(client, db_path, poll_seconds=0)  # type: ignore[arg-type]
+    return BatchTransport(client, db_path, poll_seconds=0, min_batch_requests=1)  # type: ignore[arg-type]
 
 
 def test_chunking_respects_request_count() -> None:
@@ -469,3 +471,47 @@ def test_refusals_list_the_subject_outcome(db_path: Path) -> None:
         SubjectOutcome.REFUSED_FOR_GOOD: 1,
         SubjectOutcome.UNANSWERED: 1,
     }
+
+
+def _mixed_transport(db_path: Path, batches: FakeBatches, streams: FakeStreams) -> BatchTransport:
+    client = SimpleNamespace(messages=SimpleNamespace(batches=batches, stream=streams.stream))
+    return BatchTransport(client, db_path, poll_seconds=0)  # type: ignore[arg-type]
+
+
+def _requests(prefix: str, count: int, model: str) -> list[LlmRequest]:
+    return [_request(f"{prefix}-{i}", "x", model) for i in range(count)]
+
+
+def test_batch_transport_sends_a_small_model_group_immediately(db_path: Path) -> None:
+    batches = FakeBatches({"x": {"type": "succeeded", "message": _message("end_turn")}})
+    streams = FakeStreams([])
+    requests = _requests("big", 12, MODEL) + _requests("small", 3, FALLBACK_MODEL)
+    results = asyncio.run(_mixed_transport(db_path, batches, streams).run("relevance", 1, requests))
+
+    assert [len(created) for created in batches.created] == [12]
+    assert streams.calls == 3
+    assert sorted(r.subject for r in results) == sorted(r.subject for r in requests)
+    assert all(r.status == ResultStatus.SUCCEEDED for r in results)
+    assert {r.model for r in results if r.batch_id is None} == {FALLBACK_MODEL}
+    assert {r.model for r in results if r.batch_id is not None} == {MODEL}
+    with sqlite3.connect(db_path) as conn:
+        # Only the batched requests are in flight; the immediate ones get a row when recorded.
+        assert conn.execute(
+            "SELECT model, COUNT(*) FROM llm_requests WHERE status = 'pending' GROUP BY model"
+        ).fetchall() == [(MODEL, 12)]
+
+
+@pytest.mark.parametrize(
+    ("count", "batched"), [(MIN_BATCH_REQUESTS - 1, False), (MIN_BATCH_REQUESTS, True)]
+)
+def test_batch_transport_batches_from_the_minimum(db_path: Path, count: int, batched: bool) -> None:
+    batches = FakeBatches({"x": {"type": "succeeded", "message": _message("end_turn")}})
+    streams = FakeStreams([])
+    results = asyncio.run(
+        _mixed_transport(db_path, batches, streams).run(
+            "relevance", 1, _requests("doi", count, MODEL)
+        )
+    )
+    assert len(results) == count
+    assert len(batches.created) == (1 if batched else 0)
+    assert streams.calls == (0 if batched else count)

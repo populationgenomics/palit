@@ -580,11 +580,16 @@ class ExtractionRunner:
         """
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAPERS)
 
-        async def handle_one(result: LlmResult) -> RoundOutcome:
-            async with semaphore:
-                return await self._handle_result(result)
+        with Progress() as progress:
+            task = progress.add_task("Handling extraction results", total=len(results))
 
-        outcome = RoundOutcome.combine(await asyncio.gather(*map(handle_one, results)))
+            async def handle_one(result: LlmResult) -> RoundOutcome:
+                async with semaphore:
+                    outcome = await self._handle_result(result)
+                progress.advance(task)
+                return outcome
+
+            outcome = RoundOutcome.combine(await asyncio.gather(*map(handle_one, results)))
         invalid_requests = [
             result.subject for result in results if result.error_type == "invalid_request_error"
         ]

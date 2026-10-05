@@ -141,8 +141,10 @@ uv run palit download-papers register
 #    classifier does not refuse the same paper every time.
 #    A PDF too long for the context window, often an article with all its
 #    supplements in one file, is sent with only the leading pages that fit,
-#    and the model is told so. Quotes are still located in the full PDF,
-#    which the report shows.
+#    and the model is told so. Those pages leave room for 128,000 output
+#    tokens, the models' maximum; a page count stored with less room is
+#    counted again. Quotes are located in the pages that were sent, and the
+#    report shows the full PDF.
 #    Quotes never reject an answer. A quote the PDF can't place is kept, and
 #    the report and its viewer mark it as not located. Only placeholder
 #    citations that quote nothing (an empty quote, "x", "placeholder") are

@@ -47,6 +47,7 @@ from palit.extract_evidence import (
     load_conversation,
     normalize_extraction_genes,
     page_copy,
+    request_room,
     save_conversation,
     select_papers,
     select_unsent_conversations,
@@ -1049,7 +1050,7 @@ def _pdf_with_oversized_page(pages: int, oversized: int) -> bytes:
             + (ROOM - 29 * 5_000 - OVERSIZED_PAGE_TOKENS) // 50_000 * 50_000,
         ),
         # The pages before it leave less room than the estimate.
-        (lambda index: 31_000, 29, 29 * 31_000),
+        (lambda index: ROOM // 29, 29, 29 * (ROOM // 29)),
     ],
 )
 def test_a_page_too_large_to_count_is_estimated(
@@ -1158,6 +1159,36 @@ def test_a_truncated_upload_is_counted_and_uploaded_once_per_pdf_version(tmp_pat
         "10.1/long": hashlib.sha256(truncated).hexdigest(),
         "10.1/short": hashlib.sha256(short_pdf).hexdigest(),
     }
+
+
+def test_a_stored_page_limit_without_room_for_max_tokens_is_counted_again(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A limit counted with a smaller max_tokens, whose request no longer fits, is recounted."""
+    long_pdf = _numbered_pages_pdf(120)
+    db_path, papers, history = _upload_run(tmp_path, {"10.1/long": long_pdf})
+    counter = PageTokenCounter(_article_with_supplement, 20_000_000)
+    client = SimpleNamespace(messages=counter, files=FakeFiles())
+
+    def run() -> dict[str, UploadedPdf]:
+        return asyncio.run(upload_pdfs(client, db_path, papers, tmp_path, _settings(), history))  # type: ignore[arg-type]
+
+    run()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE pdf_page_limits SET pages = pages + 1, input_tokens = ?",
+            (request_room(MODEL) + 1,),
+        )
+    calls = counter.calls
+    with caplog.at_level(logging.INFO, logger="palit.extract_evidence"):
+        second = run()
+
+    assert counter.calls > calls
+    assert second["10.1/long"].pages == ARTICLE_PAGES_THAT_FIT
+    with sqlite3.connect(db_path) as conn:
+        (input_tokens,) = conn.execute("SELECT input_tokens FROM pdf_page_limits").fetchone()
+    assert input_tokens <= request_room(MODEL)
+    assert any("recounting its page limit" in message for message in caplog.messages)
 
 
 def test_quotes_from_the_kept_pages_locate_in_the_original_pdf(

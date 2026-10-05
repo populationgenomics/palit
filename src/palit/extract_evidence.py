@@ -10,8 +10,8 @@ conversation behind each round is stored byte-for-byte in ``llm_conversations``,
 because Opus 5.5 rejects replayed thinking blocks after an edited history.
 
 A PDF too long for the context window is sent with only its leading pages that
-fit, counted once per PDF version (see :func:`upload_pdfs`); the round-1
-message says so. Quotes are located in the full local PDF.
+fit, counted once per PDF version and max_tokens (see :func:`upload_pdfs`); the
+round-1 message says so. Quotes are located in the pages that were sent.
 
 A final answer is stored only when it passes the schema and the structural
 checks. Otherwise the paper stays unextracted, the request records why, and the
@@ -109,7 +109,9 @@ logger = logging.getLogger(__name__)
 
 STAGE = "extraction"
 EFFORT: Effort = "medium"
-MAX_TOKENS = 64000
+# The maximum output of MODEL and FALLBACK_MODEL. The SDK sends this many only as a
+# stream or a batch request, which is how palit sends every request.
+MAX_TOKENS = 128_000
 LAST_ROUND = 3
 
 # Files API: re-upload a PDF whose stored copy expires within this margin.
@@ -740,6 +742,30 @@ def countable_range(pdf_bytes: bytes, start: int, end: int) -> tuple[int, bytes]
         end = start + max(1, min(end - start - 1, narrowed))
 
 
+def request_room(model: str) -> int:
+    """The input tokens a request on *model* may have.
+
+    That is its context window less max_tokens and CONTEXT_MARGIN_TOKENS.
+    """
+    return CONTEXT_WINDOW[model] - MAX_TOKENS - CONTEXT_MARGIN_TOKENS
+
+
+@dataclass(frozen=True)
+class StoredPageLimit:
+    """A row of pdf_page_limits: the PDF version counted, and its fitting pages."""
+
+    sha256: str
+    pages: int
+    input_tokens: int  # of the round-1 request with those pages
+
+    def reusable(self, sha256: str, model: str) -> bool:
+        """Whether it was counted for this PDF version and its request still fits *model*.
+
+        A limit counted with a smaller max_tokens may leave too little room for output.
+        """
+        return self.sha256 == sha256 and self.input_tokens <= request_room(model)
+
+
 @dataclass(frozen=True)
 class PageLimit:
     """How many leading pages of a paper's PDF fit its round-1 request."""
@@ -785,7 +811,7 @@ async def fitting_pages(
         return await count_input_tokens(client, build_request(conversation, settings).params)
 
     without_pdf = await count(None)
-    room = CONTEXT_WINDOW[model] - MAX_TOKENS - CONTEXT_MARGIN_TOKENS - without_pdf
+    room = request_room(model) - without_pdf
     last = min(total, MAX_PDF_PAGES)
     start = 0  # pages [0, start) fit
     counted = 0  # and have this many tokens
@@ -911,8 +937,10 @@ async def upload_pdfs(
 
     A PDF over MAX_UNCOUNTED_PAGES pages holds only the leading pages that fit
     its round-1 request, counted once per PDF version (see
-    :func:`count_page_limits`). Papers whose PDF is missing, or whose first page
-    alone does not fit, are skipped.
+    :func:`count_page_limits`). A stored count is counted again when its request
+    leaves too little room for MAX_TOKENS (see :meth:`StoredPageLimit.reusable`).
+    Papers whose PDF is missing, or whose first page alone does not fit, are
+    skipped.
     """
     now = datetime.now(UTC)
     pdfs: list[LocalPdf] = []
@@ -924,23 +952,32 @@ async def upload_pdfs(
         sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
         pdfs.append(LocalPdf(paper, pdf_path, sha256, pdf_pages(pdf_path)))
 
-    def page_limits() -> dict[str, tuple[str, int]]:
-        """The counted PDF version and its fitting pages, by DOI."""
+    def page_limits() -> dict[str, StoredPageLimit]:
         with closing(sqlite3.connect(db_path)) as conn:
             return {
-                doi: (sha256, pages)
-                for doi, sha256, pages in conn.execute(
-                    "SELECT doi, sha256, pages FROM pdf_page_limits"
+                doi: StoredPageLimit(sha256, pages, input_tokens)
+                for doi, sha256, pages, input_tokens in conn.execute(
+                    "SELECT doi, sha256, pages, input_tokens FROM pdf_page_limits"
                 )
             }
 
     limits = page_limits()
-    uncounted = [
-        pdf
-        for pdf in pdfs
-        if pdf.total_pages > MAX_UNCOUNTED_PAGES
-        and ((counted := limits.get(pdf.paper["doi"])) is None or counted[0] != pdf.sha256)
-    ]
+    uncounted: list[LocalPdf] = []
+    for pdf in pdfs:
+        if pdf.total_pages <= MAX_UNCOUNTED_PAGES:
+            continue
+        doi = pdf.paper["doi"]
+        counted = limits.get(doi)
+        if counted is None or not counted.reusable(pdf.sha256, history.model_for(doi)):
+            uncounted.append(pdf)
+            if counted is not None and counted.sha256 == pdf.sha256:
+                logger.info(
+                    "%s: recounting its page limit: its request of %s input tokens leaves "
+                    "too little room for max_tokens %s",
+                    doi,
+                    f"{counted.input_tokens:,}",
+                    f"{MAX_TOKENS:,}",
+                )
     if uncounted:
         await count_page_limits(client, db_path, uncounted, settings, history)
         limits = page_limits()
@@ -957,7 +994,7 @@ async def upload_pdfs(
     to_upload: list[tuple[LocalPdf, int, str]] = []
     for pdf in pdfs:
         doi = pdf.paper["doi"]
-        pages = pdf.total_pages if pdf.total_pages <= MAX_UNCOUNTED_PAGES else limits[doi][1]
+        pages = pdf.total_pages if pdf.total_pages <= MAX_UNCOUNTED_PAGES else limits[doi].pages
         if pages == 0:
             logger.warning("Skipping %s: not even its first page fits the context window", doi)
             continue

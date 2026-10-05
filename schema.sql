@@ -220,9 +220,21 @@ CREATE TABLE llm_conversations (
 CREATE TABLE uploaded_files (
     doi TEXT PRIMARY KEY REFERENCES papers(doi),
     file_id TEXT NOT NULL,
-    sha256 TEXT NOT NULL,                 -- re-upload when the local PDF changes
+    sha256 TEXT NOT NULL,                 -- of the upload: the local PDF, or its leading pages
     uploaded_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
+);
+
+-- How many leading pages of a long PDF fit its paper's round-1 extraction
+-- request, from token counts, once per PDF version. The upload holds only
+-- those pages when they are fewer than the PDF's.
+CREATE TABLE pdf_page_limits (
+    doi TEXT PRIMARY KEY REFERENCES papers(doi),
+    sha256 TEXT NOT NULL,                 -- of the local PDF that was counted
+    total_pages INTEGER NOT NULL,
+    pages INTEGER NOT NULL,               -- leading pages that fit; 0 if not even the first
+    input_tokens INTEGER NOT NULL,        -- of the round-1 request with those pages
+    counted_at TEXT NOT NULL
 );
 
 -- Where each extraction quote sits in its paper's PDF, resolved by anchorite at

@@ -202,6 +202,7 @@ def _result(subject: str, answer: dict[str, Any], custom_id: str) -> LlmResult:
         status=ResultStatus.SUCCEEDED,
         message=message,
         error_type=None,
+        error_message=None,
     )
 
 

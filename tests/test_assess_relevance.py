@@ -86,6 +86,7 @@ def _result(stage: str, subject: str, output: dict[str, Any]) -> LlmResult:
         status=ResultStatus.SUCCEEDED,
         message=message,
         error_type=None,
+        error_message=None,
     )
 
 
@@ -265,6 +266,7 @@ def _refused(stage: str, subject: str, model: str) -> LlmResult:
         status=ResultStatus.REFUSED,
         message=message,
         error_type=None,
+        error_message=None,
     )
 
 

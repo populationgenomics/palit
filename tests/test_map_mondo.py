@@ -417,6 +417,7 @@ class ScriptedTransport:
                     else ResultStatus.SUCCEEDED,
                     message=message,
                     error_type=None,
+                    error_message=None,
                 )
             )
         return results

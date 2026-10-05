@@ -180,6 +180,8 @@ def test_batch_round_trip_records_and_collects(db_path: Path) -> None:
     assert by_subject["doi-b"].status == ResultStatus.REFUSED
     assert by_subject["doi-c"].status == ResultStatus.ERRORED
     assert by_subject["doi-c"].error_type == "overloaded_error"
+    assert by_subject["doi-c"].error_message == "busy"
+    assert by_subject["doi-c"].too_long_prompt_tokens is None
 
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
@@ -193,6 +195,31 @@ def test_batch_round_trip_records_and_collects(db_path: Path) -> None:
         assert conn.execute(
             "SELECT input_tokens, cache_read_tokens, output_tokens, service_tier FROM llm_requests WHERE subject = 'doi-a'"
         ).fetchone() == (100, 1000, 50, "batch")
+
+
+TOO_LONG_MESSAGE = "prompt is too long: 8328354 tokens > 1000000 maximum"
+
+
+def _invalid_request(message: str) -> dict[str, Any]:
+    return {
+        "type": "errored",
+        "error": {"type": "error", "error": {"type": "invalid_request_error", "message": message}},
+    }
+
+
+def test_batch_result_rejected_as_too_long_keeps_the_token_count(db_path: Path) -> None:
+    batches = FakeBatches(
+        {"long": _invalid_request(TOO_LONG_MESSAGE), "bad": _invalid_request("tools.0: bad")}
+    )
+    results = asyncio.run(
+        _transport(db_path, batches).run(
+            "extraction", 1, [_request("doi-long", "long"), _request("doi-bad", "bad")]
+        )
+    )
+    by_subject = {r.subject: r for r in results}
+    assert by_subject["doi-long"].error_type == "invalid_request_error"
+    assert by_subject["doi-long"].too_long_prompt_tokens == 8_328_354
+    assert by_subject["doi-bad"].too_long_prompt_tokens is None
 
 
 def test_resume_returns_only_unrecorded_results(db_path: Path) -> None:
@@ -290,6 +317,28 @@ def test_immediate_raises_invalid_request_errors_inside_the_stream() -> None:
         asyncio.run(_immediate(streams).run("test", 1, [_request("a")]))
 
 
+def test_immediate_returns_a_prompt_too_long_as_an_errored_result() -> None:
+    """As a batch does, so that stages handle the rejection the same way in both modes."""
+    response = httpx2.Response(400, request=httpx2.Request("POST", "https://api.anthropic.com"))
+    body = {
+        "type": "error",
+        "error": {"type": "invalid_request_error", "message": TOO_LONG_MESSAGE},
+    }
+    error = anthropic.BadRequestError(str(body), response=response, body=body)
+    [result] = asyncio.run(_immediate(FakeStreams([error])).run("test", 1, [_request("a")]))
+    assert result.status == ResultStatus.ERRORED
+    assert result.error_type == "invalid_request_error"
+    assert result.too_long_prompt_tokens == 8_328_354
+
+
+def test_immediate_raises_other_bad_requests() -> None:
+    response = httpx2.Response(400, request=httpx2.Request("POST", "https://api.anthropic.com"))
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": "tools: bad"}}
+    error = anthropic.BadRequestError(str(body), response=response, body=body)
+    with pytest.raises(anthropic.BadRequestError):
+        asyncio.run(_immediate(FakeStreams([error])).run("test", 1, [_request("a")]))
+
+
 def test_request_cost_batch_sonnet_55() -> None:
     # 1M uncached input at $1 + 1M 5m writes at $1.25 + 1M 1h writes at $2
     # + 1M reads at $0.10 + 1M output at $5.
@@ -341,7 +390,7 @@ def test_stage_refusals_route_by_the_model_that_refused(db_path: Path) -> None:
 
 def test_result_goes_to_fallback_only_after_a_refusal_by_model() -> None:
     def result(model: str, status: ResultStatus) -> LlmResult:
-        return LlmResult("c", None, "relevance", "s", 1, model, status, None, None)
+        return LlmResult("c", None, "relevance", "s", 1, model, status, None, None, None)
 
     assert result(MODEL, ResultStatus.REFUSED).goes_to_fallback
     assert not result(FALLBACK_MODEL, ResultStatus.REFUSED).goes_to_fallback

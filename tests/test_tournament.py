@@ -109,6 +109,7 @@ class RefusingTransport:
                     status=ResultStatus.REFUSED if refused else ResultStatus.SUCCEEDED,
                     message=message,
                     error_type=None,
+                    error_message=None,
                 )
             )
         return results

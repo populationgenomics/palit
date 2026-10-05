@@ -135,6 +135,10 @@ uv run palit download-papers register
 #    refuses are extracted by Sonnet 5.5; re-runs skip papers both refused. Add
 #    --retry-refused to send each of them once more, since the safety
 #    classifier does not refuse the same paper every time.
+#    A PDF too long for the context window, often an article with all its
+#    supplements in one file, is sent with only the leading pages that fit,
+#    and the model is told so. Quotes are still checked against the full PDF,
+#    which the report shows.
 #    Each disease entity carries three family counts. The reported count is
 #    every family the paper reports. The qualifying count (`family_count`) is
 #    the families whose genotype passes the qualifying variant gate. The

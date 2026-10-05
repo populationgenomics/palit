@@ -1,14 +1,17 @@
 """Tests for extraction helpers that need no network or PDFs."""
 
 import asyncio
+import base64
 import hashlib
 import io
 import json
 import logging
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx2
@@ -19,17 +22,26 @@ from anthropic import AsyncAnthropic
 from anthropic.types import Message
 
 from palit.extract_evidence import (
+    CONTEXT_MARGIN_TOKENS,
     MAX_CONCURRENT_PAPERS,
+    MAX_COUNTED_PAGES,
+    MAX_PDF_PAGES,
+    MAX_TOKENS,
     STAGE,
     Conversation,
     ExtractionRunner,
+    PageLimit,
     Remaining,
     RequestSettings,
     RoundOutcome,
+    UploadedPdf,
     _process_evidence,
     count_remaining,
     extraction_quotes,
+    first_user_message,
+    fitting_pages,
     normalize_extraction_genes,
+    page_copy,
     prune_citations,
     select_papers,
     select_unsent_conversations,
@@ -37,10 +49,12 @@ from palit.extract_evidence import (
     structural_problems,
     symbol_pattern,
     unselected_reasons,
+    upload_pdfs,
     variant_lookup_results,
 )
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import (
+    CONTEXT_WINDOW,
     EVERY_REFUSAL,
     FALLBACK_MODEL,
     MODEL,
@@ -60,7 +74,7 @@ from palit.lookup_tools import (
 )
 from palit.panelapp_integration import criteria_object_to_list
 from palit.papers import doi_to_path
-from palit.quotes import QuoteCheck
+from palit.quotes import PaperQuotes, QuoteCheck
 
 CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
@@ -386,7 +400,7 @@ def test_select_papers_skips_only_papers_refused_for_good(tmp_path: Path) -> Non
             refusals = stage_refusals(conn, STAGE, since)
         return {
             p["doi"]: refusals.model_for(p["doi"])
-            for p in select_papers(db_path, None, None, refusals)
+            for p in select_papers(db_path, None, None, refusals, set())
         }
 
     assert selected(EVERY_REFUSAL) == {"10.1/new": MODEL, "10.1/to-fallback": FALLBACK_MODEL}
@@ -417,7 +431,7 @@ def test_select_papers_skips_initial_papers_not_assessed_relevant(tmp_path: Path
         )
         refusals = stage_refusals(conn, STAGE)
 
-    assert [p["doi"] for p in select_papers(db_path, None, None, refusals)] == [
+    assert [p["doi"] for p in select_papers(db_path, None, None, refusals, set())] == [
         "10.1/expansion",
         "10.1/relevant",
     ]
@@ -464,8 +478,10 @@ def test_select_papers_restricts_to_requested_dois_and_explains_the_rest(
         "10.1/refused",
     ]
 
-    assert [p["doi"] for p in select_papers(db_path, requested, None, refusals)] == ["10.1/due"]
-    assert unselected_reasons(db_path, requested, refusals) == {
+    assert [p["doi"] for p in select_papers(db_path, requested, None, refusals, set())] == [
+        "10.1/due"
+    ]
+    assert unselected_reasons(db_path, requested, refusals, {}) == {
         "10.1/missing": "not in the database",
         "10.1/scheduled": "not downloaded (download status scheduled)",
         "10.1/extracted": "already extracted",
@@ -537,6 +553,7 @@ class RoundTwoRefuser:
                     status=status,
                     message=message,
                     error_type=None,
+                    error_message=None,
                 )
             )
         return results
@@ -700,6 +717,349 @@ def test_a_doi_run_takes_only_that_paper_through_its_attempts(
     assert "Not extracting 10.1/done: already extracted" in caplog.messages
 
 
+def _pdf(pages: int) -> bytes:
+    document = pdfium.PdfDocument.new()
+    for _ in range(pages):
+        document.new_page(595, 842)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _uploaded_papers_db(tmp_path: Path, pdfs: dict[str, bytes]) -> Path:
+    """A run database with these papers due an extraction, their PDFs already uploaded."""
+    expires_at = (datetime.now(UTC) + timedelta(days=30)).isoformat()
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        for doi, pdf in pdfs.items():
+            conn.execute(
+                "INSERT INTO papers (doi, title, source, source_type, download_status) "
+                "VALUES (?, 't', 'pubmed', 'expansion', 'downloaded')",
+                (doi,),
+            )
+            doi_to_path(doi, tmp_path, ".pdf").write_bytes(pdf)
+            conn.execute(
+                "INSERT INTO uploaded_files (doi, file_id, sha256, uploaded_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (doi, f"file-{doi}", hashlib.sha256(pdf).hexdigest(), expires_at, expires_at),
+            )
+    return db_path
+
+
+def _run_process_evidence(
+    tmp_path: Path,
+    db_path: Path,
+    hgnc_resolver: HgncResolver,
+    client: Any,
+    transport: RoundTwoRefuser,
+    only: list[str] | None,
+) -> None:
+    schema = {"type": "object"}
+    settings = RequestSettings(
+        system="s", output_config=json_output_config(schema, "medium"), cache_pdf=False
+    )
+
+    async def run() -> None:
+        variants = VariantLookupClient(
+            VariantLookupSettings(
+                VARIANT_LOOKUP_BASE_URL="http://unused.invalid", VARIANT_LOOKUP_API_KEY="x"
+            )
+        )
+        try:
+            await _process_evidence(
+                client=client,
+                runner=ExtractionRunner(
+                    transport=transport,
+                    db_path=db_path,
+                    papers_dir=tmp_path,
+                    settings=settings,
+                    schema=schema,
+                    hgnc_resolver=hgnc_resolver,
+                    lookups=LookupRunner(variants, hgnc_resolver),
+                ),
+                transport=transport,
+                db_path=db_path,
+                papers_dir=tmp_path,
+                settings=settings,
+                only=only,
+                limit=None,
+                max_retries=5,
+                refusals_since=EVERY_REFUSAL,
+            )
+        finally:
+            await variants.aclose()
+
+    asyncio.run(run())
+
+
+class TooLongRejecter(RoundTwoRefuser):
+    """Rejects every request about *subject* as too long; others as RoundTwoRefuser does."""
+
+    def __init__(self, subject: str) -> None:
+        super().__init__()
+        self._subject = subject
+
+    async def run(
+        self, stage: str, round_no: int, requests: Sequence[LlmRequest]
+    ) -> list[LlmResult]:
+        rejected = [request for request in requests if request.subject == self._subject]
+        results = await super().run(
+            stage, round_no, [request for request in requests if request not in rejected]
+        )
+        for request in rejected:
+            self.sent.append((round_no, request))
+            results.append(
+                LlmResult(
+                    custom_id=f"{stage}-{round_no}-{len(self.sent)}",
+                    batch_id="msgbatch_1",
+                    stage=stage,
+                    subject=request.subject,
+                    round=round_no,
+                    model=request.params["model"],
+                    status=ResultStatus.ERRORED,
+                    message=None,
+                    error_type="invalid_request_error",
+                    error_message="prompt is too long: 8328354 tokens > 1000000 maximum",
+                )
+            )
+        return results
+
+
+def test_a_paper_rejected_as_too_long_is_not_sent_again_in_the_invocation(
+    tmp_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """The other paper's refusal leads to a second attempt, which leaves the rejected paper out."""
+    db_path = _uploaded_papers_db(tmp_path, {"10.1/a": _pdf(1), "10.1/long": _pdf(1)})
+    transport = TooLongRejecter("10.1/long")
+
+    _run_process_evidence(tmp_path, db_path, hgnc_resolver, SimpleNamespace(), transport, only=None)
+
+    sent = [(round_no, request.subject) for round_no, request in transport.sent]
+    assert sent.count((1, "10.1/long")) == 1
+    assert sent.count((1, "10.1/a")) == 2  # on MODEL, then on FALLBACK_MODEL
+    with sqlite3.connect(db_path) as conn:
+        statuses = conn.execute(
+            "SELECT status, error_type FROM llm_requests WHERE subject = '10.1/long'"
+        ).fetchall()
+    assert statuses == [("errored", "invalid_request_error")]
+
+
+# ---------------------------------------------------------------------------
+# Truncating long PDFs to the pages that fit
+# ---------------------------------------------------------------------------
+
+WITHOUT_PDF_TOKENS = 30_000
+
+
+def _numbered_pages_pdf(pages: int) -> bytes:
+    """Blank pages, each 100 points plus its index wide, so a copy's pages can be told apart."""
+    with closing(pdfium.PdfDocument.new()) as document:
+        for index in range(pages):
+            document.new_page(100 + index, 842)
+        buffer = io.BytesIO()
+        document.save(buffer)
+    return buffer.getvalue()
+
+
+class PageTokenCounter:
+    """``client.messages.count_tokens`` for round-1 requests with a base64 PDF.
+
+    The request without the PDF costs WITHOUT_PDF_TOKENS, and each page of the
+    PDF what *page_tokens* gives for its index in the original PDF.
+    """
+
+    def __init__(self, page_tokens: Callable[[int], int], max_bytes: int) -> None:
+        self._page_tokens = page_tokens
+        self._max_bytes = max_bytes
+        self.calls = 0
+
+    async def count_tokens(self, **params: Any) -> SimpleNamespace:
+        self.calls += 1
+        assert "max_tokens" not in params
+        assert {"model", "system", "tools", "output_config"} <= set(params)
+        tokens = WITHOUT_PDF_TOKENS
+        block = params["messages"][0]["content"][0]
+        if block["type"] == "document":
+            pdf = base64.standard_b64decode(block["source"]["data"])
+            assert len(pdf) <= self._max_bytes
+            with closing(pdfium.PdfDocument(pdf)) as document:
+                assert len(document) <= MAX_COUNTED_PAGES
+                tokens += sum(
+                    self._page_tokens(round(document[i].get_width()) - 100)
+                    for i in range(len(document))
+                )
+        return SimpleNamespace(input_tokens=tokens)
+
+
+def _settings() -> RequestSettings:
+    return RequestSettings(
+        system="s", output_config=json_output_config({"type": "object"}, "medium"), cache_pdf=False
+    )
+
+
+def _article_with_supplement(index: int) -> int:
+    """Ten article pages, then pages of dense supplementary tables."""
+    return 5_000 if index < 10 else 50_000
+
+
+# The pages of the PDF that fit beside the request without it.
+ROOM = CONTEXT_WINDOW[MODEL] - MAX_TOKENS - CONTEXT_MARGIN_TOKENS - WITHOUT_PDF_TOKENS
+ARTICLE_PAGES_THAT_FIT = 10 + (ROOM - 10 * 5_000) // 50_000
+
+
+@pytest.mark.parametrize("narrow_ranges", [False, True])
+def test_a_long_pdf_is_truncated_to_the_leading_pages_that_fit(
+    monkeypatch: pytest.MonkeyPatch, narrow_ranges: bool
+) -> None:
+    """The page count is the largest that fits, also when ranges are narrowed to fit the byte cap."""
+    pdf = _numbered_pages_pdf(120)
+    max_bytes = 20_000_000
+    if narrow_ranges:
+        max_bytes = len(page_copy(pdf, 0, 10))
+        monkeypatch.setattr("palit.extract_evidence.MAX_COUNTED_PDF_BYTES", max_bytes)
+    counter = PageTokenCounter(_article_with_supplement, max_bytes)
+    paper = {"doi": "10.1/long", "title": "t", "source_date": "2026-09-01", "abstract": "a"}
+
+    limit = asyncio.run(
+        fitting_pages(SimpleNamespace(messages=counter), paper, pdf, _settings(), MODEL)  # type: ignore[arg-type]
+    )
+
+    expected_tokens = WITHOUT_PDF_TOKENS + 10 * 5_000 + (ARTICLE_PAGES_THAT_FIT - 10) * 50_000
+    assert limit == PageLimit(120, ARTICLE_PAGES_THAT_FIT, expected_tokens)
+    assert counter.calls <= 2 + 120 // 10 + 4
+
+
+@pytest.mark.parametrize(
+    ("pages", "expected"),
+    [
+        (60, PageLimit(60, 60, WITHOUT_PDF_TOKENS + 60 * 5_000)),
+        (
+            MAX_PDF_PAGES + 1,
+            PageLimit(MAX_PDF_PAGES + 1, MAX_PDF_PAGES, WITHOUT_PDF_TOKENS + MAX_PDF_PAGES * 100),
+        ),
+    ],
+)
+def test_a_pdf_that_fits_keeps_its_pages_up_to_the_api_page_limit(
+    pages: int, expected: PageLimit
+) -> None:
+    pdf = _numbered_pages_pdf(pages)
+    counter = PageTokenCounter(lambda index: 5_000 if pages == 60 else 100, 20_000_000)
+    paper = {"doi": "10.1/long", "title": "t", "source_date": "2026-09-01", "abstract": "a"}
+
+    limit = asyncio.run(
+        fitting_pages(SimpleNamespace(messages=counter), paper, pdf, _settings(), MODEL)  # type: ignore[arg-type]
+    )
+
+    assert limit == expected
+
+
+def test_the_round_one_message_notes_a_truncated_pdf() -> None:
+    paper = {"doi": "10.1/a", "title": "t", "source_date": "2026-09-01", "abstract": "a"}
+
+    def text(pdf: UploadedPdf) -> str:
+        return str(first_user_message(paper, pdf, cache_pdf=False)["content"][1]["text"])
+
+    assert "first 38 of the paper's 298 pages" in text(UploadedPdf("file-1", 38, 298))
+    assert "NOTE" not in text(UploadedPdf("file-1", 298, 298))
+
+
+class FakeFiles:
+    """``client.files``: records each upload's bytes."""
+
+    def __init__(self) -> None:
+        self.uploaded: list[bytes] = []
+
+    async def upload(
+        self, file: tuple[str, bytes, str], expires_in_seconds: int
+    ) -> SimpleNamespace:
+        self.uploaded.append(file[1])
+        return SimpleNamespace(id=f"file-{len(self.uploaded)}")
+
+
+def test_a_truncated_upload_is_counted_and_uploaded_once_per_pdf_version(tmp_path: Path) -> None:
+    """A later run reuses the page count and the upload: same pages, same bytes, same sha256."""
+    long_pdf = _numbered_pages_pdf(120)
+    short_pdf = _numbered_pages_pdf(3)
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA_SQL.read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, title, source, source_type, download_status) "
+            "VALUES (?, 't', 'pubmed', 'expansion', 'downloaded')",
+            [("10.1/long",), ("10.1/short",)],
+        )
+        refusals = stage_refusals(conn, STAGE)
+    doi_to_path("10.1/long", tmp_path, ".pdf").write_bytes(long_pdf)
+    doi_to_path("10.1/short", tmp_path, ".pdf").write_bytes(short_pdf)
+    papers = [
+        {"doi": doi, "title": "t", "source_date": "2026-09-01", "abstract": "a"}
+        for doi in ("10.1/long", "10.1/short")
+    ]
+    counter = PageTokenCounter(_article_with_supplement, 20_000_000)
+    files = FakeFiles()
+    client = SimpleNamespace(messages=counter, files=files)
+
+    def run() -> dict[str, UploadedPdf]:
+        return asyncio.run(upload_pdfs(client, db_path, papers, tmp_path, _settings(), refusals))  # type: ignore[arg-type]
+
+    first = run()
+    calls = counter.calls
+    second = run()
+
+    assert first == second
+    long_upload = first["10.1/long"]
+    assert (long_upload.pages, long_upload.total_pages) == (ARTICLE_PAGES_THAT_FIT, 120)
+    assert first["10.1/short"].pages == first["10.1/short"].total_pages == 3
+    assert counter.calls == calls  # the second run counts nothing
+    assert len(files.uploaded) == 2  # and uploads nothing
+    truncated = files.uploaded[int(long_upload.file_id.removeprefix("file-")) - 1]
+    with closing(pdfium.PdfDocument(truncated)) as document:
+        assert len(document) == ARTICLE_PAGES_THAT_FIT
+    with sqlite3.connect(db_path) as conn:
+        uploaded = dict(conn.execute("SELECT doi, sha256 FROM uploaded_files"))
+        limits = conn.execute("SELECT doi, sha256, total_pages, pages FROM pdf_page_limits")
+        assert limits.fetchall() == [
+            ("10.1/long", hashlib.sha256(long_pdf).hexdigest(), 120, ARTICLE_PAGES_THAT_FIT)
+        ]
+    assert uploaded == {
+        "10.1/long": hashlib.sha256(truncated).hexdigest(),
+        "10.1/short": hashlib.sha256(short_pdf).hexdigest(),
+    }
+
+
+def test_quotes_from_the_kept_pages_ground_and_locate_in_the_original_pdf(
+    text_pdf: Callable[[list[str]], bytes],
+) -> None:
+    """Extraction checks quotes against the local PDF, whose leading pages the upload keeps."""
+    filler = [f"Line {i} of the cohort description for unrelated probands." for i in range(25)]
+    page_quotes = [
+        "c.1061C>T p.T354M in proband 1",
+        "c.6752C>T in exon 31",
+        "Table S2 row 4012",
+    ]
+    with closing(pdfium.PdfDocument.new()) as original:
+        for quote in page_quotes:
+            with closing(pdfium.PdfDocument(text_pdf([*filler, quote]))) as page:
+                original.import_pages(page)
+        buffer = io.BytesIO()
+        original.save(buffer)
+        original_pdf = buffer.getvalue()
+    kept = page_copy(original_pdf, 0, 2)
+
+    with (
+        closing(pdfium.PdfDocument(kept)) as truncated,
+        closing(pdfium.PdfDocument(original_pdf)) as source,
+    ):
+        assert [truncated[i].get_textpage().get_text_range() for i in range(2)] == [
+            source[i].get_textpage().get_text_range() for i in range(2)
+        ]
+    quotes = PaperQuotes(original_pdf)
+    assert quotes.check(page_quotes[:2]).rejected == []
+    locations = quotes.locate(page_quotes[:2])
+    assert [{box["page"] for box in locations[quote]} for quote in page_quotes[:2]] == [{1}, {2}]
+
+
 # ---------------------------------------------------------------------------
 # Handling one round's results
 # ---------------------------------------------------------------------------
@@ -792,7 +1152,11 @@ def _runner(
 
 
 def _round_one_result(
-    doi: str, status: ResultStatus, message: Message | None, error_type: str | None = None
+    doi: str,
+    status: ResultStatus,
+    message: Message | None,
+    error_type: str | None = None,
+    error_message: str | None = None,
 ) -> LlmResult:
     return LlmResult(
         custom_id=f"{STAGE}-1-{doi}",
@@ -804,6 +1168,7 @@ def _round_one_result(
         status=status,
         message=message,
         error_type=error_type,
+        error_message=error_message,
     )
 
 
@@ -847,7 +1212,7 @@ def test_a_round_handles_papers_concurrently_and_counts_every_outcome(
         _round_one_result("10.1/a", ResultStatus.SUCCEEDED, _variant_lookup("c.1A>G")),
         _round_one_result("10.1/b", ResultStatus.SUCCEEDED, _variant_lookup("c.2A>G")),
         _round_one_result("10.1/c", ResultStatus.REFUSED, _message("refusal", [], MODEL)),
-        _round_one_result("10.1/d", ResultStatus.ERRORED, None, "api_error"),
+        _round_one_result("10.1/d", ResultStatus.ERRORED, None, "api_error", "Internal error"),
         _round_one_result(
             "10.1/e",
             ResultStatus.SUCCEEDED,
@@ -930,11 +1295,17 @@ def test_a_variant_lookup_failing_every_attempt_becomes_a_lookup_failed_result(
     )
 
 
+TOO_LONG_MESSAGE = "prompt is too long: 8328354 tokens > 1000000 maximum"
+
+
 def test_invalid_requests_raise_once_every_result_is_recorded(
     tmp_path: Path, hgnc_resolver: HgncResolver
 ) -> None:
+    """A request rejected as too long does not count as invalid; any other rejection does."""
+    invalid = "invalid_request_error"
     results = [
-        _round_one_result("10.1/x", ResultStatus.ERRORED, None, "invalid_request_error"),
+        _round_one_result("10.1/long", ResultStatus.ERRORED, None, invalid, TOO_LONG_MESSAGE),
+        _round_one_result("10.1/x", ResultStatus.ERRORED, None, invalid, "tools.0: bad schema"),
         _round_one_result("10.1/y", ResultStatus.REFUSED, _message("refusal", [], MODEL)),
     ]
     db_path = _round_one_db(tmp_path, [result.subject for result in results])
@@ -947,7 +1318,35 @@ def test_invalid_requests_raise_once_every_result_is_recorded(
         asyncio.run(run())
     with sqlite3.connect(db_path) as conn:
         recorded = conn.execute("SELECT subject, status FROM llm_requests ORDER BY subject")
-        assert recorded.fetchall() == [("10.1/x", "errored"), ("10.1/y", "refused")]
+        assert recorded.fetchall() == [
+            ("10.1/long", "errored"),
+            ("10.1/x", "errored"),
+            ("10.1/y", "refused"),
+        ]
+
+
+def test_a_request_rejected_as_too_long_is_recorded_without_raising(
+    tmp_path: Path, hgnc_resolver: HgncResolver, caplog: pytest.LogCaptureFixture
+) -> None:
+    results = [
+        _round_one_result(
+            "10.1/long", ResultStatus.ERRORED, None, "invalid_request_error", TOO_LONG_MESSAGE
+        )
+    ]
+    db_path = _round_one_db(tmp_path, ["10.1/long"])
+
+    async def run() -> RoundOutcome:
+        runner = _runner(tmp_path, db_path, hgnc_resolver, GatedVariantClient(0))
+        return await runner.handle(results)
+
+    with caplog.at_level(logging.WARNING, logger="palit.extract_evidence"):
+        outcome = asyncio.run(run())
+    assert outcome.too_long == {"10.1/long": 8_328_354}
+    assert (outcome.stored, outcome.refused, outcome.failed) == (0, 0, 0)
+    assert any("10.1/long" in m and "8,328,354 input tokens" in m for m in caplog.messages)
+    with sqlite3.connect(db_path) as conn:
+        recorded = conn.execute("SELECT subject, status, error_type FROM llm_requests")
+        assert recorded.fetchall() == [("10.1/long", "errored", "invalid_request_error")]
 
 
 # ---------------------------------------------------------------------------
@@ -1010,7 +1409,7 @@ def test_unsent_rounds_are_the_latest_saved_rounds_no_request_followed(tmp_path:
         )
         refusals = stage_refusals(conn, STAGE)
 
-    assert [p["doi"] for p in select_papers(db_path, None, None, refusals)] == [
+    assert [p["doi"] for p in select_papers(db_path, None, None, refusals, set())] == [
         "10.1/fresh",
         "10.1/sent",
     ]
@@ -1027,8 +1426,8 @@ def test_unsent_rounds_are_the_latest_saved_rounds_no_request_followed(tmp_path:
     assert [c.doi for c in select_unsent_conversations(db_path, only, None, refusals)] == [
         "10.1/unsent"
     ]
-    assert select_papers(db_path, only, None, refusals) == []
-    assert unselected_reasons(db_path, only, refusals) == {
+    assert select_papers(db_path, only, None, refusals, set()) == []
+    assert unselected_reasons(db_path, only, refusals, {}) == {
         "10.1/unsent": "its saved round-2 conversation waits to be continued",
         "10.1/in-flight": "a request for it is still pending",
     }
@@ -1049,7 +1448,7 @@ def test_unsent_rounds_are_the_latest_saved_rounds_no_request_followed(tmp_path:
     with pytest.raises(
         RuntimeError, match=r"1 saved extraction conversations \(first: 10.1/fresh\)"
     ):
-        select_papers(db_path, None, None, refusals)
+        select_papers(db_path, None, None, refusals, set())
 
 
 class ScriptedBatches:
@@ -1112,6 +1511,7 @@ class ScriptedBatches:
             status=ResultStatus.SUCCEEDED,
             message=message,
             error_type=None,
+            error_message=None,
         )
 
 

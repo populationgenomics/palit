@@ -1,5 +1,7 @@
-"""Shared fixtures: a small PanelApp snapshot, GenCC index, HGNC resolver and curated record."""
+"""Shared fixtures: a small PanelApp snapshot, GenCC index, HGNC resolver, curated record,
+and a builder of one-page PDFs with a text layer."""
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -130,3 +132,39 @@ def curated_record(
         gencc_index,
         incidentalome_fallback=True,
     )
+
+
+def _text_pdf(lines: list[str]) -> bytes:
+    """A one-page PDF with one line of Helvetica text per entry in *lines*."""
+    text = "\n".join(
+        "(" + line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") + ") Tj T*"
+        for line in lines
+    )
+    stream = f"BT\n/F1 8 Tf\n10 TL\n40 800 Td\n{text}\nET".encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        b"<< /Length %d >>\nstream\n%b\nendstream" % (len(stream), stream),
+    ]
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(pdf))
+        pdf += b"%d 0 obj\n%b\nendobj\n" % (number, body)
+    xref = len(pdf)
+    pdf += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    pdf += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    pdf += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref,
+    )
+    return bytes(pdf)
+
+
+@pytest.fixture
+def text_pdf() -> Callable[[list[str]], bytes]:
+    """Builds a one-page PDF with one line of Helvetica text per entry in its argument."""
+    return _text_pdf

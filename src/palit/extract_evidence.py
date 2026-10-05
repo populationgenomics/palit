@@ -9,6 +9,10 @@ tool call is answered with an error. Every round goes out as one batch, and the
 conversation behind each round is stored byte-for-byte in ``llm_conversations``,
 because Opus 5.5 rejects replayed thinking blocks after an edited history.
 
+A PDF too long for the context window is sent with only its leading pages that
+fit, counted once per PDF version (see :func:`upload_pdfs`); the round-1
+message says so. Quotes are checked against the full local PDF.
+
 A final answer is stored only when it passes the schema, the structural checks,
 and the quote check (every quote verbatim in the PDF). Otherwise the paper stays
 unextracted and the next attempt starts a fresh conversation.
@@ -23,13 +27,15 @@ on FALLBACK_MODEL: thinking blocks cannot be replayed to another model.
 """
 
 import asyncio
+import base64
 import hashlib
+import io
 import json
 import logging
 import re
 import sqlite3
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -37,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
+import pypdf
 import pypdfium2 as pdfium
 import typer
 from anthropic import AsyncAnthropic
@@ -47,6 +54,7 @@ from rich.progress import TaskID
 
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import (
+    CONTEXT_WINDOW,
     EVERY_REFUSAL,
     BatchTransport,
     Effort,
@@ -58,6 +66,7 @@ from palit.llm import (
     Transport,
     assistant_content,
     cached_system,
+    count_input_tokens,
     json_output_config,
     log_refusal,
     make_client,
@@ -100,6 +109,29 @@ FILE_EXPIRY_MARGIN = timedelta(days=3)
 MAX_CONCURRENT_UPLOADS = 8
 # Claude's PDF input limit.
 MAX_PDF_PAGES = 600
+
+# The round-1 request of a PDF with more pages is token-counted once per PDF
+# version, and the PDF is truncated to the leading pages that fit the context
+# window. A round-1 prompt costs about 27k tokens without the PDF, plus 2-4k
+# tokens a page for a typical paper, so a typical paper fills the window only
+# at hundreds of pages. Under this many pages, it takes 18k tokens a page,
+# which only pages of dense small-print tables come near. File size is no
+# guide: it mostly reflects embedded figures, and each page costs the same
+# image tokens whatever it shows.
+MAX_UNCOUNTED_PAGES = 50
+# count_tokens does not accept Files API sources, so a PDF is counted as base64
+# copies of page ranges, each well within the API's 32 MB request limit once
+# encoded. The API also fails to count a PDF of several million tokens (150
+# pages of dense tables at 4M tokens), while 50 such pages count in seconds.
+# The counts of consecutive ranges add up to the count of the whole, plus a
+# few tokens per range.
+MAX_COUNTED_PDF_BYTES = 20_000_000
+MAX_COUNTED_PAGES = 50
+# Context window kept free besides max_tokens, for the truncation note.
+CONTEXT_MARGIN_TOKENS = 1_000
+# Counts that refine the page count within the range where the window fills up.
+MAX_REFINING_COUNTS = 4
+MAX_CONCURRENT_TOKEN_COUNTS = 8
 
 # Papers whose results one round handles at once. VariantLookupClient caps the
 # requests in flight to the variant-lookup service at the service's own limit;
@@ -284,14 +316,41 @@ class RequestSettings:
     cache_pdf: bool  # immediate calls only: round 2 follows within seconds
 
 
-def first_user_message(paper: dict[str, Any], file_id: str, cache_pdf: bool) -> dict[str, Any]:
-    document: dict[str, Any] = {"type": "document", "source": {"type": "file", "file_id": file_id}}
-    if cache_pdf:
-        document["cache_control"] = {"type": "ephemeral"}
-    text = (
-        "PAPER TO EVALUATE (attached PDF)\n\n"
+@dataclass(frozen=True)
+class UploadedPdf:
+    """A paper's PDF in the Files API: all its pages, or the leading pages that fit."""
+
+    file_id: str
+    pages: int  # the leading pages of the local PDF that the upload holds
+    total_pages: int
+
+    @property
+    def truncated(self) -> bool:
+        return self.pages < self.total_pages
+
+
+def paper_text(paper: dict[str, Any], pages: int, total_pages: int) -> str:
+    """The text block of a paper's round-1 message, noting a truncated PDF."""
+    note = (
+        f"\n\nNOTE: The attached PDF holds only the first {pages} of the paper's "
+        f"{total_pages} pages; the rest did not fit the context window."
+        if pages < total_pages
+        else ""
+    )
+    return (
+        f"PAPER TO EVALUATE (attached PDF){note}\n\n"
         f"Title: {paper['title']}\n\nDate: {paper['source_date']}\n\nAbstract: {paper['abstract']}"
     )
+
+
+def first_user_message(paper: dict[str, Any], pdf: UploadedPdf, cache_pdf: bool) -> dict[str, Any]:
+    document: dict[str, Any] = {
+        "type": "document",
+        "source": {"type": "file", "file_id": pdf.file_id},
+    }
+    if cache_pdf:
+        document["cache_control"] = {"type": "ephemeral"}
+    text = paper_text(paper, pdf.pages, pdf.total_pages)
     return {"role": "user", "content": [document, {"type": "text", "text": text}]}
 
 
@@ -461,17 +520,25 @@ def _due_papers(
 
 
 def select_papers(
-    db_path: Path, only: list[str] | None, limit: int | None, refusals: StageRefusals
+    db_path: Path,
+    only: list[str] | None,
+    limit: int | None,
+    refusals: StageRefusals,
+    too_long: Collection[str],
 ) -> list[dict[str, Any]]:
     """The papers due an extraction that start from round 1.
 
     These are the papers of :func:`_due_papers` without an unsent round (see
-    :func:`unsent_rounds`), which :func:`select_unsent_conversations` continues.
+    :func:`unsent_rounds`), which :func:`select_unsent_conversations` continues,
+    except the papers in *too_long*: the API rejected a request about each of
+    them in this invocation as too long for the context window.
     """
     with closing(sqlite3.connect(db_path)) as conn:
         unsent = unsent_rounds(conn)
         papers = [
-            paper for paper in _due_papers(conn, only, refusals) if paper["doi"] not in unsent
+            paper
+            for paper in _due_papers(conn, only, refusals)
+            if paper["doi"] not in unsent and paper["doi"] not in too_long
         ]
     return papers if limit is None else papers[:limit]
 
@@ -502,8 +569,14 @@ def select_unsent_conversations(
         ]
 
 
-def unselected_reasons(db_path: Path, dois: list[str], refusals: StageRefusals) -> dict[str, str]:
-    """The reason :func:`select_papers` leaves out each of *dois* that it leaves out."""
+def unselected_reasons(
+    db_path: Path, dois: list[str], refusals: StageRefusals, too_long: Mapping[str, int]
+) -> dict[str, str]:
+    """The reason :func:`select_papers` leaves out each of *dois* that it leaves out.
+
+    *too_long* holds the input tokens by DOI of the papers whose request the API
+    rejected in this invocation as too long for the context window.
+    """
     with closing(sqlite3.connect(db_path)) as conn:
         unsent = unsent_rounds(conn)
         rows = conn.execute(
@@ -540,18 +613,247 @@ def unselected_reasons(db_path: Path, dois: list[str], refusals: StageRefusals) 
             reasons[doi] = (
                 f"its saved round-{unsent_round.round} conversation waits to be continued"
             )
+        elif (tokens := too_long.get(doi)) is not None:
+            reasons[doi] = (
+                f"the API rejected its request of {tokens:,} input tokens as too long for the "
+                "context window"
+            )
     return reasons
 
 
-async def upload_pdfs(
-    client: AsyncAnthropic, db_path: Path, papers: list[dict[str, Any]], papers_dir: Path
-) -> dict[str, str]:
-    """Files API IDs for the papers' PDFs, uploading only new, changed, or expiring ones.
+def pdf_pages(pdf_path: Path) -> int:
+    with closing(pdfium.PdfDocument(pdf_path)) as document:
+        return len(document)
 
-    Papers whose PDF is missing or has more pages than Claude accepts are skipped.
+
+def page_copy(pdf_bytes: bytes, start: int, end: int) -> bytes:
+    """A PDF of pages [start, end) of the PDF, each page unchanged.
+
+    pypdf writes no creation time and no random file identifier, unlike PDFium,
+    so the same pages of the same PDF always give the same bytes.
+    """
+    writer = pypdf.PdfWriter()
+    for page in pypdf.PdfReader(io.BytesIO(pdf_bytes)).pages[start:end]:
+        writer.add_page(page)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def countable_range(pdf_bytes: bytes, start: int, end: int) -> tuple[int, bytes]:
+    """The end of a range of pages from *start*, up to *end*, small enough to count, and its copy.
+
+    The range is narrowed in proportion to its copy's size until the copy is at
+    most MAX_COUNTED_PDF_BYTES. Returns *start* and no bytes when page *start*
+    alone is larger.
+    """
+    while True:
+        copy = page_copy(pdf_bytes, start, end)
+        if len(copy) <= MAX_COUNTED_PDF_BYTES:
+            return end, copy
+        if end - start == 1:
+            return start, b""
+        narrowed = (end - start) * MAX_COUNTED_PDF_BYTES // len(copy)
+        end = start + max(1, min(end - start - 1, narrowed))
+
+
+@dataclass(frozen=True)
+class PageLimit:
+    """How many leading pages of a paper's PDF fit its round-1 request."""
+
+    total_pages: int
+    pages: int  # 0 when not even the first page fits
+    input_tokens: int  # of the round-1 request with those pages, from token counts
+
+
+async def fitting_pages(
+    client: AsyncAnthropic,
+    paper: dict[str, Any],
+    pdf_bytes: bytes,
+    settings: RequestSettings,
+    model: str,
+) -> PageLimit:
+    """The leading pages of the paper's PDF that its round-1 request has room for.
+
+    The room is the model's context window less max_tokens, CONTEXT_MARGIN_TOKENS
+    and the request without the PDF. Page ranges are counted from the first page
+    on, each of at most MAX_COUNTED_PAGES pages and MAX_COUNTED_PDF_BYTES, and
+    kept while they fit the room, up to MAX_PDF_PAGES pages. Once a range does
+    not fit, the pages of it that do are estimated from its tokens per page, and
+    the estimate is counted: kept if it fits, otherwise the new range that does
+    not. This repeats up to MAX_REFINING_COUNTS times.
+    """
+    with closing(pdfium.PdfDocument(pdf_bytes)) as document:
+        total = len(document)
+
+    async def count(pdf: bytes | None) -> int:
+        content: list[dict[str, Any]] = [{"type": "text", "text": paper_text(paper, total, total)}]
+        if pdf is not None:
+            data = base64.standard_b64encode(pdf).decode()
+            source = {"type": "base64", "media_type": "application/pdf", "data": data}
+            content.insert(0, {"type": "document", "source": source})
+        conversation = Conversation(
+            doi=paper["doi"], round=1, messages=[{"role": "user", "content": content}], model=model
+        )
+        return await count_input_tokens(client, build_request(conversation, settings).params)
+
+    without_pdf = await count(None)
+    room = CONTEXT_WINDOW[model] - MAX_TOKENS - CONTEXT_MARGIN_TOKENS - without_pdf
+    last = min(total, MAX_PDF_PAGES)
+    start = 0  # pages [0, start) fit
+    counted = 0  # and have this many tokens
+    # The end and the tokens of a range from start that does not fit.
+    too_many: tuple[int, int] | None = None
+    refining_counts = 0
+    while start < last:
+        if too_many is None:
+            end, copy = countable_range(pdf_bytes, start, min(last, start + MAX_COUNTED_PAGES))
+            if end == start:
+                logger.warning(
+                    "%s: page %d alone is over %s bytes, too large to count; "
+                    "the PDF is truncated before it",
+                    paper["doi"],
+                    start + 1,
+                    f"{MAX_COUNTED_PDF_BYTES:,}",
+                )
+                break
+        else:
+            if refining_counts == MAX_REFINING_COUNTS:
+                break
+            refining_counts += 1
+            over_end, over_tokens = too_many
+            span = over_end - start
+            end = start + min(span - 1, (room - counted) * span // max(1, over_tokens))
+            if end == start:
+                break
+            copy = page_copy(pdf_bytes, start, end)
+        tokens = await count(copy) - without_pdf
+        if counted + tokens > room:
+            too_many = (end, tokens)
+        else:
+            start = end
+            counted += tokens
+            if too_many is not None:
+                too_many = (too_many[0], too_many[1] - tokens)
+    return PageLimit(total, start, without_pdf + counted)
+
+
+@dataclass(frozen=True)
+class LocalPdf:
+    paper: dict[str, Any]
+    path: Path
+    sha256: str
+    total_pages: int
+
+
+def upload_content(pdf: LocalPdf, pages: int) -> bytes:
+    """The bytes to upload for the leading *pages* of the paper's PDF."""
+    pdf_bytes = pdf.path.read_bytes()
+    return pdf_bytes if pages == pdf.total_pages else page_copy(pdf_bytes, 0, pages)
+
+
+async def count_page_limits(
+    client: AsyncAnthropic,
+    db_path: Path,
+    pdfs: list[LocalPdf],
+    settings: RequestSettings,
+    refusals: StageRefusals,
+) -> None:
+    """Count the leading pages that fit each PDF's round-1 request, into pdf_page_limits.
+
+    PDFs are counted MAX_CONCURRENT_TOKEN_COUNTS at a time, and each count is
+    stored as soon as it completes.
+    """
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_TOKEN_COUNTS)
+
+    with Progress() as progress:
+        task = progress.add_task("Counting round-1 tokens of long PDFs", total=len(pdfs))
+
+        async def count(pdf: LocalPdf) -> None:
+            doi = pdf.paper["doi"]
+            async with semaphore:
+                limit = await fitting_pages(
+                    client, pdf.paper, pdf.path.read_bytes(), settings, refusals.model_for(doi)
+                )
+            with _transaction(db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO pdf_page_limits
+                        (doi, sha256, total_pages, pages, input_tokens, counted_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        doi,
+                        pdf.sha256,
+                        limit.total_pages,
+                        limit.pages,
+                        limit.input_tokens,
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+            if limit.pages < limit.total_pages:
+                logger.warning(
+                    "Truncating %s to its first %d of %d pages: with them, its round-1 "
+                    "request has %s input tokens; more pages exceed the context window "
+                    "with max_tokens %s",
+                    doi,
+                    limit.pages,
+                    limit.total_pages,
+                    f"{limit.input_tokens:,}",
+                    f"{MAX_TOKENS:,}",
+                )
+            progress.advance(task)
+
+        await asyncio.gather(*map(count, pdfs))
+
+
+async def upload_pdfs(
+    client: AsyncAnthropic,
+    db_path: Path,
+    papers: list[dict[str, Any]],
+    papers_dir: Path,
+    settings: RequestSettings,
+    refusals: StageRefusals,
+) -> dict[str, UploadedPdf]:
+    """The papers' PDFs in the Files API, uploading only new, changed, or expiring ones.
+
+    A PDF over MAX_UNCOUNTED_PAGES pages holds only the leading pages that fit
+    its round-1 request, counted once per PDF version (see
+    :func:`count_page_limits`). Papers whose PDF is missing, or whose first page
+    alone does not fit, are skipped.
     """
     now = datetime.now(UTC)
-    with sqlite3.connect(db_path) as conn:
+    pdfs: list[LocalPdf] = []
+    for paper in papers:
+        pdf_path = doi_to_path(paper["doi"], papers_dir, ".pdf")
+        if not pdf_path.exists():
+            logger.warning("Missing PDF for %s: %s", paper["doi"], pdf_path)
+            continue
+        sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+        pdfs.append(LocalPdf(paper, pdf_path, sha256, pdf_pages(pdf_path)))
+
+    def page_limits() -> dict[str, tuple[str, int]]:
+        """The counted PDF version and its fitting pages, by DOI."""
+        with closing(sqlite3.connect(db_path)) as conn:
+            return {
+                doi: (sha256, pages)
+                for doi, sha256, pages in conn.execute(
+                    "SELECT doi, sha256, pages FROM pdf_page_limits"
+                )
+            }
+
+    limits = page_limits()
+    uncounted = [
+        pdf
+        for pdf in pdfs
+        if pdf.total_pages > MAX_UNCOUNTED_PAGES
+        and ((counted := limits.get(pdf.paper["doi"])) is None or counted[0] != pdf.sha256)
+    ]
+    if uncounted:
+        await count_page_limits(client, db_path, uncounted, settings, refusals)
+        limits = page_limits()
+
+    with closing(sqlite3.connect(db_path)) as conn:
         known = {
             doi: (file_id, sha256, datetime.fromisoformat(expires_at))
             for doi, file_id, sha256, expires_at in conn.execute(
@@ -559,39 +861,38 @@ async def upload_pdfs(
             )
         }
 
-    file_ids: dict[str, str] = {}
-    to_upload: list[tuple[str, Path, str]] = []
-    for paper in papers:
-        doi = paper["doi"]
-        pdf_path = doi_to_path(doi, papers_dir, ".pdf")
-        if not pdf_path.exists():
-            logger.warning("Missing PDF for %s: %s", doi, pdf_path)
+    uploads: dict[str, UploadedPdf] = {}
+    to_upload: list[tuple[LocalPdf, int, str]] = []
+    for pdf in pdfs:
+        doi = pdf.paper["doi"]
+        pages = pdf.total_pages if pdf.total_pages <= MAX_UNCOUNTED_PAGES else limits[doi][1]
+        if pages == 0:
+            logger.warning("Skipping %s: not even its first page fits the context window", doi)
             continue
-        pages = len(pdfium.PdfDocument(pdf_path))
-        if pages > MAX_PDF_PAGES:
-            logger.warning(
-                "Skipping %s: %d pages exceeds the %d-page limit", doi, pages, MAX_PDF_PAGES
-            )
-            continue
-        sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+        sha256 = (
+            pdf.sha256
+            if pages == pdf.total_pages
+            else hashlib.sha256(upload_content(pdf, pages)).hexdigest()
+        )
         stored = known.get(doi)
         if stored is not None and stored[1] == sha256 and stored[2] > now + FILE_EXPIRY_MARGIN:
-            file_ids[doi] = stored[0]
+            uploads[doi] = UploadedPdf(stored[0], pages, pdf.total_pages)
         else:
-            to_upload.append((doi, pdf_path, sha256))
+            to_upload.append((pdf, pages, sha256))
 
     if not to_upload:
-        return file_ids
+        return uploads
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
     expires_at = (now + FILE_TTL).isoformat()
 
     async def upload(
-        doi: str, pdf_path: Path, sha256: str, progress: Progress, task: TaskID
+        pdf: LocalPdf, pages: int, sha256: str, progress: Progress, task: TaskID
     ) -> None:
+        doi = pdf.paper["doi"]
         async with semaphore:
             meta = await client.files.upload(
-                file=(pdf_path.name, pdf_path.read_bytes(), "application/pdf"),
+                file=(pdf.path.name, upload_content(pdf, pages), "application/pdf"),
                 expires_in_seconds=int(FILE_TTL.total_seconds()),
             )
         # Recorded as soon as it completes, so an interrupted run keeps its uploads.
@@ -604,14 +905,14 @@ async def upload_pdfs(
                 """,
                 (doi, meta.id, sha256, now.isoformat(), expires_at),
             )
-        file_ids[doi] = meta.id
+        uploads[doi] = UploadedPdf(meta.id, pages, pdf.total_pages)
         progress.advance(task)
 
     logger.info("Uploading %d PDFs to the Files API", len(to_upload))
     with Progress() as progress:
         task = progress.add_task("Uploading PDFs", total=len(to_upload))
         await asyncio.gather(*(upload(*item, progress, task) for item in to_upload))
-    return file_ids
+    return uploads
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +939,9 @@ class RoundOutcome:
     refused: int = 0
     to_fallback: int = 0  # the refusals by MODEL: these papers restart on FALLBACK_MODEL
     failed: int = 0
+    # Input tokens by DOI of the papers whose request the API rejected as too
+    # long for the context window; they are not sent again in this invocation.
+    too_long: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def combine(cls, outcomes: Iterable["RoundOutcome"]) -> "RoundOutcome":
@@ -649,6 +953,7 @@ class RoundOutcome:
             total.refused += outcome.refused
             total.to_fallback += outcome.to_fallback
             total.failed += outcome.failed
+            total.too_long |= outcome.too_long
         return total
 
 
@@ -688,6 +993,7 @@ class ExtractionRunner:
                 total.refused += outcome.refused
                 total.to_fallback += outcome.to_fallback
                 total.failed += outcome.failed
+                total.too_long |= outcome.too_long
                 conversations += outcome.next_round
         return total
 
@@ -695,7 +1001,9 @@ class ExtractionRunner:
         """Record every result and act on it, for up to MAX_CONCURRENT_PAPERS papers at once.
 
         The next round's conversations follow the order of *results*. Invalid
-        requests are a bug: they raise once every result is recorded.
+        requests are a bug: they raise once every result is recorded. A request
+        the API rejected as too long for the context window is no bug: the
+        paper's PDF is too long, and its outcome lists it in ``too_long``.
         """
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAPERS)
 
@@ -710,7 +1018,10 @@ class ExtractionRunner:
 
             outcome = RoundOutcome.combine(await asyncio.gather(*map(handle_one, results)))
         invalid_requests = [
-            result.subject for result in results if result.error_type == "invalid_request_error"
+            result.subject
+            for result in results
+            if result.error_type == "invalid_request_error"
+            and result.too_long_prompt_tokens is None
         ]
         if invalid_requests:
             raise RuntimeError(
@@ -726,6 +1037,17 @@ class ExtractionRunner:
             log_refusal(result, f"{result.subject} in round {result.round}")
             self._record(result)
             return RoundOutcome(refused=1, to_fallback=int(result.goes_to_fallback))
+        too_long_tokens = result.too_long_prompt_tokens
+        if too_long_tokens is not None:
+            logger.warning(
+                "%s round %d: the API rejected the request of %s input tokens as too long "
+                "for the context window; it is not sent again in this run",
+                result.subject,
+                result.round,
+                f"{too_long_tokens:,}",
+            )
+            self._record(result)
+            return RoundOutcome(too_long={result.subject: too_long_tokens})
         if result.status != ResultStatus.SUCCEEDED:
             self._record(result)
             return RoundOutcome(failed=1)
@@ -1006,7 +1328,9 @@ async def _process_evidence(
     First, the results of earlier batches are handled, and every saved
     conversation whose latest round was never sent is continued: the ones those
     results lead on to, and the ones an interrupted run saved but did not send.
-    Then come the attempts, which start papers from round 1.
+    Then come the attempts, which start papers from round 1. A paper whose
+    request the API rejects as too long for the context window is not sent
+    again in this invocation.
 
     ``only`` restricts the run to these DOIs; requested papers that are not due
     an extraction are logged with the reason. ``limit`` caps the papers this run
@@ -1015,15 +1339,19 @@ async def _process_evidence(
     round of refusals by MODEL is followed by the attempt that restarts those
     papers on FALLBACK_MODEL.
     """
+    too_long: dict[str, int] = {}  # input tokens by DOI
     resumed = await transport.resume(STAGE)
     if resumed:
         outcome = await runner.handle(resumed)
+        too_long |= outcome.too_long
         logger.info(
-            "Collected %d results from earlier batches (stored %d, refused %d, failed %d)",
+            "Collected %d results from earlier batches (stored %d, refused %d, failed %d, "
+            "too long %d)",
             len(resumed),
             outcome.stored,
             outcome.refused,
             outcome.failed,
+            len(outcome.too_long),
         )
 
     with sqlite3.connect(db_path) as conn:
@@ -1032,19 +1360,21 @@ async def _process_evidence(
     if unsent:
         logger.info("Continuing %d saved conversations from their unsent round", len(unsent))
         continued = await runner.advance(unsent)
+        too_long |= continued.too_long
         logger.info(
             "Continued conversations: stored %d, refused %d (%d go to the fallback model), "
-            "failed %d",
+            "failed %d, too long %d",
             continued.stored,
             continued.refused,
             continued.to_fallback,
             continued.failed,
+            len(continued.too_long),
         )
 
     if only is not None:
         with sqlite3.connect(db_path) as conn:
             refusals = stage_refusals(conn, STAGE, refusals_since)
-        for doi, reason in unselected_reasons(db_path, only, refusals).items():
+        for doi, reason in unselected_reasons(db_path, only, refusals, too_long).items():
             logger.warning("Not extracting %s: %s", doi, reason)
 
     if limit is not None:
@@ -1056,33 +1386,42 @@ async def _process_evidence(
     for attempt in range(1, max_retries + 1):
         with sqlite3.connect(db_path) as conn:
             refusals = stage_refusals(conn, STAGE, refusals_since)
-        papers = select_papers(db_path, only, limit, refusals)
+        papers = select_papers(db_path, only, limit, refusals, too_long)
         if not papers:
             logger.info("No papers left to extract")
             return
-        file_ids = await upload_pdfs(client, db_path, papers, papers_dir)
+        uploads = await upload_pdfs(client, db_path, papers, papers_dir, settings, refusals)
         conversations = [
             Conversation(
                 doi=paper["doi"],
                 round=1,
-                messages=[first_user_message(paper, file_ids[paper["doi"]], settings.cache_pdf)],
+                messages=[first_user_message(paper, uploads[paper["doi"]], settings.cache_pdf)],
                 model=refusals.model_for(paper["doi"]),
             )
             for paper in papers
-            if paper["doi"] in file_ids
+            if paper["doi"] in uploads
         ]
         with sqlite3.connect(db_path) as conn:
             for conversation in conversations:
                 start_conversation(conn, conversation)
-        logger.info("Attempt %d: extracting %d papers", attempt, len(conversations))
-        outcome = await runner.advance(conversations)
         logger.info(
-            "Attempt %d: stored %d, refused %d (%d go to the fallback model), failed %d",
+            "Attempt %d: extracting %d papers, %d of them with a PDF truncated to fit the "
+            "context window",
+            attempt,
+            len(conversations),
+            sum(uploads[c.doi].truncated for c in conversations),
+        )
+        outcome = await runner.advance(conversations)
+        too_long |= outcome.too_long
+        logger.info(
+            "Attempt %d: stored %d, refused %d (%d go to the fallback model), failed %d, "
+            "too long %d",
             attempt,
             outcome.stored,
             outcome.refused,
             outcome.to_fallback,
             outcome.failed,
+            len(outcome.too_long),
         )
         if outcome.stored + outcome.to_fallback == 0:
             logger.error("No progress in attempt %d - stopping", attempt)

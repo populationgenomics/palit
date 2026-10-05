@@ -22,6 +22,7 @@ identical params. A subject is refused for good once FALLBACK_MODEL refuses it.
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import uuid
 from collections import defaultdict
@@ -51,6 +52,8 @@ FALLBACK_MODEL = "claude-sonnet-5-5"
 # For the report's notes on results that came from FALLBACK_MODEL.
 MODEL_NAME = "Opus 5.5"
 FALLBACK_MODEL_NAME = "Sonnet 5.5"
+# Input tokens plus max_tokens of a request must fit this window, per model.
+CONTEXT_WINDOW: dict[str, int] = {MODEL: 1_000_000, FALLBACK_MODEL: 1_000_000}
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
@@ -75,6 +78,8 @@ _TRANSIENT_ERRORS = (
 # the SDK raises a plain APIStatusError and does not retry it.
 _MID_STREAM_TRANSIENT_TYPES = frozenset({"api_error", "overloaded_error"})
 MID_STREAM_ATTEMPTS = 5
+# The API's message for a request whose prompt exceeds the model's context window.
+_PROMPT_TOO_LONG = re.compile(r"prompt is too long: (\d+) tokens > \d+ maximum")
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +168,19 @@ def parse_json_output(message: Message) -> Any:
     return json.loads(text)
 
 
+async def count_input_tokens(
+    client: AsyncAnthropic, params: MessageCreateParamsNonStreaming
+) -> int:
+    """The input tokens of the request *params*, from the Messages count_tokens endpoint.
+
+    The endpoint takes the request's params except ``max_tokens``. Counting is
+    free and sends nothing to the model. It does not accept Files API sources.
+    """
+    counted: dict[str, Any] = dict(params)
+    del counted["max_tokens"]
+    return (await client.messages.count_tokens(**counted)).input_tokens
+
+
 # ---------------------------------------------------------------------------
 # Requests and results
 # ---------------------------------------------------------------------------
@@ -195,6 +213,7 @@ class LlmResult:
     status: ResultStatus
     message: Message | None  # set for SUCCEEDED and REFUSED
     error_type: str | None  # set for ERRORED, e.g. "invalid_request_error"
+    error_message: str | None  # set for ERRORED; not stored in llm_requests
 
     @property
     def goes_to_fallback(self) -> bool:
@@ -211,6 +230,14 @@ class LlmResult:
         """The safety classifier's category of a refusal, if the message names one."""
         stop_details = self.message.stop_details if self.message is not None else None
         return stop_details.category if stop_details is not None else None
+
+    @property
+    def too_long_prompt_tokens(self) -> int | None:
+        """The prompt's token count, if the API rejected the request as too long for the model."""
+        if self.error_type != "invalid_request_error" or self.error_message is None:
+            return None
+        match = _PROMPT_TOO_LONG.match(self.error_message)
+        return int(match.group(1)) if match is not None else None
 
 
 def log_refusal(result: LlmResult, label: str) -> None:
@@ -524,6 +551,7 @@ def _result_from_batch(
     outcome = response.result
     message: Message | None = None
     error_type: str | None = None
+    error_message: str | None = None
     match outcome.type:
         case "succeeded":
             message = outcome.message
@@ -531,6 +559,7 @@ def _result_from_batch(
         case "errored":
             status = ResultStatus.ERRORED
             error_type = outcome.error.error.type
+            error_message = outcome.error.error.message
         case "expired":
             status = ResultStatus.EXPIRED
         case "canceled":
@@ -545,6 +574,7 @@ def _result_from_batch(
         status=status,
         message=message,
         error_type=error_type,
+        error_message=error_message,
     )
 
 
@@ -559,13 +589,26 @@ def is_mid_stream_transient(error: BaseException) -> bool:
             return False
 
 
+def prompt_too_long_message(error: anthropic.APIStatusError) -> str | None:
+    """The API's message, if *error* rejects a prompt as too long for the model."""
+    match error.body:
+        case {"error": {"type": "invalid_request_error", "message": str(message)}} if (
+            _PROMPT_TOO_LONG.match(message) is not None
+        ):
+            return message
+        case _:
+            return None
+
+
 class ImmediateTransport:
     """Concurrent streaming Messages calls through a fixed worker pool.
 
     Nothing is persisted until the stage records a result, so there is nothing
-    to resume. Invalid requests raise; transient failures come back as ERRORED
-    results once retries are spent: the SDK's own retries for failed responses,
-    and MID_STREAM_ATTEMPTS attempts for error events inside a started stream.
+    to resume. Invalid requests raise, except a prompt too long for the model,
+    which comes back as an ERRORED ``invalid_request_error`` result, as it does
+    from a batch. Transient failures come back as ERRORED results once retries
+    are spent: the SDK's own retries for failed responses, and
+    MID_STREAM_ATTEMPTS attempts for error events inside a started stream.
     """
 
     def __init__(
@@ -605,11 +648,16 @@ class ImmediateTransport:
         try:
             message = await self._stream(request)
         except anthropic.APIStatusError as e:
+            too_long = prompt_too_long_message(e)
+            if too_long is not None:
+                return self._errored(
+                    custom_id, stage, round_no, request, "invalid_request_error", too_long
+                )
             if not (isinstance(e, _TRANSIENT_ERRORS) or is_mid_stream_transient(e)):
                 raise
-            return self._errored(custom_id, stage, round_no, request, e)
+            return self._failed_after_retries(custom_id, stage, round_no, request, e)
         except anthropic.APIConnectionError as e:
-            return self._errored(custom_id, stage, round_no, request, e)
+            return self._failed_after_retries(custom_id, stage, round_no, request, e)
         return LlmResult(
             custom_id=custom_id,
             batch_id=None,
@@ -620,6 +668,7 @@ class ImmediateTransport:
             status=_status_for(message),
             message=message,
             error_type=None,
+            error_message=None,
         )
 
     async def _stream(self, request: LlmRequest) -> Message:
@@ -642,9 +691,9 @@ class ImmediateTransport:
                     return await stream.get_final_message()
         raise AssertionError("tenacity returns or re-raises")
 
-    @staticmethod
-    def _errored(
-        custom_id: str, stage: str, round_no: int, request: LlmRequest, error: Exception
+    @classmethod
+    def _failed_after_retries(
+        cls, custom_id: str, stage: str, round_no: int, request: LlmRequest, error: Exception
     ) -> LlmResult:
         logger.warning(
             "%s: request for %s failed after retries: %s",
@@ -652,6 +701,17 @@ class ImmediateTransport:
             request.subject,
             type(error).__name__,
         )
+        return cls._errored(custom_id, stage, round_no, request, type(error).__name__, str(error))
+
+    @staticmethod
+    def _errored(
+        custom_id: str,
+        stage: str,
+        round_no: int,
+        request: LlmRequest,
+        error_type: str,
+        error_message: str,
+    ) -> LlmResult:
         return LlmResult(
             custom_id=custom_id,
             batch_id=None,
@@ -661,7 +721,8 @@ class ImmediateTransport:
             model=request.params["model"],
             status=ResultStatus.ERRORED,
             message=None,
-            error_type=type(error).__name__,
+            error_type=error_type,
+            error_message=error_message,
         )
 
 

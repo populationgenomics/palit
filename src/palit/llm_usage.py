@@ -11,6 +11,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from palit.hgnc import HgncResolver
 from palit.llm import FAILED_ANSWER, FALLBACK_MODEL, request_cost, stage_failures
 
 app = typer.Typer(help="Claude API usage recorded in a run database")
@@ -71,6 +72,62 @@ def summarise_usage(db_path: Path) -> list[StageUsage]:
     return sorted(rows.values(), key=lambda u: (u.stage, u.model, u.service_tier))
 
 
+class SubjectKind(StrEnum):
+    """What a stage's ``llm_requests.subject`` identifies."""
+
+    PAPER = "paper"  # a DOI
+    GENE = "gene"  # an HGNC ID
+    TOURNAMENT_PROMPT = "tournament prompt"  # "{hgnc_id}:{round}:{index}"
+    ASSOCIATION = "association"  # an associations.id
+
+
+# The stage modules import this module, so the stage names are literals here;
+# tests/test_llm.py checks them against each module's STAGE.
+STAGE_SUBJECT_KINDS: dict[str, SubjectKind] = {
+    "relevance": SubjectKind.PAPER,
+    "relevance_panelapp": SubjectKind.PAPER,
+    "extraction": SubjectKind.PAPER,
+    "assess_genes": SubjectKind.GENE,
+    "scan_mechanisms": SubjectKind.GENE,
+    "expand_literature": SubjectKind.TOURNAMENT_PROMPT,
+    "reduce_literature": SubjectKind.TOURNAMENT_PROMPT,
+    "map_mondo": SubjectKind.ASSOCIATION,
+    "match_panels": SubjectKind.ASSOCIATION,
+}
+
+
+def subject_label(
+    conn: sqlite3.Connection, hgnc_resolver: HgncResolver, stage: str, subject: str
+) -> str | None:
+    """A human-readable name for *subject* of *stage*; None when its row no longer exists.
+
+    A paper is named by its title, a gene or tournament prompt by the gene symbol, and
+    an association by "SYMBOL: description". Re-assessing a gene recreates its
+    associations under new ids, so an older request's association may be gone.
+    """
+    match STAGE_SUBJECT_KINDS[stage]:
+        case SubjectKind.PAPER:
+            title = conn.execute("SELECT title FROM papers WHERE doi = ?", (subject,)).fetchone()
+            return None if title is None else title[0]
+        case SubjectKind.GENE:
+            return hgnc_resolver.get_symbol(int(subject))
+        case SubjectKind.TOURNAMENT_PROMPT:
+            hgnc_id, _, _ = subject.partition(":")
+            return hgnc_resolver.get_symbol(int(hgnc_id))
+        case SubjectKind.ASSOCIATION:
+            association = conn.execute(
+                """
+                SELECT hgnc_id, json_extract(assessment_json, '$.description')
+                FROM associations WHERE id = ?
+                """,
+                (int(subject),),
+            ).fetchone()
+            if association is None:
+                return None
+            hgnc_id, description = association
+            return f"{hgnc_resolver.get_symbol(hgnc_id)}: {description}"
+
+
 class SubjectOutcome(StrEnum):
     """Where a refused subject stands in its stage, from the stage's latest request about it."""
 
@@ -94,18 +151,20 @@ class Refusal:
     round: int
     model: str
     category: str | None
-    title: str | None  # paper title when the subject is a DOI
+    label: str | None  # see subject_label
     outcome: SubjectOutcome  # of the subject, not of this request
 
 
-def list_refusals(db_path: Path, stage: str | None = None) -> list[Refusal]:
+def list_refusals(
+    db_path: Path, hgnc_resolver: HgncResolver, stage: str | None = None
+) -> list[Refusal]:
     """Refused requests, oldest first, with their subject's outcome; optionally for one stage.
 
     The outcome comes from the latest completed request of the stage about the
     subject. In a multi-round stage, an answered round after the refusal counts
     as recovered even while later rounds are still to come.
     """
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
             """
             WITH ranked AS (
@@ -116,38 +175,36 @@ def list_refusals(db_path: Path, stage: str | None = None) -> list[Refusal]:
                 FROM llm_requests
                 WHERE status != 'pending' AND (? IS NULL OR stage = ?)
             )
-            SELECT r.stage, r.subject, r.round, r.model, r.refusal_category, p.title,
+            SELECT r.stage, r.subject, r.round, r.model, r.refusal_category,
                    latest.status, latest.model
             FROM llm_requests r
             JOIN ranked latest
               ON latest.stage = r.stage AND latest.subject = r.subject AND latest.recency = 1
-            LEFT JOIN papers p ON p.doi = r.subject
             WHERE r.status = 'refused' AND (? IS NULL OR r.stage = ?)
             ORDER BY r.completed_at
             """,
             (stage, stage, stage, stage),
         ).fetchall()
-    return [
-        Refusal(
-            stage=row_stage,
-            subject=subject,
-            round=round_no,
-            model=model,
-            category=category,
-            title=title,
-            outcome=subject_outcome(latest_status, latest_model),
-        )
-        for (
-            row_stage,
-            subject,
-            round_no,
-            model,
-            category,
-            title,
-            latest_status,
-            latest_model,
-        ) in rows
-    ]
+        return [
+            Refusal(
+                stage=row_stage,
+                subject=subject,
+                round=round_no,
+                model=model,
+                category=category,
+                label=subject_label(conn, hgnc_resolver, row_stage, subject),
+                outcome=subject_outcome(latest_status, latest_model),
+            )
+            for (
+                row_stage,
+                subject,
+                round_no,
+                model,
+                category,
+                latest_status,
+                latest_model,
+            ) in rows
+        ]
 
 
 def outcome_counts(refusals: list[Refusal]) -> dict[SubjectOutcome, int]:
@@ -162,7 +219,7 @@ def _outcome_summary(refusals: list[Refusal]) -> str:
 
 def _refusal_table(refusals: list[Refusal], title: str) -> Table:
     table = Table(title=title)
-    for column in ("stage", "subject", "round", "model", "category", "subject outcome", "title"):
+    for column in ("stage", "subject", "round", "model", "category", "subject outcome", "label"):
         table.add_column(column)
     for r in refusals:
         table.add_row(
@@ -172,7 +229,7 @@ def _refusal_table(refusals: list[Refusal], title: str) -> Table:
             r.model,
             r.category or "-",
             r.outcome,
-            (r.title or "")[:80],
+            (r.label or "")[:80],
         )
     return table
 
@@ -185,10 +242,12 @@ class FailedSubject:
     subject: str
     failures: int
     last_rejection: str
-    title: str | None  # paper title when the subject is a DOI
+    label: str | None  # see subject_label
 
 
-def list_failed_for_good(db_path: Path, stage: str | None = None) -> list[FailedSubject]:
+def list_failed_for_good(
+    db_path: Path, hgnc_resolver: HgncResolver, stage: str | None = None
+) -> list[FailedSubject]:
     """The subjects failed for good, by stage and subject; optionally of one stage."""
     found: list[FailedSubject] = []
     with closing(sqlite3.connect(db_path)) as conn:
@@ -202,16 +261,13 @@ def list_failed_for_good(db_path: Path, stage: str | None = None) -> list[Failed
         for one_stage in stages:
             failures = stage_failures(conn, one_stage)
             for subject in failures.failed_for_good_subjects():
-                title = conn.execute(
-                    "SELECT title FROM papers WHERE doi = ?", (subject,)
-                ).fetchone()
                 found.append(
                     FailedSubject(
                         stage=one_stage,
                         subject=subject,
                         failures=failures.counts[subject],
                         last_rejection=failures.last_rejection[subject],
-                        title=title[0] if title is not None else None,
+                        label=subject_label(conn, hgnc_resolver, one_stage, subject),
                     )
                 )
     return found
@@ -219,11 +275,11 @@ def list_failed_for_good(db_path: Path, stage: str | None = None) -> list[Failed
 
 def _failed_table(failed: list[FailedSubject], title: str) -> Table:
     table = Table(title=title)
-    for column in ("stage", "subject", "failed answers", "last rejection", "title"):
+    for column in ("stage", "subject", "failed answers", "last rejection", "label"):
         table.add_column(column)
     for f in failed:
         table.add_row(
-            f.stage, f.subject, str(f.failures), f.last_rejection[:100], (f.title or "")[:80]
+            f.stage, f.subject, str(f.failures), f.last_rejection[:100], (f.label or "")[:80]
         )
     return table
 
@@ -244,11 +300,12 @@ def print_stage_summary(db_path: Path, stage: str) -> None:
         f"{errored:,} errored, {pending:,} pending; "
         f"${cost:,.2f}"
     )
-    refusals = list_refusals(db_path, stage)
+    hgnc_resolver = HgncResolver.from_file()
+    refusals = list_refusals(db_path, hgnc_resolver, stage)
     if refusals:
         console.print(_refusal_table(refusals, f"{stage}: refused requests"))
         console.print(f"{stage}: refused subjects: {_outcome_summary(refusals)}")
-    failed = list_failed_for_good(db_path, stage)
+    failed = list_failed_for_good(db_path, hgnc_resolver, stage)
     if failed:
         console.print(_failed_table(failed, f"{stage}: subjects failed for good"))
 
@@ -262,7 +319,8 @@ def refusals(
 
     Then list the subjects whose answers failed for good, with the last rejection.
     """
-    found = list_refusals(db_path, stage)
+    hgnc_resolver = HgncResolver.from_file()
+    found = list_refusals(db_path, hgnc_resolver, stage)
     by_category: dict[str, int] = {}
     for r in found:
         by_category[r.category or "-"] = by_category.get(r.category or "-", 0) + 1
@@ -274,7 +332,7 @@ def refusals(
     )
     if found:
         console.print(f"Refused subjects: {_outcome_summary(found)}")
-    failed = list_failed_for_good(db_path, stage)
+    failed = list_failed_for_good(db_path, hgnc_resolver, stage)
     if failed:
         console.print(_failed_table(failed, f"Subjects failed for good in {db_path}"))
     console.print(f"{len(failed)} subjects failed for good")

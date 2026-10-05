@@ -16,6 +16,17 @@ import tenacity
 from anthropic.types import Message
 from anthropic.types.messages import MessageBatchIndividualResponse
 
+from palit import (
+    assess_genes,
+    assess_relevance,
+    expand_literature,
+    extract_evidence,
+    map_mondo,
+    match_panels,
+    reduce_literature,
+    scan_mechanisms,
+)
+from palit.hgnc import HgncResolver
 from palit.llm import (
     FALLBACK_MODEL,
     MAX_FAILED_ANSWERS,
@@ -38,7 +49,9 @@ from palit.llm import (
     stage_refusals,
 )
 from palit.llm_usage import (
+    STAGE_SUBJECT_KINDS,
     FailedSubject,
+    SubjectKind,
     SubjectOutcome,
     list_failed_for_good,
     list_refusals,
@@ -257,14 +270,16 @@ def test_resume_returns_only_unrecorded_results(db_path: Path) -> None:
     assert asyncio.run(transport.resume("relevance")) == []
 
 
-def test_refusal_category_is_recorded_and_listed(db_path: Path) -> None:
+def test_refusal_category_is_recorded_and_listed(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
     batches = FakeBatches({"b": {"type": "succeeded", "message": _message("refusal")}})
     results = asyncio.run(
         _transport(db_path, batches).run("relevance", 1, [_request("doi-b", "b")])
     )
     with sqlite3.connect(db_path) as conn:
         record_result(conn, results[0])
-    [refusal] = list_refusals(db_path, "relevance")
+    [refusal] = list_refusals(db_path, hgnc_resolver, "relevance")
     assert (refusal.subject, refusal.category) == ("doi-b", "bio")
 
 
@@ -471,7 +486,7 @@ def test_batch_transport_submits_one_model_per_batch(db_path: Path) -> None:
         ).fetchone() == (FALLBACK_MODEL,)
 
 
-def test_refusals_list_the_subject_outcome(db_path: Path) -> None:
+def test_refusals_list_the_subject_outcome(db_path: Path, hgnc_resolver: HgncResolver) -> None:
     _add_requests(
         db_path,
         [
@@ -483,7 +498,7 @@ def test_refusals_list_the_subject_outcome(db_path: Path) -> None:
             ("relevance", "waiting", FALLBACK_MODEL, "pending", None),
         ],
     )
-    refusals = list_refusals(db_path, "relevance")
+    refusals = list_refusals(db_path, hgnc_resolver, "relevance")
     assert sorted((r.subject, r.model, r.outcome) for r in refusals) == [
         ("for-good", MODEL, SubjectOutcome.REFUSED_FOR_GOOD),
         ("for-good", FALLBACK_MODEL, SubjectOutcome.REFUSED_FOR_GOOD),
@@ -495,6 +510,62 @@ def test_refusals_list_the_subject_outcome(db_path: Path) -> None:
         SubjectOutcome.REFUSED_FOR_GOOD: 1,
         SubjectOutcome.UNANSWERED: 1,
     }
+
+
+def test_every_stage_has_its_subject_kind() -> None:
+    assert STAGE_SUBJECT_KINDS == {
+        assess_relevance.STAGE: SubjectKind.PAPER,
+        assess_relevance.CHECK_STAGE: SubjectKind.PAPER,
+        extract_evidence.STAGE: SubjectKind.PAPER,
+        assess_genes.STAGE: SubjectKind.GENE,
+        scan_mechanisms.STAGE: SubjectKind.GENE,
+        expand_literature.STAGE: SubjectKind.TOURNAMENT_PROMPT,
+        reduce_literature.STAGE: SubjectKind.TOURNAMENT_PROMPT,
+        map_mondo.STAGE: SubjectKind.ASSOCIATION,
+        match_panels.STAGE: SubjectKind.ASSOCIATION,
+    }
+
+
+def test_refusals_are_labelled_by_their_subject_kind(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    _add_requests(
+        db_path,
+        [
+            ("relevance", "10.1/a", MODEL, "refused", "2026-09-02T00"),
+            ("relevance", "10.1/unknown", MODEL, "refused", "2026-09-02T01"),
+            ("assess_genes", "3", MODEL, "refused", "2026-09-02T02"),
+            ("expand_literature", "4:2:0", MODEL, "refused", "2026-09-02T03"),
+            ("map_mondo", "7", MODEL, "refused", "2026-09-02T04"),
+            # The association was deleted when its gene was re-assessed.
+            ("match_panels", "8", MODEL, "refused", "2026-09-02T05"),
+        ],
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO papers (doi, title, source, source_type) "
+            "VALUES ('10.1/a', 'A paper', 'pubmed', 'initial')"
+        )
+        conn.execute(
+            "INSERT INTO associations (id, hgnc_id, position, assessment_json) "
+            """VALUES (7, 1, 0, '{"description": "Disease A"}')"""
+        )
+    assert [(r.subject, r.label) for r in list_refusals(db_path, hgnc_resolver)] == [
+        ("10.1/a", "A paper"),
+        ("10.1/unknown", None),
+        ("3", "GENEB"),
+        ("4:2:0", "GENEC"),
+        ("7", "GENEA: Disease A"),
+        ("8", None),
+    ]
+
+
+def test_a_stage_without_a_subject_kind_cannot_be_listed(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    _add_requests(db_path, [("renamed_stage", "x", MODEL, "refused", "2026-09-02T00")])
+    with pytest.raises(KeyError, match="renamed_stage"):
+        list_refusals(db_path, hgnc_resolver)
 
 
 def _mixed_transport(db_path: Path, batches: FakeBatches, streams: FakeStreams) -> BatchTransport:
@@ -618,15 +689,17 @@ def test_an_answer_cut_off_at_max_tokens_is_rejected_as_such() -> None:
     assert str(tool_call.value) == "stopped with tool_use"
 
 
-def test_subjects_failed_for_good_are_listed_with_their_last_rejection(db_path: Path) -> None:
+def test_subjects_failed_for_good_are_listed_with_their_last_rejection(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
     _add_answers(
         db_path,
         [
             ("extraction", "10.1/a", "succeeded", "max_tokens", None, "2026-09-02T01"),
             ("extraction", "10.1/a", "succeeded", "end_turn", "structural: y", "2026-09-02T02"),
             ("extraction", "10.1/b", "succeeded", "max_tokens", None, "2026-09-02T01"),
-            ("assess_genes", "1100", "succeeded", "max_tokens", None, "2026-09-02T01"),
-            ("assess_genes", "1100", "succeeded", "max_tokens", None, "2026-09-02T02"),
+            ("assess_genes", "1", "succeeded", "max_tokens", None, "2026-09-02T01"),
+            ("assess_genes", "1", "succeeded", "max_tokens", None, "2026-09-02T02"),
         ],
     )
     with sqlite3.connect(db_path) as conn:
@@ -634,8 +707,10 @@ def test_subjects_failed_for_good_are_listed_with_their_last_rejection(db_path: 
             "INSERT INTO papers (doi, title, source, source_type) "
             "VALUES ('10.1/a', 'A paper', 'pubmed', 'initial')"
         )
-    assert list_failed_for_good(db_path) == [
-        FailedSubject("assess_genes", "1100", 2, MAX_TOKENS_REJECTION, None),
+    assert list_failed_for_good(db_path, hgnc_resolver) == [
+        FailedSubject("assess_genes", "1", 2, MAX_TOKENS_REJECTION, "GENEA"),
         FailedSubject("extraction", "10.1/a", 2, "structural: y", "A paper"),
     ]
-    assert [f.subject for f in list_failed_for_good(db_path, "extraction")] == ["10.1/a"]
+    assert [f.subject for f in list_failed_for_good(db_path, hgnc_resolver, "extraction")] == [
+        "10.1/a"
+    ]

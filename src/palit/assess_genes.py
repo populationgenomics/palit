@@ -694,22 +694,6 @@ def uncovered_dois(assessment: dict[str, Any], required_dois: set[str]) -> list[
     return sorted(required_dois - covered)
 
 
-def coverage_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> list[str]:
-    """A problem listing the contributing papers the aggregation leaves out, if any.
-
-    A short answer that ends normally still validates against the schema; this is
-    the check that catches it.
-    """
-    missing = uncovered_dois(assessment, dois_with_disease_entities(item.evidence_list))
-    if not missing:
-        return []
-    doi_to_paper_id = {doi: paper_id for paper_id, doi in item.paper_id_to_doi.items()}
-    return [
-        f"{len(missing)} contributing paper(s) in no association or unassessed report: "
-        + ", ".join(f"{doi_to_paper_id[doi]} ({doi})" for doi in missing)
-    ]
-
-
 def association_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> list[str]:
     """Checks of the association fields that send a gene back for another attempt."""
     paa_mondo_ids = {a.mondo_id for a in item.context.gencc.paa_associations}
@@ -778,6 +762,17 @@ def log_association_warnings(assessment: dict[str, Any], item: _GeneBatchItem) -
             logger.warning(
                 "%s: cites papers missing from its paper_ids: %s", label, sorted(uncited)
             )
+    # The report lists every paper with an extraction for the gene, so a paper the
+    # aggregation leaves out stays visible there; the gene isn't worth losing over it.
+    missing = uncovered_dois(assessment, dois_with_disease_entities(item.evidence_list))
+    if missing:
+        doi_to_paper_id = {doi: paper_id for paper_id, doi in item.paper_id_to_doi.items()}
+        logger.warning(
+            "%s: %d contributing paper(s) in no association or unassessed report: %s",
+            item.hgnc_symbol,
+            len(missing),
+            ", ".join(f"{doi_to_paper_id[doi]} ({doi})" for doi in missing),
+        )
 
 
 def drop_placeholders_and_log_quotes(
@@ -812,7 +807,7 @@ def assessment_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> lis
         replace_paper_ids_with_dois(assessment, item.paper_id_to_doi)
     except ValueError as e:
         return [f"hallucinated paper ID: {e}"]
-    problems = coverage_problems(assessment, item)
+    problems = []
     if not validate_entities_criteria_complete(assessment["disease_entities"]):
         problems.append("incomplete per-association criteria")
     if not validate_independent_family_counts(assessment["disease_entities"]):

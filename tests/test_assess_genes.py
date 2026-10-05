@@ -17,12 +17,13 @@ from palit.assess_genes import (
     PanelReviews,
     PaperBatchProcessor,
     _GeneBatchItem,
+    assessment_problems,
     association_problems,
     build_request,
-    coverage_problems,
     drop_placeholder_citations,
     genes_to_assess,
     handle_results,
+    log_association_warnings,
     render_prompt,
     replace_paper_ids_with_dois,
     store_gene_aggregation,
@@ -282,18 +283,27 @@ def test_unknown_paper_id_is_rejected() -> None:
         replace_paper_ids_with_dois(answer, PAPER_IDS)
 
 
-def test_coverage_requires_every_paper_with_a_disease_entity(gencc_index: GenccIndex) -> None:
+def test_papers_left_out_are_logged_not_rejected(
+    gencc_index: GenccIndex, caplog: pytest.LogCaptureFixture
+) -> None:
     answer = _stored_form(_answer(_association()))
     no_entities = _evidence("10.1/c", "Lee", "2022", entities=0)
     item = _item(
         gencc_index,
         [_evidence("10.1/a", "Smith", "2024"), _evidence("10.1/b", "Jones", "2023"), no_entities],
     )
-    assert coverage_problems(answer, item) == []
+    log_association_warnings(answer, item)
+    assert "no association or unassessed report" not in caplog.text
 
     answer["unassessed_reports"] = []
-    (problem,) = coverage_problems(answer, item)
-    assert "Jones2023 (10.1/b)" in problem
+    log_association_warnings(answer, item)
+    assert "1 contributing paper(s) in no association or unassessed report: Jones2023 (10.1/b)" in (
+        caplog.text
+    )
+    unmapped = _answer(_association())
+    criteria_object_to_list(unmapped["disease_entities"])
+    unmapped["unassessed_reports"] = []
+    assert assessment_problems(unmapped, item) == []
 
 
 def test_association_fields_are_checked(gencc_index: GenccIndex) -> None:

@@ -1260,6 +1260,12 @@ class ExtractionRunner:
             criteria_object_to_list(gene["disease_entities"])
         problems = structural_problems(extraction)
         pdf_quotes = PaperQuotes(doi_to_path(doi, self._papers_dir, ".pdf").read_bytes())
+        if not pdf_quotes.can_locate:
+            logger.warning(
+                "%s: the PDF's text layer has undecodable characters; quotes are checked "
+                "but cannot be highlighted",
+                doi,
+            )
         quotes = extraction_quotes(extraction)
         check = pdf_quotes.check(quotes)
         if not check.text_layer:

@@ -2,6 +2,9 @@
 
 from collections.abc import Callable
 
+import anchorite
+import pytest
+
 from palit.quotes import PaperQuotes
 
 TABLE_ROW = "c.1061C>T p.T354M 20 46 3"
@@ -42,3 +45,18 @@ def test_without_text_layer_nothing_is_rejected(text_pdf: Callable[[list[str]], 
     check = quotes.check([TABLE_ROW, "BRCA1 exon11:c.1234C>T"])
     assert not check.text_layer
     assert check.rejected == []
+
+
+def test_undecodable_text_layer_checks_quotes_without_highlights(
+    text_pdf: Callable[[list[str]], bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_index(pdf_bytes: bytes) -> None:
+        raise UnicodeDecodeError("utf-16-le", b"\x00\xd8", 0, 2, "illegal UTF-16 surrogate")
+
+    monkeypatch.setattr(anchorite, "PdfIndex", broken_index)
+    quotes = _paper(text_pdf)
+
+    assert not quotes.can_locate
+    absent = "c.9999A>T p.Lys3333Ter 1 1 0"
+    assert quotes.check([TABLE_ROW, absent]).rejected == [absent]
+    assert quotes.locate([TABLE_ROW, FIGURE_LABEL]) == {TABLE_ROW: [], FIGURE_LABEL: []}

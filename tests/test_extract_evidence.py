@@ -1104,6 +1104,8 @@ class GatedVariantClient(VariantLookupClient):
 class GroundedQuotes:
     """Stands in for PaperQuotes: every quote is in the PDF."""
 
+    can_locate = True
+
     def __init__(self, pdf_bytes: bytes) -> None:
         pass
 

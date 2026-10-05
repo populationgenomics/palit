@@ -45,11 +45,23 @@ class PaperQuotes:
         self._text = "\n".join(
             document[i].get_textpage().get_text_range() for i in range(len(document))
         )
-        self._index = anchorite.PdfIndex(pdf_bytes)
+        # anchorite decodes each text object's UTF-16 strictly, so a malformed
+        # text layer (e.g. an unpaired surrogate) fails the index. The index
+        # only serves highlight boxes; grounding checks use the text above.
+        self._index: anchorite.PdfIndex | None
+        try:
+            self._index = anchorite.PdfIndex(pdf_bytes)
+        except UnicodeDecodeError:
+            self._index = None
 
     @property
     def has_text_layer(self) -> bool:
         return len(self._text.strip()) >= MIN_TEXT_LAYER_CHARS
+
+    @property
+    def can_locate(self) -> bool:
+        """Whether highlight boxes are available; False when the index couldn't be built."""
+        return self._index is not None
 
     def check(self, quotes: list[str]) -> QuoteCheck:
         """Quotes that don't appear verbatim in the PDF.
@@ -70,8 +82,11 @@ class PaperQuotes:
     def locate(self, quotes: list[str]) -> dict[str, list[dict[str, Any]]]:
         """Highlight boxes per quote: 1-based page and 0-1000 page coordinates.
 
-        One box per matched visual line; ``[]`` when the quote can't be placed.
+        One box per matched visual line; ``[]`` when the quote can't be placed,
+        and for every quote when the index couldn't be built.
         """
+        if self._index is None:
+            return {quote: [] for quote in quotes}
         resolved = self._index.resolve(sorted(set(quotes)))
         return {
             quote: [

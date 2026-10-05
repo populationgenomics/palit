@@ -18,7 +18,13 @@ class LoggingProgress(Progress):
 
     def update(self, task_id: TaskID, **kwargs: Any) -> None:
         super().update(task_id, **kwargs)
+        self._log_progress(task_id)
 
+    def advance(self, task_id: TaskID, advance: float = 1) -> None:
+        super().advance(task_id, advance)
+        self._log_progress(task_id)
+
+    def _log_progress(self, task_id: TaskID) -> None:
         if self.console.is_terminal:
             return
 

@@ -15,11 +15,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx2
+import pypdf
 import pypdfium2 as pdfium
 import pytest
 import tenacity
 from anthropic import AsyncAnthropic
 from anthropic.types import Message
+from pypdf.generic import DecodedStreamObject
 
 from palit.extract_evidence import (
     CONTEXT_MARGIN_TOKENS,
@@ -27,6 +29,8 @@ from palit.extract_evidence import (
     MAX_COUNTED_PAGES,
     MAX_PDF_PAGES,
     MAX_TOKENS,
+    OVERSIZED_PAGE_TOKENS,
+    PAGE_LIMIT_RULES_VERSION,
     STAGE,
     Conversation,
     ExtractionRunner,
@@ -63,6 +67,7 @@ from palit.llm import (
     LlmRequest,
     LlmResult,
     ResultStatus,
+    StageRefusals,
     json_output_config,
     stage_refusals,
 )
@@ -956,6 +961,62 @@ def test_a_pdf_that_fits_keeps_its_pages_up_to_the_api_page_limit(
     assert limit == expected
 
 
+OVERSIZED_TEST_BYTES = 100_000
+
+
+def _pdf_with_oversized_page(pages: int, oversized: int) -> bytes:
+    """_numbered_pages_pdf whose page *oversized* alone is over OVERSIZED_TEST_BYTES."""
+    writer = pypdf.PdfWriter(clone_from=io.BytesIO(_numbered_pages_pdf(pages)))
+    content = DecodedStreamObject()
+    content.set_data(b"% " + b"x" * 2 * OVERSIZED_TEST_BYTES + b"\n")
+    writer.pages[oversized].replace_contents(content)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("page_tokens", "expected_pages", "expected_pdf_tokens"),
+    [
+        # The estimate fits, and so do all other pages.
+        (lambda index: 2_000, 77, 76 * 2_000 + OVERSIZED_PAGE_TOKENS),
+        # The estimate fits, then dense table pages fill the window.
+        (
+            lambda index: 5_000 if index < 29 else 50_000,
+            29 + 1 + (ROOM - 29 * 5_000 - OVERSIZED_PAGE_TOKENS) // 50_000,
+            29 * 5_000
+            + OVERSIZED_PAGE_TOKENS
+            + (ROOM - 29 * 5_000 - OVERSIZED_PAGE_TOKENS) // 50_000 * 50_000,
+        ),
+        # The pages before it leave less room than the estimate.
+        (lambda index: 31_000, 29, 29 * 31_000),
+    ],
+)
+def test_a_page_too_large_to_count_is_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    page_tokens: Callable[[int], int],
+    expected_pages: int,
+    expected_pdf_tokens: int,
+) -> None:
+    """Counting goes on after it; the PDF is truncated only where the window fills up."""
+    pdf = _pdf_with_oversized_page(77, 29)
+    monkeypatch.setattr("palit.extract_evidence.MAX_COUNTED_PDF_BYTES", OVERSIZED_TEST_BYTES)
+    counter = PageTokenCounter(page_tokens, OVERSIZED_TEST_BYTES)
+    paper = {"doi": "10.1/huge-figure", "title": "t", "source_date": "2026-09-01", "abstract": "a"}
+
+    with caplog.at_level(logging.INFO, logger="palit.extract_evidence"):
+        limit = asyncio.run(
+            fitting_pages(SimpleNamespace(messages=counter), paper, pdf, _settings(), MODEL)  # type: ignore[arg-type]
+        )
+
+    assert limit == PageLimit(77, expected_pages, WITHOUT_PDF_TOKENS + expected_pdf_tokens)
+    assert (
+        "10.1/huge-figure: page 30 alone is over 100,000 bytes, too large to count; "
+        f"taking it to cost {OVERSIZED_PAGE_TOKENS:,} tokens"
+    ) in caplog.messages
+
+
 def test_the_round_one_message_notes_a_truncated_pdf() -> None:
     paper = {"doi": "10.1/a", "title": "t", "source_date": "2026-09-01", "abstract": "a"}
 
@@ -979,25 +1040,34 @@ class FakeFiles:
         return SimpleNamespace(id=f"file-{len(self.uploaded)}")
 
 
-def test_a_truncated_upload_is_counted_and_uploaded_once_per_pdf_version(tmp_path: Path) -> None:
-    """A later run reuses the page count and the upload: same pages, same bytes, same sha256."""
-    long_pdf = _numbered_pages_pdf(120)
-    short_pdf = _numbered_pages_pdf(3)
+def _upload_run(
+    tmp_path: Path, pdfs: dict[str, bytes]
+) -> tuple[Path, list[dict[str, Any]], StageRefusals]:
+    """A run database with the papers of *pdfs*, by DOI, and their PDFs in *tmp_path*."""
     db_path = tmp_path / "run.sqlite"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA_SQL.read_text())
         conn.executemany(
             "INSERT INTO papers (doi, title, source, source_type, download_status) "
             "VALUES (?, 't', 'pubmed', 'expansion', 'downloaded')",
-            [("10.1/long",), ("10.1/short",)],
+            [(doi,) for doi in pdfs],
         )
         refusals = stage_refusals(conn, STAGE)
-    doi_to_path("10.1/long", tmp_path, ".pdf").write_bytes(long_pdf)
-    doi_to_path("10.1/short", tmp_path, ".pdf").write_bytes(short_pdf)
+    for doi, pdf in pdfs.items():
+        doi_to_path(doi, tmp_path, ".pdf").write_bytes(pdf)
     papers = [
-        {"doi": doi, "title": "t", "source_date": "2026-09-01", "abstract": "a"}
-        for doi in ("10.1/long", "10.1/short")
+        {"doi": doi, "title": "t", "source_date": "2026-09-01", "abstract": "a"} for doi in pdfs
     ]
+    return db_path, papers, refusals
+
+
+def test_a_truncated_upload_is_counted_and_uploaded_once_per_pdf_version(tmp_path: Path) -> None:
+    """A later run reuses the page count and the upload: same pages, same bytes, same sha256."""
+    long_pdf = _numbered_pages_pdf(120)
+    short_pdf = _numbered_pages_pdf(3)
+    db_path, papers, refusals = _upload_run(
+        tmp_path, {"10.1/long": long_pdf, "10.1/short": short_pdf}
+    )
     counter = PageTokenCounter(_article_with_supplement, 20_000_000)
     files = FakeFiles()
     client = SimpleNamespace(messages=counter, files=files)
@@ -1028,6 +1098,30 @@ def test_a_truncated_upload_is_counted_and_uploaded_once_per_pdf_version(tmp_pat
         "10.1/long": hashlib.sha256(truncated).hexdigest(),
         "10.1/short": hashlib.sha256(short_pdf).hexdigest(),
     }
+
+
+def test_a_page_limit_counted_under_other_rules_is_counted_again(tmp_path: Path) -> None:
+    """A stored limit of the same PDF version but another PAGE_LIMIT_RULES_VERSION is replaced."""
+    long_pdf = _numbered_pages_pdf(120)
+    sha256 = hashlib.sha256(long_pdf).hexdigest()
+    db_path, papers, refusals = _upload_run(tmp_path, {"10.1/long": long_pdf})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO pdf_page_limits "
+            "(doi, sha256, rules_version, total_pages, pages, input_tokens, counted_at) "
+            "VALUES ('10.1/long', ?, ?, 120, 7, 65000, '2026-10-05T00:00:00+00:00')",
+            (sha256, PAGE_LIMIT_RULES_VERSION - 1),
+        )
+    counter = PageTokenCounter(_article_with_supplement, 20_000_000)
+    client = SimpleNamespace(messages=counter, files=FakeFiles())
+
+    uploads = asyncio.run(upload_pdfs(client, db_path, papers, tmp_path, _settings(), refusals))  # type: ignore[arg-type]
+
+    assert counter.calls > 0
+    assert uploads["10.1/long"].pages == ARTICLE_PAGES_THAT_FIT
+    with sqlite3.connect(db_path) as conn:
+        limits = conn.execute("SELECT sha256, rules_version, pages FROM pdf_page_limits")
+        assert limits.fetchall() == [(sha256, PAGE_LIMIT_RULES_VERSION, ARTICLE_PAGES_THAT_FIT)]
 
 
 def test_quotes_from_the_kept_pages_ground_and_locate_in_the_original_pdf(

@@ -131,6 +131,18 @@ MAX_UNCOUNTED_PAGES = 50
 # few tokens per range.
 MAX_COUNTED_PDF_BYTES = 20_000_000
 MAX_COUNTED_PAGES = 50
+# A page whose copy alone is over MAX_COUNTED_PDF_BYTES is not counted but
+# taken to cost this many tokens. Its bytes are mostly embedded images, and
+# the upload goes through the Files API, which has no such size limit. The
+# model gets a PDF page as its text, typically 1,500-3,000 tokens, plus one
+# image of the whole page, at most 4,784 tokens on Claude 4.7 and later
+# (Anthropic's PDF support and vision docs). Embedded images change what that
+# image shows, not what it costs. The estimate leaves room for denser text.
+OVERSIZED_PAGE_TOKENS = 10_000
+# Version of the rules by which fitting_pages finds a PDF's page limit, stored
+# with each limit in pdf_page_limits. A limit stored under another version is
+# counted again. Raise it whenever a change to the rules can change a limit.
+PAGE_LIMIT_RULES_VERSION = 2
 # Context window kept free besides max_tokens, for the truncation note.
 CONTEXT_MARGIN_TOKENS = 1_000
 # Counts that refine the page count within the range where the window fills up.
@@ -702,7 +714,9 @@ class PageLimit:
 
     total_pages: int
     pages: int  # 0 when not even the first page fits
-    input_tokens: int  # of the round-1 request with those pages, from token counts
+    # Of the round-1 request with those pages, from token counts and
+    # OVERSIZED_PAGE_TOKENS for each page too large to count.
+    input_tokens: int
 
 
 async def fitting_pages(
@@ -717,10 +731,12 @@ async def fitting_pages(
     The room is the model's context window less max_tokens, CONTEXT_MARGIN_TOKENS
     and the request without the PDF. Page ranges are counted from the first page
     on, each of at most MAX_COUNTED_PAGES pages and MAX_COUNTED_PDF_BYTES, and
-    kept while they fit the room, up to MAX_PDF_PAGES pages. Once a range does
-    not fit, the pages of it that do are estimated from its tokens per page, and
-    the estimate is counted: kept if it fits, otherwise the new range that does
-    not. This repeats up to MAX_REFINING_COUNTS times.
+    kept while they fit the room, up to MAX_PDF_PAGES pages. A page too large
+    to count on its own is taken to cost OVERSIZED_PAGE_TOKENS, and counting
+    goes on after it. Once a range does not fit, the pages of it that do are
+    estimated from its tokens per page, and the estimate is counted: kept if it
+    fits, otherwise the new range that does not. This repeats up to
+    MAX_REFINING_COUNTS times.
     """
     with closing(pdfium.PdfDocument(pdf_bytes)) as document:
         total = len(document)
@@ -748,14 +764,19 @@ async def fitting_pages(
         if too_many is None:
             end, copy = countable_range(pdf_bytes, start, min(last, start + MAX_COUNTED_PAGES))
             if end == start:
-                logger.warning(
+                logger.info(
                     "%s: page %d alone is over %s bytes, too large to count; "
-                    "the PDF is truncated before it",
+                    "taking it to cost %s tokens",
                     paper["doi"],
                     start + 1,
                     f"{MAX_COUNTED_PDF_BYTES:,}",
+                    f"{OVERSIZED_PAGE_TOKENS:,}",
                 )
-                break
+                if counted + OVERSIZED_PAGE_TOKENS > room:
+                    break
+                start += 1
+                counted += OVERSIZED_PAGE_TOKENS
+                continue
         else:
             if refining_counts == MAX_REFINING_COUNTS:
                 break
@@ -818,12 +839,13 @@ async def count_page_limits(
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO pdf_page_limits
-                        (doi, sha256, total_pages, pages, input_tokens, counted_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                        (doi, sha256, rules_version, total_pages, pages, input_tokens, counted_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         doi,
                         pdf.sha256,
+                        PAGE_LIMIT_RULES_VERSION,
                         limit.total_pages,
                         limit.pages,
                         limit.input_tokens,
@@ -857,9 +879,9 @@ async def upload_pdfs(
     """The papers' PDFs in the Files API, uploading only new, changed, or expiring ones.
 
     A PDF over MAX_UNCOUNTED_PAGES pages holds only the leading pages that fit
-    its round-1 request, counted once per PDF version (see
-    :func:`count_page_limits`). Papers whose PDF is missing, or whose first page
-    alone does not fit, are skipped.
+    its round-1 request, counted once per PDF version and
+    PAGE_LIMIT_RULES_VERSION (see :func:`count_page_limits`). Papers whose PDF
+    is missing, or whose first page alone does not fit, are skipped.
     """
     now = datetime.now(UTC)
     pdfs: list[LocalPdf] = []
@@ -872,12 +894,13 @@ async def upload_pdfs(
         pdfs.append(LocalPdf(paper, pdf_path, sha256, pdf_pages(pdf_path)))
 
     def page_limits() -> dict[str, tuple[str, int]]:
-        """The counted PDF version and its fitting pages, by DOI."""
+        """The counted PDF version and its fitting pages, by DOI, under the current rules."""
         with closing(sqlite3.connect(db_path)) as conn:
             return {
                 doi: (sha256, pages)
                 for doi, sha256, pages in conn.execute(
-                    "SELECT doi, sha256, pages FROM pdf_page_limits"
+                    "SELECT doi, sha256, pages FROM pdf_page_limits WHERE rules_version = ?",
+                    (PAGE_LIMIT_RULES_VERSION,),
                 )
             }
 

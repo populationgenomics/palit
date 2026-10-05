@@ -1364,11 +1364,6 @@ class ExtractionRunner:
         pdf_quotes = PaperQuotes(
             sent_pdf(self._db_path, doi, doi_to_path(doi, self._papers_dir, ".pdf"))
         )
-        if not pdf_quotes.can_locate:
-            logger.warning(
-                "%s: the PDF's text layer has undecodable characters; no quote can be highlighted",
-                doi,
-            )
         locations = pdf_quotes.locate(sorted(quotes))
         unlocated = {quote for quote, boxes in locations.items() if not boxes}
         unlocated_variants = unlocated & variant_quotes(extraction)

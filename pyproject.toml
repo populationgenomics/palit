@@ -28,7 +28,7 @@ dependencies = [
     "typer",
     "boto3>=1.43.24",
     "anthropic>=1.0.0",
-    "anchorite>=0.5.1",
+    "anchorite>=0.5.2",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +51,10 @@ palit = "palit.cli:app"
 # .github/dependabot.yml. Override per package with `exclude-newer-package`
 # (e.g. to accept a security fix younger than the window).
 exclude-newer = "7 days"
+# Bypass the gate only for first-party packages we publish and need to consume
+# immediately after cutting: anchorite, plus seq-smith which new anchorite
+# releases pin tightly. Third-party packages always observe the 7-day floor.
+exclude-newer-package = { anchorite = "0 days", seq-smith = "0 days" }
 
 [tool.pyright]
 venvPath = "."

@@ -1263,7 +1263,6 @@ class GatedVariantClient(VariantLookupClient):
 class GroundedQuotes:
     """Stands in for PaperQuotes: every quote not in *unlocated* is placed on page 1."""
 
-    can_locate = True
     unlocated: frozenset[str] = frozenset()
 
     def __init__(self, pdf_bytes: bytes) -> None:

@@ -33,28 +33,13 @@ class PaperQuotes:
     """
 
     def __init__(self, pdf_bytes: bytes) -> None:
-        # anchorite decodes each text object's UTF-16 strictly, so a malformed
-        # text layer (e.g. an unpaired surrogate) fails the index. Then no
-        # quote of the paper can be highlighted.
-        self._index: anchorite.PdfIndex | None
-        try:
-            self._index = anchorite.PdfIndex(pdf_bytes)
-        except UnicodeDecodeError:
-            self._index = None
-
-    @property
-    def can_locate(self) -> bool:
-        """Whether highlight boxes are available; False when the index couldn't be built."""
-        return self._index is not None
+        self._index = anchorite.PdfIndex(pdf_bytes)
 
     def locate(self, quotes: list[str]) -> dict[str, list[dict[str, Any]]]:
         """Highlight boxes per quote: 1-based page and 0-1000 page coordinates.
 
-        One box per matched visual line; ``[]`` when the quote can't be placed,
-        and for every quote when the index couldn't be built.
+        One box per matched visual line; ``[]`` when the quote can't be placed.
         """
-        if self._index is None:
-            return {quote: [] for quote in quotes}
         resolved = self._index.resolve(sorted(set(quotes)))
         return {
             quote: [

@@ -53,7 +53,7 @@
                             "string",
                             "null"
                         ],
-                        "description": "'<GENE>-related <disease>' when no GenCC row is reused; null when existing_association_mondo_id is set."
+                        "description": "'<GENE>-related <disease>', required whenever existing_association_mondo_id is null, whatever the status; null when existing_association_mondo_id is set."
                     },
                     "panelapp_relation": {
                         "type": "object",
@@ -65,7 +65,7 @@
                                     "new_disease",
                                     "new_moi"
                                 ],
-                                "description": "existing: curated with this MoI; new_moi: disease curated, not with this MoI; new_disease: disease not curated."
+                                "description": "existing: curated with this MoI; new_moi: disease curated, not with this MoI; new_disease: disease not curated. new_moi and new_disease need independent_family_count >= 1; below that, the report belongs in unassessed_reports."
                             },
                             "existing_rating": {
                                 "anyOf": [
@@ -128,7 +128,7 @@
                             "integer",
                             "null"
                         ],
-                        "description": "Independent families used for Criteria A/B/C; <= family_count; null iff family_count null."
+                        "description": "Independent families used for Criteria A/B/C; <= family_count; null iff family_count null; >= 1 for new_disease and new_moi."
                     },
                     "count_reduction_reasoning": {
                         "type": "string",

@@ -19,7 +19,9 @@ unextracted and the next attempt starts a fresh conversation.
 
 An interrupted run loses no paid round: a restart handles the results of its
 uncollected batches, then continues every saved conversation whose latest round
-was never sent, before it starts any paper from round 1.
+was never sent, before it starts any paper from round 1. Variant lookups in that
+round that failed for a reason that can pass (see
+:data:`palit.lookup_tools.TRANSIENT_LOOKUP_ERRORS`) are run again before it is sent.
 
 A conversation stays on the model it started on. When MODEL refuses a paper in
 any round, the next attempt starts the paper's conversation afresh from round 1
@@ -83,6 +85,8 @@ from palit.lookup_tools import (
     VariantLookupClient,
     VariantLookupSettings,
     frequency_row,
+    is_transient_failure,
+    variant_lookup_input,
 )
 from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
 from palit.panelapp_integration import (
@@ -394,15 +398,19 @@ def load_conversation(conn: sqlite3.Connection, doi: str, round_no: int) -> list
     return json.loads(messages_json)  # type: ignore[no-any-return]
 
 
-def variant_lookup_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Every ``lookup_variants`` result item in a conversation's tool results."""
-    variant_tool_ids = {
+def _variant_tool_ids(assistant_messages: Iterable[dict[str, Any]]) -> set[str]:
+    """The ids of the ``lookup_variants`` calls in *assistant_messages*."""
+    return {
         block["id"]
-        for message in messages
-        if message["role"] == "assistant"
+        for message in assistant_messages
         for block in message["content"]
         if block["type"] == "tool_use" and block["name"] == LOOKUP_VARIANTS_TOOL["name"]
     }
+
+
+def variant_lookup_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every ``lookup_variants`` result item in a conversation's tool results."""
+    variant_tool_ids = _variant_tool_ids(m for m in messages if m["role"] == "assistant")
     results: list[dict[str, Any]] = []
     for message in messages:
         if message["role"] != "user" or isinstance(message["content"], str):
@@ -412,6 +420,37 @@ def variant_lookup_results(messages: list[dict[str, Any]]) -> list[dict[str, Any
                 if not block.get("is_error"):
                     results += json.loads(block["content"])["results"]
     return results
+
+
+def unsent_variant_results(messages: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    """The ``lookup_variants`` result items of an unsent round, by index of their block.
+
+    The messages are those of an unsent round (see :func:`unsent_rounds`). Its
+    last message, the user turn after the last assistant turn, holds the tool
+    results no request has carried yet. The blocks are indexes into that
+    message's content. Results of earlier rounds are not included: requests
+    have carried them.
+    """
+    *_, assistant, latest = messages
+    if (assistant["role"], latest["role"]) != ("assistant", "user"):
+        raise AssertionError("an unsent round ends with tool results after an assistant turn")
+    variant_tool_ids = _variant_tool_ids([assistant])
+    return {
+        index: json.loads(block["content"])["results"]
+        for index, block in enumerate(latest["content"])
+        if block["type"] == "tool_result"
+        and block["tool_use_id"] in variant_tool_ids
+        and not block["is_error"]
+    }
+
+
+def transient_failure_count(messages: list[dict[str, Any]]) -> int:
+    """The variant lookups of an unsent round that failed for a reason that can pass."""
+    return sum(
+        is_transient_failure(item)
+        for results in unsent_variant_results(messages).values()
+        for item in results
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -957,6 +996,15 @@ class RoundOutcome:
         return total
 
 
+@dataclass(frozen=True)
+class LookupRerun:
+    """An unsent round whose transiently failed variant lookups were run again."""
+
+    conversation: Conversation  # with the new results in place
+    lookups: int  # variant lookups run again
+    still_failing: int  # of them, the ones that failed for a reason that can pass again
+
+
 class ExtractionRunner:
     def __init__(
         self,
@@ -1029,6 +1077,78 @@ class ExtractionRunner:
                 f"(first: {invalid_requests[0]}); see llm_requests.error_type"
             )
         return outcome
+
+    async def rerun_transient_lookups(
+        self, conversations: list[Conversation]
+    ) -> list[Conversation]:
+        """The unsent rounds with their transiently failed variant lookups run again.
+
+        Each conversation is an unsent round (see :func:`unsent_rounds`), so the
+        tool results it ends with were never sent and may still change. Each
+        result item that failed for a reason that can pass (see
+        :func:`palit.lookup_tools.is_transient_failure`) is replaced by the
+        result of the same lookup run again, whether that succeeds or fails.
+        Each changed conversation is saved before it is returned, for up to
+        MAX_CONCURRENT_PAPERS papers at once. The list keeps its order.
+        """
+        due = [c for c in conversations if transient_failure_count(c.messages) > 0]
+        if not due:
+            return conversations
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAPERS)
+
+        with Progress() as progress:
+            task = progress.add_task("Re-running failed variant lookups", total=len(due))
+
+            async def rerun_one(conversation: Conversation) -> LookupRerun:
+                async with semaphore:
+                    rerun = await self._rerun_lookups(conversation)
+                with _transaction(self._db_path) as conn:
+                    save_conversation(conn, rerun.conversation)
+                progress.advance(task)
+                return rerun
+
+            reruns = await asyncio.gather(*map(rerun_one, due))
+        logger.info(
+            "Re-ran %d variant lookups that had failed for a reason that can pass, in %d "
+            "conversations: %d still failed that way",
+            sum(rerun.lookups for rerun in reruns),
+            len(reruns),
+            sum(rerun.still_failing for rerun in reruns),
+        )
+        by_doi = {rerun.conversation.doi: rerun.conversation for rerun in reruns}
+        return [by_doi.get(c.doi, c) for c in conversations]
+
+    async def _rerun_lookups(self, conversation: Conversation) -> LookupRerun:
+        """The conversation with its transiently failed variant lookups run again."""
+        messages = conversation.messages
+        by_block = unsent_variant_results(messages)
+        stale = [
+            (index, position)
+            for index, results in by_block.items()
+            for position, item in enumerate(results)
+            if is_transient_failure(item)
+        ]
+        fresh = await asyncio.gather(
+            *(
+                self._lookups.lookup_variant(variant_lookup_input(by_block[index][position]))
+                for index, position in stale
+            )
+        )
+        for (index, position), item in zip(stale, fresh, strict=True):
+            by_block[index][position] = item
+        content = list(messages[-1]["content"])
+        for index in {index for index, _ in stale}:
+            content[index] = {**content[index], "content": json.dumps({"results": by_block[index]})}
+        return LookupRerun(
+            conversation=Conversation(
+                doi=conversation.doi,
+                round=conversation.round,
+                messages=[*messages[:-1], {**messages[-1], "content": content}],
+                model=conversation.model,
+            ),
+            lookups=len(fresh),
+            still_failing=sum(map(is_transient_failure, fresh)),
+        )
 
     async def _handle_result(self, result: LlmResult) -> RoundOutcome:
         """Record *result* with its paper's next conversation or extraction, if any."""
@@ -1179,7 +1299,8 @@ class ExtractionRunner:
         """(paper gene symbol, variant, quote, lookup result) for every extracted variant.
 
         Variants the model extracted without looking them up are looked up here,
-        so the report's variant table is complete.
+        so the report's variant table is complete. So are variants whose lookup
+        failed for a reason that can pass, with the model's lookup input.
         """
         looked_up = {
             (item["gene_symbol"].upper(), item["variant"]): item
@@ -1192,26 +1313,25 @@ class ExtractionRunner:
             "hg19": "GRCh37",
         }.get(extraction["genome_build"], "unknown")
         rows: list[tuple[str, str, str, dict[str, Any]]] = []
-        missing: list[tuple[str, str, str]] = []
+        # (paper gene symbol, variant, quote, lookup input)
+        missing: list[tuple[str, str, str, dict[str, Any]]] = []
         for gene in extraction["gene_evaluations"]:
             for variant in gene["variants"]:
-                key = (gene["gene_symbol"].upper(), variant["variant"])
-                item = looked_up.get(key)
+                symbol, text, quote = gene["gene_symbol"], variant["variant"], variant["quote"]
+                item = looked_up.get((symbol.upper(), text))
                 if item is None:
-                    missing.append((gene["gene_symbol"], variant["variant"], variant["quote"]))
+                    lookup = {"gene_symbol": symbol, "variant": text, "genome_build": genome_build}
+                    missing.append((symbol, text, quote, lookup))
+                elif is_transient_failure(item):
+                    missing.append((symbol, text, quote, variant_lookup_input(item)))
                 else:
-                    rows.append((gene["gene_symbol"], variant["variant"], variant["quote"], item))
+                    rows.append((symbol, text, quote, item))
         late = await asyncio.gather(
-            *(
-                self._lookups.lookup_variant(
-                    {"gene_symbol": symbol, "variant": text, "genome_build": genome_build}
-                )
-                for symbol, text, _ in missing
-            )
+            *(self._lookups.lookup_variant(lookup) for *_, lookup in missing)
         )
         rows += [
             (symbol, text, quote, item)
-            for (symbol, text, quote), item in zip(missing, late, strict=True)
+            for (symbol, text, quote, _), item in zip(missing, late, strict=True)
         ]
         return rows
 
@@ -1328,9 +1448,11 @@ async def _process_evidence(
     First, the results of earlier batches are handled, and every saved
     conversation whose latest round was never sent is continued: the ones those
     results lead on to, and the ones an interrupted run saved but did not send.
-    Then come the attempts, which start papers from round 1. A paper whose
-    request the API rejects as too long for the context window is not sent
-    again in this invocation.
+    Their variant lookups that failed for a reason that can pass are run again
+    first (see :meth:`ExtractionRunner.rerun_transient_lookups`). Then come the
+    attempts, which start papers from round 1. A paper whose request the API
+    rejects as too long for the context window is not sent again in this
+    invocation.
 
     ``only`` restricts the run to these DOIs; requested papers that are not due
     an extraction are logged with the reason. ``limit`` caps the papers this run
@@ -1359,7 +1481,7 @@ async def _process_evidence(
     unsent = select_unsent_conversations(db_path, only, limit, refusals)
     if unsent:
         logger.info("Continuing %d saved conversations from their unsent round", len(unsent))
-        continued = await runner.advance(unsent)
+        continued = await runner.advance(await runner.rerun_transient_lookups(unsent))
         too_long |= continued.too_long
         logger.info(
             "Continued conversations: stored %d, refused %d (%d go to the fallback model), "

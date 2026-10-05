@@ -40,9 +40,11 @@ from palit.extract_evidence import (
     extraction_quotes,
     first_user_message,
     fitting_pages,
+    load_conversation,
     normalize_extraction_genes,
     page_copy,
     prune_citations,
+    save_conversation,
     select_papers,
     select_unsent_conversations,
     start_conversation,
@@ -1682,3 +1684,226 @@ def test_a_retried_variant_lookup_is_logged_with_its_gene_and_variant(
     assert caplog.messages == [
         f"Variant lookup GATA2 c.1061C>T: ReadTimeout; attempt 2/{MAX_ATTEMPTS} in 0.0 s"
     ]
+
+
+class RecordingVariantClient(VariantLookupClient):
+    """Answers every variant lookup, except that the ones for *timing_out* time out upstream."""
+
+    def __init__(self, timing_out: set[str]) -> None:
+        self._timing_out = timing_out
+        self.bodies: list[dict[str, Any]] = []
+
+    async def lookup_one(self, body: dict[str, Any]) -> dict[str, Any]:
+        self.bodies.append(body)
+        if body["variant"] in self._timing_out:
+            return {"error": {"code": "VV_UPSTREAM_TIMEOUT", "message": "timed out"}}
+        return {
+            "normalized": [
+                {
+                    "hgvs_c": body["variant"],
+                    "hgvs_p": None,
+                    "pseudo_vcf": f"vcf:{body['variant']}",
+                    "frequency": {"ac": 1, "an": 10},
+                }
+            ]
+        }
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _lookup_result(
+    variant: str, error_code: str | None, genome_build: str = "GRCh38"
+) -> dict[str, Any]:
+    """A summarised ``lookup_variants`` item: an error with *error_code*, or a success."""
+    item = {"gene_symbol": "GENEA", "variant": variant, "genome_build": genome_build}
+    if error_code is None:
+        response: dict[str, Any] = {
+            "normalized": [
+                {
+                    "hgvs_c": variant,
+                    "hgvs_p": None,
+                    "pseudo_vcf": f"old:{variant}",
+                    "frequency": None,
+                }
+            ]
+        }
+    else:
+        response = {"error": {"code": error_code, "message": "m"}}
+    return summarise_variant_response(item, response)
+
+
+def _lookup_round(tool_id: str, results: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+    """An assistant turn that looks up variants, and the user turn with their results."""
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "t", "signature": "sig"},
+                {"type": "tool_use", "id": tool_id, "name": "lookup_variants", "input": {}},
+                {"type": "tool_use", "id": f"{tool_id}-genes", "name": "lookup_genes", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": json.dumps({"results": results}),
+                    "is_error": False,
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": f"{tool_id}-genes",
+                    "content": json.dumps({"results": [{"symbol": "GENEA", "status": "ok"}]}),
+                    "is_error": False,
+                },
+                {"type": "text", "text": text},
+            ],
+        },
+    ]
+
+
+def test_transiently_failed_lookups_of_an_unsent_round_are_run_again_and_saved(
+    tmp_path: Path, hgnc_resolver: HgncResolver, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Only the unsent round's transient failures are looked up again; one still fails.
+
+    The round-3 conversation's transient failure is in round 2's results, which
+    a request has carried, so it stays as it is.
+    """
+    db_path = _round_one_db(tmp_path, ["10.1/a", "10.1/sent"])
+    # The model wrote genome_build before gene_symbol; the rerun keeps that order.
+    timeout = summarise_variant_response(
+        {"genome_build": "GRCh37", "gene_symbol": "GENEA", "variant": "c.1A>G"},
+        {"error": {"code": "VV_UPSTREAM_TIMEOUT", "message": "timed out"}},
+    )
+    unsent_results = [
+        timeout,
+        _lookup_result("c.2A>G", None),
+        _lookup_result("c.3A>G", "NORMALIZATION_ESEQUENCEMISMATCH"),
+        _lookup_result("c.4A>G", "LOOKUP_FAILED"),
+    ]
+    unsent = Conversation(
+        doi="10.1/a",
+        round=2,
+        messages=[
+            {"role": "user", "content": "paper"},
+            *_lookup_round("toolu_1", unsent_results, "finalise"),
+        ],
+        model=MODEL,
+    )
+    sent_round_two = _lookup_round(
+        "toolu_2", [_lookup_result("c.5A>G", "VV_UPSTREAM_TIMEOUT")], "finalise"
+    )
+    budget_exhausted = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "toolu_3", "name": "lookup_variants", "input": {}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_3",
+                    "content": "budget exhausted",
+                    "is_error": True,
+                },
+                {"type": "text", "text": "budget exhausted"},
+            ],
+        },
+    ]
+    round_three = Conversation(
+        doi="10.1/sent",
+        round=3,
+        messages=[{"role": "user", "content": "paper"}, *sent_round_two, *budget_exhausted],
+        model=MODEL,
+    )
+    original = json.dumps([unsent.messages, round_three.messages])
+    with sqlite3.connect(db_path) as conn:
+        save_conversation(conn, unsent)
+        save_conversation(conn, round_three)
+    variants = RecordingVariantClient(timing_out={"c.4A>G"})
+
+    async def run() -> list[Conversation]:
+        runner = _runner(tmp_path, db_path, hgnc_resolver, variants)
+        return await runner.rerun_transient_lookups([unsent, round_three])
+
+    with caplog.at_level(logging.INFO, logger="palit.extract_evidence"):
+        rerun, untouched = asyncio.run(run())
+
+    assert json.dumps([unsent.messages, round_three.messages]) == original
+    assert variants.bodies == [
+        {"gene": "GENEA", "variant": "c.1A>G", "genome_build": "GRCh37"},
+        {"gene": "GENEA", "variant": "c.4A>G", "genome_build": "GRCh38"},
+    ]
+    assert untouched is round_three
+    assert rerun.messages[:-1] == unsent.messages[:-1]
+    variant_block, genes_block, text_block = rerun.messages[-1]["content"]
+    assert (genes_block, text_block) == tuple(unsent.messages[-1]["content"][1:])
+    refreshed, ok, nomenclature, still_failing = json.loads(variant_block["content"])["results"]
+    assert list(refreshed) == ["genome_build", "gene_symbol", "variant", "status", "candidates"]
+    assert refreshed["candidates"][0]["vcf"] == "vcf:c.1A>G"
+    assert (ok, nomenclature) == (unsent_results[1], unsent_results[2])
+    assert (still_failing["status"], still_failing["error_code"]) == (
+        "error",
+        "VV_UPSTREAM_TIMEOUT",
+    )
+    assert variant_block == {
+        "type": "tool_result",
+        "tool_use_id": "toolu_1",
+        "content": json.dumps({"results": [refreshed, ok, nomenclature, still_failing]}),
+        "is_error": False,
+    }
+    with sqlite3.connect(db_path) as conn:
+        assert load_conversation(conn, "10.1/a", 2) == rerun.messages
+        assert load_conversation(conn, "10.1/sent", 3) == round_three.messages
+    assert (
+        "Re-ran 2 variant lookups that had failed for a reason that can pass, in 1 "
+        "conversations: 1 still failed that way"
+    ) in caplog.messages
+
+
+def test_frequency_rows_look_up_transient_failures_again(
+    tmp_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """A transient failure is looked up again with the model's input; other results stay."""
+    messages = [
+        {"role": "user", "content": "paper"},
+        *_lookup_round(
+            "toolu_1",
+            [
+                _lookup_result("c.1A>G", None),
+                _lookup_result("c.2A>G", "NO_GENOMIC_COORDS"),
+                _lookup_result("c.3A>G", "VV_UPSTREAM_TIMEOUT", genome_build="GRCh37"),
+            ],
+            "finalise",
+        ),
+    ]
+    gene = _gene("GENEA", [])
+    gene["variants"] = [
+        {"variant": variant, "quote": f"quote {variant}"}
+        for variant in ("c.1A>G", "c.2A>G", "c.3A>G", "c.4A>G")
+    ]
+    extraction = {"genome_build": "GRCh38", "gene_evaluations": [gene]}
+    variants = RecordingVariantClient(timing_out=set())
+
+    async def run() -> list[tuple[str, str, str, dict[str, Any]]]:
+        runner = _runner(tmp_path, tmp_path / "unused.sqlite", hgnc_resolver, variants)
+        return await runner._frequency_rows(extraction, messages)
+
+    rows = asyncio.run(run())
+    assert variants.bodies == [
+        {"gene": "GENEA", "variant": "c.3A>G", "genome_build": "GRCh37"},
+        {"gene": "GENEA", "variant": "c.4A>G", "genome_build": "GRCh38"},
+    ]
+    by_variant = {variant: item for _, variant, _, item in rows}
+    assert by_variant["c.1A>G"]["candidates"][0]["vcf"] == "old:c.1A>G"
+    assert by_variant["c.2A>G"]["error_code"] == "NO_GENOMIC_COORDS"
+    assert by_variant["c.3A>G"]["candidates"][0]["vcf"] == "vcf:c.3A>G"
+    assert by_variant["c.4A>G"]["candidates"][0]["vcf"] == "vcf:c.4A>G"
+    assert {quote for _, _, quote, _ in rows} == {f"quote c.{n}A>G" for n in range(1, 5)}

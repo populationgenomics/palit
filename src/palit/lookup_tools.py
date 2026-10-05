@@ -109,6 +109,35 @@ MAX_IN_FLIGHT = 8
 # Attempts per request when the service answers 5xx or the connection fails.
 MAX_ATTEMPTS = 7
 
+# The error code of a variant whose request still failed after MAX_ATTEMPTS
+# attempts, after ten 429s in a row, or at once on any other HTTP error.
+LOOKUP_FAILED = "LOOKUP_FAILED"
+
+# The error codes of variant lookups that failed for a reason other than the
+# variant's notation, so the same lookup can succeed later.
+#
+# The service reports an upstream that timed out as UPSTREAM_TIMEOUT, and one
+# that failed otherwise (connection error, 5xx, any HTTP error but Mutalyzer's
+# structured 422 for a bad description) as UPSTREAM_ERROR. The code is prefixed
+# by the step that called it: NORMALIZATION_ and BACK_TRANSLATE_ for Mutalyzer,
+# RSID_ for NCBI. VariantValidator timing out on every candidate is
+# VV_UPSTREAM_TIMEOUT. Its other failures are reported as NO_GENOMIC_COORDS,
+# like a variant without GRCh38 coordinates, so they are not retried. All
+# other codes describe the notation itself (Mutalyzer's NORMALIZATION_E*
+# codes, VARIANT_CLEANUP_FAILED, ...): the same lookup fails the same way.
+TRANSIENT_LOOKUP_ERRORS = frozenset(
+    {
+        "VV_UPSTREAM_TIMEOUT",
+        "NORMALIZATION_UPSTREAM_TIMEOUT",
+        "NORMALIZATION_UPSTREAM_ERROR",
+        "BACK_TRANSLATE_UPSTREAM_TIMEOUT",
+        "BACK_TRANSLATE_UPSTREAM_ERROR",
+        "RSID_UPSTREAM_TIMEOUT",
+        "RSID_UPSTREAM_ERROR",
+        LOOKUP_FAILED,
+    }
+)
+
 
 class VariantLookupSettings(BaseSettings):
     """Loaded from environment + .env."""
@@ -258,6 +287,20 @@ def summarise_variant_response(item: dict[str, Any], response: dict[str, Any]) -
     return {**item, "status": "ok", "candidates": candidates}
 
 
+def is_transient_failure(result: dict[str, Any]) -> bool:
+    """Whether a summarised lookup result failed for a reason that can pass."""
+    return result["status"] == "error" and result["error_code"] in TRANSIENT_LOOKUP_ERRORS
+
+
+def variant_lookup_input(result: dict[str, Any]) -> dict[str, Any]:
+    """The ``{gene_symbol, variant, genome_build}`` item a summarised result answers, in its order."""
+    return {
+        key: value
+        for key, value in result.items()
+        if key in ("gene_symbol", "variant", "genome_build")
+    }
+
+
 @dataclass(frozen=True)
 class FrequencyRow:
     """One ``variant_frequencies`` row derived from a ``lookup_variants`` result."""
@@ -345,7 +388,7 @@ class LookupRunner:
             )
             response = {
                 "error": {
-                    "code": "LOOKUP_FAILED",
+                    "code": LOOKUP_FAILED,
                     "message": f"lookup service error: {type(e).__name__}",
                 }
             }

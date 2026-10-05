@@ -9,10 +9,13 @@ when the term names the disease, ``broader`` when it is the most specific term
 that includes it.
 
 Requests go out immediately rather than as batches: inputs are small and a
-mapping takes several tool rounds. Conversations are kept in memory, append-only,
-because Opus 5.5 rejects replayed thinking after an edited history. An answer is
-stored only when it passes the schema and names an eligible MONDO term; otherwise
-the association stays unmapped and the next attempt starts a fresh conversation.
+mapping takes several tool rounds. Each association's conversation runs on its own,
+from round 1 until it ends, and the conversations share DEFAULT_IMMEDIATE_WORKERS
+request slots, so an association's mapping is stored as soon as its conversation
+ends. Conversations are kept in memory, append-only, because Opus 5.5 rejects
+replayed thinking after an edited history. An answer is stored only when it passes
+the schema and names an eligible MONDO term; otherwise the association stays
+unmapped and the next attempt starts a fresh conversation.
 A conversation stays on the model it started on: when MODEL refuses an
 association in any round, the next attempt starts its conversation afresh on
 FALLBACK_MODEL, because thinking blocks cannot be replayed to another model.
@@ -22,7 +25,6 @@ import asyncio
 import json
 import logging
 import sqlite3
-from collections import defaultdict
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -43,6 +45,7 @@ from palit.gencc import (
 from palit.hgnc import HgncResolver
 from palit.llm import (
     ALL_TIME,
+    DEFAULT_IMMEDIATE_WORKERS,
     Effort,
     ImmediateTransport,
     LlmRequest,
@@ -64,6 +67,7 @@ from palit.llm import (
 )
 from palit.llm_usage import print_stage_summary
 from palit.mondo_tools import TOOLS, MondoIndex, MondoToolRunner
+from palit.progress import LoggingProgress as Progress
 
 app = typer.Typer(help="Map associations without a PanelApp Australia GenCC row onto MONDO")
 logger = logging.getLogger(__name__)
@@ -282,67 +286,72 @@ class MappingRunner:
         self._tools = MondoToolRunner(index)
 
     async def advance(self, conversations: list[Conversation]) -> MappingOutcome:
-        """Run conversations round by round until each has ended."""
-        total = MappingOutcome()
-        while conversations:
-            by_round: dict[int, list[Conversation]] = defaultdict(list)
-            for conversation in conversations:
-                by_round[conversation.round].append(conversation)
-            conversations = []
-            for round_no in sorted(by_round):
-                current = {c.association_id: c for c in by_round[round_no]}
-                requests = [
-                    build_request(c, self._system, self._output_config) for c in current.values()
-                ]
-                results = await self._transport.run(STAGE, round_no, requests)
-                conversations += self.handle(results, current, total)
-        return total
+        """Run each conversation on its own until it ends, and count the outcomes.
+
+        A conversation holds one of DEFAULT_IMMEDIATE_WORKERS request slots only
+        while its request is in flight, not while its tool calls run. An exception
+        in one conversation, such as an invalid request, cancels the others and
+        propagates in an ExceptionGroup.
+        """
+        outcome = MappingOutcome()
+        slots = asyncio.Semaphore(DEFAULT_IMMEDIATE_WORKERS)
+        with Progress() as progress:
+            task = progress.add_task("Mapping associations", total=len(conversations))
+
+            async def converse(conversation: Conversation) -> None:
+                current: Conversation | None = conversation
+                while current is not None:
+                    request = build_request(current, self._system, self._output_config)
+                    async with slots:
+                        (result,) = await self._transport.run(STAGE, current.round, [request])
+                    current = self.handle(result, current, outcome)
+                progress.update(task, advance=1)
+
+            async with asyncio.TaskGroup() as group:
+                for conversation in conversations:
+                    group.create_task(converse(conversation))
+        return outcome
 
     def handle(
-        self,
-        results: list[LlmResult],
-        conversations: dict[int, Conversation],
-        outcome: MappingOutcome,
-    ) -> list[Conversation]:
-        """Record every result, store valid answers, and return the next round's conversations."""
-        next_round: list[Conversation] = []
-        invalid_requests: list[str] = []
-        for result in results:
-            conversation = conversations[int(result.subject)]
-            message = result.message
-            if result.status == ResultStatus.REFUSED:
-                outcome.refused += 1
-                outcome.to_fallback += result.goes_to_fallback
-                log_refusal(result, f"association {result.subject} in round {result.round}")
-                self._record(result)
-            elif result.status != ResultStatus.SUCCEEDED:
-                outcome.failed += 1
-                if result.error_type == "invalid_request_error":
-                    invalid_requests.append(result.subject)
-                self._record(result)
-            elif message is None:
-                raise AssertionError("succeeded result without a message")
-            elif message.stop_reason == "tool_use" and result.round < LAST_ROUND:
-                next_round.append(self._next_round(conversation, message))
-                self._record(result)
-            elif message.stop_reason == "end_turn":
-                if self._store(result, message):
-                    outcome.stored += 1
-                else:
-                    outcome.failed += 1
-            else:
-                rejection = unfinished_answer_reason(message.stop_reason)
-                logger.warning(
-                    "Rejected association %s round %d: %s", result.subject, result.round, rejection
+        self, result: LlmResult, conversation: Conversation, outcome: MappingOutcome
+    ) -> Conversation | None:
+        """Record *result*, store a valid answer, and return the conversation's next round.
+
+        Returns None when the conversation has ended. Raises RuntimeError when the
+        request was invalid.
+        """
+        message = result.message
+        if result.status == ResultStatus.REFUSED:
+            outcome.refused += 1
+            outcome.to_fallback += result.goes_to_fallback
+            log_refusal(result, f"association {result.subject} in round {result.round}")
+            self._record(result)
+        elif result.status != ResultStatus.SUCCEEDED:
+            outcome.failed += 1
+            self._record(result)
+            if result.error_type == "invalid_request_error":
+                raise RuntimeError(
+                    f"map-mondo request for association {result.subject} in round "
+                    f"{result.round} was invalid; see llm_requests.error_type"
                 )
+        elif message is None:
+            raise AssertionError("succeeded result without a message")
+        elif message.stop_reason == "tool_use" and result.round < LAST_ROUND:
+            self._record(result)
+            return self._next_round(conversation, message)
+        elif message.stop_reason == "end_turn":
+            if self._store(result, message):
+                outcome.stored += 1
+            else:
                 outcome.failed += 1
-                self._record(result, rejection=rejection)
-        if invalid_requests:
-            raise RuntimeError(
-                f"{len(invalid_requests)} map-mondo requests were invalid "
-                f"(first: association {invalid_requests[0]}); see llm_requests.error_type"
+        else:
+            rejection = unfinished_answer_reason(message.stop_reason)
+            logger.warning(
+                "Rejected association %s round %d: %s", result.subject, result.round, rejection
             )
-        return next_round
+            outcome.failed += 1
+            self._record(result, rejection=rejection)
+        return None
 
     def _record(self, result: LlmResult, *, rejection: str | None = None) -> None:
         with sqlite3.connect(self._db_path) as conn:
@@ -417,9 +426,9 @@ async def map_associations(
     """Map every unmapped association, retrying failed ones up to *max_retries* times.
 
     An attempt makes progress when it stores a mapping or sends an association on
-    to FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
-    that restarts those associations on FALLBACK_MODEL. Failed answers count from
-    *failures_since*.
+    to FALLBACK_MODEL, so an attempt whose only outcomes are refusals by MODEL is
+    followed by the attempt that restarts those associations on FALLBACK_MODEL.
+    Failed answers count from *failures_since*.
     """
 
     def load_history() -> StageHistory:

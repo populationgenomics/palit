@@ -391,6 +391,35 @@ def test_association_text_lists_the_gene_and_its_gencc_rows(db_path: Path) -> No
     assert "no GenCC submissions" in text
 
 
+def _result(
+    stage: str,
+    round_no: int,
+    request: LlmRequest,
+    custom_id: str,
+    message: Message | None,
+    *,
+    error_type: str | None = None,
+) -> LlmResult:
+    if message is None:
+        status = ResultStatus.ERRORED
+    elif message.stop_reason == "refusal":
+        status = ResultStatus.REFUSED
+    else:
+        status = ResultStatus.SUCCEEDED
+    return LlmResult(
+        custom_id=custom_id,
+        batch_id=None,
+        stage=stage,
+        subject=request.subject,
+        round=round_no,
+        model=request.params["model"],
+        status=status,
+        message=message,
+        error_type=error_type,
+        error_message=None if error_type is None else "invalid",
+    )
+
+
 class ScriptedTransport:
     """Answers each request from a script keyed by (association id, round), on its model."""
 
@@ -405,22 +434,8 @@ class ScriptedTransport:
         for i, request in enumerate(requests):
             self.requests.append((round_no, request))
             message = self._script(int(request.subject), round_no, request)
-            results.append(
-                LlmResult(
-                    custom_id=f"{stage}-{round_no}-{request.subject}-{i}-{len(self.requests)}",
-                    batch_id=None,
-                    stage=stage,
-                    subject=request.subject,
-                    round=round_no,
-                    model=request.params["model"],
-                    status=ResultStatus.REFUSED
-                    if message.stop_reason == "refusal"
-                    else ResultStatus.SUCCEEDED,
-                    message=message,
-                    error_type=None,
-                    error_message=None,
-                )
-            )
+            custom_id = f"{stage}-{round_no}-{request.subject}-{i}-{len(self.requests)}"
+            results.append(_result(stage, round_no, request, custom_id, message))
         return results
 
     async def resume(self, stage: str) -> list[LlmResult]:
@@ -612,3 +627,92 @@ def test_a_refused_conversation_restarts_on_the_fallback_model_in_the_same_run(
             (1, FALLBACK_MODEL, "succeeded"),
             (2, FALLBACK_MODEL, "succeeded"),
         ]
+
+
+def _add_unmapped_association(db_path: Path, association_id: int) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO associations (id, hgnc_id, position, assessment_json) VALUES (?, 6772, ?, ?)",
+            (association_id, association_id, _assessment("SMAD6-related hypertension")),
+        )
+
+
+def test_a_conversation_is_stored_while_another_is_still_in_flight(
+    db_path: Path, index: MondoIndex
+) -> None:
+    """Association 2 answers in round 1; association 4 searches first, and its round-1
+    request returns only once association 2's mapping is stored."""
+    _add_unmapped_association(db_path, 4)
+    sent: list[tuple[int, int]] = []
+
+    async def wait_until_stored(association_id: int) -> None:
+        async with asyncio.timeout(5):
+            while _row(db_path, association_id)[0] is None:
+                await asyncio.sleep(0.001)
+
+    class GatedTransport:
+        async def run(
+            self, stage: str, round_no: int, requests: Sequence[LlmRequest]
+        ) -> list[LlmResult]:
+            (request,) = requests
+            association_id = int(request.subject)
+            sent.append((association_id, round_no))
+            if association_id == 4 and round_no == 1:
+                await wait_until_stored(2)
+            if association_id == 2:
+                message = _answer("MONDO:0000201")
+            else:
+                message = _search_then_answer("MONDO:0000201")(association_id, round_no, request)
+            custom_id = f"{stage}-{round_no}-{association_id}"
+            return [_result(stage, round_no, request, custom_id, message)]
+
+        async def resume(self, stage: str) -> list[LlmResult]:
+            return []
+
+    runner = MappingRunner(
+        transport=GatedTransport(), db_path=db_path, system="s", schema=SCHEMA, index=index
+    )
+    outcome = asyncio.run(runner.advance([_conversation(2), _conversation(4)]))
+
+    assert (outcome.stored, outcome.failed) == (2, 0)
+    assert sent == [(2, 1), (4, 1), (4, 2)]
+    assert _row(db_path, 2)[0] == _row(db_path, 4)[0] == "MONDO:0000201"
+
+
+def test_an_invalid_request_is_recorded_and_cancels_the_other_conversations(
+    db_path: Path, index: MondoIndex
+) -> None:
+    _add_unmapped_association(db_path, 4)
+    never_answered = asyncio.Event()
+
+    class InvalidTransport:
+        async def run(
+            self, stage: str, round_no: int, requests: Sequence[LlmRequest]
+        ) -> list[LlmResult]:
+            (request,) = requests
+            if request.subject == "4":
+                await never_answered.wait()
+            custom_id = f"{stage}-{round_no}-{request.subject}"
+            return [
+                _result(
+                    stage, round_no, request, custom_id, None, error_type="invalid_request_error"
+                )
+            ]
+
+        async def resume(self, stage: str) -> list[LlmResult]:
+            return []
+
+    runner = MappingRunner(
+        transport=InvalidTransport(), db_path=db_path, system="s", schema=SCHEMA, index=index
+    )
+    with pytest.RaisesGroup(
+        pytest.RaisesExc(RuntimeError, match="association 2 in round 1 was invalid")
+    ):
+        asyncio.run(runner.advance([_conversation(2), _conversation(4)]))
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT subject, round, status, error_type FROM llm_requests WHERE stage = ? "
+            "AND subject IN ('2', '4')",
+            (STAGE,),
+        ).fetchall() == [("2", 1, "errored", "invalid_request_error")]

@@ -56,7 +56,7 @@ Requests go to Claude Opus 5.5 (`MODEL` in `src/palit/llm.py`). When Opus 5.5 re
 
 A stage also gives up on a subject once it has rejected two of its answers, or seen them cut off at `max_tokens`, since the subject's latest accepted answer (`MAX_FAILED_ANSWERS` in `src/palit/llm.py`); later invocations skip it as failed for good. `--retry-failed` on `assess-relevance`, `extract-evidence`, `assess-genes`, `map-mondo` and `match-panels` sends such subjects again, until they fail that often within the invocation.
 
-Stages send their requests as Message Batches, except that a model's requests in a round go out as immediate requests when there are fewer than 10 of them (`MIN_BATCH_REQUESTS`), since a batch can take hours however few requests it holds.
+Stages send their requests as Message Batches, except that a model's requests in a round go out as immediate requests when there are fewer than 10 of them (`MIN_BATCH_REQUESTS`), since a batch can take hours however few requests it holds. `map-mondo` sends all of its requests immediately.
 
 `assess-relevance` settles a paper refused for good as not relevant, so that `ledger writeback` marks it settled and later runs do not ingest it again. Its `relevance_assessment_json` keeps the usual two-level shape and records the refusal:
 
@@ -202,8 +202,11 @@ uv run palit assess-genes --panel-date $PANEL_DATE
 #     answers with a term and a match type: exact when the term names the
 #     disease, broader when it is the most specific term that includes the
 #     disease. The report marks broader terms. Requests go out immediately, not
-#     as batches, because a mapping takes several tool rounds. Re-runs map only
-#     the associations still without a term.
+#     as batches, because a mapping takes several tool rounds. Each
+#     association's conversation runs on its own, with up to 50 requests in
+#     flight across them (DEFAULT_IMMEDIATE_WORKERS), and its mapping is stored
+#     when the conversation ends. Re-runs map only the associations still
+#     without a term.
 uv run palit map-mondo
 
 # 11. Match each association to diagnostic panels by its disease, MoI and

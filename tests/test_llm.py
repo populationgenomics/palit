@@ -1,6 +1,7 @@
 """Offline tests for palit.llm: batching limits, prices, bookkeeping, resume."""
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -283,8 +284,19 @@ def test_rejections_are_recorded_and_counted_per_stage(db_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         record_result(conn, results[0], rejection=reason)
         record_result(conn, results[1])
-        rejections = conn.execute("SELECT subject, rejection FROM llm_requests ORDER BY subject")
-        assert rejections.fetchall() == [("doi-a", reason), ("doi-b", None)]
+        rejections = conn.execute(
+            "SELECT subject, rejection, rejected_answer FROM llm_requests ORDER BY subject"
+        ).fetchall()
+    assert [(subject, rejection) for subject, rejection, _ in rejections] == [
+        ("doi-a", reason),
+        ("doi-b", None),
+    ]
+    message = results[0].message
+    assert message is not None
+    assert json.loads(rejections[0][2]) == [
+        block.model_dump(mode="json") for block in message.content
+    ]
+    assert rejections[1][2] is None
     [usage] = summarise_usage(db_path)
     assert (usage.stage, usage.requests, usage.rejected) == ("extraction", 2, 1)
 

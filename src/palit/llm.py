@@ -463,8 +463,15 @@ def record_result(
     Call inside the transaction that writes the stage's output. Every result must
     be recorded, including the ones the stage rejects and retries, because the
     row is also the usage record; *rejection* is the reason the stage rejected
-    the answer. Marks the batch collected once no request in it is pending.
+    the answer, which is then kept alongside it. Marks the batch collected once
+    no request in it is pending.
     """
+    rejected_answer = None
+    if rejection is not None:
+        assert result.message is not None, "a rejection needs an answer"
+        rejected_answer = json.dumps(
+            [block.model_dump(mode="json") for block in result.message.content]
+        )
     usage = result.message.usage if result.message is not None else None
     cache_creation = usage.cache_creation if usage is not None else None
     conn.execute(
@@ -472,8 +479,9 @@ def record_result(
         INSERT INTO llm_requests (
             custom_id, batch_id, stage, subject, round, model, status, stop_reason,
             refusal_category, error_type, service_tier, input_tokens, cache_write_5m_tokens,
-            cache_write_1h_tokens, cache_read_tokens, output_tokens, rejection, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cache_write_1h_tokens, cache_read_tokens, output_tokens, rejection,
+            rejected_answer, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (custom_id) DO UPDATE SET
             status = excluded.status,
             stop_reason = excluded.stop_reason,
@@ -486,6 +494,7 @@ def record_result(
             cache_read_tokens = excluded.cache_read_tokens,
             output_tokens = excluded.output_tokens,
             rejection = excluded.rejection,
+            rejected_answer = excluded.rejected_answer,
             completed_at = excluded.completed_at
         """,
         (
@@ -506,6 +515,7 @@ def record_result(
             usage.cache_read_input_tokens if usage is not None else None,
             usage.output_tokens if usage is not None else None,
             rejection,
+            rejected_answer,
             _now(),
         ),
     )

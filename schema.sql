@@ -203,6 +203,9 @@ CREATE TABLE llm_requests (
     -- Why the stage rejected the answer and will ask again, e.g. 'schema violation
     -- at $.gene_evaluations[0]: ...'; NULL for an answer the stage used
     rejection TEXT,
+    -- The rejected answer's content blocks as JSON, thinking included, for debugging;
+    -- NULL whenever rejection is
+    rejected_answer JSON,
     completed_at TEXT
 );
 

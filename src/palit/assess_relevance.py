@@ -62,6 +62,7 @@ from palit.llm import (
     StageRefusals,
     Transport,
     cached_system,
+    invalid_answer_reason,
     json_output_config,
     log_refusal,
     make_client,
@@ -297,8 +298,8 @@ def _parsed_outputs(
     valid: list[tuple[LlmResult, dict[str, Any]]] = []
     invalid_requests: list[str] = []
     for result in results:
-        record_result(conn, result)
         if result.status == ResultStatus.REFUSED:
+            record_result(conn, result)
             outcome.refused += 1
             outcome.to_fallback += result.goes_to_fallback
             log_refusal(result, result.subject)
@@ -308,6 +309,7 @@ def _parsed_outputs(
                 outcome.settled += 1
             continue
         if result.status != ResultStatus.SUCCEEDED:
+            record_result(conn, result)
             outcome.failed += 1
             if result.error_type == "invalid_request_error":
                 invalid_requests.append(result.subject)
@@ -317,9 +319,12 @@ def _parsed_outputs(
             parsed = parse_json_output(result.message)
             validator.validate(parsed)
         except (ValueError, jsonschema.ValidationError) as e:
-            logger.warning("Invalid %s output for %s: %s", result.stage, result.subject, e)
+            rejection = invalid_answer_reason(e)
+            logger.warning("Invalid %s output for %s: %s", result.stage, result.subject, rejection)
+            record_result(conn, result, rejection=rejection)
             outcome.failed += 1
             continue
+        record_result(conn, result)
         valid.append((result, parsed))
     if invalid_requests:
         raise RuntimeError(

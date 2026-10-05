@@ -31,6 +31,7 @@ from palit.llm import (
     StageRefusals,
     Transport,
     cached_system,
+    invalid_answer_reason,
     json_output_config,
     log_refusal,
     make_client,
@@ -228,13 +229,14 @@ def handle_results(
     stored = 0
     with sqlite3.connect(db_path) as conn:
         for result in results:
-            record_result(conn, result)
             association_id = int(result.subject)
             message = result.message
             if result.status == ResultStatus.REFUSED:
+                record_result(conn, result)
                 log_refusal(result, f"association {association_id}")
                 continue
             if result.status != ResultStatus.SUCCEEDED or message is None:
+                record_result(conn, result)
                 if result.error_type == "invalid_request_error":
                     raise RuntimeError(
                         f"invalid match-panels request for association {association_id}"
@@ -245,8 +247,13 @@ def handle_results(
                 validator.validate(answer)
                 matches = parse_matches(answer, name_to_id)
             except (ValueError, jsonschema.ValidationError) as e:
-                logger.warning("Invalid panel matching for association %d: %s", association_id, e)
+                rejection = invalid_answer_reason(e)
+                logger.warning(
+                    "Invalid panel matching for association %d: %s", association_id, rejection
+                )
+                record_result(conn, result, rejection=rejection)
                 continue
+            record_result(conn, result)
             if store_matched_panels(conn, association_id, matches, message.to_json()):
                 stored += 1
     return stored

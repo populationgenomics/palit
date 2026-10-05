@@ -19,15 +19,24 @@ from palit.assess_genes import (
     association_problems,
     build_request,
     coverage_problems,
+    drop_placeholder_citations,
     genes_to_assess,
-    prune_invalid_citations,
+    handle_results,
     render_prompt,
     replace_paper_ids_with_dois,
     store_gene_aggregation,
     target_panels_holding,
+    uncopied_citations,
 )
 from palit.gencc import GenccIndex, GeneGencc, MondoRef
-from palit.llm import FALLBACK_MODEL, MODEL, json_output_config, stage_refusals
+from palit.llm import (
+    FALLBACK_MODEL,
+    MODEL,
+    LlmResult,
+    ResultStatus,
+    json_output_config,
+    stage_refusals,
+)
 from palit.panelapp_check import INCIDENTALOME_SCOPE, CuratedRecord
 from palit.panelapp_client import PanelGeneData
 from palit.panelapp_integration import (
@@ -84,11 +93,14 @@ def test_evidence_for_gene_lists_each_paper_once_with_extraction_symbol(tmp_path
     assert [(e["doi"], e["paper_gene_symbol"]) for e in evidence] == [("10.1/a", "AARS1")]
 
 
-def test_prune_invalid_citations_keeps_extraction_quotes() -> None:
+def test_uncopied_citations_are_kept_and_placeholders_dropped() -> None:
     assessment: dict[str, Any] = {
         "disease_entities": [
             {
-                "citations": [{"doi": "10.1/a", "quote": "exact quote", "commentary": "c"}],
+                "citations": [
+                    {"doi": "10.1/a", "quote": "exact quote", "commentary": "c"},
+                    {"doi": "10.1/a", "quote": "x", "commentary": "x"},
+                ],
                 "evidence_assessments": [
                     {
                         "name": "criterion_A",
@@ -100,17 +112,18 @@ def test_prune_invalid_citations_keeps_extraction_quotes() -> None:
         "quality_concerns": [
             {
                 "concern": "x",
-                "citations": [{"doi": "10.1/b", "quote": "exact quote", "commentary": "c"}],
+                "citations": [{"doi": "10.1/b", "quote": "", "commentary": ""}],
             }
         ],
     }
-    total, removed = prune_invalid_citations(
-        assessment, {"10.1/a": {"exact quote"}, "10.1/b": set()}
-    )
-    assert total == 3
-    assert removed == [("10.1/a", "paraphrase"), ("10.1/b", "exact quote")]
-    assert assessment["disease_entities"][0]["citations"][0]["quote"] == "exact quote"
-    assert assessment["disease_entities"][0]["evidence_assessments"][0]["citations"] == []
+    assert drop_placeholder_citations(assessment) == 2
+    total, uncopied = uncopied_citations(assessment, {"10.1/a": {"exact quote"}, "10.1/b": set()})
+    assert total == 2
+    assert uncopied == [("10.1/a", "paraphrase")]
+    assert [c["quote"] for c in assessment["disease_entities"][0]["citations"]] == ["exact quote"]
+    assert assessment["disease_entities"][0]["evidence_assessments"][0]["citations"] == [
+        {"doi": "10.1/a", "quote": "paraphrase", "commentary": "c"}
+    ]
     assert assessment["quality_concerns"][0]["citations"] == []
 
 
@@ -658,3 +671,85 @@ def test_only_genes_with_recent_evidence_from_a_relevant_paper_are_assessed(
         "10.1/not-relevant",
         "10.1/relevant",
     ]
+
+
+def _result(custom_id: str, answer: dict[str, Any]) -> LlmResult:
+    return LlmResult(
+        custom_id=custom_id,
+        batch_id=None,
+        stage=STAGE,
+        subject=str(GENEA),
+        round=1,
+        model=MODEL,
+        status=ResultStatus.SUCCEEDED,
+        message=_message(answer),
+        error_type=None,
+        error_message=None,
+    )
+
+
+def test_quotes_not_copied_from_the_extractions_never_reject_a_gene(
+    tmp_path: Path, gencc_index: GenccIndex
+) -> None:
+    """Every quote is new to the extractions: the gene is stored with all but placeholders."""
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+    association = _association(
+        citations=[
+            {"paper_id": "Smith2024", "quote": "Three families were affected.", "commentary": "c"},
+            {"paper_id": "Smith2024", "quote": "placeholder", "commentary": "placeholder"},
+        ]
+    )
+    answer = _answer(association)
+    answer["quality_concerns"][0]["citations"] = [
+        {"paper_id": "Jones2023", "quote": "Segregation was not tested."}
+    ]
+    validator = jsonschema.Draft202012Validator(SCHEMA)
+
+    outcome = handle_results(
+        [_result("assess_genes-1-a", answer)],
+        {str(GENEA): _item(gencc_index)},
+        db_path,
+        validator,
+    )
+
+    assert outcome.stored == 1
+    with sqlite3.connect(db_path) as conn:
+        (stored,) = conn.execute("SELECT assessment_json FROM associations").fetchone()
+        (concerns,) = conn.execute("SELECT quality_concerns_json FROM gene_aggregations").fetchone()
+        (rejection,) = conn.execute("SELECT rejection FROM llm_requests").fetchone()
+    assert [c["quote"] for c in json.loads(stored)["citations"]] == [
+        "Three families were affected."
+    ]
+    assert [c["quote"] for c in json.loads(concerns)[0]["citations"]] == [
+        "Segregation was not tested."
+    ]
+    assert rejection is None
+
+
+def test_a_rejected_assessment_records_its_reason(tmp_path: Path, gencc_index: GenccIndex) -> None:
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+    validator = jsonschema.Draft202012Validator(SCHEMA)
+    schema_violation = _answer(_association(summary=""))
+    inconsistent = _answer(_association(independent_family_count=5))
+
+    outcome = handle_results(
+        [
+            _result("assess_genes-1-a", schema_violation),
+            _result("assess_genes-1-b", inconsistent),
+        ],
+        {str(GENEA): _item(gencc_index)},
+        db_path,
+        validator,
+    )
+
+    assert outcome.failed == 2
+    with sqlite3.connect(db_path) as conn:
+        rejections = dict(conn.execute("SELECT custom_id, rejection FROM llm_requests"))
+    assert rejections["assess_genes-1-a"].startswith(
+        "schema violation at $.disease_entities[0].summary: "
+    )
+    assert rejections["assess_genes-1-b"] == "inconsistent independent_family_count"

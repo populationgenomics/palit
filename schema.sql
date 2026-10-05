@@ -200,6 +200,9 @@ CREATE TABLE llm_requests (
     cache_write_1h_tokens INTEGER,
     cache_read_tokens INTEGER,
     output_tokens INTEGER,                -- includes thinking
+    -- Why the stage rejected the answer and will ask again, e.g. 'schema violation
+    -- at $.gene_evaluations[0]: ...'; NULL for an answer the stage used
+    rejection TEXT,
     completed_at TEXT
 );
 

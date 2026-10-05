@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
+from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
 
 from palit.gencc import PAA_ASSOCIATIONS_CAVEAT, GenccIndex, format_paa_associations
@@ -34,6 +35,7 @@ from palit.llm import (
     LlmResult,
     ResultStatus,
     Transport,
+    invalid_answer_reason,
     json_output_config,
     parse_json_output,
     record_result,
@@ -115,6 +117,25 @@ def tournament_prompt(
         max_papers=max_papers,
         papers_list=format_papers_for_prompt(papers),
     )
+
+
+def parse_selection(
+    message: Message,
+    validator: jsonschema.protocols.Validator,
+    paper_count: int,
+    max_papers: int,
+) -> dict[str, Any]:
+    """The answer to a tournament prompt of *paper_count* papers.
+
+    Raises ValueError when it is not JSON or selects an index outside the
+    prompt, and jsonschema.ValidationError when it violates the schema.
+    """
+    parsed: dict[str, Any] = parse_json_output(message)
+    validator.validate(parsed)
+    out_of_range = [i for i in parsed["papers"][:max_papers] if not 0 <= i < paper_count]
+    if out_of_range:
+        raise ValueError(f"out-of-range indices {out_of_range} (prompt has {paper_count} papers)")
+    return parsed
 
 
 def record_abandoned(db_path: Path, results: list[LlmResult]) -> None:
@@ -236,9 +257,20 @@ async def _run_prompts(
             for subject, (key, index) in subjects.items()
         ]
         results = await transport.run(stage, round_no, requests)
+        answers: dict[str, dict[str, Any]] = {}
+        rejections: dict[str, str] = {}
+        for result in results:
+            if result.status == ResultStatus.SUCCEEDED and result.message is not None:
+                paper_count = len(prompts[subjects[result.subject]])
+                try:
+                    answers[result.subject] = parse_selection(
+                        result.message, validator, paper_count, max_papers
+                    )
+                except (ValueError, jsonschema.ValidationError) as e:
+                    rejections[result.subject] = invalid_answer_reason(e)
         with sqlite3.connect(db_path) as conn:
             for result in results:
-                record_result(conn, result)
+                record_result(conn, result, rejection=rejections.get(result.subject))
         pending = []
         for result in results:
             job = subjects[result.subject]
@@ -257,21 +289,13 @@ async def _run_prompts(
                 failures[job] = f"{result.status.value} by {result.model}"
                 pending.append(job)
                 continue
-            try:
-                parsed = parse_json_output(result.message)
-                validator.validate(parsed)
-            except (ValueError, jsonschema.ValidationError) as e:
-                failures[job] = str(e)
+            rejection = rejections.get(result.subject)
+            if rejection is not None:
+                failures[job] = rejection
                 pending.append(job)
                 continue
+            parsed = answers[result.subject]
             selected = parsed["papers"][:max_papers]
-            out_of_range = [i for i in selected if not 0 <= i < len(papers)]
-            if out_of_range:
-                failures[job] = (
-                    f"out-of-range indices {out_of_range} (prompt has {len(papers)} papers)"
-                )
-                pending.append(job)
-                continue
             selections[job] = ([papers[i] for i in selected], json.dumps(parsed))
     if pending:
         summary = "; ".join(

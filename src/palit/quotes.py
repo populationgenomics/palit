@@ -1,53 +1,41 @@
-"""Verbatim quotes against a paper's PDF: grounding checks and highlight boxes.
+"""Verbatim quotes against a paper's PDF: highlight boxes, and placeholders.
 
 Extraction cites evidence as verbatim quotes. ``anchorite`` aligns each quote
 (Smith-Waterman over normalised text, so ligatures, hyphenation and whitespace
-differences don't matter) against the PDF's text layer, which gives both a
-grounding check and the per-line bounding boxes the report's PDF viewer draws.
+differences don't matter) against the PDF's text layer, which gives the per-line
+bounding boxes the report's PDF viewer draws. A quote that can't be placed is
+still kept and shown: the viewer says it could not be located.
 """
 
-import logging
-from dataclasses import dataclass
 from typing import Any
 
 import anchorite
-import pypdfium2 as pdfium
 
-logger = logging.getLogger(__name__)
-
-# Share of a quote's normalised characters that must align to the PDF text.
-# Verbatim quotes reach ~1.0; the margin absorbs text-layer quirks.
-MIN_QUOTE_COVERAGE = 0.9
-
-# Below this many text-layer characters the PDF is treated as a scan without
-# usable text: quotes can be neither checked nor highlighted.
-MIN_TEXT_LAYER_CHARS = 2000
+# Quotes that stand in for a missing quote rather than quoting anything,
+# compared after stripping whitespace and case-folding.
+PLACEHOLDER_QUOTES = frozenset({"placeholder", "pending", "n/a", "tbd"})
+# A quote with fewer letters and digits than this quotes nothing: "", "x", ":", "-".
+MIN_QUOTE_ALNUM_CHARS = 2
 
 
-@dataclass(frozen=True)
-class QuoteCheck:
-    """Quotes that fail the grounding check, and whether a check was possible."""
-
-    rejected: list[str]
-    text_layer: bool
+def is_placeholder(quote: str) -> bool:
+    """Whether *quote* is a placeholder for a missing quote rather than a quote."""
+    if sum(char.isalnum() for char in quote) < MIN_QUOTE_ALNUM_CHARS:
+        return True
+    return quote.strip().casefold() in PLACEHOLDER_QUOTES
 
 
 class PaperQuotes:
-    """Grounding and location of quotes in one PDF.
+    """Location of quotes in one PDF.
 
-    Construction extracts the text layer and builds anchorite's index, which is
-    the expensive step (seconds for a long paper). PDFium isn't thread-safe, so
-    build instances one at a time.
+    Construction builds anchorite's index, which is the expensive step (seconds
+    for a long paper). PDFium isn't thread-safe, so build instances one at a time.
     """
 
     def __init__(self, pdf_bytes: bytes) -> None:
-        document = pdfium.PdfDocument(pdf_bytes)
-        self._text = "\n".join(
-            document[i].get_textpage().get_text_range() for i in range(len(document))
-        )
         # anchorite decodes each text object's UTF-16 strictly, so a malformed
-        # text layer (e.g. an unpaired surrogate) fails the index. The index
-        # only serves highlight boxes; grounding checks use the text above.
+        # text layer (e.g. an unpaired surrogate) fails the index. Then no
+        # quote of the paper can be highlighted.
         self._index: anchorite.PdfIndex | None
         try:
             self._index = anchorite.PdfIndex(pdf_bytes)
@@ -55,29 +43,9 @@ class PaperQuotes:
             self._index = None
 
     @property
-    def has_text_layer(self) -> bool:
-        return len(self._text.strip()) >= MIN_TEXT_LAYER_CHARS
-
-    @property
     def can_locate(self) -> bool:
         """Whether highlight boxes are available; False when the index couldn't be built."""
         return self._index is not None
-
-    def check(self, quotes: list[str]) -> QuoteCheck:
-        """Quotes that don't appear verbatim in the PDF.
-
-        Without a usable text layer nothing can be checked, so nothing is rejected.
-        """
-        if not self.has_text_layer:
-            return QuoteCheck(rejected=[], text_layer=False)
-        ungrounded = [
-            q
-            for q in quotes
-            if not anchorite.is_quote_grounded(
-                self._text, q, fail_coverage=MIN_QUOTE_COVERAGE, strip_html=False
-            )
-        ]
-        return QuoteCheck(rejected=ungrounded, text_layer=True)
 
     def locate(self, quotes: list[str]) -> dict[str, list[dict[str, Any]]]:
         """Highlight boxes per quote: 1-based page and 0-1000 page coordinates.

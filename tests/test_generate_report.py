@@ -20,6 +20,7 @@ from palit.generate_report import (
     GeneAssessment,
     GeneAssessmentResults,
     PanelValidationResult,
+    QuoteRef,
     ReportAssociation,
     StageState,
     build_gene_assessment_results,
@@ -29,7 +30,9 @@ from palit.generate_report import (
     known_gene_sort_key,
     load_low_confidence_irrelevant_papers,
     load_panel_publications_validation,
+    load_quote_refs,
     novel_gene_sort_key,
+    write_viewer_package,
 )
 from palit.hgnc import HgncResolver
 from palit.llm import FALLBACK_MODEL, MODEL
@@ -41,6 +44,7 @@ from palit.panelapp_integration import (
     MENDELIOME_PANEL_ID,
     PANELAPP_CRITERIA,
 )
+from palit.papers import doi_to_path
 
 ROOT = Path(__file__).resolve().parents[1]
 ATAXIA_PANEL_ID = 9001
@@ -908,3 +912,68 @@ def test_papers_both_models_refused_are_neither_passes_nor_rejections(
     assert "category: none given" in html
     # The paper refused at the PanelApp check shows the screen it passed.
     assert "Screen rationale HIGH." in html
+
+
+def test_quotes_an_aggregation_adds_follow_the_extraction_quotes_unlocated(
+    tmp_path: Path,
+) -> None:
+    """A citation quote not copied from the extraction is listed, and opens as not located."""
+    db_path = tmp_path / "run.sqlite"
+    box = {"page": 3, "top": 1, "left": 1, "bottom": 2, "right": 2}
+    association = json.loads(_association("disease A"))
+    association["citations"] = [
+        {"doi": "10.1/a", "quote": "Located quote.", "commentary": "c"},
+        {"doi": "10.1/a", "quote": "Aggregate quote.", "commentary": "c"},
+        {"doi": "10.1/b", "quote": "Other paper's quote.", "commentary": "c"},
+    ]
+    concerns = [
+        {
+            "concern": "c",
+            "dois": ["10.1/a"],
+            "citations": [{"doi": "10.1/a", "quote": "Concern quote."}],
+        }
+    ]
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+        conn.execute(
+            "INSERT INTO papers (doi, title, source) VALUES ('10.1/a', 'Paper A', 'pubmed')"
+        )
+        conn.execute(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (1, 'GENEA', '10.1/a', 'recent_evidence')"
+        )
+        conn.execute(
+            "INSERT INTO gene_aggregations (hgnc_id, assessment_raw, paper_id_mapping, "
+            "panelapp_context_json, unassessed_reports_json, quality_concerns_json) "
+            "VALUES (1, '{}', '{}', '{}', '[]', ?)",
+            (json.dumps(concerns),),
+        )
+        conn.execute(
+            "INSERT INTO associations (hgnc_id, position, assessment_json) VALUES (1, 0, ?)",
+            (json.dumps(association),),
+        )
+        conn.executemany(
+            "INSERT INTO citation_locations (paper_doi, quote, bboxes_json) VALUES ('10.1/a', ?, ?)",
+            [("Located quote.", json.dumps([box])), ("Unlocated quote.", "[]")],
+        )
+        refs = load_quote_refs(conn.cursor(), "10.1/a")
+    assert refs == {
+        "Located quote.": QuoteRef(index=0, page=3),
+        "Unlocated quote.": QuoteRef(index=1, page=None),
+        "Aggregate quote.": QuoteRef(index=2, page=None),
+        "Concern quote.": QuoteRef(index=3, page=None),
+    }
+
+    papers_dir, viewer_dir, output_dir = tmp_path / "papers", tmp_path / "viewer", tmp_path / "out"
+    papers_dir.mkdir()
+    viewer_dir.mkdir()
+    output_dir.mkdir()
+    doi_to_path("10.1/a", papers_dir, ".pdf").write_bytes(b"%PDF")
+    write_viewer_package(output_dir, db_path, ["10.1/a"], papers_dir, viewer_dir)
+    written = json.loads(doi_to_path("10.1/a", output_dir / "citations", ".json").read_text())
+    assert [(q["quote"], q["bboxes"]) for q in written["quotes"]] == [
+        ("Located quote.", [box]),
+        ("Unlocated quote.", []),
+        ("Aggregate quote.", []),
+        ("Concern quote.", []),
+    ]

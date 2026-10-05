@@ -30,7 +30,7 @@ from palit.llm import (
     request_cost,
     stage_refusals,
 )
-from palit.llm_usage import SubjectOutcome, list_refusals, outcome_counts
+from palit.llm_usage import SubjectOutcome, list_refusals, outcome_counts, summarise_usage
 
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
 
@@ -251,6 +251,28 @@ def test_refusal_category_is_recorded_and_listed(db_path: Path) -> None:
         record_result(conn, results[0])
     [refusal] = list_refusals(db_path, "relevance")
     assert (refusal.subject, refusal.category) == ("doi-b", "bio")
+
+
+def test_rejections_are_recorded_and_counted_per_stage(db_path: Path) -> None:
+    batches = FakeBatches(
+        {
+            "a": {"type": "succeeded", "message": _message("end_turn")},
+            "b": {"type": "succeeded", "message": _message("end_turn")},
+        }
+    )
+    results = asyncio.run(
+        _transport(db_path, batches).run(
+            "extraction", 1, [_request("doi-a", "a"), _request("doi-b", "b")]
+        )
+    )
+    reason = "structural: GENEA: inconsistent independent_family_count"
+    with sqlite3.connect(db_path) as conn:
+        record_result(conn, results[0], rejection=reason)
+        record_result(conn, results[1])
+        rejections = conn.execute("SELECT subject, rejection FROM llm_requests ORDER BY subject")
+        assert rejections.fetchall() == [("doi-a", reason), ("doi-b", None)]
+    [usage] = summarise_usage(db_path)
+    assert (usage.stage, usage.requests, usage.rejected) == ("extraction", 2, 1)
 
 
 def _stream_error(status: int, error_type: str) -> anthropic.APIStatusError:

@@ -22,6 +22,7 @@ class StageUsage:
     service_tier: str
     requests: int = 0
     refused: int = 0
+    rejected: int = 0  # answers the stage rejected and asks for again
     errored: int = 0
     pending: int = 0
     input_tokens: int = 0
@@ -36,17 +37,29 @@ def summarise_usage(db_path: Path) -> list[StageUsage]:
     with sqlite3.connect(db_path) as conn:
         cursor = conn.execute(
             """
-            SELECT stage, model, COALESCE(service_tier, '-'), status,
+            SELECT stage, model, COALESCE(service_tier, '-'), status, rejection,
                    COALESCE(input_tokens, 0), COALESCE(cache_write_5m_tokens, 0),
                    COALESCE(cache_write_1h_tokens, 0), COALESCE(cache_read_tokens, 0),
                    COALESCE(output_tokens, 0)
             FROM llm_requests
             """
         )
-        for stage, model, tier, status, uncached, write_5m, write_1h, read, output in cursor:
+        for (
+            stage,
+            model,
+            tier,
+            status,
+            rejection,
+            uncached,
+            write_5m,
+            write_1h,
+            read,
+            output,
+        ) in cursor:
             usage = rows.setdefault((stage, model, tier), StageUsage(stage, model, tier))
             usage.requests += 1
             usage.refused += status == "refused"
+            usage.rejected += rejection is not None
             usage.errored += status in ("errored", "expired", "canceled")
             usage.pending += status == "pending"
             usage.input_tokens += uncached
@@ -168,13 +181,15 @@ def print_stage_summary(db_path: Path, stage: str) -> None:
     usages = [u for u in summarise_usage(db_path) if u.stage == stage]
     requests = sum(u.requests for u in usages)
     refused = sum(u.refused for u in usages)
+    rejected = sum(u.rejected for u in usages)
     errored = sum(u.errored for u in usages)
     pending = sum(u.pending for u in usages)
     cost = sum(u.cost for u in usages)
     console = Console()
     console.print(
         f"[bold]{stage}[/bold]: {requests:,} requests, {requests - refused - errored - pending:,} "
-        f"answered, [bold]{refused:,} refused[/bold], {errored:,} errored, {pending:,} pending; "
+        f"answered ({rejected:,} of them rejected), [bold]{refused:,} refused[/bold], "
+        f"{errored:,} errored, {pending:,} pending; "
         f"${cost:,.2f}"
     )
     refusals = list_refusals(db_path, stage)
@@ -207,10 +222,23 @@ def refusals(
 def costs(
     db_path: Path = typer.Option(Path("data/db.sqlite"), "--db-path", help="Run database"),
 ) -> None:
-    """Show requests, outcomes, tokens, and USD cost per stage, model, and service tier."""
+    """Show requests, outcomes, tokens, and USD cost per stage, model, and service tier.
+
+    Rejected counts the answers a stage rejected (schema violation, structural
+    problem, invalid JSON) and asks for again; ``llm_requests.rejection`` says why.
+    """
     usages = summarise_usage(db_path)
     table = Table(title=f"Claude usage in {db_path}")
-    for column in ("stage", "model", "tier", "requests", "refused", "errored", "pending"):
+    for column in (
+        "stage",
+        "model",
+        "tier",
+        "requests",
+        "refused",
+        "rejected",
+        "errored",
+        "pending",
+    ):
         table.add_column(
             column, justify="left" if column in ("stage", "model", "tier") else "right"
         )
@@ -223,6 +251,7 @@ def costs(
             u.service_tier,
             f"{u.requests:,}",
             f"{u.refused:,}",
+            f"{u.rejected:,}",
             f"{u.errored:,}",
             f"{u.pending:,}",
             f"{u.input_tokens:,}",
@@ -233,6 +262,6 @@ def costs(
         )
     table.add_section()
     table.add_row(
-        "total", "", "", "", "", "", "", "", "", "", "", f"{sum(u.cost for u in usages):,.2f}"
+        "total", "", "", "", "", "", "", "", "", "", "", "", f"{sum(u.cost for u in usages):,.2f}"
     )
     Console().print(table)

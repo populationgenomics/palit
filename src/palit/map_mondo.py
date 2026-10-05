@@ -49,6 +49,7 @@ from palit.llm import (
     Transport,
     assistant_content,
     cached_system,
+    invalid_answer_reason,
     json_output_config,
     log_refusal,
     make_client,
@@ -340,9 +341,9 @@ class MappingRunner:
             )
         return next_round
 
-    def _record(self, result: LlmResult) -> None:
+    def _record(self, result: LlmResult, *, rejection: str | None = None) -> None:
         with sqlite3.connect(self._db_path) as conn:
-            record_result(conn, result)
+            record_result(conn, result, rejection=rejection)
 
     def _next_round(self, conversation: Conversation, message: Message) -> Conversation:
         tool_results: list[dict[str, Any]] = []
@@ -377,8 +378,9 @@ class MappingRunner:
         try:
             mapping = parse_mapping(message, self._validator, self._index)
         except (ValueError, jsonschema.ValidationError) as e:
-            logger.warning("Rejected mapping for association %s: %s", result.subject, e)
-            self._record(result)
+            rejection = invalid_answer_reason(e)
+            logger.warning("Rejected mapping for association %s: %s", result.subject, rejection)
+            self._record(result, rejection=rejection)
             return False
         logger.info(
             "Association %s -> %s %s (%s): %s",

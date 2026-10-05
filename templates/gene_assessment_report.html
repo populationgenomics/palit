@@ -56,9 +56,9 @@
     {% endif %}
     {% endmacro %}
 
-    {# Link to a quote in the report's PDF viewer #}
+    {# Link to a quote in the report's PDF viewer, with its page, or marked when the PDF can't place it #}
     {% macro cite(link) -%}
-    <a href="viewer/index.html?paper={{ link.doi | paper_key | urlencode }}&amp;q={{ link.quote_index }}" target="_blank">[{{ link.display_id | short_id }}{% if link.page %}:p{{ link.page }}{% endif %}]</a>
+    <a href="viewer/index.html?paper={{ link.doi | paper_key | urlencode }}&amp;q={{ link.quote_index }}" target="_blank">[{{ link.display_id | short_id }}{% if link.page %}:p{{ link.page }}{% else %}, not located{% endif %}]</a>
     {%- endmacro %}
 
     {# Macro for rendering prefill button (inline in header) #}

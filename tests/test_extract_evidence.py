@@ -41,13 +41,13 @@ from palit.extract_evidence import (
     UploadedPdf,
     _process_evidence,
     count_remaining,
+    drop_placeholder_citations,
     extraction_quotes,
     first_user_message,
     fitting_pages,
     load_conversation,
     normalize_extraction_genes,
     page_copy,
-    prune_citations,
     save_conversation,
     select_papers,
     select_unsent_conversations,
@@ -81,7 +81,7 @@ from palit.lookup_tools import (
 )
 from palit.panelapp_integration import criteria_object_to_list
 from palit.papers import doi_to_path
-from palit.quotes import PaperQuotes, QuoteCheck
+from palit.quotes import PaperQuotes
 
 CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
@@ -118,12 +118,12 @@ def test_extraction_quotes_covers_every_citation_site() -> None:
     extraction["gene_evaluations"][0]["disease_entities"][0]["evidence_assessments"][0][
         "citations"
     ] = [_citation("criterion quote")]
-    assert extraction_quotes(extraction) == [
+    assert extraction_quotes(extraction) == {
         "variant quote",
         "entity quote",
         "criterion quote",
         "concern quote",
-    ]
+    }
 
 
 def test_structural_problems() -> None:
@@ -356,14 +356,25 @@ def test_criteria_object_to_list_orders_and_names() -> None:
     assert entity["evidence_assessments"][0]["rationale"] == "criterion_A"
 
 
-def test_prune_citations_keeps_variant_quotes() -> None:
-    extraction = {"gene_evaluations": [_gene("ABC1", [_entity(2, 2)])]}
-    removed = prune_citations(extraction, {"entity quote", "concern quote", "variant quote"})
-    gene = extraction["gene_evaluations"][0]
-    assert removed == ["entity quote", "concern quote"]
-    assert gene["disease_entities"][0]["citations"] == []
-    assert gene["quality_concerns"][0]["citations"] == []
-    assert gene["variants"][0]["quote"] == "variant quote"
+def test_placeholder_citations_are_dropped_and_variants_kept() -> None:
+    entity = _entity(2, 2)
+    entity["citations"] += [
+        {"quote": "", "commentary": ""},
+        _citation("x"),
+        _citation("Placeholder"),
+        _citation(" pending "),
+        _citation(":"),
+        _citation("N/A"),
+    ]
+    entity["evidence_assessments"][0]["citations"] = [_citation("tbd"), _citation("criterion")]
+    gene = _gene("ABC1", [entity])
+    gene["variants"].append({"variant": "c.2A>G", "quote": "x"})
+    extraction = {"gene_evaluations": [gene]}
+
+    assert drop_placeholder_citations(extraction) == 7
+    assert entity["citations"] == [_citation("entity quote")]
+    assert entity["evidence_assessments"][0]["citations"] == [_citation("criterion")]
+    assert [v["quote"] for v in gene["variants"]] == ["variant quote", "x"]
 
 
 def test_select_papers_skips_only_papers_refused_for_good(tmp_path: Path) -> None:
@@ -1124,10 +1135,10 @@ def test_a_page_limit_counted_under_other_rules_is_counted_again(tmp_path: Path)
         assert limits.fetchall() == [(sha256, PAGE_LIMIT_RULES_VERSION, ARTICLE_PAGES_THAT_FIT)]
 
 
-def test_quotes_from_the_kept_pages_ground_and_locate_in_the_original_pdf(
+def test_quotes_from_the_kept_pages_locate_in_the_original_pdf(
     text_pdf: Callable[[list[str]], bytes],
 ) -> None:
-    """Extraction checks quotes against the local PDF, whose leading pages the upload keeps."""
+    """Extraction locates quotes in the local PDF, whose leading pages the upload keeps."""
     filler = [f"Line {i} of the cohort description for unrelated probands." for i in range(25)]
     page_quotes = [
         "c.1061C>T p.T354M in proband 1",
@@ -1150,9 +1161,7 @@ def test_quotes_from_the_kept_pages_ground_and_locate_in_the_original_pdf(
         assert [truncated[i].get_textpage().get_text_range() for i in range(2)] == [
             source[i].get_textpage().get_text_range() for i in range(2)
         ]
-    quotes = PaperQuotes(original_pdf)
-    assert quotes.check(page_quotes[:2]).rejected == []
-    locations = quotes.locate(page_quotes[:2])
+    locations = PaperQuotes(original_pdf).locate(page_quotes[:2])
     assert [{box["page"] for box in locations[quote]} for quote in page_quotes[:2]] == [{1}, {2}]
 
 
@@ -1196,27 +1205,17 @@ class GatedVariantClient(VariantLookupClient):
 
 
 class GroundedQuotes:
-    """Stands in for PaperQuotes: every quote is in the PDF."""
+    """Stands in for PaperQuotes: every quote not in *unlocated* is placed on page 1."""
 
     can_locate = True
+    unlocated: frozenset[str] = frozenset()
 
     def __init__(self, pdf_bytes: bytes) -> None:
         pass
 
-    def check(self, quotes: list[str]) -> QuoteCheck:
-        return QuoteCheck(rejected=[], text_layer=True)
-
     def locate(self, quotes: list[str]) -> dict[str, list[dict[str, Any]]]:
-        return {quote: [] for quote in quotes}
-
-
-class PartlyGroundedQuotes(GroundedQuotes):
-    """Stands in for PaperQuotes: the quotes in *ungrounded* are not in the PDF."""
-
-    ungrounded: frozenset[str] = frozenset()
-
-    def check(self, quotes: list[str]) -> QuoteCheck:
-        return QuoteCheck(rejected=[q for q in quotes if q in self.ungrounded], text_layer=True)
+        box = {"page": 1, "top": 0, "left": 0, "bottom": 10, "right": 10}
+        return {quote: [] if quote in self.unlocated else [box] for quote in quotes}
 
 
 def _round_one_db(tmp_path: Path, dois: list[str]) -> Path:
@@ -1362,46 +1361,36 @@ def test_a_round_handles_papers_concurrently_and_counts_every_outcome(
         assert frequencies.fetchall() == [("10.1/e", "vcf:c.1A>G")]
 
 
-@pytest.mark.parametrize(
-    ("ungrounded", "expected"),
-    [
-        (
-            {"entity quote", "variant quote"},
-            [
-                "10.1/e: dropped 1 citations whose quote isn't in the PDF: 'entity quote'",
-                "10.1/e: kept 1 variant quotes not found in the PDF: 'variant quote'",
-            ],
-        ),
-        (
-            {"variant quote"},
-            ["10.1/e: kept 1 variant quotes not found in the PDF: 'variant quote'"],
-        ),
-    ],
-)
-def test_the_log_names_dropped_citations_apart_from_kept_variant_quotes(
+def _criteria_with_citations() -> dict[str, Any]:
+    return {
+        name: {
+            "result": False,
+            "rationale": "r",
+            "confidence": "LOW",
+            "citations": [_citation(f"{name} quote")],
+        }
+        for name in CRITERIA
+    }
+
+
+def test_unlocated_quotes_are_stored_and_only_placeholders_dropped(
     tmp_path: Path,
     hgnc_resolver: HgncResolver,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    ungrounded: set[str],
-    expected: list[str],
 ) -> None:
-    """Only quotes whose citations were removed are listed as dropped."""
-    monkeypatch.setattr(PartlyGroundedQuotes, "ungrounded", frozenset(ungrounded))
-    monkeypatch.setattr("palit.extract_evidence.PaperQuotes", PartlyGroundedQuotes)
-    entity = {
-        **_entity(1, 1),
-        "evidence_assessments": {
-            name: {
-                "result": False,
-                "rationale": "r",
-                "confidence": "LOW",
-                "citations": [_citation(f"{name} quote")],
-            }
-            for name in CRITERIA
-        },
-    }
+    """No quote the PDF can place: the extraction is stored with every real citation."""
+    entity = {**_entity(1, 1), "evidence_assessments": _criteria_with_citations()}
+    entity["citations"] += [{"quote": "", "commentary": ""}, _citation("x")]
     extraction = {"genome_build": "GRCh38", "gene_evaluations": [_gene("GENEA", [entity])]}
+    quotes = {
+        "variant quote",
+        "entity quote",
+        "concern quote",
+        *(f"{name} quote" for name in CRITERIA),
+    }
+    monkeypatch.setattr(GroundedQuotes, "unlocated", frozenset(quotes))
+    monkeypatch.setattr("palit.extract_evidence.PaperQuotes", GroundedQuotes)
     final = _message("end_turn", [{"type": "text", "text": json.dumps(extraction)}], MODEL)
     result = _round_one_result("10.1/e", ResultStatus.SUCCEEDED, final)
     db_path = _round_one_db(tmp_path, ["10.1/e"])
@@ -1411,9 +1400,60 @@ def test_the_log_names_dropped_citations_apart_from_kept_variant_quotes(
         outcome = asyncio.run(runner.handle([result]))
 
     assert outcome.stored == 1
-    assert [m for m in caplog.messages if "not found in the PDF" in m or "dropped" in m] == (
-        expected
+    with sqlite3.connect(db_path) as conn:
+        (stored,) = conn.execute("SELECT evidence_extraction_json FROM papers").fetchone()
+        locations = dict(conn.execute("SELECT quote, bboxes_json FROM citation_locations"))
+        (rejection,) = conn.execute("SELECT rejection FROM llm_requests").fetchone()
+    gene = json.loads(stored)["gene_evaluations"][0]
+    assert gene["disease_entities"][0]["citations"] == [_citation("entity quote")]
+    assert all(
+        len(c["citations"]) == 1 for c in gene["disease_entities"][0]["evidence_assessments"]
     )
+    assert gene["quality_concerns"][0]["citations"] == [_citation("concern quote")]
+    assert locations == dict.fromkeys(quotes, "[]")
+    assert rejection is None
+    assert (
+        "10.1/e: 8 quotes; 2 placeholder citations dropped; not located in the PDF: "
+        "1 variant quotes, 7 citation quotes"
+    ) in caplog.messages
+
+
+def test_a_rejected_extraction_records_its_reason(
+    tmp_path: Path, hgnc_resolver: HgncResolver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("palit.extract_evidence.PaperQuotes", GroundedQuotes)
+    inconsistent = {
+        "genome_build": "GRCh38",
+        "gene_evaluations": [
+            _gene("GENEA", [{**_entity(1, 3), "evidence_assessments": _criteria_with_citations()}])
+        ],
+    }
+    results = [
+        _round_one_result(
+            "10.1/a",
+            ResultStatus.SUCCEEDED,
+            _message("end_turn", [{"type": "text", "text": "{not json"}], MODEL),
+        ),
+        _round_one_result(
+            "10.1/b",
+            ResultStatus.SUCCEEDED,
+            _message("end_turn", [{"type": "text", "text": json.dumps(inconsistent)}], MODEL),
+        ),
+    ]
+    db_path = _round_one_db(tmp_path, ["10.1/a", "10.1/b"])
+    runner = _runner(tmp_path, db_path, hgnc_resolver, RecordingVariantClient(set()))
+
+    outcome = asyncio.run(runner.handle(results))
+
+    assert outcome.failed == 2
+    with sqlite3.connect(db_path) as conn:
+        rejections = dict(conn.execute("SELECT subject, rejection FROM llm_requests"))
+        (extracted,) = conn.execute(
+            "SELECT COUNT(*) FROM papers WHERE evidence_extraction_json IS NOT NULL"
+        ).fetchone()
+    assert extracted == 0
+    assert rejections["10.1/a"].startswith("invalid JSON: ")
+    assert rejections["10.1/b"] == "structural: GENEA: inconsistent independent_family_count"
 
 
 def test_a_variant_lookup_failing_every_attempt_becomes_a_lookup_failed_result(

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import anthropic
+import jsonschema
 import tenacity
 from anthropic import AsyncAnthropic, transform_schema
 from anthropic.types import Message, TextBlockParam
@@ -166,6 +167,19 @@ def parse_json_output(message: Message) -> Any:
         raise ValueError(f"message {message.id} stopped with {message.stop_reason}, not end_turn")
     text = next(block.text for block in message.content if block.type == "text")
     return json.loads(text)
+
+
+def invalid_answer_reason(error: ValueError | jsonschema.ValidationError) -> str:
+    """A short reason for rejecting an answer that isn't JSON or violates the schema.
+
+    Stages also raise ValueError for answers that break their own rules; its
+    message is the reason.
+    """
+    if isinstance(error, jsonschema.ValidationError):
+        return f"schema violation at {error.json_path}: {error.message[:200]}"
+    if isinstance(error, json.JSONDecodeError):
+        return f"invalid JSON: {error}"
+    return str(error)
 
 
 async def count_input_tokens(
@@ -318,13 +332,15 @@ def _status_for(message: Message) -> ResultStatus:
     return ResultStatus.REFUSED if message.stop_reason == "refusal" else ResultStatus.SUCCEEDED
 
 
-def record_result(conn: sqlite3.Connection, result: LlmResult) -> None:
+def record_result(
+    conn: sqlite3.Connection, result: LlmResult, *, rejection: str | None = None
+) -> None:
     """Store *result*'s outcome and usage in ``llm_requests``.
 
     Call inside the transaction that writes the stage's output. Every result must
     be recorded, including the ones the stage rejects and retries, because the
-    row is also the usage record. Marks the batch collected once no request in it
-    is pending.
+    row is also the usage record; *rejection* is the reason the stage rejected
+    the answer. Marks the batch collected once no request in it is pending.
     """
     usage = result.message.usage if result.message is not None else None
     cache_creation = usage.cache_creation if usage is not None else None
@@ -333,8 +349,8 @@ def record_result(conn: sqlite3.Connection, result: LlmResult) -> None:
         INSERT INTO llm_requests (
             custom_id, batch_id, stage, subject, round, model, status, stop_reason,
             refusal_category, error_type, service_tier, input_tokens, cache_write_5m_tokens,
-            cache_write_1h_tokens, cache_read_tokens, output_tokens, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cache_write_1h_tokens, cache_read_tokens, output_tokens, rejection, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (custom_id) DO UPDATE SET
             status = excluded.status,
             stop_reason = excluded.stop_reason,
@@ -346,6 +362,7 @@ def record_result(conn: sqlite3.Connection, result: LlmResult) -> None:
             cache_write_1h_tokens = excluded.cache_write_1h_tokens,
             cache_read_tokens = excluded.cache_read_tokens,
             output_tokens = excluded.output_tokens,
+            rejection = excluded.rejection,
             completed_at = excluded.completed_at
         """,
         (
@@ -365,6 +382,7 @@ def record_result(conn: sqlite3.Connection, result: LlmResult) -> None:
             cache_creation.ephemeral_1h_input_tokens if cache_creation is not None else None,
             usage.cache_read_input_tokens if usage is not None else None,
             usage.output_tokens if usage is not None else None,
+            rejection,
             _now(),
         ),
     )

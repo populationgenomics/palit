@@ -11,11 +11,13 @@ because Opus 5.5 rejects replayed thinking blocks after an edited history.
 
 A PDF too long for the context window is sent with only its leading pages that
 fit, counted once per PDF version (see :func:`upload_pdfs`); the round-1
-message says so. Quotes are checked against the full local PDF.
+message says so. Quotes are located in the full local PDF.
 
-A final answer is stored only when it passes the schema, the structural checks,
-and the quote check (every quote verbatim in the PDF). Otherwise the paper stays
-unextracted and the next attempt starts a fresh conversation.
+A final answer is stored only when it passes the schema and the structural
+checks. Otherwise the paper stays unextracted, the request records why, and the
+next attempt starts a fresh conversation. Quotes never reject an answer: every
+citation is stored, and one the PDF can't place is shown as not located. Only
+placeholder citations that quote nothing are dropped.
 
 An interrupted run loses no paid round: a restart handles the results of its
 uncollected batches, then continues every saved conversation whose latest round
@@ -69,6 +71,7 @@ from palit.llm import (
     assistant_content,
     cached_system,
     count_input_tokens,
+    invalid_answer_reason,
     json_output_config,
     log_refusal,
     make_client,
@@ -96,7 +99,7 @@ from palit.panelapp_integration import (
 )
 from palit.papers import doi_to_path
 from palit.progress import LoggingProgress as Progress
-from palit.quotes import PaperQuotes
+from palit.quotes import PaperQuotes, is_placeholder
 from palit.run_corpus import CORPUS_PAPER
 
 app = typer.Typer(help="Extract structured evidence from full-text PDFs")
@@ -161,10 +164,6 @@ FINALISE_TEXT = (
     "These are all the lookup results. Write the final JSON answer now. "
     "No further lookups are available; any further tool call will return an error."
 )
-# Above this share of quotes not found in the PDF, the extraction is redone
-# rather than pruned: the model was quoting from memory, not from the paper.
-MAX_UNGROUNDED_QUOTE_SHARE = 0.25
-
 BUDGET_EXHAUSTED_TEXT = (
     "Lookup budget exhausted. Write the final JSON answer now with the results you already have."
 )
@@ -176,7 +175,7 @@ BUDGET_EXHAUSTED_TEXT = (
 
 
 # Extraction fields that hold the paper's own text, left untouched by symbol
-# replacement: quotes are checked verbatim against the PDF and keyed into
+# replacement: quotes are located verbatim in the PDF and keyed into
 # citation_locations, titles of earlier papers are searched on PubMed, and the
 # gene symbol and variant notation are the paper's.
 VERBATIM_FIELDS = frozenset({"gene_symbol", "quote", "title", "variant"})
@@ -257,50 +256,46 @@ def normalize_extraction_genes(
 # ---------------------------------------------------------------------------
 
 
-def extraction_quotes(extraction: dict[str, Any]) -> list[str]:
+def citation_lists(extraction: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """Every citation list of an extraction: entities, criteria, quality concerns."""
+    lists: list[list[dict[str, Any]]] = []
+    for gene in extraction["gene_evaluations"]:
+        for entity in gene["disease_entities"]:
+            lists.append(entity["citations"])
+            lists += [assessment["citations"] for assessment in entity["evidence_assessments"]]
+        lists += [concern["citations"] for concern in gene["quality_concerns"]]
+    return lists
+
+
+def variant_quotes(extraction: dict[str, Any]) -> set[str]:
+    """The quotes of an extraction's variants."""
+    return {
+        variant["quote"] for gene in extraction["gene_evaluations"] for variant in gene["variants"]
+    }
+
+
+def extraction_quotes(extraction: dict[str, Any]) -> set[str]:
     """Every quote an extraction cites: variants, entities, criteria, concerns."""
-    quotes: list[str] = []
-    for gene in extraction["gene_evaluations"]:
-        quotes += [variant["quote"] for variant in gene["variants"]]
-        for entity in gene["disease_entities"]:
-            quotes += [citation["quote"] for citation in entity["citations"]]
-            for assessment in entity["evidence_assessments"]:
-                quotes += [citation["quote"] for citation in assessment["citations"]]
-        for concern in gene["quality_concerns"]:
-            quotes += [citation["quote"] for citation in concern["citations"]]
-    return quotes
+    return variant_quotes(extraction) | {
+        citation["quote"] for citations in citation_lists(extraction) for citation in citations
+    }
 
 
-def prune_citations(extraction: dict[str, Any], rejected: set[str]) -> list[str]:
-    """Remove entity, criterion, and concern citations whose quote is in *rejected*.
+def drop_placeholder_citations(extraction: dict[str, Any]) -> int:
+    """Remove the citations whose quote is a placeholder; returns how many.
 
-    Variant quotes stay: a variant's notation is real even when its quote can't
-    be placed (e.g. a row of a table printed as an image). Returns the quotes of
-    the removed citations, one per citation.
+    Variants keep a placeholder quote: their notation is the evidence.
     """
-    removed: list[str] = []
-
-    def keep(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        removed.extend(c["quote"] for c in citations if c["quote"] in rejected)
-        return [c for c in citations if c["quote"] not in rejected]
-
-    for gene in extraction["gene_evaluations"]:
-        for entity in gene["disease_entities"]:
-            entity["citations"] = keep(entity["citations"])
-            for assessment in entity["evidence_assessments"]:
-                assessment["citations"] = keep(assessment["citations"])
-        for concern in gene["quality_concerns"]:
-            concern["citations"] = keep(concern["citations"])
-    return removed
-
-
-def quote_sample(quotes: list[str]) -> str:
-    """The first few distinct *quotes*, shortened, for a log message."""
-    return "; ".join(repr(quote[:60]) for quote in list(dict.fromkeys(quotes))[:3])
+    dropped = 0
+    for citations in citation_lists(extraction):
+        kept = [citation for citation in citations if not is_placeholder(citation["quote"])]
+        dropped += len(citations) - len(kept)
+        citations[:] = kept
+    return dropped
 
 
 def structural_problems(extraction: dict[str, Any]) -> list[str]:
-    """Problems that send a paper back for another attempt (besides quotes)."""
+    """Problems that send a paper back for another attempt."""
     problems = []
     for gene in extraction["gene_evaluations"]:
         symbol = gene["gene_symbol"]
@@ -1220,9 +1215,9 @@ class ExtractionRunner:
         with _transaction(self._db_path) as conn:
             return load_conversation(conn, result.subject, result.round)
 
-    def _record(self, result: LlmResult) -> None:
+    def _record(self, result: LlmResult, *, rejection: str | None = None) -> None:
         with _transaction(self._db_path) as conn:
-            record_result(conn, result)
+            record_result(conn, result, rejection=rejection)
 
     async def _next_round(
         self, result: LlmResult, messages: list[dict[str, Any]], message: Message
@@ -1273,58 +1268,50 @@ class ExtractionRunner:
     async def _store_final(
         self, result: LlmResult, messages: list[dict[str, Any]], message: Message
     ) -> bool:
-        """Validate the final answer and store it with its locations and frequencies."""
+        """Validate the final answer and store it with its locations and frequencies.
+
+        A rejected answer is recorded with the reason. Placeholder citations are
+        dropped; every other quote is stored, whether or not the PDF places it.
+        """
         doi = result.subject
         try:
             extraction = parse_json_output(message)
             self._validator.validate(extraction)
         except (ValueError, jsonschema.ValidationError) as e:
-            logger.warning("Invalid extraction for %s: %s", doi, e)
-            self._record(result)
+            rejection = invalid_answer_reason(e)
+            logger.warning("Rejected extraction for %s: %s", doi, rejection)
+            self._record(result, rejection=rejection)
             return False
         for gene in extraction["gene_evaluations"]:
             criteria_object_to_list(gene["disease_entities"])
         problems = structural_problems(extraction)
+        if problems:
+            rejection = "structural: " + "; ".join(problems[:5])
+            logger.warning("Rejected extraction for %s: %s", doi, rejection)
+            self._record(result, rejection=rejection)
+            return False
+
+        placeholders = drop_placeholder_citations(extraction)
+        quotes = {quote for quote in extraction_quotes(extraction) if not is_placeholder(quote)}
         pdf_quotes = PaperQuotes(doi_to_path(doi, self._papers_dir, ".pdf").read_bytes())
         if not pdf_quotes.can_locate:
             logger.warning(
-                "%s: the PDF's text layer has undecodable characters; quotes are checked "
-                "but cannot be highlighted",
+                "%s: the PDF's text layer has undecodable characters; no quote can be highlighted",
                 doi,
             )
-        quotes = extraction_quotes(extraction)
-        check = pdf_quotes.check(quotes)
-        if not check.text_layer:
-            logger.warning(
-                "%s has no usable text layer; quotes cannot be checked or highlighted", doi
-            )
-        if quotes and len(check.rejected) > MAX_UNGROUNDED_QUOTE_SHARE * len(quotes):
-            problems.append(f"{len(check.rejected)} of {len(quotes)} quotes not found in the PDF")
-        if problems:
-            logger.warning("Rejected extraction for %s: %s", doi, "; ".join(problems[:5]))
-            self._record(result)
-            return False
-        if check.rejected:
-            dropped = prune_citations(extraction, set(check.rejected))
-            quotes = extraction_quotes(extraction)
-            if dropped:
-                logger.info(
-                    "%s: dropped %d citations whose quote isn't in the PDF: %s",
-                    doi,
-                    len(dropped),
-                    quote_sample(dropped),
-                )
-            remaining = set(quotes)
-            kept = [quote for quote in check.rejected if quote in remaining]
-            if kept:
-                logger.info(
-                    "%s: kept %d variant quotes not found in the PDF: %s",
-                    doi,
-                    len(set(kept)),
-                    quote_sample(kept),
-                )
+        locations = pdf_quotes.locate(sorted(quotes))
+        unlocated = {quote for quote, boxes in locations.items() if not boxes}
+        unlocated_variants = unlocated & variant_quotes(extraction)
+        logger.info(
+            "%s: %d quotes; %d placeholder citations dropped; not located in the PDF: "
+            "%d variant quotes, %d citation quotes",
+            doi,
+            len(quotes),
+            placeholders,
+            len(unlocated_variants),
+            len(unlocated - unlocated_variants),
+        )
 
-        locations = pdf_quotes.locate(quotes)
         frequencies = await self._frequency_rows(extraction, messages)
         normalized, unresolved = normalize_extraction_genes(extraction, self._hgnc)
         if unresolved:

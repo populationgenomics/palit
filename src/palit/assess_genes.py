@@ -34,6 +34,7 @@ from palit.llm import (
     ResultStatus,
     StageRefusals,
     Transport,
+    invalid_answer_reason,
     json_output_config,
     log_refusal,
     make_client,
@@ -59,6 +60,7 @@ from palit.panelapp_integration import (
     validate_independent_family_counts,
 )
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
+from palit.quotes import is_placeholder
 from palit.run_corpus import RUN_GENES
 
 app = typer.Typer(help="Aggregate evidence across papers into gene-disease-MoI associations")
@@ -67,9 +69,6 @@ logger = logging.getLogger(__name__)
 STAGE = "assess_genes"
 EFFORT: Effort = "medium"
 MAX_TOKENS = 64000
-# Above this share of citations not copied from the extractions, the assessment
-# is redone; below it, those citations are dropped.
-MAX_INVALID_CITATION_SHARE = 0.25
 
 DB_TIMEOUT_SECONDS = 60
 
@@ -201,32 +200,41 @@ def _citation_lists(parsed_json: dict[str, Any]) -> list[list[dict[str, Any]]]:
     return lists
 
 
-def prune_invalid_citations(
+def drop_placeholder_citations(parsed_json: dict[str, Any]) -> int:
+    """Remove the citations whose quote is a placeholder; returns how many."""
+    dropped = 0
+    for citations in _citation_lists(parsed_json):
+        kept = [citation for citation in citations if not is_placeholder(citation["quote"])]
+        dropped += len(citations) - len(kept)
+        citations[:] = kept
+    return dropped
+
+
+def uncopied_citations(
     parsed_json: dict[str, Any], quotes_by_doi: dict[str, set[str]]
 ) -> tuple[int, list[tuple[str, str]]]:
-    """Remove citations whose quote isn't one of that paper's extraction quotes.
+    """Citations whose quote isn't one of that paper's extraction quotes.
 
-    Checked after paper_id→doi replacement. Aggregate citations must copy an
-    extraction quote exactly, because the report locates quotes by exact lookup
-    in ``citation_locations``. Returns the total number of citations and the
-    removed (doi, quote) pairs.
+    Checked after paper_id→doi replacement. Aggregate citations should copy an
+    extraction quote exactly, because the report finds a quote's highlight by
+    exact lookup in ``citation_locations``; a citation that doesn't is kept and
+    shown as not located. Returns the total number of citations and the
+    uncopied (doi, quote) pairs.
     """
     total = 0
-    removed: list[tuple[str, str]] = []
+    uncopied: list[tuple[str, str]] = []
     for citations in _citation_lists(parsed_json):
         total += len(citations)
-        kept = []
-        for citation in citations:
-            if citation["quote"] in quotes_by_doi.get(citation["doi"], set()):
-                kept.append(citation)
-            else:
-                removed.append((citation["doi"], citation["quote"]))
-        citations[:] = kept
-    return total, removed
+        uncopied += [
+            (c["doi"], c["quote"])
+            for c in citations
+            if c["quote"] not in quotes_by_doi.get(c["doi"], set())
+        ]
+    return total, uncopied
 
 
 def fetch_quotes_by_doi(db_path: Path, dois: set[str]) -> dict[str, set[str]]:
-    """Every located extraction quote of each paper."""
+    """Every extraction quote of each paper, located in its PDF or not."""
     quotes: dict[str, set[str]] = {doi: set() for doi in dois}
     with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
         for doi, quote in conn.execute(
@@ -767,9 +775,29 @@ def log_association_warnings(assessment: dict[str, Any], item: _GeneBatchItem) -
             )
 
 
-def assessment_problems(
+def drop_placeholders_and_log_quotes(
     assessment: dict[str, Any], item: _GeneBatchItem, db_path: Path
-) -> list[str]:
+) -> None:
+    """Drop the placeholder citations and log them with the uncopied ones.
+
+    Quotes never send a gene back: a citation whose quote isn't copied from the
+    paper's extraction is kept, and the report shows it as not located.
+    """
+    placeholders = drop_placeholder_citations(assessment)
+    quotes_by_doi = fetch_quotes_by_doi(db_path, {e["doi"] for e in item.evidence_list})
+    total, uncopied = uncopied_citations(assessment, quotes_by_doi)
+    logger.info(
+        "%s: %d citations; %d placeholder citations dropped; %d quotes not copied from "
+        "the extractions%s",
+        item.hgnc_symbol,
+        total,
+        placeholders,
+        len(uncopied),
+        f": {'; '.join(repr(quote[:60]) for _, quote in uncopied[:3])}" if uncopied else "",
+    )
+
+
+def assessment_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> list[str]:
     """Problems that send a gene back for another attempt. Maps paper IDs to DOIs in place.
 
     Expects an answer that validates against the full schema, with its criteria
@@ -780,19 +808,6 @@ def assessment_problems(
     except ValueError as e:
         return [f"hallucinated paper ID: {e}"]
     problems = coverage_problems(assessment, item)
-    quotes_by_doi = fetch_quotes_by_doi(db_path, {e["doi"] for e in item.evidence_list})
-    total, removed = prune_invalid_citations(assessment, quotes_by_doi)
-    if total and len(removed) > MAX_INVALID_CITATION_SHARE * total:
-        problems.append(
-            f"{len(removed)} of {total} citation quotes not copied from the extractions"
-        )
-    elif removed:
-        logger.info(
-            "%s: dropped %d citations whose quote isn't in the paper's extraction: %s",
-            item.hgnc_symbol,
-            len(removed),
-            "; ".join(repr(quote[:60]) for _, quote in removed[:3]),
-        )
     if not validate_entities_criteria_complete(assessment["disease_entities"]):
         problems.append("incomplete per-association criteria")
     if not validate_independent_family_counts(assessment["disease_entities"]):
@@ -888,6 +903,7 @@ def handle_results(
         item = items.get(result.subject)
         message = result.message
         stored = False
+        rejection: str | None = None  # why an answer was rejected
         if result.status == ResultStatus.REFUSED:
             outcome.refused += 1
             outcome.to_fallback += result.goes_to_fallback
@@ -905,17 +921,15 @@ def handle_results(
                 assessment = parse_json_output(message)
                 validator.validate(assessment)
                 criteria_object_to_list(assessment["disease_entities"])
-                problems = assessment_problems(assessment, item, db_path)
-            except jsonschema.ValidationError as e:
-                problems = [f"schema violation at {e.json_path}: {e.message[:200]}"]
-            except ValueError as e:
-                problems = [str(e)]
+                problems = assessment_problems(assessment, item)
+            except (ValueError, jsonschema.ValidationError) as e:
+                problems = [invalid_answer_reason(e)]
             if problems:
-                logger.warning(
-                    "Rejected assessment for %s: %s", item.hgnc_symbol, "; ".join(problems[:5])
-                )
+                rejection = "; ".join(problems[:5])
+                logger.warning("Rejected assessment for %s: %s", item.hgnc_symbol, rejection)
                 outcome.failed += 1
             else:
+                drop_placeholders_and_log_quotes(assessment, item, db_path)
                 log_association_warnings(assessment, item)
                 with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
                     record_result(conn, result)
@@ -931,7 +945,7 @@ def handle_results(
                 outcome.stored += 1
         if not stored:
             with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-                record_result(conn, result)
+                record_result(conn, result, rejection=rejection)
     if invalid_requests:
         raise RuntimeError(
             f"{len(invalid_requests)} assess-genes requests were invalid "

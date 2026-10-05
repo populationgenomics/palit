@@ -111,17 +111,47 @@ class CitationLink:
     page: int | None
 
 
-def load_quote_refs(cursor: sqlite3.Cursor, doi: str) -> dict[str, QuoteRef]:
-    """Index a paper's located quotes, in the order of its citations file."""
+def aggregate_quotes(cursor: sqlite3.Cursor, doi: str) -> set[str]:
+    """The quotes the aggregations of the paper's genes cite from the paper."""
+    genes = "SELECT hgnc_id FROM gene_mentions WHERE paper_doi = ?"
+    citations: list[dict[str, Any]] = []
+    cursor.execute(f"SELECT assessment_json FROM associations WHERE hgnc_id IN ({genes})", (doi,))
+    for (assessment_json,) in cursor.fetchall():
+        entity = json.loads(assessment_json)
+        citations += entity["citations"]
+        for criterion in entity["evidence_assessments"]:
+            citations += criterion["citations"]
+    cursor.execute(
+        f"SELECT quality_concerns_json FROM gene_aggregations WHERE hgnc_id IN ({genes})", (doi,)
+    )
+    for (concerns_json,) in cursor.fetchall():
+        for concern in json.loads(concerns_json):
+            citations += concern["citations"]
+    return {citation["quote"] for citation in citations if citation["doi"] == doi}
+
+
+def paper_quotes(cursor: sqlite3.Cursor, doi: str) -> list[tuple[str, list[dict[str, Any]]]]:
+    """A paper's quotes with their highlight boxes, in the order of its citations file.
+
+    The extraction's quotes come first, then the quotes an aggregation cites
+    that are not among them, which have no boxes. Both parts are sorted by
+    text, so a quote's position doesn't depend on the aggregations.
+    """
     cursor.execute(
         "SELECT quote, bboxes_json FROM citation_locations WHERE paper_doi = ? ORDER BY quote",
         (doi,),
     )
-    refs = {}
-    for index, (quote, bboxes_json) in enumerate(cursor.fetchall()):
-        bboxes = json.loads(bboxes_json)
-        refs[quote] = QuoteRef(index=index, page=bboxes[0]["page"] if bboxes else None)
-    return refs
+    quotes = [(quote, json.loads(bboxes_json)) for quote, bboxes_json in cursor.fetchall()]
+    extracted = {quote for quote, _ in quotes}
+    return quotes + [(quote, []) for quote in sorted(aggregate_quotes(cursor, doi) - extracted)]
+
+
+def load_quote_refs(cursor: sqlite3.Cursor, doi: str) -> dict[str, QuoteRef]:
+    """Index a paper's quotes, located or not, in the order of its citations file."""
+    return {
+        quote: QuoteRef(index=index, page=bboxes[0]["page"] if bboxes else None)
+        for index, (quote, bboxes) in enumerate(paper_quotes(cursor, doi))
+    }
 
 
 def citation_link(paper: "DetailedPaper", quote: str) -> CitationLink | None:
@@ -2342,8 +2372,8 @@ def write_viewer_package(
     """Copy the viewer page and write each paper's PDF link and citations file.
 
     PDFs are symlinked (``aws s3 sync`` uploads the target); each
-    ``citations/<key>.json`` lists the paper's quotes in the order
-    :func:`load_quote_refs` numbers them.
+    ``citations/<key>.json`` lists the paper's quotes as :func:`paper_quotes`
+    orders them, which is how :func:`load_quote_refs` numbers them.
     """
     viewer_out = output_dir / "viewer"
     if viewer_out.exists():
@@ -2368,11 +2398,8 @@ def write_viewer_package(
             link.symlink_to(pdf.resolve())
             (title,) = conn.execute("SELECT title FROM papers WHERE doi = ?", (doi,)).fetchone()
             quotes = [
-                {"quote": quote_text, "bboxes": json.loads(bboxes_json)}
-                for quote_text, bboxes_json in conn.execute(
-                    "SELECT quote, bboxes_json FROM citation_locations WHERE paper_doi = ? ORDER BY quote",
-                    (doi,),
-                )
+                {"quote": quote, "bboxes": bboxes}
+                for quote, bboxes in paper_quotes(conn.cursor(), doi)
             ]
             doi_to_path(doi, citations_out, ".json").write_text(
                 json.dumps({"doi": doi, "title": title, "quotes": quotes})

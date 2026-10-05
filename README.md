@@ -63,7 +63,7 @@ Requests go to Claude Opus 5.5 (`MODEL` in `src/palit/llm.py`). When Opus 5.5 re
 
 `level` is `screen` or `panelapp_check`. For a refusal at the PanelApp check, `screen` holds the scope screen the paper passed, and the paper's genes stay in `gene_mentions` like those of any paper the screen passed. Every invocation first settles the papers refused for good that still have no result, since a run database's recorded refusals may lack one. With `--retry-refused`, it reopens the settled papers instead, and any that both models refuse again are settled again. The report shows these papers as refused by both models: they are kept out of the screen misses, the PanelApp-check rejections and the low-confidence review list, and the panel-publication sensitivity leaves them out.
 
-`uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, tokens, and USD cost per stage, model and service tier for a run database. Every stage prints the same summary for itself when it finishes, listing each refused request; `uv run palit llm refusals --db-path data/db.sqlite` lists all refusals with their safety-classifier category and the subject's outcome: recovered (answered after the refusal), refused for good (Sonnet 5.5 refused it last), or not answered yet. `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API for both models (it needs the profile above).
+`uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, rejected answers, tokens, and USD cost per stage, model and service tier for a run database. A rejected answer failed the stage's schema or structural checks and is asked for again; `llm_requests.rejection` records why. Every stage prints the same summary for itself when it finishes, listing each refused request; `uv run palit llm refusals --db-path data/db.sqlite` lists all refusals with their safety-classifier category and the subject's outcome: recovered (answered after the refusal), refused for good (Sonnet 5.5 refused it last), or not answered yet. `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API for both models (it needs the profile above).
 
 ### External Services
 
@@ -137,8 +137,12 @@ uv run palit download-papers register
 #    classifier does not refuse the same paper every time.
 #    A PDF too long for the context window, often an article with all its
 #    supplements in one file, is sent with only the leading pages that fit,
-#    and the model is told so. Quotes are still checked against the full PDF,
+#    and the model is told so. Quotes are still located in the full PDF,
 #    which the report shows.
+#    Quotes never reject an answer. A quote the PDF can't place is kept, and
+#    the report and its viewer mark it as not located. Only placeholder
+#    citations that quote nothing (an empty quote, "x", "placeholder") are
+#    dropped.
 #    Each disease entity carries three family counts. The reported count is
 #    every family the paper reports. The qualifying count (`family_count`) is
 #    the families whose genotype passes the qualifying variant gate. The

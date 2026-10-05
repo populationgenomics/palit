@@ -21,7 +21,7 @@ from palit.assess_relevance import (
     RelevancePrompt,
     SettledRefusals,
     _process_relevance,
-    load_refusals,
+    load_history,
     refused_assessment,
     reopen_refused,
     select_papers,
@@ -32,13 +32,13 @@ from palit.assess_relevance import (
 )
 from palit.hgnc import HgncResolver
 from palit.llm import (
-    EVERY_REFUSAL,
+    ALL_TIME,
     FALLBACK_MODEL,
     MODEL,
     LlmRequest,
     LlmResult,
     ResultStatus,
-    StageRefusals,
+    StageHistory,
     json_output_config,
     record_result,
 )
@@ -143,8 +143,8 @@ def test_screen_finalises_rejections_and_gene_less_papers(
     pending = _row(db_path, "10.1/gene")
     assert pending["relevance_assessment_json"] is None
     assert json.loads(pending["relevance_screen_json"])["associations"][0]["gene_symbol"] == "GENEA"
-    assert select_papers(db_path, None, _refusals(db_path, STAGE)) == []
-    assert [p["doi"] for p in select_screened(db_path, None, _refusals(db_path, CHECK_STAGE))] == [
+    assert select_papers(db_path, None, _history(db_path, STAGE)) == []
+    assert [p["doi"] for p in select_screened(db_path, None, _history(db_path, CHECK_STAGE))] == [
         "10.1/gene"
     ]
 
@@ -180,7 +180,7 @@ def test_check_finalises_with_verdicts_and_mentions(
     with sqlite3.connect(db_path) as conn:
         mentions = conn.execute("SELECT hgnc_id, source FROM gene_mentions").fetchall()
     assert sorted(mentions) == [(1, "relevance_assessment"), (4, "relevance_assessment")]
-    assert select_screened(db_path, None, _refusals(db_path, CHECK_STAGE)) == []
+    assert select_screened(db_path, None, _history(db_path, CHECK_STAGE)) == []
 
 
 def test_check_with_only_curated_genes_is_not_relevant(
@@ -220,7 +220,7 @@ def test_screen_only_decides_alone(db_path: Path, hgnc_resolver: HgncResolver) -
     assessment = json.loads(row["relevance_assessment_json"])
     assert assessment["relevant"] is True and assessment["panelapp_check"] is None
     assert row["relevance_screen_json"] is None
-    assert select_screened(db_path, None, _refusals(db_path, CHECK_STAGE)) == []
+    assert select_screened(db_path, None, _history(db_path, CHECK_STAGE)) == []
 
 
 def test_empty_check_leaves_the_paper_for_another_attempt(
@@ -240,6 +240,11 @@ def test_empty_check_leaves_the_paper_for_another_attempt(
     )
     assert (outcome.stored, outcome.failed) == (0, 1)
     assert _row(db_path, "10.1/gene")["relevance_assessment_json"] is None
+    with sqlite3.connect(db_path) as conn:
+        rejection = conn.execute(
+            "SELECT rejection FROM llm_requests WHERE stage = ?", (CHECK_STAGE,)
+        ).fetchone()
+    assert rejection == ("no associations",)
 
 
 def _refused(stage: str, subject: str, model: str) -> LlmResult:
@@ -270,8 +275,8 @@ def _refused(stage: str, subject: str, model: str) -> LlmResult:
     )
 
 
-def _refusals(db_path: Path, stage: str) -> StageRefusals:
-    return load_refusals(db_path, stage, EVERY_REFUSAL)
+def _history(db_path: Path, stage: str) -> StageHistory:
+    return load_history(db_path, stage, ALL_TIME, ALL_TIME)
 
 
 def test_selection_routes_refused_papers_to_the_fallback_model(
@@ -290,7 +295,7 @@ def test_selection_routes_refused_papers_to_the_fallback_model(
         screen_only=False,
     )
     assert (outcome.refused, outcome.to_fallback) == (3, 2)
-    refusals = _refusals(db_path, STAGE)
+    refusals = _history(db_path, STAGE)
     papers = select_papers(db_path, None, refusals)
     # 10.1/nogene was refused for good; 10.1/out goes to the fallback model next.
     assert {p["doi"]: refusals.model_for(p["doi"]) for p in papers} == {
@@ -300,7 +305,7 @@ def test_selection_routes_refused_papers_to_the_fallback_model(
     assert [p["doi"] for p in select_papers(db_path, 1, refusals)] == ["10.1/gene"]
     # With --retry-refused, refusals before this invocation no longer count, and the
     # paper settled as refused comes back once reopened.
-    later = load_refusals(db_path, STAGE, datetime.now(UTC) + timedelta(seconds=1))
+    later = load_history(db_path, STAGE, datetime.now(UTC) + timedelta(seconds=1), ALL_TIME)
     assert len(select_papers(db_path, None, later)) == 2
     assert reopen_refused(db_path) == 1
     assert len(select_papers(db_path, None, later)) == 3
@@ -318,12 +323,12 @@ def test_check_level_falls_back_on_its_own(
         screen_only=False,
     )
     store_checks(db_path, [_refused(CHECK_STAGE, "10.1/gene", MODEL)], check)
-    refusals = _refusals(db_path, CHECK_STAGE)
+    refusals = _history(db_path, CHECK_STAGE)
     [paper] = select_screened(db_path, None, refusals)
     assert refusals.model_for(paper["doi"]) == FALLBACK_MODEL
-    assert _refusals(db_path, STAGE).model_for("10.1/gene") == MODEL
+    assert _history(db_path, STAGE).model_for("10.1/gene") == MODEL
     store_checks(db_path, [_refused(CHECK_STAGE, "10.1/gene", FALLBACK_MODEL)], check)
-    assert select_screened(db_path, None, _refusals(db_path, CHECK_STAGE)) == []
+    assert select_screened(db_path, None, _history(db_path, CHECK_STAGE)) == []
 
 
 class RefusingTransport:
@@ -365,6 +370,7 @@ def test_a_round_of_refusals_is_followed_by_the_fallback_attempt(
             limit=None,
             max_retries=5,
             retry_refused=False,
+            retry_failed=False,
         )
     )
     dois = ["10.1/gene", "10.1/nogene", "10.1/out"]
@@ -430,7 +436,7 @@ def test_a_screen_both_models_refused_is_settled_as_not_relevant(
     assert json.loads(row["relevance_assessment_raw"]) == {"screen": None, "panelapp_check": None}
     assert row["download_status"] is None
     # Not selected again, even when earlier refusals no longer count (--retry-refused).
-    later = load_refusals(db_path, STAGE, datetime.now(UTC) + timedelta(seconds=1))
+    later = load_history(db_path, STAGE, datetime.now(UTC) + timedelta(seconds=1), ALL_TIME)
     assert "10.1/out" not in [p["doi"] for p in select_papers(db_path, None, later)]
 
 
@@ -455,7 +461,7 @@ def test_a_check_both_models_refused_keeps_the_screen(
     with sqlite3.connect(db_path) as conn:
         # the screen passed it, so its genes are recorded as for any paper it passes
         assert conn.execute("SELECT hgnc_id FROM gene_mentions").fetchall() == [(1,)]
-    later = load_refusals(db_path, CHECK_STAGE, datetime.now(UTC) + timedelta(seconds=1))
+    later = load_history(db_path, CHECK_STAGE, datetime.now(UTC) + timedelta(seconds=1), ALL_TIME)
     assert select_screened(db_path, None, later) == []
 
 
@@ -492,10 +498,10 @@ def test_settle_step_settles_earlier_refusals_once(
     assert gene["screen"] == _screen(True, ["GENEA"])
     assert _row(db_path, "10.1/nogene")["relevance_assessment_json"] is None
     assert settle_refused(db_path, hgnc_resolver) == SettledRefusals(screen=0, panelapp_check=0)
-    assert [p["doi"] for p in select_papers(db_path, None, _refusals(db_path, STAGE))] == [
+    assert [p["doi"] for p in select_papers(db_path, None, _history(db_path, STAGE))] == [
         "10.1/nogene"
     ]
-    assert select_screened(db_path, None, _refusals(db_path, CHECK_STAGE)) == []
+    assert select_screened(db_path, None, _history(db_path, CHECK_STAGE)) == []
 
 
 def test_settle_step_leaves_papers_in_flight(db_path: Path, hgnc_resolver: HgncResolver) -> None:
@@ -565,6 +571,7 @@ def _run(
             limit=limit,
             max_retries=5,
             retry_refused=retry_refused,
+            retry_failed=False,
         )
     )
 

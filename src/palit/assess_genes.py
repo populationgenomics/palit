@@ -6,14 +6,17 @@ into associations, anchored on what PanelApp Australia already curates for the
 gene (its GenCC rows, its panel entries and its reviews), and assesses each
 association on its own. An association that reuses a GenCC row takes that row's
 MONDO term; the others get theirs from ``map-mondo``. A gene MODEL refused goes
-to FALLBACK_MODEL in the next attempt (see :mod:`palit.llm`).
+to FALLBACK_MODEL in the next attempt (see :mod:`palit.llm`). A gene whose
+answers failed for good is left out until ``--retry-failed``.
 """
 
 import asyncio
 import json
 import logging
 import sqlite3
+from contextlib import closing
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,21 +29,23 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from palit.gencc import GeneGencc, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
+    ALL_TIME,
     BatchTransport,
     Effort,
     ImmediateTransport,
     LlmRequest,
     LlmResult,
     ResultStatus,
-    StageRefusals,
+    StageHistory,
     Transport,
     invalid_answer_reason,
     json_output_config,
+    log_failed_for_good,
     log_refusal,
     make_client,
     parse_json_output,
     record_result,
-    stage_refusals,
+    stage_history,
 )
 from palit.llm_usage import print_stage_summary
 from palit.panelapp_check import INCIDENTALOME_SCOPE, CuratedRecord, PanelEntry
@@ -630,8 +635,8 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
     )
 
 
-def genes_to_assess(db_path: Path, only: list[int] | None, refusals: StageRefusals) -> list[int]:
-    """The run's genes without an aggregation, except ones refused for good and in flight.
+def genes_to_assess(db_path: Path, only: list[int] | None, history: StageHistory) -> list[int]:
+    """The run's genes without an aggregation, except ones skipped for good and in flight.
 
     The run's genes have recent evidence from a relevant paper (see
     :mod:`palit.run_corpus`). ``only`` restricts the result to these HGNC IDs.
@@ -650,7 +655,7 @@ def genes_to_assess(db_path: Path, only: list[int] | None, refusals: StageRefusa
             """,
             (STAGE,),
         ).fetchall()
-    hgnc_ids = [row[0] for row in rows if not refusals.refused_for_good(str(row[0]))]
+    hgnc_ids = [row[0] for row in rows if not history.skipped(str(row[0]))]
     if only is None:
         return hgnc_ids
     wanted = set(only)
@@ -963,13 +968,20 @@ async def _process_assessments(
     only: list[int] | None,
     limit: int | None,
     max_retries: int,
+    failures_since: datetime,
 ) -> None:
     """Assess every gene due an assessment, in attempts.
 
     An attempt makes progress when it stores an assessment or sends a gene on to
     FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
-    that sends those genes to FALLBACK_MODEL.
+    that sends those genes to FALLBACK_MODEL. Failed answers count from
+    *failures_since*.
     """
+
+    def load_history() -> StageHistory:
+        with closing(sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS)) as conn:
+            return stage_history(conn, STAGE, failures_since=failures_since)
+
     validator = jsonschema.Draft202012Validator(schema)
     output_config = json_output_config(schema, EFFORT)
     items: dict[str, _GeneBatchItem] = {}
@@ -996,10 +1008,10 @@ async def _process_assessments(
         outcome = handle_results(resumed, items, db_path, validator)
         logger.info("Collected %d results from earlier batches: %s", len(resumed), outcome)
 
+    log_failed_for_good(load_history().failures, STAGE)
     for attempt in range(1, max_retries + 1):
-        with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
-            refusals = stage_refusals(conn, STAGE)
-        hgnc_ids = [g for g in genes_to_assess(db_path, only, refusals) if g not in skipped]
+        history = load_history()
+        hgnc_ids = [g for g in genes_to_assess(db_path, only, history) if g not in skipped]
         if limit is not None:
             hgnc_ids = hgnc_ids[:limit]
         batch = prepared(hgnc_ids)
@@ -1008,7 +1020,7 @@ async def _process_assessments(
             return
         logger.info("Attempt %d: assessing %d genes", attempt, len(batch))
         requests = [
-            build_request(item, output_config, refusals.model_for(str(item.hgnc_id)))
+            build_request(item, output_config, history.model_for(str(item.hgnc_id)))
             for item in batch
         ]
         outcome = handle_results(await transport.run(STAGE, 1, requests), items, db_path, validator)
@@ -1051,6 +1063,13 @@ def main(
         help="Maximum number of attempts for genes whose assessment failed, was rejected or "
         "was refused; the fallback-model request after a refusal is one of them",
     ),
+    retry_failed: bool = typer.Option(
+        False,
+        "--retry-failed",
+        help="Send genes whose answers failed for good in earlier invocations (rejected or "
+        "cut off at max_tokens, MAX_FAILED_ANSWERS times) again, until they fail that often "
+        "in this invocation",
+    ),
     panel_date: str = typer.Option(
         ...,
         "--panel-date",
@@ -1086,6 +1105,8 @@ def main(
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
+    # With --retry-failed, only failed answers during this invocation count.
+    failures_since = datetime.now(UTC) if retry_failed else ALL_TIME
 
     schema: dict[str, Any] = json.loads(schema_path.read_text())
     hgnc_resolver = HgncResolver.from_file()
@@ -1141,6 +1162,7 @@ def main(
             only=hgnc_ids,
             limit=limit,
             max_retries=max_retries,
+            failures_since=failures_since,
         )
 
     asyncio.run(run())

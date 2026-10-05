@@ -17,6 +17,8 @@ from anthropic.types.messages import MessageBatchIndividualResponse
 
 from palit.llm import (
     FALLBACK_MODEL,
+    MAX_FAILED_ANSWERS,
+    MAX_TOKENS_REJECTION,
     MID_STREAM_ATTEMPTS,
     MIN_BATCH_REQUESTS,
     MODEL,
@@ -27,11 +29,21 @@ from palit.llm import (
     ResultStatus,
     chunk_for_batches,
     json_output_config,
+    parse_json_output,
     record_result,
     request_cost,
+    stage_failures,
+    stage_history,
     stage_refusals,
 )
-from palit.llm_usage import SubjectOutcome, list_refusals, outcome_counts, summarise_usage
+from palit.llm_usage import (
+    FailedSubject,
+    SubjectOutcome,
+    list_failed_for_good,
+    list_refusals,
+    outcome_counts,
+    summarise_usage,
+)
 
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
 
@@ -515,3 +527,103 @@ def test_batch_transport_batches_from_the_minimum(db_path: Path, count: int, bat
     assert len(results) == count
     assert len(batches.created) == (1 if batched else 0)
     assert streams.calls == (0 if batched else count)
+
+
+def _add_answers(
+    db_path: Path, rows: list[tuple[str, str, str, str | None, str | None, str]]
+) -> None:
+    """Requests as (stage, subject, status, stop_reason, rejection, completed_at)."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO llm_requests (custom_id, stage, subject, round, model, status,
+                                      stop_reason, rejection, completed_at)
+            VALUES (?, ?, ?, 2, 'claude-opus-5-5', ?, ?, ?, ?)
+            """,
+            [(f"r{i}", *row) for i, row in enumerate(rows)],
+        )
+
+
+def test_stage_failures_count_rejected_and_cut_off_answers_since_the_latest_accepted_one(
+    db_path: Path,
+) -> None:
+    assert MAX_FAILED_ANSWERS == 2
+    _add_answers(
+        db_path,
+        [
+            # Rejected twice: failed for good, with the latest reason.
+            ("extraction", "rejected", "succeeded", "end_turn", "invalid JSON: x", "2026-09-02T01"),
+            ("extraction", "rejected", "succeeded", "end_turn", "structural: y", "2026-09-02T02"),
+            # Cut off twice before cut-offs had a rejection: only the stop reason says so.
+            ("extraction", "cut-off", "succeeded", "max_tokens", None, "2026-09-02T01"),
+            ("extraction", "cut-off", "succeeded", "max_tokens", None, "2026-09-02T02"),
+            # One of each.
+            (
+                "extraction",
+                "mixed",
+                "succeeded",
+                "max_tokens",
+                MAX_TOKENS_REJECTION,
+                "2026-09-02T01",
+            ),
+            ("extraction", "mixed", "succeeded", "end_turn", "structural: z", "2026-09-02T02"),
+            ("extraction", "once", "succeeded", "end_turn", "structural: z", "2026-09-02T01"),
+            # Refusals, errors, tool rounds and pending requests are no failed answers.
+            ("extraction", "other", "refused", "refusal", None, "2026-09-02T01"),
+            ("extraction", "other", "errored", None, None, "2026-09-02T02"),
+            ("extraction", "other", "succeeded", "tool_use", None, "2026-09-02T03"),
+            ("extraction", "other", "pending", None, None, "2026-09-02T04"),
+            # An accepted answer starts the count afresh.
+            ("extraction", "rerun", "succeeded", "max_tokens", None, "2026-09-02T01"),
+            ("extraction", "rerun", "succeeded", "max_tokens", None, "2026-09-02T02"),
+            ("extraction", "rerun", "succeeded", "end_turn", None, "2026-09-02T03"),
+            ("extraction", "rerun", "succeeded", "end_turn", "structural: z", "2026-09-02T04"),
+            # Another stage's failures count there only.
+            ("relevance", "rejected", "succeeded", "end_turn", "invalid JSON: x", "2026-09-02T03"),
+        ],
+    )
+    with sqlite3.connect(db_path) as conn:
+        failures = stage_failures(conn, "extraction")
+        since = stage_failures(conn, "extraction", datetime(2026, 9, 2, 2, tzinfo=UTC))
+        history = stage_history(conn, "extraction")
+    assert failures.counts == {"rejected": 2, "cut-off": 2, "mixed": 2, "once": 1, "rerun": 1}
+    assert failures.failed_for_good_subjects() == ["cut-off", "mixed", "rejected"]
+    assert failures.last_rejection["rejected"] == "structural: y"
+    assert failures.last_rejection["cut-off"] == MAX_TOKENS_REJECTION
+    assert not failures.failed_for_good("once") and not failures.failed_for_good("other")
+    # --retry-failed: failures before the invocation started no longer count.
+    assert since.failed_for_good_subjects() == []
+    assert history.skipped("rejected") and not history.skipped("once")
+    assert history.model_for("rejected") == MODEL
+
+
+def test_an_answer_cut_off_at_max_tokens_is_rejected_as_such() -> None:
+    with pytest.raises(ValueError) as cut_off:
+        parse_json_output(Message.model_validate(_message("max_tokens")))
+    assert str(cut_off.value) == MAX_TOKENS_REJECTION
+    with pytest.raises(ValueError) as tool_call:
+        parse_json_output(Message.model_validate(_message("tool_use")))
+    assert str(tool_call.value) == "stopped with tool_use"
+
+
+def test_subjects_failed_for_good_are_listed_with_their_last_rejection(db_path: Path) -> None:
+    _add_answers(
+        db_path,
+        [
+            ("extraction", "10.1/a", "succeeded", "max_tokens", None, "2026-09-02T01"),
+            ("extraction", "10.1/a", "succeeded", "end_turn", "structural: y", "2026-09-02T02"),
+            ("extraction", "10.1/b", "succeeded", "max_tokens", None, "2026-09-02T01"),
+            ("assess_genes", "1100", "succeeded", "max_tokens", None, "2026-09-02T01"),
+            ("assess_genes", "1100", "succeeded", "max_tokens", None, "2026-09-02T02"),
+        ],
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO papers (doi, title, source, source_type) "
+            "VALUES ('10.1/a', 'A paper', 'pubmed', 'initial')"
+        )
+    assert list_failed_for_good(db_path) == [
+        FailedSubject("assess_genes", "1100", 2, MAX_TOKENS_REJECTION, None),
+        FailedSubject("extraction", "10.1/a", 2, "structural: y", "A paper"),
+    ]
+    assert [f.subject for f in list_failed_for_good(db_path, "extraction")] == ["10.1/a"]

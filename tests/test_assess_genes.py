@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,11 +32,12 @@ from palit.assess_genes import (
 from palit.gencc import GenccIndex, GeneGencc, MondoRef
 from palit.llm import (
     FALLBACK_MODEL,
+    MAX_TOKENS_REJECTION,
     MODEL,
     LlmResult,
     ResultStatus,
     json_output_config,
-    stage_refusals,
+    stage_history,
 )
 from palit.panelapp_check import INCIDENTALOME_SCOPE, CuratedRecord
 from palit.panelapp_client import PanelGeneData
@@ -593,6 +595,71 @@ def test_scoped_run_asks_for_panel_relevance_per_association(
     assert 'one country."\nIMPORTANT INSTRUCTIONS:' in unscoped
 
 
+def test_genes_failed_for_good_stay_out_unless_their_failures_predate_the_cutoff(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+        conn.execute(
+            "INSERT INTO papers (doi, title, source, source_type, relevance_assessment_json) "
+            "VALUES ('10.1/a', 't', 'pubmed', 'initial', ?)",
+            (_relevance(True),),
+        )
+        conn.executemany(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (?, 'G', '10.1/a', 'recent_evidence')",
+            [(1,), (2,), (3,)],
+        )
+        conn.executemany(
+            "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, "
+            "stop_reason, rejection, completed_at) VALUES (?, ?, ?, 1, ?, 'succeeded', ?, ?, ?)",
+            [
+                ("a", STAGE, "2", MODEL, "max_tokens", None, "2026-10-01T00:00:00+00:00"),
+                (
+                    "b",
+                    STAGE,
+                    "2",
+                    MODEL,
+                    "end_turn",
+                    "no associations",
+                    "2026-10-01T01:00:00+00:00",
+                ),
+                ("c", STAGE, "3", MODEL, "max_tokens", None, "2026-10-01T00:00:00+00:00"),
+            ],
+        )
+        history = stage_history(conn, STAGE)
+        retried = stage_history(conn, STAGE, failures_since=datetime(2026, 10, 2, tzinfo=UTC))
+    assert genes_to_assess(db_path, None, history) == [1, 3]
+    assert genes_to_assess(db_path, None, retried) == [1, 2, 3]
+
+
+def test_an_assessment_cut_off_at_max_tokens_records_the_rejection(
+    tmp_path: Path, gencc_index: GenccIndex
+) -> None:
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+    result = _result("assess_genes-1-a", _answer(_association()))
+    assert result.message is not None
+    cut_off = dataclasses.replace(
+        result, message=result.message.model_copy(update={"stop_reason": "max_tokens"})
+    )
+
+    outcome = handle_results(
+        [cut_off],
+        {str(GENEA): _item(gencc_index)},
+        db_path,
+        jsonschema.Draft202012Validator(SCHEMA),
+    )
+
+    assert outcome.failed == 1
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT rejection FROM llm_requests").fetchall() == [
+            (MAX_TOKENS_REJECTION,)
+        ]
+
+
 def test_genes_refused_by_model_go_to_the_fallback_and_refused_for_good_ones_stay_out(
     tmp_path: Path, gencc_index: GenccIndex
 ) -> None:
@@ -619,10 +686,10 @@ def test_genes_refused_by_model_go_to_the_fallback_and_refused_for_good_ones_sta
                 ("d", STAGE, "4", MODEL, "pending"),
             ],
         )
-        refusals = stage_refusals(conn, STAGE)
-    assert genes_to_assess(db_path, None, refusals) == [1, 2]
-    assert genes_to_assess(db_path, [2, 3], refusals) == [2]
-    assert [refusals.model_for(str(g)) for g in (1, 2)] == [MODEL, FALLBACK_MODEL]
+        history = stage_history(conn, STAGE)
+    assert genes_to_assess(db_path, None, history) == [1, 2]
+    assert genes_to_assess(db_path, [2, 3], history) == [2]
+    assert [history.model_for(str(g)) for g in (1, 2)] == [MODEL, FALLBACK_MODEL]
 
     item = _item(gencc_index)
     output_config = json_output_config({"type": "object"}, "medium")
@@ -662,9 +729,9 @@ def test_only_genes_with_recent_evidence_from_a_relevant_paper_are_assessed(
                 (4, "10.1/expansion", "expansion_evidence"),
             ],
         )
-        refusals = stage_refusals(conn, STAGE)
+        history = stage_history(conn, STAGE)
 
-    assert genes_to_assess(db_path, None, refusals) == [1]
+    assert genes_to_assess(db_path, None, history) == [1]
     processor = PaperBatchProcessor(db_path)
     assert processor.count_remaining() == 1
     assert [e["doi"] for e in processor.get_evidence_for_gene(1)] == [

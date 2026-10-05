@@ -60,16 +60,17 @@ from palit.extract_evidence import (
 )
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import (
+    ALL_TIME,
     CONTEXT_WINDOW,
-    EVERY_REFUSAL,
     FALLBACK_MODEL,
+    MAX_TOKENS_REJECTION,
     MODEL,
     LlmRequest,
     LlmResult,
     ResultStatus,
-    StageRefusals,
+    StageHistory,
     json_output_config,
-    stage_refusals,
+    stage_history,
 )
 from palit.lookup_tools import (
     MAX_ATTEMPTS,
@@ -415,13 +416,13 @@ def test_select_papers_skips_only_papers_refused_for_good(tmp_path: Path) -> Non
 
     def selected(since: datetime) -> dict[str, str]:
         with sqlite3.connect(db_path) as conn:
-            refusals = stage_refusals(conn, STAGE, since)
+            history = stage_history(conn, STAGE, since)
         return {
-            p["doi"]: refusals.model_for(p["doi"])
-            for p in select_papers(db_path, None, None, refusals, set())
+            p["doi"]: history.model_for(p["doi"])
+            for p in select_papers(db_path, None, None, history, set())
         }
 
-    assert selected(EVERY_REFUSAL) == {"10.1/new": MODEL, "10.1/to-fallback": FALLBACK_MODEL}
+    assert selected(ALL_TIME) == {"10.1/new": MODEL, "10.1/to-fallback": FALLBACK_MODEL}
     assert selected(cutoff) == {
         "10.1/new": MODEL,
         "10.1/to-fallback": FALLBACK_MODEL,
@@ -447,9 +448,9 @@ def test_select_papers_skips_initial_papers_not_assessed_relevant(tmp_path: Path
                 ("10.1/expansion", "expansion", None),
             ],
         )
-        refusals = stage_refusals(conn, STAGE)
+        history = stage_history(conn, STAGE)
 
-    assert [p["doi"] for p in select_papers(db_path, None, None, refusals, set())] == [
+    assert [p["doi"] for p in select_papers(db_path, None, None, history, set())] == [
         "10.1/expansion",
         "10.1/relevant",
     ]
@@ -475,6 +476,7 @@ def test_select_papers_restricts_to_requested_dois_and_explains_the_rest(
                 ("10.1/not-relevant", "initial", "downloaded", None, None),
                 ("10.1/pending", "initial", "downloaded", relevant, None),
                 ("10.1/refused", "initial", "downloaded", relevant, None),
+                ("10.1/failed", "initial", "downloaded", relevant, None),
             ],
         )
         conn.executemany(
@@ -485,7 +487,15 @@ def test_select_papers_restricts_to_requested_dois_and_explains_the_rest(
                 ("b", STAGE, "10.1/refused", FALLBACK_MODEL, "refused", "2026-09-01T00:00:00"),
             ],
         )
-        refusals = stage_refusals(conn, STAGE)
+        conn.executemany(
+            "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, "
+            "stop_reason, rejection, completed_at) VALUES (?, ?, ?, 2, ?, 'succeeded', ?, ?, ?)",
+            [
+                ("c", STAGE, "10.1/failed", MODEL, "max_tokens", None, "2026-09-01T00:00:00"),
+                ("d", STAGE, "10.1/failed", MODEL, "end_turn", "invalid JSON: x", "2026-09-02"),
+            ],
+        )
+        history = stage_history(conn, STAGE)
     requested = [
         "10.1/due",
         "10.1/missing",
@@ -494,18 +504,21 @@ def test_select_papers_restricts_to_requested_dois_and_explains_the_rest(
         "10.1/not-relevant",
         "10.1/pending",
         "10.1/refused",
+        "10.1/failed",
     ]
 
-    assert [p["doi"] for p in select_papers(db_path, requested, None, refusals, set())] == [
+    assert [p["doi"] for p in select_papers(db_path, requested, None, history, set())] == [
         "10.1/due"
     ]
-    assert unselected_reasons(db_path, requested, refusals, {}) == {
+    assert unselected_reasons(db_path, requested, history, {}) == {
         "10.1/missing": "not in the database",
         "10.1/scheduled": "not downloaded (download status scheduled)",
         "10.1/extracted": "already extracted",
         "10.1/not-relevant": "an initial paper not assessed relevant",
         "10.1/pending": "a request for it is still pending",
         "10.1/refused": "refused by both models (see --retry-refused)",
+        "10.1/failed": "failed for good after 2 failed answers, the last 'invalid JSON: x' "
+        "(see --retry-failed)",
     }
 
 
@@ -602,12 +615,12 @@ def test_a_refusal_in_round_two_restarts_the_conversation_on_the_fallback_model(
 
     async def attempt(runner: ExtractionRunner) -> RoundOutcome:
         with sqlite3.connect(db_path) as conn:
-            refusals = stage_refusals(conn, STAGE)
+            history = stage_history(conn, STAGE)
             conversation = Conversation(
                 doi="10.1/a",
                 round=1,
                 messages=[first_message],
-                model=refusals.model_for("10.1/a"),
+                model=history.model_for("10.1/a"),
             )
             start_conversation(conn, conversation)
         starts.append(conversations())
@@ -652,8 +665,8 @@ def test_a_refusal_in_round_two_restarts_the_conversation_on_the_fallback_model(
     # Starting the fallback conversation dropped the refused conversation's round 2.
     assert starts == [[(1, "user")], [(1, "user")]]
     with sqlite3.connect(db_path) as conn:
-        refusals = stage_refusals(conn, STAGE)
-    assert refusals.refused_for_good("10.1/a")
+        history = stage_history(conn, STAGE)
+    assert history.refusals.refused_for_good("10.1/a")
 
 
 def test_a_doi_run_takes_only_that_paper_through_its_attempts(
@@ -715,7 +728,8 @@ def test_a_doi_run_takes_only_that_paper_through_its_attempts(
                 only=["10.1/a", "10.1/done"],
                 limit=None,
                 max_retries=5,
-                refusals_since=EVERY_REFUSAL,
+                refusals_since=ALL_TIME,
+                failures_since=ALL_TIME,
             )
         finally:
             await variants.aclose()
@@ -772,6 +786,7 @@ def _run_process_evidence(
     client: Any,
     transport: RoundTwoRefuser,
     only: list[str] | None,
+    failures_since: datetime = ALL_TIME,
 ) -> None:
     schema = {"type": "object"}
     settings = RequestSettings(
@@ -803,7 +818,8 @@ def _run_process_evidence(
                 only=only,
                 limit=None,
                 max_retries=5,
-                refusals_since=EVERY_REFUSAL,
+                refusals_since=ALL_TIME,
+                failures_since=failures_since,
             )
         finally:
             await variants.aclose()
@@ -861,6 +877,39 @@ def test_a_paper_rejected_as_too_long_is_not_sent_again_in_the_invocation(
             "SELECT status, error_type FROM llm_requests WHERE subject = '10.1/long'"
         ).fetchall()
     assert statuses == [("errored", "invalid_request_error")]
+
+
+def test_a_paper_failed_for_good_is_sent_again_only_with_retry_failed(
+    tmp_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    db_path = _uploaded_papers_db(tmp_path, {"10.1/a": _pdf(1), "10.1/failed": _pdf(1)})
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO llm_requests (custom_id, stage, subject, round, model, status, "
+            "stop_reason, rejection, completed_at) "
+            "VALUES (?, ?, '10.1/failed', 2, ?, 'succeeded', 'max_tokens', ?, ?)",
+            [
+                ("x", STAGE, MODEL, None, "2026-10-05T01:00:00+00:00"),
+                ("y", STAGE, MODEL, MAX_TOKENS_REJECTION, "2026-10-05T02:00:00+00:00"),
+            ],
+        )
+
+    transport = RoundTwoRefuser()
+    _run_process_evidence(tmp_path, db_path, hgnc_resolver, SimpleNamespace(), transport, None)
+    assert {request.subject for _, request in transport.sent} == {"10.1/a"}
+
+    transport = RoundTwoRefuser()
+    _run_process_evidence(
+        tmp_path,
+        db_path,
+        hgnc_resolver,
+        SimpleNamespace(),
+        transport,
+        None,
+        failures_since=datetime.now(UTC),
+    )
+    sent = [(round_no, request.subject) for round_no, request in transport.sent]
+    assert (1, "10.1/failed") in sent and (2, "10.1/failed") in sent
 
 
 # ---------------------------------------------------------------------------
@@ -1053,7 +1102,7 @@ class FakeFiles:
 
 def _upload_run(
     tmp_path: Path, pdfs: dict[str, bytes]
-) -> tuple[Path, list[dict[str, Any]], StageRefusals]:
+) -> tuple[Path, list[dict[str, Any]], StageHistory]:
     """A run database with the papers of *pdfs*, by DOI, and their PDFs in *tmp_path*."""
     db_path = tmp_path / "run.sqlite"
     with sqlite3.connect(db_path) as conn:
@@ -1063,20 +1112,20 @@ def _upload_run(
             "VALUES (?, 't', 'pubmed', 'expansion', 'downloaded')",
             [(doi,) for doi in pdfs],
         )
-        refusals = stage_refusals(conn, STAGE)
+        history = stage_history(conn, STAGE)
     for doi, pdf in pdfs.items():
         doi_to_path(doi, tmp_path, ".pdf").write_bytes(pdf)
     papers = [
         {"doi": doi, "title": "t", "source_date": "2026-09-01", "abstract": "a"} for doi in pdfs
     ]
-    return db_path, papers, refusals
+    return db_path, papers, history
 
 
 def test_a_truncated_upload_is_counted_and_uploaded_once_per_pdf_version(tmp_path: Path) -> None:
     """A later run reuses the page count and the upload: same pages, same bytes, same sha256."""
     long_pdf = _numbered_pages_pdf(120)
     short_pdf = _numbered_pages_pdf(3)
-    db_path, papers, refusals = _upload_run(
+    db_path, papers, history = _upload_run(
         tmp_path, {"10.1/long": long_pdf, "10.1/short": short_pdf}
     )
     counter = PageTokenCounter(_article_with_supplement, 20_000_000)
@@ -1084,7 +1133,7 @@ def test_a_truncated_upload_is_counted_and_uploaded_once_per_pdf_version(tmp_pat
     client = SimpleNamespace(messages=counter, files=files)
 
     def run() -> dict[str, UploadedPdf]:
-        return asyncio.run(upload_pdfs(client, db_path, papers, tmp_path, _settings(), refusals))  # type: ignore[arg-type]
+        return asyncio.run(upload_pdfs(client, db_path, papers, tmp_path, _settings(), history))  # type: ignore[arg-type]
 
     first = run()
     calls = counter.calls
@@ -1318,14 +1367,16 @@ def test_a_round_handles_papers_concurrently_and_counts_every_outcome(
     ]
     assert looked_up == ["c.1A>G", "c.2A>G"]
     with sqlite3.connect(db_path) as conn:
-        recorded = conn.execute("SELECT subject, status FROM llm_requests ORDER BY subject")
+        recorded = conn.execute(
+            "SELECT subject, status, rejection FROM llm_requests ORDER BY subject"
+        )
         assert recorded.fetchall() == [
-            ("10.1/a", "succeeded"),
-            ("10.1/b", "succeeded"),
-            ("10.1/c", "refused"),
-            ("10.1/d", "errored"),
-            ("10.1/e", "succeeded"),
-            ("10.1/f", "succeeded"),
+            ("10.1/a", "succeeded", None),
+            ("10.1/b", "succeeded", None),
+            ("10.1/c", "refused", None),
+            ("10.1/d", "errored", None),
+            ("10.1/e", "succeeded", None),
+            ("10.1/f", "succeeded", MAX_TOKENS_REJECTION),
         ]
         rounds = conn.execute(
             "SELECT subject, round FROM llm_conversations WHERE round > 1 ORDER BY subject"
@@ -1584,27 +1635,27 @@ def test_unsent_rounds_are_the_latest_saved_rounds_no_request_followed(tmp_path:
             "stop_reason, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [(f"r{i}", STAGE, *request) for i, request in enumerate(requests)],
         )
-        refusals = stage_refusals(conn, STAGE)
+        history = stage_history(conn, STAGE)
 
-    assert [p["doi"] for p in select_papers(db_path, None, None, refusals, set())] == [
+    assert [p["doi"] for p in select_papers(db_path, None, None, history, set())] == [
         "10.1/fresh",
         "10.1/sent",
     ]
-    continued = select_unsent_conversations(db_path, None, None, refusals)
+    continued = select_unsent_conversations(db_path, None, None, history)
     assert [(c.doi, c.round, c.model, c.messages) for c in continued] == [
         ("10.1/fallback", 2, FALLBACK_MODEL, [{"role": "user", "content": "round 2"}]),
         ("10.1/round3", 3, MODEL, [{"role": "user", "content": "round 3"}]),
         ("10.1/unsent", 2, MODEL, [{"role": "user", "content": "round 2"}]),
     ]
-    assert [c.doi for c in select_unsent_conversations(db_path, None, 1, refusals)] == [
+    assert [c.doi for c in select_unsent_conversations(db_path, None, 1, history)] == [
         "10.1/fallback"
     ]
     only = ["10.1/unsent", "10.1/in-flight"]
-    assert [c.doi for c in select_unsent_conversations(db_path, only, None, refusals)] == [
+    assert [c.doi for c in select_unsent_conversations(db_path, only, None, history)] == [
         "10.1/unsent"
     ]
-    assert select_papers(db_path, only, None, refusals, set()) == []
-    assert unselected_reasons(db_path, only, refusals, {}) == {
+    assert select_papers(db_path, only, None, history, set()) == []
+    assert unselected_reasons(db_path, only, history, {}) == {
         "10.1/unsent": "its saved round-2 conversation waits to be continued",
         "10.1/in-flight": "a request for it is still pending",
     }
@@ -1625,7 +1676,7 @@ def test_unsent_rounds_are_the_latest_saved_rounds_no_request_followed(tmp_path:
     with pytest.raises(
         RuntimeError, match=r"1 saved extraction conversations \(first: 10.1/fresh\)"
     ):
-        select_papers(db_path, None, None, refusals, set())
+        select_papers(db_path, None, None, history, set())
 
 
 class ScriptedBatches:
@@ -1784,7 +1835,8 @@ def test_a_restart_continues_the_conversations_an_interrupted_run_saved(
             only=None,
             limit=None,
             max_retries=5,
-            refusals_since=EVERY_REFUSAL,
+            refusals_since=ALL_TIME,
+            failures_since=ALL_TIME,
         )
 
     interrupted = ScriptedBatches(db_path, variants, final_answer)

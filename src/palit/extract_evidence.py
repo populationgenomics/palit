@@ -58,26 +58,28 @@ from rich.progress import TaskID
 
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import (
+    ALL_TIME,
     CONTEXT_WINDOW,
-    EVERY_REFUSAL,
     BatchTransport,
     Effort,
     ImmediateTransport,
     LlmRequest,
     LlmResult,
     ResultStatus,
-    StageRefusals,
+    StageHistory,
     Transport,
     assistant_content,
     cached_system,
     count_input_tokens,
     invalid_answer_reason,
     json_output_config,
+    log_failed_for_good,
     log_refusal,
     make_client,
     parse_json_output,
     record_result,
-    stage_refusals,
+    stage_history,
+    unfinished_answer_reason,
 )
 from palit.llm_usage import print_stage_summary
 from palit.lookup_tools import (
@@ -533,12 +535,16 @@ def unsent_rounds(conn: sqlite3.Connection) -> dict[str, UnsentRound]:
 
 
 def _due_papers(
-    conn: sqlite3.Connection, only: list[str] | None, refusals: StageRefusals
+    conn: sqlite3.Connection,
+    only: list[str] | None,
+    history: StageHistory,
 ) -> list[dict[str, Any]]:
-    """Downloaded corpus papers without an extraction, except ones in flight and ones refused for good.
+    """Downloaded corpus papers without an extraction, except ones in flight or skipped for good.
 
-    An initial paper is in the corpus only when assessed relevant (see :mod:`palit.run_corpus`).
-    ``only`` restricts the result to these DOIs.
+    Skipped for good are the papers both models refused and the papers whose
+    answers failed MAX_FAILED_ANSWERS times (see :mod:`palit.llm`). An initial
+    paper is in the corpus only when assessed relevant (see
+    :mod:`palit.run_corpus`). ``only`` restricts the result to these DOIs.
     """
     cursor = conn.cursor()
     cursor.row_factory = sqlite3.Row
@@ -557,7 +563,7 @@ def _due_papers(
         """,
         (STAGE,),
     ).fetchall()
-    papers = [dict(row) for row in rows if not refusals.refused_for_good(row["doi"])]
+    papers = [dict(row) for row in rows if not history.skipped(row["doi"])]
     if only is not None:
         wanted = set(only)
         papers = [paper for paper in papers if paper["doi"] in wanted]
@@ -568,7 +574,7 @@ def select_papers(
     db_path: Path,
     only: list[str] | None,
     limit: int | None,
-    refusals: StageRefusals,
+    history: StageHistory,
     too_long: Collection[str],
 ) -> list[dict[str, Any]]:
     """The papers due an extraction that start from round 1.
@@ -582,14 +588,17 @@ def select_papers(
         unsent = unsent_rounds(conn)
         papers = [
             paper
-            for paper in _due_papers(conn, only, refusals)
+            for paper in _due_papers(conn, only, history)
             if paper["doi"] not in unsent and paper["doi"] not in too_long
         ]
     return papers if limit is None else papers[:limit]
 
 
 def select_unsent_conversations(
-    db_path: Path, only: list[str] | None, limit: int | None, refusals: StageRefusals
+    db_path: Path,
+    only: list[str] | None,
+    limit: int | None,
+    history: StageHistory,
 ) -> list[Conversation]:
     """The saved conversations of the papers due an extraction that have an unsent round.
 
@@ -599,7 +608,7 @@ def select_unsent_conversations(
     with closing(sqlite3.connect(db_path)) as conn:
         unsent = unsent_rounds(conn)
         dois = [
-            paper["doi"] for paper in _due_papers(conn, only, refusals) if paper["doi"] in unsent
+            paper["doi"] for paper in _due_papers(conn, only, history) if paper["doi"] in unsent
         ]
         if limit is not None:
             dois = dois[:limit]
@@ -615,7 +624,10 @@ def select_unsent_conversations(
 
 
 def unselected_reasons(
-    db_path: Path, dois: list[str], refusals: StageRefusals, too_long: Mapping[str, int]
+    db_path: Path,
+    dois: list[str],
+    history: StageHistory,
+    too_long: Mapping[str, int],
 ) -> dict[str, str]:
     """The reason :func:`select_papers` leaves out each of *dois* that it leaves out.
 
@@ -652,8 +664,13 @@ def unselected_reasons(
             reasons[doi] = "an initial paper not assessed relevant"
         elif pending:
             reasons[doi] = "a request for it is still pending"
-        elif refusals.refused_for_good(doi):
+        elif history.refusals.refused_for_good(doi):
             reasons[doi] = "refused by both models (see --retry-refused)"
+        elif history.failures.failed_for_good(doi):
+            reasons[doi] = (
+                f"failed for good after {history.failures.counts[doi]} failed answers, the last "
+                f"{history.failures.last_rejection[doi]!r} (see --retry-failed)"
+            )
         elif (unsent_round := unsent.get(doi)) is not None:
             reasons[doi] = (
                 f"its saved round-{unsent_round.round} conversation waits to be continued"
@@ -832,7 +849,7 @@ async def count_page_limits(
     db_path: Path,
     pdfs: list[LocalPdf],
     settings: RequestSettings,
-    refusals: StageRefusals,
+    history: StageHistory,
 ) -> None:
     """Count the leading pages that fit each PDF's round-1 request, into pdf_page_limits.
 
@@ -848,7 +865,7 @@ async def count_page_limits(
             doi = pdf.paper["doi"]
             async with semaphore:
                 limit = await fitting_pages(
-                    client, pdf.paper, pdf.path.read_bytes(), settings, refusals.model_for(doi)
+                    client, pdf.paper, pdf.path.read_bytes(), settings, history.model_for(doi)
                 )
             with _transaction(db_path) as conn:
                 conn.execute(
@@ -888,7 +905,7 @@ async def upload_pdfs(
     papers: list[dict[str, Any]],
     papers_dir: Path,
     settings: RequestSettings,
-    refusals: StageRefusals,
+    history: StageHistory,
 ) -> dict[str, UploadedPdf]:
     """The papers' PDFs in the Files API, uploading only new, changed, or expiring ones.
 
@@ -925,7 +942,7 @@ async def upload_pdfs(
         and ((counted := limits.get(pdf.paper["doi"])) is None or counted[0] != pdf.sha256)
     ]
     if uncounted:
-        await count_page_limits(client, db_path, uncounted, settings, refusals)
+        await count_page_limits(client, db_path, uncounted, settings, history)
         limits = page_limits()
 
     with closing(sqlite3.connect(db_path)) as conn:
@@ -1219,10 +1236,9 @@ class ExtractionRunner:
             if await self._store_final(result, self._messages(result), message):
                 return RoundOutcome(stored=1)
             return RoundOutcome(failed=1)
-        logger.warning(
-            "%s round %d stopped with %s", result.subject, result.round, message.stop_reason
-        )
-        self._record(result)
+        rejection = unfinished_answer_reason(message.stop_reason)
+        logger.warning("Rejected %s round %d: %s", result.subject, result.round, rejection)
+        self._record(result, rejection=rejection)
         return RoundOutcome(failed=1)
 
     def _messages(self, result: LlmResult) -> list[dict[str, Any]]:
@@ -1488,6 +1504,7 @@ async def _process_evidence(
     limit: int | None,
     max_retries: int,
     refusals_since: datetime,
+    failures_since: datetime,
 ) -> None:
     """Extract every paper due an extraction, in attempts of whole conversations.
 
@@ -1506,7 +1523,14 @@ async def _process_evidence(
     when it stores an extraction or sends a paper on to FALLBACK_MODEL, so a
     round of refusals by MODEL is followed by the attempt that restarts those
     papers on FALLBACK_MODEL.
+
+    Refusals and failed answers count from *refusals_since* and *failures_since*.
     """
+
+    def load_history() -> StageHistory:
+        with closing(sqlite3.connect(db_path)) as conn:
+            return stage_history(conn, STAGE, refusals_since, failures_since)
+
     too_long: dict[str, int] = {}  # input tokens by DOI
     resumed = await transport.resume(STAGE)
     if resumed:
@@ -1522,9 +1546,9 @@ async def _process_evidence(
             len(outcome.too_long),
         )
 
-    with sqlite3.connect(db_path) as conn:
-        refusals = stage_refusals(conn, STAGE, refusals_since)
-    unsent = select_unsent_conversations(db_path, only, limit, refusals)
+    history = load_history()
+    log_failed_for_good(history.failures, STAGE)
+    unsent = select_unsent_conversations(db_path, only, limit, history)
     if unsent:
         logger.info("Continuing %d saved conversations from their unsent round", len(unsent))
         continued = await runner.advance(await runner.rerun_transient_lookups(unsent))
@@ -1540,9 +1564,8 @@ async def _process_evidence(
         )
 
     if only is not None:
-        with sqlite3.connect(db_path) as conn:
-            refusals = stage_refusals(conn, STAGE, refusals_since)
-        for doi, reason in unselected_reasons(db_path, only, refusals, too_long).items():
+        history = load_history()
+        for doi, reason in unselected_reasons(db_path, only, history, too_long).items():
             logger.warning("Not extracting %s: %s", doi, reason)
 
     if limit is not None:
@@ -1552,19 +1575,18 @@ async def _process_evidence(
             return
 
     for attempt in range(1, max_retries + 1):
-        with sqlite3.connect(db_path) as conn:
-            refusals = stage_refusals(conn, STAGE, refusals_since)
-        papers = select_papers(db_path, only, limit, refusals, too_long)
+        history = load_history()
+        papers = select_papers(db_path, only, limit, history, too_long)
         if not papers:
             logger.info("No papers left to extract")
             return
-        uploads = await upload_pdfs(client, db_path, papers, papers_dir, settings, refusals)
+        uploads = await upload_pdfs(client, db_path, papers, papers_dir, settings, history)
         conversations = [
             Conversation(
                 doi=paper["doi"],
                 round=1,
                 messages=[first_user_message(paper, uploads[paper["doi"]], settings.cache_pdf)],
-                model=refusals.model_for(paper["doi"]),
+                model=history.model_for(paper["doi"]),
             )
             for paper in papers
             if paper["doi"] in uploads
@@ -1660,13 +1682,23 @@ def main(
         help="Send papers that both models refused in earlier invocations again, once each, "
         "starting with the primary model (refusals vary between calls)",
     ),
+    retry_failed: bool = typer.Option(
+        False,
+        "--retry-failed",
+        help="Send papers whose answers failed for good in earlier invocations (rejected or "
+        "cut off at max_tokens, MAX_FAILED_ANSWERS times) again, until they fail that often "
+        "in this invocation",
+    ),
 ) -> None:
     """Extract evidence from every downloaded paper that has no extraction yet."""
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
-    # With --retry-refused, only refusals during this invocation count.
-    refusals_since = datetime.now(UTC) if retry_refused else EVERY_REFUSAL
+    # With --retry-refused and --retry-failed, only refusals and failed answers
+    # during this invocation count.
+    started = datetime.now(UTC)
+    refusals_since = started if retry_refused else ALL_TIME
+    failures_since = started if retry_failed else ALL_TIME
 
     panel_formatted = ""
     if scope_panel_id is not None:
@@ -1714,6 +1746,7 @@ def main(
                 limit=limit,
                 max_retries=max_retries,
                 refusals_since=refusals_since,
+                failures_since=failures_since,
             )
         finally:
             await variant_client.aclose()

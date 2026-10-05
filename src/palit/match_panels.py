@@ -13,7 +13,9 @@ import asyncio
 import json
 import logging
 import sqlite3
+from contextlib import closing
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,22 +24,24 @@ import typer
 from anthropic.types.output_config_param import OutputConfigParam
 
 from palit.llm import (
+    ALL_TIME,
     BatchTransport,
     Effort,
     ImmediateTransport,
     LlmRequest,
     LlmResult,
     ResultStatus,
-    StageRefusals,
+    StageHistory,
     Transport,
     cached_system,
     invalid_answer_reason,
     json_output_config,
+    log_failed_for_good,
     log_refusal,
     make_client,
     parse_json_output,
     record_result,
-    stage_refusals,
+    stage_history,
 )
 from palit.llm_usage import print_stage_summary
 from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
@@ -83,8 +87,8 @@ def format_all_panels_for_prompt(panels: dict[int, dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def select_associations(db_path: Path, refusals: StageRefusals) -> list[Association]:
-    """Associations without panel matches, except ones refused for good and ones in flight.
+def select_associations(db_path: Path, history: StageHistory) -> list[Association]:
+    """Associations without panel matches, except ones skipped for good and ones in flight.
 
     Only rows of a stored aggregation count: rows left behind by deleting a
     ``gene_aggregations`` row are skipped.
@@ -107,7 +111,7 @@ def select_associations(db_path: Path, refusals: StageRefusals) -> list[Associat
         ).fetchall()
     associations = []
     for association_id, assessment_json in rows:
-        if refusals.refused_for_good(str(association_id)):
+        if history.skipped(str(association_id)):
             continue
         assessment = json.loads(assessment_json)
         associations.append(
@@ -268,23 +272,30 @@ async def _process_panel_matching(
     user_template: str,
     name_to_id: dict[str, int],
     max_retries: int,
+    failures_since: datetime,
 ) -> None:
     """Match every association due matches, in attempts.
 
     An attempt makes progress when it stores matches or sends an association on
     to FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
-    that sends those associations to FALLBACK_MODEL.
+    that sends those associations to FALLBACK_MODEL. Failed answers count from
+    *failures_since*.
     """
+
+    def load_history() -> StageHistory:
+        with closing(sqlite3.connect(db_path)) as conn:
+            return stage_history(conn, STAGE, failures_since=failures_since)
+
     validator = jsonschema.Draft202012Validator(schema)
     output_config = json_output_config(schema, EFFORT)
     resumed = await transport.resume(STAGE)
     if resumed:
         stored = handle_results(resumed, db_path, validator, name_to_id)
         logger.info("Collected %d results from earlier batches, stored %d", len(resumed), stored)
+    log_failed_for_good(load_history().failures, STAGE)
     for attempt in range(1, max_retries + 1):
-        with sqlite3.connect(db_path) as conn:
-            refusals = stage_refusals(conn, STAGE)
-        associations = select_associations(db_path, refusals)
+        history = load_history()
+        associations = select_associations(db_path, history)
         if not associations:
             logger.info("No associations left to match")
             return
@@ -295,7 +306,7 @@ async def _process_panel_matching(
                 system,
                 user_template,
                 output_config,
-                refusals.model_for(str(association.id)),
+                history.model_for(str(association.id)),
             )
             for association in associations
         ]
@@ -331,6 +342,13 @@ def main(
         help="Maximum number of attempts for associations whose matching failed or was "
         "refused; the fallback-model request after a refusal is one of them",
     ),
+    retry_failed: bool = typer.Option(
+        False,
+        "--retry-failed",
+        help="Send associations whose answers failed for good in earlier invocations (rejected "
+        "or cut off at max_tokens, MAX_FAILED_ANSWERS times) again, until they fail that often "
+        "in this invocation",
+    ),
     immediate: bool = typer.Option(
         False,
         "--immediate",
@@ -341,6 +359,8 @@ def main(
     if not db_path.exists():
         logger.error("Database not found: %s", db_path)
         raise typer.Exit(1)
+    # With --retry-failed, only failed answers during this invocation count.
+    failures_since = datetime.now(UTC) if retry_failed else ALL_TIME
 
     template = PROMPT_PATH.read_text()
     schema: dict[str, Any] = json.loads(SCHEMA_PATH.read_text())
@@ -366,6 +386,7 @@ def main(
             user_template=user_template,
             name_to_id=name_to_id,
             max_retries=max_retries,
+            failures_since=failures_since,
         )
 
     asyncio.run(run())

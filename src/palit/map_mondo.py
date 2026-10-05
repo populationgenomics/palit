@@ -23,7 +23,9 @@ import json
 import logging
 import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -40,22 +42,25 @@ from palit.gencc import (
 )
 from palit.hgnc import HgncResolver
 from palit.llm import (
+    ALL_TIME,
     Effort,
     ImmediateTransport,
     LlmRequest,
     LlmResult,
     ResultStatus,
-    StageRefusals,
+    StageHistory,
     Transport,
     assistant_content,
     cached_system,
     invalid_answer_reason,
     json_output_config,
+    log_failed_for_good,
     log_refusal,
     make_client,
     parse_json_output,
     record_result,
-    stage_refusals,
+    stage_history,
+    unfinished_answer_reason,
 )
 from palit.llm_usage import print_stage_summary
 from palit.mondo_tools import TOOLS, MondoIndex, MondoToolRunner
@@ -124,9 +129,9 @@ class MappingOutcome:
 
 
 def select_associations(
-    db_path: Path, limit: int | None, refusals: StageRefusals
+    db_path: Path, limit: int | None, history: StageHistory
 ) -> list[Association]:
-    """Associations without a MONDO term, except the ones refused for good.
+    """Associations without a MONDO term, except the ones skipped for good.
 
     Only rows of a stored aggregation count: rows left behind by deleting a
     ``gene_aggregations`` row are skipped.
@@ -141,7 +146,7 @@ def select_associations(
             ORDER BY a.id
             """
         ).fetchall()
-    due = [row for row in rows if not refusals.refused_for_good(str(row[0]))]
+    due = [row for row in rows if not history.skipped(str(row[0]))]
     associations = []
     for association_id, hgnc_id, assessment_json in due if limit is None else due[:limit]:
         assessment = json.loads(assessment_json)
@@ -326,14 +331,12 @@ class MappingRunner:
                 else:
                     outcome.failed += 1
             else:
+                rejection = unfinished_answer_reason(message.stop_reason)
                 logger.warning(
-                    "Association %s round %d stopped with %s",
-                    result.subject,
-                    result.round,
-                    message.stop_reason,
+                    "Rejected association %s round %d: %s", result.subject, result.round, rejection
                 )
                 outcome.failed += 1
-                self._record(result)
+                self._record(result, rejection=rejection)
         if invalid_requests:
             raise RuntimeError(
                 f"{len(invalid_requests)} map-mondo requests were invalid "
@@ -409,17 +412,24 @@ async def map_associations(
     gencc: GenccIndex,
     limit: int | None,
     max_retries: int,
+    failures_since: datetime,
 ) -> None:
     """Map every unmapped association, retrying failed ones up to *max_retries* times.
 
     An attempt makes progress when it stores a mapping or sends an association on
     to FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
-    that restarts those associations on FALLBACK_MODEL.
+    that restarts those associations on FALLBACK_MODEL. Failed answers count from
+    *failures_since*.
     """
+
+    def load_history() -> StageHistory:
+        with closing(sqlite3.connect(db_path)) as conn:
+            return stage_history(conn, STAGE, failures_since=failures_since)
+
+    log_failed_for_good(load_history().failures, STAGE)
     for attempt in range(1, max_retries + 1):
-        with sqlite3.connect(db_path) as conn:
-            refusals = stage_refusals(conn, STAGE)
-        associations = select_associations(db_path, limit, refusals)
+        history = load_history()
+        associations = select_associations(db_path, limit, history)
         if not associations:
             logger.info("No associations left to map")
             return
@@ -435,7 +445,7 @@ async def map_associations(
                         ),
                     }
                 ],
-                model=refusals.model_for(str(association.id)),
+                model=history.model_for(str(association.id)),
             )
             for association in associations
         ]
@@ -473,11 +483,20 @@ def main(
         help="Maximum number of attempts for associations whose mapping failed, was rejected "
         "or was refused; the fallback-model conversation after a refusal is one of them",
     ),
+    retry_failed: bool = typer.Option(
+        False,
+        "--retry-failed",
+        help="Send associations whose answers failed for good in earlier invocations (rejected "
+        "or cut off at max_tokens, MAX_FAILED_ANSWERS times) again, until they fail that often "
+        "in this invocation",
+    ),
 ) -> None:
     """Map every association without a MONDO term onto one, with the model and the MONDO tools."""
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
+    # With --retry-failed, only failed answers during this invocation count.
+    failures_since = datetime.now(UTC) if retry_failed else ALL_TIME
 
     system = PROMPT_PATH.read_text().strip()
     schema: dict[str, Any] = json.loads(SCHEMA_PATH.read_text())
@@ -502,6 +521,7 @@ def main(
             gencc=gencc,
             limit=limit,
             max_retries=max_retries,
+            failures_since=failures_since,
         )
 
     asyncio.run(run())

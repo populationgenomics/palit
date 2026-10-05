@@ -2,6 +2,7 @@
 
 import sqlite3
 from collections import Counter
+from contextlib import closing
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -10,7 +11,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from palit.llm import FALLBACK_MODEL, request_cost
+from palit.llm import FAILED_ANSWER, FALLBACK_MODEL, request_cost, stage_failures
 
 app = typer.Typer(help="Claude API usage recorded in a run database")
 
@@ -22,7 +23,7 @@ class StageUsage:
     service_tier: str
     requests: int = 0
     refused: int = 0
-    rejected: int = 0  # answers the stage rejected and asks for again
+    rejected: int = 0  # answers the stage rejected or saw cut off, and asks for again
     errored: int = 0
     pending: int = 0
     input_tokens: int = 0
@@ -36,8 +37,8 @@ def summarise_usage(db_path: Path) -> list[StageUsage]:
     rows: dict[tuple[str, str, str], StageUsage] = {}
     with sqlite3.connect(db_path) as conn:
         cursor = conn.execute(
-            """
-            SELECT stage, model, COALESCE(service_tier, '-'), status, rejection,
+            f"""
+            SELECT stage, model, COALESCE(service_tier, '-'), status, {FAILED_ANSWER},
                    COALESCE(input_tokens, 0), COALESCE(cache_write_5m_tokens, 0),
                    COALESCE(cache_write_1h_tokens, 0), COALESCE(cache_read_tokens, 0),
                    COALESCE(output_tokens, 0)
@@ -49,7 +50,7 @@ def summarise_usage(db_path: Path) -> list[StageUsage]:
             model,
             tier,
             status,
-            rejection,
+            failed_answer,
             uncached,
             write_5m,
             write_1h,
@@ -59,7 +60,7 @@ def summarise_usage(db_path: Path) -> list[StageUsage]:
             usage = rows.setdefault((stage, model, tier), StageUsage(stage, model, tier))
             usage.requests += 1
             usage.refused += status == "refused"
-            usage.rejected += rejection is not None
+            usage.rejected += failed_answer
             usage.errored += status in ("errored", "expired", "canceled")
             usage.pending += status == "pending"
             usage.input_tokens += uncached
@@ -176,8 +177,59 @@ def _refusal_table(refusals: list[Refusal], title: str) -> Table:
     return table
 
 
+@dataclass(frozen=True)
+class FailedSubject:
+    """A subject whose answers failed for good in its stage (see :func:`palit.llm.stage_failures`)."""
+
+    stage: str
+    subject: str
+    failures: int
+    last_rejection: str
+    title: str | None  # paper title when the subject is a DOI
+
+
+def list_failed_for_good(db_path: Path, stage: str | None = None) -> list[FailedSubject]:
+    """The subjects failed for good, by stage and subject; optionally of one stage."""
+    found: list[FailedSubject] = []
+    with closing(sqlite3.connect(db_path)) as conn:
+        stages = [
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT stage FROM llm_requests WHERE ? IS NULL OR stage = ? ORDER BY stage",
+                (stage, stage),
+            )
+        ]
+        for one_stage in stages:
+            failures = stage_failures(conn, one_stage)
+            for subject in failures.failed_for_good_subjects():
+                title = conn.execute(
+                    "SELECT title FROM papers WHERE doi = ?", (subject,)
+                ).fetchone()
+                found.append(
+                    FailedSubject(
+                        stage=one_stage,
+                        subject=subject,
+                        failures=failures.counts[subject],
+                        last_rejection=failures.last_rejection[subject],
+                        title=title[0] if title is not None else None,
+                    )
+                )
+    return found
+
+
+def _failed_table(failed: list[FailedSubject], title: str) -> Table:
+    table = Table(title=title)
+    for column in ("stage", "subject", "failed answers", "last rejection", "title"):
+        table.add_column(column)
+    for f in failed:
+        table.add_row(
+            f.stage, f.subject, str(f.failures), f.last_rejection[:100], (f.title or "")[:80]
+        )
+    return table
+
+
 def print_stage_summary(db_path: Path, stage: str) -> None:
-    """Outcome counts, cost, and every refusal of *stage* in this run database."""
+    """Outcome counts, cost, every refusal and every subject failed for good of *stage*."""
     usages = [u for u in summarise_usage(db_path) if u.stage == stage]
     requests = sum(u.requests for u in usages)
     refused = sum(u.refused for u in usages)
@@ -196,6 +248,9 @@ def print_stage_summary(db_path: Path, stage: str) -> None:
     if refusals:
         console.print(_refusal_table(refusals, f"{stage}: refused requests"))
         console.print(f"{stage}: refused subjects: {_outcome_summary(refusals)}")
+    failed = list_failed_for_good(db_path, stage)
+    if failed:
+        console.print(_failed_table(failed, f"{stage}: subjects failed for good"))
 
 
 @app.command("refusals")
@@ -203,7 +258,10 @@ def refusals(
     db_path: Path = typer.Option(Path("data/db.sqlite"), "--db-path", help="Run database"),
     stage: str | None = typer.Option(None, "--stage", help="Only this stage"),
 ) -> None:
-    """List refused requests with their safety-classifier category and subject outcome."""
+    """List refused requests with their safety-classifier category and subject outcome.
+
+    Then list the subjects whose answers failed for good, with the last rejection.
+    """
     found = list_refusals(db_path, stage)
     by_category: dict[str, int] = {}
     for r in found:
@@ -216,6 +274,10 @@ def refusals(
     )
     if found:
         console.print(f"Refused subjects: {_outcome_summary(found)}")
+    failed = list_failed_for_good(db_path, stage)
+    if failed:
+        console.print(_failed_table(failed, f"Subjects failed for good in {db_path}"))
+    console.print(f"{len(failed)} subjects failed for good")
 
 
 @app.command("costs")
@@ -225,7 +287,8 @@ def costs(
     """Show requests, outcomes, tokens, and USD cost per stage, model, and service tier.
 
     Rejected counts the answers a stage rejected (schema violation, structural
-    problem, invalid JSON) and asks for again; ``llm_requests.rejection`` says why.
+    problem, invalid JSON, output cut off at max_tokens) and asks for again;
+    ``llm_requests.rejection`` says why.
     """
     usages = summarise_usage(db_path)
     table = Table(title=f"Claude usage in {db_path}")

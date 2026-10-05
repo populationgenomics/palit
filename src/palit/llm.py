@@ -19,6 +19,11 @@ Refusals fall back from :data:`MODEL` to :data:`FALLBACK_MODEL`. Stages pick the
 model for each request with :func:`stage_refusals`: a subject goes to MODEL
 until MODEL refuses it in that stage, and then to FALLBACK_MODEL with otherwise
 identical params. A subject is refused for good once FALLBACK_MODEL refuses it.
+
+A stage also gives up on a subject whose answers keep failing. Once the stage
+has rejected :data:`MAX_FAILED_ANSWERS` answers about it, or seen them cut off
+at max_tokens, since its latest accepted answer, the subject is failed for good
+(see :func:`stage_failures`). Both kinds of skipping count across invocations.
 """
 
 import asyncio
@@ -84,6 +89,10 @@ _TRANSIENT_ERRORS = (
 # the SDK raises a plain APIStatusError and does not retry it.
 _MID_STREAM_TRANSIENT_TYPES = frozenset({"api_error", "overloaded_error"})
 MID_STREAM_ATTEMPTS = 5
+# A subject is failed for good once its stage recorded this many failed answers.
+MAX_FAILED_ANSWERS = 2
+# The rejection of an answer cut off at max_tokens.
+MAX_TOKENS_REJECTION = "output cut off at max_tokens"
 # The API's message for a request whose prompt exceeds the model's context window.
 _PROMPT_TOO_LONG = re.compile(r"prompt is too long: (\d+) tokens > \d+ maximum")
 
@@ -166,10 +175,19 @@ def assistant_content(message: Message) -> list[dict[str, Any]]:
     ]
 
 
+def unfinished_answer_reason(stop_reason: str | None) -> str:
+    """The rejection of an answer that stopped before it ended its turn."""
+    return MAX_TOKENS_REJECTION if stop_reason == "max_tokens" else f"stopped with {stop_reason}"
+
+
 def parse_json_output(message: Message) -> Any:
-    """The structured output of a finished message."""
+    """The structured output of a finished message.
+
+    Raises ValueError, with :func:`unfinished_answer_reason` as its message, for
+    a message that did not end its turn.
+    """
     if message.stop_reason != "end_turn":
-        raise ValueError(f"message {message.id} stopped with {message.stop_reason}, not end_turn")
+        raise ValueError(unfinished_answer_reason(message.stop_reason))
     text = next(block.text for block in message.content if block.type == "text")
     return json.loads(text)
 
@@ -278,8 +296,9 @@ def log_refusal(result: LlmResult, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-# Refusals recorded at or after this instant count: by default, every refusal.
-EVERY_REFUSAL = datetime.min.replace(tzinfo=UTC)
+# Refusals and failed answers recorded at or after this instant count: by
+# default, all of them.
+ALL_TIME = datetime.min.replace(tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -308,7 +327,7 @@ class StageRefusals:
 
 
 def stage_refusals(
-    conn: sqlite3.Connection, stage: str, since: datetime = EVERY_REFUSAL
+    conn: sqlite3.Connection, stage: str, since: datetime = ALL_TIME
 ) -> StageRefusals:
     """The refusals *stage* recorded at or after *since*, by model."""
     refused: dict[str, set[str]] = {MODEL: set(), FALLBACK_MODEL: set()}
@@ -322,6 +341,105 @@ def stage_refusals(
         refused[model].add(subject)
     return StageRefusals(
         by_model=frozenset(refused[MODEL]), by_fallback=frozenset(refused[FALLBACK_MODEL])
+    )
+
+
+# ---------------------------------------------------------------------------
+# Failed answers
+# ---------------------------------------------------------------------------
+
+
+# An llm_requests row of an answer the stage did not use: rejected, or cut off at
+# max_tokens. Rows recorded before cut-offs had a rejection have only the stop reason.
+# Unqualified, so that it applies to the innermost llm_requests of a query.
+FAILED_ANSWER = "status = 'succeeded' AND (rejection IS NOT NULL OR stop_reason = 'max_tokens')"
+# An llm_requests row of an answer the stage stored.
+ACCEPTED_ANSWER = "status = 'succeeded' AND stop_reason = 'end_turn' AND rejection IS NULL"
+
+
+@dataclass(frozen=True)
+class StageFailures:
+    """The failed answers of one stage's subjects (see :func:`stage_failures`)."""
+
+    counts: dict[str, int]
+    last_rejection: dict[str, str]
+
+    def failed_for_good(self, subject: str) -> bool:
+        """Whether *subject* has MAX_FAILED_ANSWERS failed answers, so the stage skips it."""
+        return self.counts.get(subject, 0) >= MAX_FAILED_ANSWERS
+
+    def failed_for_good_subjects(self) -> list[str]:
+        return sorted(subject for subject in self.counts if self.failed_for_good(subject))
+
+
+def stage_failures(
+    conn: sqlite3.Connection, stage: str, since: datetime = ALL_TIME
+) -> StageFailures:
+    """The failed answers *stage* recorded at or after *since*, per subject.
+
+    A failed answer was rejected by the stage or cut off at max_tokens. Only the
+    failed answers after the subject's latest accepted answer count, so a
+    subject whose output is removed for a rerun starts afresh.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    last_rejection: dict[str, str] = {}
+    for subject, rejection in conn.execute(
+        f"""
+        SELECT subject, COALESCE(rejection, ?) FROM llm_requests r
+        WHERE stage = ? AND {FAILED_ANSWER} AND completed_at >= ?
+          AND NOT EXISTS (
+              SELECT 1 FROM llm_requests a
+              WHERE a.stage = r.stage AND a.subject = r.subject AND {ACCEPTED_ANSWER}
+                AND a.completed_at > r.completed_at
+          )
+        ORDER BY completed_at
+        """,
+        (MAX_TOKENS_REJECTION, stage, since.isoformat()),
+    ):
+        counts[subject] += 1
+        last_rejection[subject] = rejection
+    return StageFailures(counts=dict(counts), last_rejection=last_rejection)
+
+
+def log_failed_for_good(failures: StageFailures, stage: str) -> None:
+    """Warn about each subject *stage* leaves out because its answers failed for good."""
+    for subject in failures.failed_for_good_subjects():
+        logger.warning(
+            "%s: leaving out %s, failed for good after %d failed answers (last: %s); "
+            "see --retry-failed",
+            stage,
+            subject,
+            failures.counts[subject],
+            failures.last_rejection[subject],
+        )
+
+
+@dataclass(frozen=True)
+class StageHistory:
+    """The refusals and failed answers of one stage, which decide whether and how to send a subject."""
+
+    refusals: StageRefusals
+    failures: StageFailures
+
+    def skipped(self, subject: str) -> bool:
+        """Whether the stage leaves *subject* out: refused or failed for good."""
+        return self.refusals.refused_for_good(subject) or self.failures.failed_for_good(subject)
+
+    def model_for(self, subject: str) -> str:
+        """The model of the stage's next request about *subject* (see :meth:`StageRefusals.model_for`)."""
+        return self.refusals.model_for(subject)
+
+
+def stage_history(
+    conn: sqlite3.Connection,
+    stage: str,
+    refusals_since: datetime = ALL_TIME,
+    failures_since: datetime = ALL_TIME,
+) -> StageHistory:
+    """The refusals and failed answers *stage* recorded since the given instants."""
+    return StageHistory(
+        refusals=stage_refusals(conn, stage, refusals_since),
+        failures=stage_failures(conn, stage, failures_since),
     )
 
 

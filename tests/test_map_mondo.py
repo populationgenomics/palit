@@ -15,13 +15,14 @@ from anthropic.types import Message
 from palit.gencc import GenccIndex
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import (
+    ALL_TIME,
     FALLBACK_MODEL,
     MODEL,
     LlmRequest,
     LlmResult,
     ResultStatus,
-    StageRefusals,
-    stage_refusals,
+    StageHistory,
+    stage_history,
 )
 from palit.map_mondo import (
     LAST_ROUND,
@@ -353,7 +354,7 @@ def db_path(tmp_path: Path) -> Path:
 
 
 def test_select_associations_takes_only_unmapped_unrefused_rows(db_path: Path) -> None:
-    assert select_associations(db_path, None, _refusals(db_path)) == [
+    assert select_associations(db_path, None, _history(db_path)) == [
         Association(
             id=2,
             hgnc_id=6772,
@@ -370,7 +371,7 @@ def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path:
         conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = 6772")
         (left_behind,) = conn.execute("SELECT COUNT(*) FROM associations").fetchone()
     assert left_behind == 3
-    assert select_associations(db_path, None, _refusals(db_path)) == []
+    assert select_associations(db_path, None, _history(db_path)) == []
     assert count_unmapped(db_path) == 0
 
 
@@ -383,7 +384,7 @@ def test_deleting_an_aggregation_cascades_where_foreign_keys_are_on(db_path: Pat
 
 
 def test_association_text_lists_the_gene_and_its_gencc_rows(db_path: Path) -> None:
-    (association,) = select_associations(db_path, None, _refusals(db_path))
+    (association,) = select_associations(db_path, None, _history(db_path))
     text = association_text(association, "SMAD6", GenccIndex({}))
     assert "GENE: SMAD6 (HGNC:6772)" in text
     assert "Proposed disease name: SMAD6-related renovascular hypertension" in text
@@ -509,7 +510,7 @@ def test_runner_records_but_does_not_store_an_obsolete_answer(
     assert (outcome.stored, outcome.failed) == (0, 1)
     assert _row(db_path, 2) == (None, None, None, 0)
     assert len(_subjects(db_path)) == 2
-    assert [a.id for a in select_associations(db_path, None, _refusals(db_path))] == [2]
+    assert [a.id for a in select_associations(db_path, None, _history(db_path))] == [2]
 
 
 def test_runner_stops_tool_calls_at_the_last_round(db_path: Path, index: MondoIndex) -> None:
@@ -526,6 +527,11 @@ def test_runner_stops_tool_calls_at_the_last_round(db_path: Path, index: MondoIn
     assert [round_no for round_no, _ in transport.requests] == list(range(1, LAST_ROUND + 1))
     last_user_turn = _sent_messages(transport.requests[-1][1])[-1]["content"]
     assert last_user_turn[-1]["type"] == "text"
+    with sqlite3.connect(db_path) as conn:
+        rejections = conn.execute(
+            "SELECT round, rejection FROM llm_requests WHERE rejection IS NOT NULL"
+        ).fetchall()
+    assert rejections == [(LAST_ROUND, "stopped with tool_use")]
 
 
 def _resolver() -> HgncResolver:
@@ -544,9 +550,9 @@ def _resolver() -> HgncResolver:
     )
 
 
-def _refusals(db_path: Path) -> StageRefusals:
+def _history(db_path: Path) -> StageHistory:
     with sqlite3.connect(db_path) as conn:
-        return stage_refusals(conn, STAGE)
+        return stage_history(conn, STAGE)
 
 
 def test_selection_routes_an_association_model_refused_to_the_fallback(db_path: Path) -> None:
@@ -558,9 +564,9 @@ def test_selection_routes_an_association_model_refused_to_the_fallback(db_path: 
             """,
             (STAGE, MODEL),
         )
-    refusals = _refusals(db_path)
-    assert [a.id for a in select_associations(db_path, None, refusals)] == [2]
-    assert refusals.model_for("2") == FALLBACK_MODEL
+    history = _history(db_path)
+    assert [a.id for a in select_associations(db_path, None, history)] == [2]
+    assert history.model_for("2") == FALLBACK_MODEL
 
 
 def test_a_refused_conversation_restarts_on_the_fallback_model_in_the_same_run(
@@ -583,6 +589,7 @@ def test_a_refused_conversation_restarts_on_the_fallback_model_in_the_same_run(
             gencc=GenccIndex({}),
             limit=None,
             max_retries=3,
+            failures_since=ALL_TIME,
         )
     )
     assert [(round_no, request.params["model"]) for round_no, request in transport.requests] == [

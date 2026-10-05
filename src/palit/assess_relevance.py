@@ -31,6 +31,9 @@ Each invocation first settles the papers refused for good that still have no
 result, as a run database's recorded refusals may lack one. ``--retry-refused``
 instead reopens every settled refusal, and the papers both models refuse
 again are settled again.
+
+A paper whose answers failed for good at a level (see :mod:`palit.llm`) is left
+out at that level and stays without a result; ``--retry-failed`` sends it again.
 """
 
 import asyncio
@@ -39,6 +42,7 @@ import logging
 import re
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,7 +55,7 @@ from anthropic.types.output_config_param import OutputConfigParam
 from palit.gencc import fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
-    EVERY_REFUSAL,
+    ALL_TIME,
     FALLBACK_MODEL,
     BatchTransport,
     Effort,
@@ -59,16 +63,17 @@ from palit.llm import (
     LlmRequest,
     LlmResult,
     ResultStatus,
-    StageRefusals,
+    StageHistory,
     Transport,
     cached_system,
     invalid_answer_reason,
     json_output_config,
+    log_failed_for_good,
     log_refusal,
     make_client,
     parse_json_output,
     record_result,
-    stage_refusals,
+    stage_history,
 )
 from palit.llm_usage import print_stage_summary
 from palit.panelapp_check import (
@@ -212,22 +217,20 @@ def build_check_request(paper: dict[str, Any], check: CheckSettings, model: str)
     )
 
 
-def _due(
-    rows: list[sqlite3.Row], refusals: StageRefusals, limit: int | None
-) -> list[dict[str, Any]]:
-    papers = [dict(row) for row in rows if not refusals.refused_for_good(row["doi"])]
+def _due(rows: list[sqlite3.Row], history: StageHistory, limit: int | None) -> list[dict[str, Any]]:
+    papers = [dict(row) for row in rows if not history.skipped(row["doi"])]
     return papers if limit is None else papers[:limit]
 
 
-def load_refusals(db_path: Path, stage: str, since: datetime) -> StageRefusals:
-    with sqlite3.connect(db_path) as conn:
-        return stage_refusals(conn, stage, since)
+def load_history(
+    db_path: Path, stage: str, refusals_since: datetime, failures_since: datetime
+) -> StageHistory:
+    with closing(sqlite3.connect(db_path)) as conn:
+        return stage_history(conn, stage, refusals_since, failures_since)
 
 
-def select_papers(
-    db_path: Path, limit: int | None, refusals: StageRefusals
-) -> list[dict[str, Any]]:
-    """Papers without a screen or assessment, except ones refused for good and ones in flight."""
+def select_papers(db_path: Path, limit: int | None, history: StageHistory) -> list[dict[str, Any]]:
+    """Papers without a screen or assessment, except ones skipped for good and ones in flight."""
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -246,13 +249,13 @@ def select_papers(
             """,
             (STAGE,),
         ).fetchall()
-    return _due(rows, refusals, limit)
+    return _due(rows, history, limit)
 
 
 def select_screened(
-    db_path: Path, limit: int | None, refusals: StageRefusals
+    db_path: Path, limit: int | None, history: StageHistory
 ) -> list[dict[str, Any]]:
-    """Screened papers awaiting the PanelApp check, except ones refused for good and in flight."""
+    """Screened papers awaiting the PanelApp check, except ones skipped for good and in flight."""
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -269,7 +272,7 @@ def select_screened(
             """,
             (CHECK_STAGE,),
         ).fetchall()
-    return _due(rows, refusals, limit)
+    return _due(rows, history, limit)
 
 
 @dataclass
@@ -293,7 +296,8 @@ def _parsed_outputs(
 
     A refusal by FALLBACK_MODEL settles its paper at *level*. A request that
     failed or produced invalid output leaves its paper unchanged, so the next
-    attempt selects it again. Invalid requests are a bug and raise.
+    attempt selects it again; so does a PanelApp check without associations.
+    Invalid requests are a bug and raise.
     """
     valid: list[tuple[LlmResult, dict[str, Any]]] = []
     invalid_requests: list[str] = []
@@ -318,6 +322,8 @@ def _parsed_outputs(
         try:
             parsed = parse_json_output(result.message)
             validator.validate(parsed)
+            if level == "panelapp_check" and not parsed["associations"]:
+                raise ValueError("no associations")
         except (ValueError, jsonschema.ValidationError) as e:
             rejection = invalid_answer_reason(e)
             logger.warning("Invalid %s output for %s: %s", result.stage, result.subject, rejection)
@@ -381,10 +387,6 @@ def store_checks(db_path: Path, results: list[LlmResult], check: CheckSettings) 
         ):
             assert result.message is not None
             doi = result.subject
-            if not parsed["associations"]:
-                logger.warning("PanelApp check for %s returned no associations", doi)
-                outcome.failed += 1
-                continue
             screen, screen_raw = _stored_screen(conn, doi)
             associations = with_hgnc_ids(parsed["associations"], check.resolver)
             panelapp_check = {
@@ -591,6 +593,7 @@ async def _process_relevance(
     limit: int | None,
     max_retries: int,
     retry_refused: bool,
+    retry_failed: bool,
 ) -> None:
     """Screen and check papers; *check* None means the screen decides alone.
 
@@ -601,9 +604,12 @@ async def _process_relevance(
 
     With *retry_refused*, only refusals during this invocation count, and the
     settled refusals are reopened first. The settle step at the end settles
-    the reopened papers this invocation did not get to.
+    the reopened papers this invocation did not get to. With *retry_failed*,
+    only failed answers during this invocation count.
     """
-    refusals_since = datetime.now(UTC) if retry_refused else EVERY_REFUSAL
+    started = datetime.now(UTC)
+    refusals_since = started if retry_refused else ALL_TIME
+    failures_since = started if retry_failed else ALL_TIME
     validator = jsonschema.Draft202012Validator(schema)
     output_config = json_output_config(schema, EFFORT)
     screen_only = check is None
@@ -639,6 +645,7 @@ async def _process_relevance(
         limit=limit,
         max_retries=max_retries,
         refusals_since=refusals_since,
+        failures_since=failures_since,
     )
     settle_refused(db_path, resolver)
 
@@ -654,16 +661,21 @@ async def _attempts(
     limit: int | None,
     max_retries: int,
     refusals_since: datetime,
+    failures_since: datetime,
 ) -> None:
     """Up to *max_retries* attempts at both levels; see :func:`_process_relevance`."""
+    for stage in (STAGE, CHECK_STAGE) if check is not None else (STAGE,):
+        log_failed_for_good(
+            load_history(db_path, stage, refusals_since, failures_since).failures, stage
+        )
     for attempt in range(1, max_retries + 1):
         progress = 0
-        refusals = load_refusals(db_path, STAGE, refusals_since)
-        papers = select_papers(db_path, limit, refusals)
+        history = load_history(db_path, STAGE, refusals_since, failures_since)
+        papers = select_papers(db_path, limit, history)
         if papers:
             logger.info("Attempt %d: screening %d papers", attempt, len(papers))
             requests = [
-                build_request(paper, prompt, output_config, refusals.model_for(paper["doi"]))
+                build_request(paper, prompt, output_config, history.model_for(paper["doi"]))
                 for paper in papers
             ]
             outcome = store(await transport.run(STAGE, 1, requests))
@@ -671,12 +683,12 @@ async def _attempts(
             progress += outcome.stored + outcome.to_fallback + outcome.settled
         screened: list[dict[str, Any]] = []
         if check is not None:
-            refusals = load_refusals(db_path, CHECK_STAGE, refusals_since)
-            screened = select_screened(db_path, limit, refusals)
+            history = load_history(db_path, CHECK_STAGE, refusals_since, failures_since)
+            screened = select_screened(db_path, limit, history)
         if check is not None and screened:
             logger.info("Attempt %d: checking %d papers against PanelApp", attempt, len(screened))
             requests = [
-                build_check_request(paper, check, refusals.model_for(paper["doi"]))
+                build_check_request(paper, check, history.model_for(paper["doi"]))
                 for paper in screened
             ]
             outcome = store_checks(db_path, await transport.run(CHECK_STAGE, 2, requests), check)
@@ -766,6 +778,13 @@ def main(
         "starting with the primary model (refusals vary between calls); papers both refuse "
         "again stay settled as not relevant",
     ),
+    retry_failed: bool = typer.Option(
+        False,
+        "--retry-failed",
+        help="Send papers whose answers failed for good in earlier invocations (rejected or "
+        "cut off at max_tokens, MAX_FAILED_ANSWERS times at a level) again, until they fail "
+        "that often in this invocation",
+    ),
 ) -> None:
     """Assess the relevance of every paper that has no assessment yet."""
     if not db_path.exists():
@@ -832,6 +851,7 @@ def main(
             limit=limit,
             max_retries=max_retries,
             retry_refused=retry_refused,
+            retry_failed=retry_failed,
         )
 
     asyncio.run(run())

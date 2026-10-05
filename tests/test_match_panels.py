@@ -15,9 +15,9 @@ from palit.llm import (
     LlmRequest,
     LlmResult,
     ResultStatus,
-    StageRefusals,
+    StageHistory,
     json_output_config,
-    stage_refusals,
+    stage_history,
 )
 from palit.match_panels import (
     EFFORT,
@@ -107,7 +107,7 @@ def _prompt() -> tuple[str, str]:
 
 
 def test_select_associations_skips_matched_refused_and_pending_rows(db_path: Path) -> None:
-    assert select_associations(db_path, _refusals(db_path)) == [
+    assert select_associations(db_path, _history(db_path)) == [
         Association(
             id=2,
             description="adult-onset hereditary spastic paraplegia",
@@ -124,8 +124,8 @@ def test_select_associations_skips_matched_refused_and_pending_rows(db_path: Pat
         ),
     ]
     assert count_unmatched(db_path) == 4
-    refusals = _refusals(db_path)
-    assert (refusals.model_for("2"), refusals.model_for("4")) == (MODEL, FALLBACK_MODEL)
+    history = _history(db_path)
+    assert (history.model_for("2"), history.model_for("4")) == (MODEL, FALLBACK_MODEL)
 
 
 def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path: Path) -> None:
@@ -133,7 +133,7 @@ def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path:
         conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = 11273")
         (left_behind,) = conn.execute("SELECT COUNT(*) FROM associations").fetchone()
     assert left_behind == 5
-    assert select_associations(db_path, _refusals(db_path)) == []
+    assert select_associations(db_path, _history(db_path)) == []
     assert count_unmatched(db_path) == 0
 
 
@@ -145,9 +145,9 @@ def test_split_prompt_keeps_the_panel_list_in_the_system_part() -> None:
     assert user_template.startswith("ASSOCIATION:")
 
 
-def _refusals(db_path: Path) -> StageRefusals:
+def _history(db_path: Path) -> StageHistory:
     with sqlite3.connect(db_path) as conn:
-        return stage_refusals(conn, STAGE)
+        return stage_history(conn, STAGE)
 
 
 def _sent_messages(request: LlmRequest) -> list[dict[str, Any]]:
@@ -161,7 +161,7 @@ def test_build_request_describes_one_association(db_path: Path) -> None:
     output_config = json_output_config(SCHEMA, EFFORT)
     first, second = (
         build_request(association, system, user_template, output_config, MODEL)
-        for association in select_associations(db_path, _refusals(db_path))
+        for association in select_associations(db_path, _history(db_path))
     )
     assert first.subject == "2"
     assert first.params["system"] == second.params["system"]

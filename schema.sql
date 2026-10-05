@@ -229,13 +229,11 @@ CREATE TABLE uploaded_files (
 );
 
 -- How many leading pages of a long PDF fit its paper's round-1 extraction
--- request, from token counts, once per PDF version and version of the
--- counting rules. The upload holds only those pages when they are fewer than
--- the PDF's.
+-- request, from token counts, once per PDF version. The upload holds only
+-- those pages when they are fewer than the PDF's.
 CREATE TABLE pdf_page_limits (
     doi TEXT PRIMARY KEY REFERENCES papers(doi),
     sha256 TEXT NOT NULL,                 -- of the local PDF that was counted
-    rules_version INTEGER NOT NULL,       -- extract_evidence.PAGE_LIMIT_RULES_VERSION
     total_pages INTEGER NOT NULL,
     pages INTEGER NOT NULL,               -- leading pages that fit; 0 if not even the first
     input_tokens INTEGER NOT NULL,        -- of the round-1 request with those pages,

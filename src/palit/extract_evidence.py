@@ -142,10 +142,6 @@ MAX_COUNTED_PAGES = 50
 # (Anthropic's PDF support and vision docs). Embedded images change what that
 # image shows, not what it costs. The estimate leaves room for denser text.
 OVERSIZED_PAGE_TOKENS = 10_000
-# Version of the rules by which fitting_pages finds a PDF's page limit, stored
-# with each limit in pdf_page_limits. A limit stored under another version is
-# counted again. Raise it whenever a change to the rules can change a limit.
-PAGE_LIMIT_RULES_VERSION = 2
 # Context window kept free besides max_tokens, for the truncation note.
 CONTEXT_MARGIN_TOKENS = 1_000
 # Counts that refine the page count within the range where the window fills up.
@@ -837,13 +833,12 @@ async def count_page_limits(
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO pdf_page_limits
-                        (doi, sha256, rules_version, total_pages, pages, input_tokens, counted_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (doi, sha256, total_pages, pages, input_tokens, counted_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         doi,
                         pdf.sha256,
-                        PAGE_LIMIT_RULES_VERSION,
                         limit.total_pages,
                         limit.pages,
                         limit.input_tokens,
@@ -877,9 +872,9 @@ async def upload_pdfs(
     """The papers' PDFs in the Files API, uploading only new, changed, or expiring ones.
 
     A PDF over MAX_UNCOUNTED_PAGES pages holds only the leading pages that fit
-    its round-1 request, counted once per PDF version and
-    PAGE_LIMIT_RULES_VERSION (see :func:`count_page_limits`). Papers whose PDF
-    is missing, or whose first page alone does not fit, are skipped.
+    its round-1 request, counted once per PDF version (see
+    :func:`count_page_limits`). Papers whose PDF is missing, or whose first page
+    alone does not fit, are skipped.
     """
     now = datetime.now(UTC)
     pdfs: list[LocalPdf] = []
@@ -892,13 +887,12 @@ async def upload_pdfs(
         pdfs.append(LocalPdf(paper, pdf_path, sha256, pdf_pages(pdf_path)))
 
     def page_limits() -> dict[str, tuple[str, int]]:
-        """The counted PDF version and its fitting pages, by DOI, under the current rules."""
+        """The counted PDF version and its fitting pages, by DOI."""
         with closing(sqlite3.connect(db_path)) as conn:
             return {
                 doi: (sha256, pages)
                 for doi, sha256, pages in conn.execute(
-                    "SELECT doi, sha256, pages FROM pdf_page_limits WHERE rules_version = ?",
-                    (PAGE_LIMIT_RULES_VERSION,),
+                    "SELECT doi, sha256, pages FROM pdf_page_limits"
                 )
             }
 

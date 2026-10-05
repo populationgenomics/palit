@@ -30,7 +30,6 @@ from palit.extract_evidence import (
     MAX_PDF_PAGES,
     MAX_TOKENS,
     OVERSIZED_PAGE_TOKENS,
-    PAGE_LIMIT_RULES_VERSION,
     STAGE,
     Conversation,
     ExtractionRunner,
@@ -1109,30 +1108,6 @@ def test_a_truncated_upload_is_counted_and_uploaded_once_per_pdf_version(tmp_pat
         "10.1/long": hashlib.sha256(truncated).hexdigest(),
         "10.1/short": hashlib.sha256(short_pdf).hexdigest(),
     }
-
-
-def test_a_page_limit_counted_under_other_rules_is_counted_again(tmp_path: Path) -> None:
-    """A stored limit of the same PDF version but another PAGE_LIMIT_RULES_VERSION is replaced."""
-    long_pdf = _numbered_pages_pdf(120)
-    sha256 = hashlib.sha256(long_pdf).hexdigest()
-    db_path, papers, refusals = _upload_run(tmp_path, {"10.1/long": long_pdf})
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO pdf_page_limits "
-            "(doi, sha256, rules_version, total_pages, pages, input_tokens, counted_at) "
-            "VALUES ('10.1/long', ?, ?, 120, 7, 65000, '2026-10-05T00:00:00+00:00')",
-            (sha256, PAGE_LIMIT_RULES_VERSION - 1),
-        )
-    counter = PageTokenCounter(_article_with_supplement, 20_000_000)
-    client = SimpleNamespace(messages=counter, files=FakeFiles())
-
-    uploads = asyncio.run(upload_pdfs(client, db_path, papers, tmp_path, _settings(), refusals))  # type: ignore[arg-type]
-
-    assert counter.calls > 0
-    assert uploads["10.1/long"].pages == ARTICLE_PAGES_THAT_FIT
-    with sqlite3.connect(db_path) as conn:
-        limits = conn.execute("SELECT sha256, rules_version, pages FROM pdf_page_limits")
-        assert limits.fetchall() == [(sha256, PAGE_LIMIT_RULES_VERSION, ARTICLE_PAGES_THAT_FIT)]
 
 
 def test_quotes_from_the_kept_pages_locate_in_the_original_pdf(

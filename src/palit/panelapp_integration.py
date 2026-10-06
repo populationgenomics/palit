@@ -306,29 +306,36 @@ def prefill_comment_section(association: PrefillAssociation) -> str:
 def prepare_prefill_data(
     hgnc_id: int,
     associations: list[PrefillAssociation],
-    form_type: str,
     panel_id: int,
+    panel_rating: int | None,
     doi_to_pmid: dict[str, int | None],
 ) -> PrefillData:
     """One PanelApp prefill for the gene, as the union over its associations.
 
-    The rating is the top association rating and the MoI is aggregated over all
-    associations (see derive_panelapp_moi). Phenotypes, publications and comment
-    sections follow the order of *associations* (the report's order); repeated
-    phenotypes and publications are listed once.
+    A gene not on *panel_id* gets an add form rated with its top association
+    rating. A gene on it gets a review form rated with the higher of its rating
+    there and its top association rating: the corpus holds only the papers this
+    run read, so a lower rating is no downgrade recommendation. The MoI is
+    aggregated over all associations (see derive_panelapp_moi). Phenotypes,
+    publications and comment sections follow the order of *associations* (the
+    report's order); repeated phenotypes and publications are listed once.
 
     Args:
         hgnc_id: HGNC ID (integer) of the gene
         associations: The gene's associations, in report order
-        form_type: "add" or "review"
         panel_id: Target panel ID
+        panel_rating: The gene's confidence level on *panel_id*; None when it is not on it
         doi_to_pmid: PMID (None when the paper has none) of every DOI the associations cite
 
     Returns:
         PrefillData object ready for form rendering
     """
     assessments = [a.assessment for a in associations]
-    rating_str = panelapp_confidence_to_color(calculate_gene_rating(assessments)).upper()
+    top_rating = calculate_gene_rating(assessments)
+    if panel_rating is None:
+        form_type, rating = "add", top_rating
+    else:
+        form_type, rating = "review", max(panel_rating, top_rating)
 
     dois = dict.fromkeys(doi for assessment in assessments for doi in assessment["dois"])
     publications = ";".join(
@@ -342,7 +349,7 @@ def prepare_prefill_data(
         form_type=form_type,
         panel_id=panel_id,
         hgnc_id=f"HGNC:{hgnc_id}",
-        rating=rating_str,
+        rating=panelapp_confidence_to_color(rating).upper(),
         moi=derive_panelapp_moi(assessments),
         mode_of_pathogenicity=None,
         publications=publications,
@@ -387,6 +394,10 @@ def calculate_gene_rating(associations: list[dict[str, Any]]) -> int:
         Confidence level: 3 (GREEN), 2 (AMBER), or 1 (RED)
     """
     return max((calculate_association_rating(a) for a in associations), default=1)
+
+
+# PanelApp's rating names as confidence levels
+RATING_CONFIDENCE: dict[str, int] = {"RED": 1, "AMBER": 2, "GREEN": 3}
 
 
 def panelapp_confidence_to_color(confidence: int | None) -> str:

@@ -112,8 +112,8 @@ def get_green_hgnc_ids_from_panel(panel_date: str) -> list[int]:
 
     green_hgnc_ids = [
         hgnc_id
-        for hgnc_id, confidence in target_panel_data.gene_confidence.items()
-        if confidence == 3
+        for hgnc_id in target_panel_data.gene_panel_confidence
+        if target_panel_data.highest_confidence(hgnc_id) == 3
     ]
 
     logger.info(f"Found {len(green_hgnc_ids)} GREEN genes in target panels for {panel_date}")

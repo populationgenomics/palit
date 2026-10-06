@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import sqlite3
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -38,12 +39,13 @@ from palit.panelapp_client import (
     get_current_panel_publications,
 )
 from palit.panelapp_integration import (
+    RATING_CONFIDENCE,
     MondoMatch,
     MondoTerm,
     PrefillAssociation,
+    PrefillData,
     RelationStatus,
     calculate_association_rating,
-    calculate_gene_rating,
     panelapp_confidence_to_color,
     prepare_prefill_data,
 )
@@ -259,7 +261,7 @@ class FavoriteJournalGeneLink:
 
     hgnc_id: int
     hgnc_symbol: str
-    anchor: str  # "#novel-gene-{id}" or "#known-gene-{id}"
+    anchor: str  # the gene article's id: "novel-gene-{id}" or "known-gene-{id}"
 
 
 @dataclass
@@ -287,8 +289,7 @@ class FavoriteJournalSections:
     actionable and just clutter the section."""
 
     novel: list[FavoriteJournalPaper]
-    rating_upgrade: list[FavoriteJournalPaper]
-    moi_expansion: list[FavoriteJournalPaper]
+    findings: list[FavoriteJournalPaper]
     unreviewed: list[FavoriteJournalPaper]
     already_reviewed: list[FavoriteJournalPaper]
     filtered: list[FavoriteJournalPaper]
@@ -301,8 +302,7 @@ class FavoriteJournalSections:
     def total(self) -> int:
         return (
             len(self.novel)
-            + len(self.rating_upgrade)
-            + len(self.moi_expansion)
+            + len(self.findings)
             + len(self.unreviewed)
             + len(self.already_reviewed)
             + len(self.filtered)
@@ -409,6 +409,26 @@ class ReportAssociation:
         return is_highlighted_new_moi(self.assessment)
 
 
+class FindingKind(StrEnum):
+    """What an association adds to PanelApp Australia's curation of a gene."""
+
+    NEW_DISEASE = "new_disease"
+    NEW_MOI = "new_moi"  # highlighted new_moi associations only
+    UPGRADE = "upgrade"  # an existing association rated higher in this corpus
+
+
+@dataclass(frozen=True)
+class Finding:
+    """An association that PanelApp Australia lacks or rates lower than this corpus does."""
+
+    kind: FindingKind
+    rating: int  # the association's corpus rating: 3 GREEN, 2 AMBER, 1 RED
+    association_id: int
+    # Upgrades only: PanelApp's rating of the association, or the gene's current rating
+    # when PanelApp's rating of the association is unknown
+    from_rating: int | None
+
+
 @dataclass(frozen=True)
 class RefusedPaper:
     """A paper of the gene that both models refused in extract-evidence, so it was never read."""
@@ -428,22 +448,33 @@ class GeneAssessment:
     associations: list[ReportAssociation]  # by corpus rating, then independent families
     unassessed_reports: list[dict[str, Any]]  # [{phenotype, inheritance_mode, dois, reason}]
     quality_concerns: list[dict[str, Any]]  # [{concern, dois, citations}]
-    existing_rating: int | None  # the gene's highest rating on the target panels; None if novel
-    new_rating: int  # the top association rating: 3 (GREEN), 2 (AMBER), 1 (RED)
+    current_rating: int | None  # the gene's highest rating on the target panels; None if novel
+    findings: list[Finding]  # strongest first, in association order within a rating
     contributing_papers: list[DetailedPaper]
     unassociated_variants: list[ReportVariant]  # the gene's variants that no association lists
-    prefill_json: str  # HTML-escaped JSON for data-prefill attribute
+    prefill: PrefillData
     existing_panel_reviews: list[ExistingPanelReviews]  # per target panel; empty if novel
     refused_papers: list[RefusedPaper]
 
     @property
     def is_novel(self) -> bool:
         """The gene is on none of the target panels."""
-        return self.existing_rating is None
+        return self.current_rating is None
 
     @property
-    def has_highlighted_new_moi(self) -> bool:
-        return any(a.new_moi_highlighted for a in self.associations)
+    def anchor(self) -> str:
+        """The id of the gene's article in the report."""
+        return f"{'novel' if self.is_novel else 'known'}-gene-{self.hgnc_id}"
+
+    @property
+    def top_rating(self) -> int:
+        """The highest corpus rating of the gene's associations."""
+        return max(a.rating for a in self.associations)
+
+    @property
+    def prefill_json(self) -> str:
+        """The prefill as JSON, for the prefill button's data-prefill attribute."""
+        return json.dumps(asdict(self.prefill))
 
 
 @dataclass(frozen=True)
@@ -487,8 +518,8 @@ class ComprehensiveStats:
 
     # Gene assessment stats
     total_genes_assessed: int
-    novel_genes_count: int
-    known_genes_upgraded: int
+    new_genes_count: int  # on none of the target panels
+    known_genes_with_findings: int
     total_contributing_papers: int
 
     # Panel validation stats
@@ -508,9 +539,11 @@ class ComprehensiveStats:
     # Distinct (gene, panel) pairs an association matched where the gene is not on the panel
     total_panel_suggestions: int
 
-    # Associations, and new_moi associations highlighted for curators
+    # Associations, and the findings among them by kind
     total_associations: int
-    highlighted_new_moi_count: int
+    new_disease_findings: int
+    new_moi_findings: int
+    upgrade_findings: int
 
     # Papers of assessed genes that both models refused in extract-evidence
     refused_papers_count: int
@@ -523,42 +556,32 @@ class ComprehensiveStats:
     papers_filtered: int
 
 
-@dataclass
-class NovelGeneCategories:
-    """Categorized novel genes by potential rating."""
+@dataclass(frozen=True)
+class GeneGroup:
+    """Genes placed together: one ToC section, and one subsection of the report body."""
 
-    green: list[GeneAssessment]
-    amber: list[GeneAssessment]
-    red: list[GeneAssessment]
-
-    @property
-    def total(self) -> int:
-        """Total number of novel genes."""
-        return len(self.green) + len(self.amber) + len(self.red)
-
-
-@dataclass
-class KnownGeneCategories:
-    """Categorized known genes by upgrade type."""
-
-    red_to_green: list[GeneAssessment]
-    amber_to_green: list[GeneAssessment]
-    red_to_amber: list[GeneAssessment]
-    no_change_new_moi: list[GeneAssessment]
-    no_change_unreviewed: list[GeneAssessment]
-    no_change_reviewed: list[GeneAssessment]
+    key: str  # the ToC section's data-section-key, e.g. "finding-green"
+    title: str  # a rated group's title is followed by its rating badge
+    rating: int | None  # None for the groups of known genes without findings
+    genes: list[GeneAssessment]
+    collapsed: bool  # its gene list starts collapsed in the ToC
+    preselected: bool  # checked by default in the bulk assignment panel
 
     @property
-    def total(self) -> int:
-        """Total number of known genes."""
-        return (
-            len(self.red_to_green)
-            + len(self.amber_to_green)
-            + len(self.red_to_amber)
-            + len(self.no_change_new_moi)
-            + len(self.no_change_unreviewed)
-            + len(self.no_change_reviewed)
-        )
+    def label(self) -> str:
+        """The group's name in the bulk assignment panel."""
+        if self.rating is None:
+            return self.title
+        return f"{self.title} {panelapp_confidence_to_color(self.rating).upper()}"
+
+
+@dataclass(frozen=True)
+class GeneGroups:
+    """The report's genes, each in exactly one group; groups without genes are left out."""
+
+    new_genes: list[GeneGroup]  # by top association rating: GREEN, AMBER, RED
+    with_findings: list[GeneGroup]  # known genes by best finding rating: GREEN, AMBER, RED
+    without_findings: list[GeneGroup]  # known genes unreviewed on the target panels, reviewed
 
 
 app = typer.Typer(help="Generate gene-centric HTML reports from aggregate assessments")
@@ -660,22 +683,129 @@ def association_sort_key(association: ReportAssociation) -> tuple[int, int, int]
     )
 
 
-def novel_gene_sort_key(gene: GeneAssessment) -> tuple[int, int, str]:
-    """Highest rating first, then genes with a highlighted new MoI, then by symbol."""
-    return (-gene.new_rating, 0 if gene.has_highlighted_new_moi else 1, gene.hgnc_symbol)
+def association_finding(
+    association: ReportAssociation, current_rating: int | None
+) -> Finding | None:
+    """The association's finding, or None when it adds nothing to PanelApp's curation.
+
+    *current_rating* is the gene's highest rating on the target panels, None
+    when it is on none of them. A new disease is a finding of a gene on a target
+    panel; a new gene is the finding itself, so its new diseases are not findings
+    of their own. A new MoI is a finding once highlighted. An existing association
+    is an upgrade when its corpus rating is above PanelApp's rating of it, or above
+    the gene's current rating when PanelApp's rating of it is unknown; a new gene's
+    association of unknown rating has nothing to compare with.
+    """
+    status = association.relation_status
+    if status == "new_disease":
+        if current_rating is None:
+            return None
+        return Finding(FindingKind.NEW_DISEASE, association.rating, association.id, None)
+    if status == "new_moi":
+        if not association.new_moi_highlighted:
+            return None
+        return Finding(FindingKind.NEW_MOI, association.rating, association.id, None)
+    stated: str | None = association.assessment["panelapp_relation"]["existing_rating"]
+    from_rating = current_rating if stated is None else RATING_CONFIDENCE[stated]
+    if from_rating is None or association.rating <= from_rating:
+        return None
+    return Finding(FindingKind.UPGRADE, association.rating, association.id, from_rating)
 
 
-def known_gene_sort_key(gene: GeneAssessment) -> tuple[int, int, int, str]:
-    """Lowest existing rating first, then highest corpus rating, then highlighted new MoI."""
-    if gene.existing_rating is None:
+def gene_findings(
+    associations: list[ReportAssociation], current_rating: int | None
+) -> list[Finding]:
+    """The findings of a gene's associations, strongest first.
+
+    *associations* are in report order, highest corpus rating first, so their
+    findings are too.
+    """
+    findings = [association_finding(a, current_rating) for a in associations]
+    return [finding for finding in findings if finding is not None]
+
+
+def new_gene_sort_key(gene: GeneAssessment) -> tuple[int, str]:
+    """Most findings first (a new gene's are new MoIs and upgrades), then by symbol."""
+    return (-len(gene.findings), gene.hgnc_symbol)
+
+
+def known_gene_sort_key(gene: GeneAssessment) -> tuple[int, int, str]:
+    """Lowest current rating first, then most findings, then by symbol."""
+    if gene.current_rating is None:
         raise ValueError(
             f"Known gene {gene.hgnc_symbol} (HGNC:{gene.hgnc_id}) has no rating on the target panels"
         )
-    return (
-        gene.existing_rating,
-        -gene.new_rating,
-        0 if gene.has_highlighted_new_moi else 1,
-        gene.hgnc_symbol,
+    return (gene.current_rating, -len(gene.findings), gene.hgnc_symbol)
+
+
+def group_genes(
+    novel_genes: list[GeneAssessment],
+    known_genes: list[GeneAssessment],
+    target_panel_ids: set[int],
+) -> GeneGroups:
+    """Place each gene in one group.
+
+    New genes go by their top association rating, known genes with findings by
+    the rating of their strongest finding, and known genes without findings by
+    whether any target panel holding them has an expert review. RED groups and
+    the reviewed genes start collapsed in the ToC; the groups of known genes
+    without findings are not preselected for bulk assignment.
+    """
+    novel = sorted(novel_genes, key=new_gene_sort_key)
+    known = sorted(known_genes, key=known_gene_sort_key)
+
+    def by_rating(
+        key: str,
+        title: str,
+        genes: list[GeneAssessment],
+        rating_of: Callable[[GeneAssessment], int],
+    ) -> list[GeneGroup]:
+        groups = [
+            GeneGroup(
+                key=f"{key}-{panelapp_confidence_to_color(rating).lower()}",
+                title=title,
+                rating=rating,
+                genes=[g for g in genes if rating_of(g) == rating],
+                collapsed=rating == 1,
+                preselected=True,
+            )
+            for rating in (3, 2, 1)
+        ]
+        return [group for group in groups if group.genes]
+
+    unreviewed: list[GeneAssessment] = []
+    reviewed: list[GeneAssessment] = []
+    for gene in known:
+        if not gene.findings:
+            on_unreviewed = unreviewed_target_panels(gene, target_panel_ids)
+            (unreviewed if on_unreviewed else reviewed).append(gene)
+    no_finding_groups = [
+        GeneGroup(
+            key="unreviewed",
+            title="Unreviewed on target panel",
+            rating=None,
+            genes=unreviewed,
+            collapsed=False,
+            preselected=False,
+        ),
+        GeneGroup(
+            key="reviewed",
+            title="Already reviewed",
+            rating=None,
+            genes=reviewed,
+            collapsed=True,
+            preselected=False,
+        ),
+    ]
+    return GeneGroups(
+        new_genes=by_rating("new", "New gene", novel, lambda g: g.top_rating),
+        with_findings=by_rating(
+            "finding",
+            "Best finding",
+            [g for g in known if g.findings],
+            lambda g: g.findings[0].rating,
+        ),
+        without_findings=[group for group in no_finding_groups if group.genes],
     )
 
 
@@ -1030,22 +1160,17 @@ def load_gene(
         display_ids,
     )
 
-    # Gene is novel if not in any target panel; the list keeps target-panel order
-    gene_panels = target_panel_data.gene_panel_mapping.get(hgnc_id, set())
-    target_panel_membership = [pid for pid in target_panel_data.panel_ids if pid in gene_panels]
-    is_novel = not target_panel_membership
-
-    if is_novel:
-        prefill_panel_id = target_panel_data.panel_ids[0]
-        prefill_form_type = "add"
-    else:
-        prefill_panel_id = target_panel_membership[0]
-        prefill_form_type = "review"
-    prefill_data = prepare_prefill_data(
+    # The gene is novel if it is on no target panel. A known gene's prefill reviews it
+    # on the first target panel holding it; a novel gene's adds it to the first one.
+    panel_confidence = target_panel_data.gene_panel_confidence.get(hgnc_id, {})
+    holding = [pid for pid in target_panel_data.panel_ids if pid in panel_confidence]
+    current_rating = target_panel_data.highest_confidence(hgnc_id) if holding else None
+    prefill_panel_id = holding[0] if holding else target_panel_data.panel_ids[0]
+    prefill = prepare_prefill_data(
         hgnc_id=hgnc_id,
         associations=[PrefillAssociation(a.assessment, a.mondo) for a in associations],
-        form_type=prefill_form_type,
         panel_id=prefill_panel_id,
+        panel_rating=panel_confidence.get(prefill_panel_id),
         doi_to_pmid={p.doi: p.pmid for p in contributing_papers},
     )
 
@@ -1055,11 +1180,11 @@ def load_gene(
         associations=associations,
         unassessed_reports=gene_level["unassessed_reports"],
         quality_concerns=gene_level["quality_concerns"],
-        existing_rating=None if is_novel else target_panel_data.gene_confidence[hgnc_id],
-        new_rating=calculate_gene_rating([a.assessment for a in associations]),
+        current_rating=current_rating,
+        findings=gene_findings(associations, current_rating),
         contributing_papers=contributing_papers,
         unassociated_variants=[v for v in gene_variants if v.variant_id not in associated_ids],
-        prefill_json=json.dumps(asdict(prefill_data)),
+        prefill=prefill,
         existing_panel_reviews=existing_panel_reviews,
         refused_papers=load_refused_papers(cursor, hgnc_id),
     )
@@ -1071,7 +1196,7 @@ def build_gene_assessment_results(
     target_panel_data: PanelGeneData,
     all_panels_data: AllPanelsData,
 ) -> GeneAssessmentResults:
-    """Every aggregated gene with associations, split into novel and known genes and sorted.
+    """Every aggregated gene with associations, split into novel and known genes.
 
     A gene whose reports all went to ``unassessed_reports`` has an aggregation but no
     associations. It has nothing to rate or submit, so the report leaves it out.
@@ -1103,8 +1228,6 @@ def build_gene_assessment_results(
         gene = load_gene(conn.cursor(), row, hgnc_resolver, target_panel_data, all_panels_data)
         (novel_genes if gene.is_novel else known_genes).append(gene)
 
-    novel_genes.sort(key=novel_gene_sort_key)
-    known_genes.sort(key=known_gene_sort_key)
     logger.info(f"Loaded {len(novel_genes)} novel genes, {len(known_genes)} known genes")
 
     target_panel_names = {
@@ -1150,7 +1273,7 @@ def load_gene_assessments(
     target_panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
     all_panels_data = panelapp_client.get_all_panels_genes()
     logger.info(
-        f"Loaded {len(target_panel_data.gene_confidence)} genes from target panels, {len(all_panels_data.gene_to_panels)} genes from all panels"
+        f"Loaded {len(target_panel_data.gene_panel_confidence)} genes from target panels, {len(all_panels_data.gene_to_panels)} genes from all panels"
     )
 
     with sqlite3.connect(db_path) as conn:
@@ -1465,32 +1588,21 @@ def unreviewed_target_panels(gene: GeneAssessment, target_panel_ids: set[int]) -
     return [r.panel_id for r in panels]
 
 
-def _gene_contribution_bucket(
-    gene: GeneAssessment, is_novel: bool, target_panel_ids: set[int]
-) -> str:
-    """Classify a gene by the kind of contribution it represents.
+def _gene_contribution_bucket(gene: GeneAssessment, target_panel_ids: set[int]) -> str:
+    """Classify a gene by its place in the report.
 
-    Returns one of: 'novel', 'rating_upgrade', 'moi_expansion', 'unreviewed',
-    'already_reviewed'.
+    Returns one of: 'novel', 'findings', 'unreviewed', 'already_reviewed'.
     """
-    if is_novel:
+    if gene.is_novel:
         return "novel"
-    if gene.existing_rating != gene.new_rating:
-        return "rating_upgrade"
-    if gene.has_highlighted_new_moi:
-        return "moi_expansion"
+    if gene.findings:
+        return "findings"
     if unreviewed_target_panels(gene, target_panel_ids):
         return "unreviewed"
     return "already_reviewed"
 
 
-_BUCKET_PRIORITY = (
-    "novel",
-    "rating_upgrade",
-    "moi_expansion",
-    "unreviewed",
-    "already_reviewed",
-)
+_BUCKET_PRIORITY = ("novel", "findings", "unreviewed", "already_reviewed")
 
 
 def load_favorite_journal_papers(
@@ -1500,32 +1612,19 @@ def load_favorite_journal_papers(
     target_panel_ids: set[int],
 ) -> FavoriteJournalSections:
     """Load every initial-search paper from FAVORITE_JOURNALS, bucketed by the
-    kind of contribution it made — mirroring the report's gene structure
-    (novel / rating upgrade / MoI expansion / unreviewed / already reviewed)
+    kind of contribution it made, mirroring the report's gene groups
+    (new genes / known genes with findings / unreviewed / already reviewed)
     and the reasons a paper did not contribute (filtered out of aggregate /
     requiring manual download / relevance refused by both models / screened
     out by relevance / off-panel evidence). Expansion papers are excluded
     entirely."""
     gene_anchors: dict[int, FavoriteJournalGeneLink] = {}
     gene_buckets: dict[int, str] = {}
-    for gene in novel_genes:
+    for gene in (*novel_genes, *known_genes):
         gene_anchors[gene.hgnc_id] = FavoriteJournalGeneLink(
-            hgnc_id=gene.hgnc_id,
-            hgnc_symbol=gene.hgnc_symbol,
-            anchor=f"#novel-gene-{gene.hgnc_id}",
+            hgnc_id=gene.hgnc_id, hgnc_symbol=gene.hgnc_symbol, anchor=gene.anchor
         )
-        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(
-            gene, is_novel=True, target_panel_ids=target_panel_ids
-        )
-    for gene in known_genes:
-        gene_anchors[gene.hgnc_id] = FavoriteJournalGeneLink(
-            hgnc_id=gene.hgnc_id,
-            hgnc_symbol=gene.hgnc_symbol,
-            anchor=f"#known-gene-{gene.hgnc_id}",
-        )
-        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(
-            gene, is_novel=False, target_panel_ids=target_panel_ids
-        )
+        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(gene, target_panel_ids)
 
     # Build doi -> [(hgnc_id, filtered_reason)] from each gene's contributing papers.
     # A paper can appear under multiple genes; filtered_reason is per (gene, paper).
@@ -1555,8 +1654,7 @@ def load_favorite_journal_papers(
 
     sections = FavoriteJournalSections(
         novel=[],
-        rating_upgrade=[],
-        moi_expansion=[],
+        findings=[],
         unreviewed=[],
         already_reviewed=[],
         filtered=[],
@@ -1626,13 +1724,12 @@ def load_favorite_journal_papers(
         # else: relevant + downloaded + extraction in flight — drop.
 
     logger.info(
-        "Featured journals: %d total — novel=%d, rating_upgrade=%d, moi_expansion=%d, "
+        "Featured journals: %d total; novel=%d, findings=%d, "
         "unreviewed=%d, already_reviewed=%d, filtered=%d, manual_download=%d, refused=%d, "
         "not_relevant=%d, off_panel=%d",
         sections.total,
         len(sections.novel),
-        len(sections.rating_upgrade),
-        len(sections.moi_expansion),
+        len(sections.findings),
         len(sections.unreviewed),
         len(sections.already_reviewed),
         len(sections.filtered),
@@ -1652,20 +1749,8 @@ def calculate_comprehensive_statistics(
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        # Overall counts
-        total_genes = len(results.novel_genes) + len(results.known_genes)
-        novel_genes = len(results.novel_genes)
-
-        # Count upgrades (known genes that could become GREEN)
-        known_upgraded = 0
-        for gene in results.known_genes:
-            # Get current confidence from target panel data
-            current_confidence = results.target_panel_data.gene_confidence.get(gene.hgnc_id)
-            # Current is RED or AMBER (1, 2), new is GREEN (3)
-            if current_confidence is not None and current_confidence < 3 and gene.new_rating == 3:
-                known_upgraded += 1
-
         all_genes = results.novel_genes + results.known_genes
+        finding_kinds = [finding.kind for gene in all_genes for finding in gene.findings]
         total_panel_suggestions = sum(
             len(
                 {
@@ -1713,9 +1798,9 @@ def calculate_comprehensive_statistics(
 
         return ComprehensiveStats(
             # Gene assessment stats
-            total_genes_assessed=total_genes,
-            novel_genes_count=novel_genes,
-            known_genes_upgraded=known_upgraded,
+            total_genes_assessed=len(all_genes),
+            new_genes_count=len(results.novel_genes),
+            known_genes_with_findings=sum(1 for gene in results.known_genes if gene.findings),
             total_contributing_papers=len(all_dois),
             # Panel validation stats
             total_panel_papers=panel_validation.total_panel_papers,
@@ -1731,7 +1816,9 @@ def calculate_comprehensive_statistics(
             expansion_papers=source_counts.get("expansion", 0),
             total_panel_suggestions=total_panel_suggestions,
             total_associations=len(all_associations),
-            highlighted_new_moi_count=sum(a.new_moi_highlighted for a in all_associations),
+            new_disease_findings=finding_kinds.count(FindingKind.NEW_DISEASE),
+            new_moi_findings=finding_kinds.count(FindingKind.NEW_MOI),
+            upgrade_findings=finding_kinds.count(FindingKind.UPGRADE),
             refused_papers_count=len({p.doi for gene in all_genes for p in gene.refused_papers}),
             unreviewed_count=unreviewed_count,
             # Preprint stats
@@ -1831,6 +1918,9 @@ def build_report_config(
 ) -> str:
     """Build the report-config JSON for PanelApp assignment integration.
 
+    A gene's suggested rating is its prefill's rating, against which curator
+    ratings count as concordant.
+
     Args:
         report_id: Unique report identifier (e.g., "panel_arthrogryposis")
         target_panel_ids: List of panel IDs used for this report
@@ -1844,7 +1934,7 @@ def build_report_config(
     for gene in novel_genes + known_genes:
         genes[f"HGNC:{gene.hgnc_id}"] = {
             "hgnc_symbol": gene.hgnc_symbol,
-            "suggested_rating": panelapp_confidence_to_color(gene.new_rating).upper(),
+            "suggested_rating": gene.prefill.rating,
         }
 
     config = {
@@ -1882,51 +1972,8 @@ def generate_html_report(
         else None
     )
 
-    # Categorize novel genes by new rating
-    novel_categories = NovelGeneCategories(
-        green=[g for g in novel_genes if g.new_rating == 3],
-        amber=[g for g in novel_genes if g.new_rating == 2],
-        red=[g for g in novel_genes if g.new_rating == 1],
-    )
-
-    # Categorize known genes by upgrade type
-    red_to_green = []
-    amber_to_green = []
-    red_to_amber = []
-    no_change = []
-
-    for gene in known_genes:
-        if gene.existing_rating == 1 and gene.new_rating == 3:
-            red_to_green.append(gene)
-        elif gene.existing_rating == 2 and gene.new_rating == 3:
-            amber_to_green.append(gene)
-        elif gene.existing_rating == 1 and gene.new_rating == 2:
-            red_to_amber.append(gene)
-        else:
-            no_change.append(gene)
-
-    # Split no_change into three: a highlighted new-MoI association, unreviewed on the
-    # target panels, and the remainder (already reviewed by at least one expert).
     target_panel_id_set = set(target_panel_ids)
-    no_change_new_moi: list[GeneAssessment] = []
-    no_change_unreviewed: list[GeneAssessment] = []
-    no_change_reviewed: list[GeneAssessment] = []
-    for gene in no_change:
-        if gene.has_highlighted_new_moi:
-            no_change_new_moi.append(gene)
-        elif unreviewed_target_panels(gene, target_panel_id_set):
-            no_change_unreviewed.append(gene)
-        else:
-            no_change_reviewed.append(gene)
-
-    known_categories = KnownGeneCategories(
-        red_to_green=red_to_green,
-        amber_to_green=amber_to_green,
-        red_to_amber=red_to_amber,
-        no_change_new_moi=no_change_new_moi,
-        no_change_unreviewed=no_change_unreviewed,
-        no_change_reviewed=no_change_reviewed,
-    )
+    groups = group_genes(novel_genes, known_genes, target_panel_id_set)
 
     # Set up Jinja2 environment
     env = Environment(
@@ -1979,8 +2026,7 @@ def generate_html_report(
 
     # Render HTML
     html = template.render(
-        novel_categories=novel_categories,
-        known_categories=known_categories,
+        groups=groups,
         statistics=statistics,
         panel_validation=panel_validation,
         low_confidence_papers=low_confidence_papers,

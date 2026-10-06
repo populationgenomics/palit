@@ -690,7 +690,7 @@ class _GenePreparation:
 
 def target_panels_holding(hgnc_id: int, panel_data: PanelGeneData) -> list[int]:
     """The target panels with an entry for the gene, in target-panel order."""
-    held = panel_data.gene_panel_mapping.get(hgnc_id, set())
+    held = panel_data.gene_panel_confidence.get(hgnc_id, {})
     return [panel_id for panel_id in panel_data.panel_ids if panel_id in held]
 
 
@@ -1293,7 +1293,7 @@ def main(
     panelapp_client = PanelAppClient(panel_date)
     panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
     logger.info(
-        f"  Loaded {len(panel_data.gene_confidence)} genes from {len(panel_data.panel_ids)} target panels"
+        f"  Loaded {len(panel_data.gene_panel_confidence)} genes from {len(panel_data.panel_ids)} target panels"
     )
     # Unscoped runs show an Incidentalome-only gene's entries from all panels, as the
     # PanelApp relevance check does.

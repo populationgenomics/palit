@@ -115,8 +115,12 @@ h6 { font-size: 0.95em; color: #7f8c8d; }
 }
 
 .toc-section-header .rating-badge {
-    margin-left: 0;
-    margin-right: 4px;
+    margin-left: 4px;
+}
+
+.toc-legend {
+    font-size: 0.85em;
+    color: #6c757d;
 }
 
 /* 6-column layout for gene lists */
@@ -139,50 +143,68 @@ h6 { font-size: 0.95em; color: #7f8c8d; }
     padding: 2px 0;
 }
 
-/* MoI expansion indicator */
-.moi-expansion-indicator {
-    font-size: 0.75em;
-    margin-left: 2px;
-    opacity: 0.8;
-}
-
-/* Gradient backgrounds for novel genes */
-.toc-novel-to-green {
+/* New genes: from grey (not in panel) to the top association rating */
+.toc-group-new-green {
     background: linear-gradient(to right, #e9ecef 0%, #d4edda 100%);
     border-left: 4px solid #28a745;
 }
 
-.toc-novel-to-amber {
+.toc-group-new-amber {
     background: linear-gradient(to right, #e9ecef 0%, #fff3cd 100%);
     border-left: 4px solid #ffc107;
 }
 
-.toc-novel-to-red {
+.toc-group-new-red {
     background: linear-gradient(to right, #e9ecef 0%, #f8d7da 100%);
     border-left: 4px solid #dc3545;
 }
 
-/* Gradient backgrounds for known gene upgrades */
-.toc-red-to-green {
-    background: linear-gradient(to right, #f8d7da 0%, #d4edda 100%);
+/* Known genes with findings: the rating of the best finding */
+.toc-group-finding-green {
+    background: #eaf6ec;
     border-left: 4px solid #28a745;
 }
 
-.toc-amber-to-green {
-    background: linear-gradient(to right, #fff3cd 0%, #d4edda 100%);
-    border-left: 4px solid #28a745;
-}
-
-.toc-red-to-amber {
-    background: linear-gradient(to right, #f8d7da 0%, #fff3cd 100%);
+.toc-group-finding-amber {
+    background: #fff9e6;
     border-left: 4px solid #ffc107;
 }
 
-/* No change section */
-.toc-no-change {
+.toc-group-finding-red {
+    background: #fcebed;
+    border-left: 4px solid #dc3545;
+}
+
+/* Known genes without findings */
+.toc-group-unreviewed,
+.toc-group-reviewed {
     background: #f8f9fa;
     border-left: 4px solid #6c757d;
 }
+
+/* A finding as a one-letter badge after a gene's ToC link, coloured by its rating */
+.toc .finding-chip {
+    display: inline-block;
+    min-width: 1.3em;
+    margin-left: 3px;
+    padding: 0 3px;
+    border-radius: 3px;
+    font-size: 0.7em;
+    font-weight: 700;
+    line-height: 1.5;
+    text-align: center;
+    vertical-align: 1px;
+}
+
+.toc .finding-chip:hover {
+    text-decoration: none;
+    filter: brightness(0.95);
+}
+
+/* Rating colours over the ToC's link colour, with borders in the text colour */
+.toc .finding-chip.rating-green { color: #155724; border-color: #155724; }
+.toc .finding-chip.rating-amber { color: #856404; border-color: #856404; }
+.toc .finding-chip.rating-red { color: #721c24; border-color: #721c24; }
 
 /* Collapsed section styling */
 .toc-collapsed-section {
@@ -349,21 +371,6 @@ section > h2 {
     font-style: italic;
 }
 
-.toc-subsection-header,
-.sub-subsection-header {
-    margin: 10px 0 6px 0;
-    color: #2c3e50;
-    font-size: 0.9em;
-    font-weight: 600;
-    padding-left: 8px;
-}
-
-.sub-subsection-header h4 {
-    margin: 14px 0 8px 0;
-    color: #2c3e50;
-    font-size: 1.05em;
-}
-
 .gene-assessment > h3 {
     margin-top: 0;
     margin-bottom: 15px;
@@ -428,6 +435,38 @@ section > h2 {
     color: #6c757d;
     font-size: 1.1em;
 }
+
+/* A known gene's status in its header: "On panel", then its current rating */
+.gene-status {
+    margin-left: 12px;
+    font-size: 0.75em;
+    font-weight: normal;
+    color: #6c757d;
+}
+
+.gene-status + .rating-badge {
+    margin-left: 4px;
+}
+
+/* A finding in a gene header, coloured by its rating and linking to its association */
+.finding-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    margin-left: 8px;
+    border-radius: 3px;
+    font-size: 0.75em;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.finding-badge:hover {
+    text-decoration: underline;
+}
+
+.finding-badge.rating-green { border-color: #155724; }
+.finding-badge.rating-amber { border-color: #856404; }
+.finding-badge.rating-red { border-color: #721c24; }
 
 /* Mode of Inheritance Badges */
 

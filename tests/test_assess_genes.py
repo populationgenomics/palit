@@ -797,9 +797,7 @@ def test_reviews_from_several_panels_are_labelled(curated_record: CuratedRecord)
 def test_target_panels_holding_keeps_target_panel_order() -> None:
     panel_data = PanelGeneData(
         panel_ids=[MENDELIOME_PANEL_ID, INCIDENTALOME_PANEL_ID, 203],
-        gene_confidence={},
-        gene_panel_mapping={GENEA: {203, MENDELIOME_PANEL_ID}},
-        gene_moi={},
+        gene_panel_confidence={GENEA: {203: 3, MENDELIOME_PANEL_ID: 2}},
     )
     assert target_panels_holding(GENEA, panel_data) == [MENDELIOME_PANEL_ID, 203]
     assert target_panels_holding(GENEB, panel_data) == []

@@ -155,11 +155,13 @@ var LiteratureAssignments = {
 
   /**
    * Build a lookup map of ToC links by HGNC ID (called once at init).
-   * This avoids repeated querySelector calls in highlightTocLinks.
+   * This avoids repeated querySelector calls in highlightTocLinks. The query
+   * is scoped to the ToC: the report body holds tens of thousands of links.
+   * Each gene has one link; its finding badges link to associations instead.
    */
   _buildTocLinkMap: function () {
     this._tocLinkMap = {};
-    var links = document.querySelectorAll(
+    var links = document.querySelector("nav.toc").querySelectorAll(
       '.toc-gene-list a[href^="#novel-gene-"], .toc-gene-list a[href^="#known-gene-"]'
     );
     for (var i = 0; i < links.length; i++) {
@@ -1145,13 +1147,18 @@ function initPrefillButtons() {
   });
 }
 
+/**
+ * Bind the prefill buttons first: they don't need the assignment widget, whose
+ * init throws when the page has no #assignment-data block.
+ */
+function initReport() {
+  initPrefillButtons();
+  LiteratureAssignments.init();
+}
+
 // Auto-initialize when DOM is ready
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", function () {
-    LiteratureAssignments.init();
-    initPrefillButtons();
-  });
+  document.addEventListener("DOMContentLoaded", initReport);
 } else {
-  LiteratureAssignments.init();
-  initPrefillButtons();
+  initReport();
 }

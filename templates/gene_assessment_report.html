@@ -27,9 +27,9 @@
     </script>
     {% endif %}
 
-    {# What the ratings in gene headers and associations mean #}
+    {# What the ratings in association headings mean, and how genes are grouped #}
     {% macro corpus_note() %}
-    <p class="corpus-note">Ratings after an arrow come from the papers this run read for the gene, not from everything published, so a rating below PanelApp's is not a downgrade recommendation. A gene's header shows its top association's rating.</p>
+    <p class="corpus-note">Ratings in association headings come from the papers this run read for the gene, not from everything published, so a rating below PanelApp's is not a downgrade recommendation. Genes are grouped by their strongest finding: a new gene, a new disease or mode of inheritance, or a curated association rated higher in this corpus than in PanelApp.</p>
     {% endmacro %}
 
     {# Macro for linking to a paper: PubMed if PMID available, DOI otherwise #}
@@ -37,12 +37,27 @@
     {% if paper.pmid %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ paper.pmid }}/" target="_blank">{{ paper.pmid }}</a>{% else %}<a href="https://doi.org/{{ paper.doi }}" target="_blank">{{ paper.doi }}</a>{% endif %}
     {%- endmacro %}
 
-    {# Gene-header badge for a gene with a highlighted new-MoI association #}
-    {% macro new_moi_badge(gene) %}
-    {% if gene.has_highlighted_new_moi %}
-        <span class="moi-badge moi-expansion" data-title="At least one association adds a mode of inheritance PanelApp Australia does not curate for its disease, with {{ min_families_for_moi_expansion }} or more independent families">➕ New MoI</span>
-    {% endif %}
+    {# A finding: what its association adds to PanelApp Australia, then its corpus rating #}
+    {% macro finding_text(finding) -%}
+    {% set rating = finding.rating | confidence_to_color | upper %}
+    {% if finding.kind == 'new_disease' %}new disease {{ rating }}{% elif finding.kind == 'new_moi' %}new MoI {{ rating }}{% else %}upgrade {{ finding.from_rating | confidence_to_color | upper }}→{{ rating }}{% endif %}
+    {%- endmacro %}
+
+    {% macro finding_title(finding) -%}
+    {% if finding.kind == 'new_disease' %}A disease PanelApp Australia does not curate for this gene{% elif finding.kind == 'new_moi' %}A mode of inheritance PanelApp Australia does not curate for this disease, with {{ min_families_for_moi_expansion }} or more independent families{% else %}Rated higher in this corpus than in PanelApp Australia{% endif %}
+    {%- endmacro %}
+
+    {# The gene header's finding badges, strongest first, each linking to its association #}
+    {% macro finding_badges(gene) %}
+    {% for finding in gene.findings %}
+    <a class="finding-badge rating-{{ finding.rating | confidence_to_color | lower }}" href="#association-{{ finding.association_id }}" data-title="{{ finding_title(finding) }}">{{ finding_text(finding) }}</a>
+    {% endfor %}
     {% endmacro %}
+
+    {# A one-letter finding badge for the ToC; the legend above the gene lists explains the letters #}
+    {% macro finding_chip(kind, rating, href=none, title=none) -%}
+    <a class="finding-chip rating-{{ rating | confidence_to_color | lower }}"{% if href %} href="{{ href }}"{% endif %}{% if title %} data-title="{{ title }}"{% endif %}>{{ {'new_disease': 'D', 'new_moi': 'M', 'upgrade': '↑'}[kind] }}</a>
+    {%- endmacro %}
 
     {# Link to a quote in the report's PDF viewer, with its page, or marked when the PDF can't place it #}
     {% macro cite(link) -%}
@@ -51,8 +66,9 @@
 
     {# Macro for rendering prefill button (inline in header) #}
     {# Form is created dynamically by JS to avoid thousands of hidden inputs slowing down page load #}
-    {% macro prefill_button(gene, form_type) %}
+    {% macro prefill_button(gene) %}
     {% if panelapp_integration %}
+    {% set form_type = gene.prefill.form_type %}
     <span class="prefill-form">
         <button type="button" class="prefill-button prefill-{{ form_type }}"
                 data-prefill="{{ gene.prefill_json }}">
@@ -405,6 +421,63 @@
         </details>
     {% endmacro %}
 
+    {# One gene: its status on the target panels, its findings, then everything below the header #}
+    {% macro gene_article(gene) %}
+    {% set unreviewed_panels = gene | unreviewed_target_panels %}
+    <article class="gene-assessment" id="{{ gene.anchor }}">
+        <h3>
+            {{ gene_header(gene) }}
+            {% if gene.is_novel %}
+            <span class="rating-badge rating-grey">Not in panel</span>
+            {% else %}
+            <span class="gene-status">On panel</span>{{ rating_badge(gene.current_rating, "The gene's highest rating on the target panels") }}
+            {% endif %}
+            {{ finding_badges(gene) }}
+            {% if unreviewed_panels %}
+            <span class="unreviewed-badge" title="No expert review on PanelApp for this gene/panel">⚠️ Unreviewed</span>
+            {% endif %}
+            {{ prefill_button(gene) }}
+            {{ assignment_slot(gene) }}
+        </h3>
+        {% if unreviewed_panels %}
+        <p class="unreviewed-note">
+            No reviews on {% for panel_id in unreviewed_panels %}{{ target_panel_names.get(panel_id, "Panel " ~ panel_id) }}{% if not loop.last %}, {% endif %}{% endfor %}
+        </p>
+        {% endif %}
+        {{ gene_article_body(gene) }}
+    </article>
+    {% endmacro %}
+
+    {# A group's name: its title, then its rating badge when it has one #}
+    {% macro group_heading(group) -%}
+    {{ group.title }}{% if group.rating %} {{ rating_badge(group.rating) }}{% endif %} ({{ group.genes | length }})
+    {%- endmacro %}
+
+    {# A group's ToC section: its gene links, each followed by its finding badges.
+       literature-assignments.js reads the data-section-* attributes for bulk assignment. #}
+    {% macro toc_group(group) %}
+    <div class="toc-section-header">{{ group_heading(group) }}</div>
+    <div class="toc-section toc-group-{{ group.key }}" data-section-key="{{ group.key }}" data-section-label="{{ group.label }}"{% if group.preselected %} data-section-default{% endif %}>
+        {% if group.collapsed %}<details class="toc-collapsed-section"><summary>Show gene list</summary>{% endif %}
+        <ul class="toc-gene-list">
+            {% for gene in group.genes %}
+            <li><a href="#{{ gene.anchor }}">{{ gene.hgnc_symbol }}</a>{% for finding in gene.findings %}{{ finding_chip(finding.kind, finding.rating, '#association-' ~ finding.association_id, finding_text(finding)) }}{% endfor %}</li>
+            {% endfor %}
+        </ul>
+        {% if group.collapsed %}</details>{% endif %}
+    </div>
+    {% endmacro %}
+
+    {# A group's subsection of the report body #}
+    {% macro body_group(group) %}
+    <div class="subsection-header" id="group-{{ group.key }}">
+        <h3>{{ group_heading(group) }}</h3>
+    </div>
+    {% for gene in group.genes %}
+    {{ gene_article(gene) }}
+    {% endfor %}
+    {% endmacro %}
+
     {# A gnomAD count cell, flagged when the count is above the threshold of the variants' MoI #}
     {% macro gnomad_count_cell(count, metric, flag) -%}
     <td>{{ count }}{% if flag and flag.metric == metric %} <span class="hover-value frequency-warning" data-title="{{ flag.warning }}">⚠️</span>{% endif %}</td>
@@ -567,6 +640,13 @@
         <p>Generated on {{ generated_at }} | Panel state as of {{ panel_date }}</p>
     </header>
 
+    {# The report's gene sections, each a list of groups: (anchor, title, note, groups) #}
+    {% set gene_sections = [
+        ('new-genes', 'New genes', "Genes on none of the target panels, grouped by their top association's rating in this corpus.", groups.new_genes),
+        ('known-genes-with-findings', 'Known genes with findings', 'Genes on a target panel with at least one finding, grouped by the rating of their strongest finding.', groups.with_findings),
+        ('known-genes-without-findings', 'Known genes without findings', 'Genes on a target panel without findings: PanelApp Australia curates each association at the same or a higher rating, or it adds a mode of inheritance with fewer than ' ~ min_families_for_moi_expansion ~ ' independent families.', groups.without_findings)
+    ] | selectattr(3) | list %}
+
     <nav class="toc">
         <h2>Table of Contents</h2>
         <ul>
@@ -574,143 +654,17 @@
             {% if favorite_journal_papers.total %}
             <li><a href="#featured-journals">Papers in Featured Journals ({{ favorite_journal_papers.total }})</a></li>
             {% endif %}
-            {% if novel_categories and novel_categories.total > 0 %}
-            <li>
-                <a href="#novel-genes">Novel Gene-Disease Associations ({{ novel_categories.total }})</a>
-
-                {% if novel_categories.green %}
-                <div class="toc-section-header">
-                    <span class="rating-badge rating-green">GREEN</span> Candidates ({{ novel_categories.green|length }})
-                </div>
-                <div class="toc-section toc-novel-to-green" data-section-key="novel-green" data-section-label="Novel → GREEN" data-section-default>
-                    <ul class="toc-gene-list">
-                        {% for gene in novel_categories.green %}
-                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
-
-                {% if novel_categories.amber %}
-                <div class="toc-section-header">
-                    <span class="rating-badge rating-amber">AMBER</span> Candidates ({{ novel_categories.amber|length }})
-                </div>
-                <div class="toc-section toc-novel-to-amber" data-section-key="novel-amber" data-section-label="Novel → AMBER" data-section-default>
-                    <ul class="toc-gene-list">
-                        {% for gene in novel_categories.amber %}
-                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
-
-                {% if novel_categories.red %}
-                <div class="toc-section-header">
-                    <span class="rating-badge rating-red">RED</span> Candidates ({{ novel_categories.red|length }})
-                </div>
-                <div class="toc-section toc-novel-to-red" data-section-key="novel-red" data-section-label="Novel → RED" data-section-default>
-                    <ul class="toc-gene-list">
-                        {% for gene in novel_categories.red %}
-                        <li><a href="#novel-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
-            </li>
+            {% if groups.new_genes or groups.with_findings %}
+            <li class="toc-legend">Finding badges: {{ finding_chip('new_disease', 3) }} new disease, {{ finding_chip('new_moi', 2) }} new MoI, {{ finding_chip('upgrade', 1) }} upgrade, coloured by their rating in this corpus</li>
             {% endif %}
-            {% if known_categories and known_categories.total > 0 %}
+            {% for anchor, title, _, gene_groups in gene_sections %}
             <li>
-                <a href="#known-genes">Known Gene Evidence Updates ({{ known_categories.total }})</a>
-
-                {% if known_categories.red_to_green %}
-                <div class="toc-section-header">
-                    <span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.red_to_green|length }})
-                </div>
-                <div class="toc-section toc-red-to-green" data-section-key="red-to-green" data-section-label="RED → GREEN" data-section-default>
-                    <ul class="toc-gene-list">
-                        {% for gene in known_categories.red_to_green %}
-                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
-
-                {% if known_categories.amber_to_green %}
-                <div class="toc-section-header">
-                    <span class="rating-badge rating-amber">AMBER</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.amber_to_green|length }})
-                </div>
-                <div class="toc-section toc-amber-to-green" data-section-key="amber-to-green" data-section-label="AMBER → GREEN" data-section-default>
-                    <ul class="toc-gene-list">
-                        {% for gene in known_categories.amber_to_green %}
-                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
-
-                {% if known_categories.red_to_amber %}
-                <div class="toc-section-header">
-                    <span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-amber">AMBER</span> Upgrades ({{ known_categories.red_to_amber|length }})
-                </div>
-                <div class="toc-section toc-red-to-amber" data-section-key="red-to-amber" data-section-label="RED → AMBER" data-section-default>
-                    <ul class="toc-gene-list">
-                        {% for gene in known_categories.red_to_amber %}
-                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}{% if gene.has_highlighted_new_moi %}<span class="moi-expansion-indicator">➕</span>{% endif %}</a></li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
-
-                {% set no_change_total = known_categories.no_change_new_moi|length + known_categories.no_change_unreviewed|length + known_categories.no_change_reviewed|length %}
-                {% if no_change_total %}
-                <div class="toc-section-header">
-                    No Rating Change ({{ no_change_total }})
-                </div>
-
-                {% if known_categories.no_change_new_moi %}
-                <div class="toc-subsection-header">
-                    New MoI ({{ known_categories.no_change_new_moi|length }})
-                </div>
-                <div class="toc-section toc-no-change toc-moi-expansion" data-section-key="moi-expansion" data-section-label="New MoI" data-section-default>
-                    <ul class="toc-gene-list">
-                        {% for gene in known_categories.no_change_new_moi %}
-                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}<span class="moi-expansion-indicator">➕</span></a></li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
-
-                {% if known_categories.no_change_unreviewed %}
-                <div class="toc-subsection-header">
-                    Unreviewed on Target Panel ({{ known_categories.no_change_unreviewed|length }})
-                </div>
-                <div class="toc-section toc-no-change" data-section-key="no-change-unreviewed" data-section-label="Unreviewed on Target Panel">
-                    <ul class="toc-gene-list">
-                        {% for gene in known_categories.no_change_unreviewed %}
-                        <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}</a></li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
-
-                {% if known_categories.no_change_reviewed %}
-                <div class="toc-subsection-header">
-                    Already Reviewed ({{ known_categories.no_change_reviewed|length }})
-                </div>
-                <div class="toc-section toc-no-change" data-section-key="no-change-reviewed" data-section-label="Already Reviewed">
-                    <details class="toc-collapsed-section">
-                        <summary>Show gene list</summary>
-                        <ul class="toc-gene-list">
-                            {% for gene in known_categories.no_change_reviewed %}
-                            <li><a href="#known-gene-{{ gene.hgnc_id }}">{{ gene.hgnc_symbol }}</a></li>
-                            {% endfor %}
-                        </ul>
-                    </details>
-                </div>
-                {% endif %}
-                {% endif %}
+                <a href="#{{ anchor }}">{{ title }} ({{ gene_groups | map(attribute='genes') | map('length') | sum }})</a>
+                {% for group in gene_groups %}
+                {{ toc_group(group) }}
+                {% endfor %}
             </li>
-            {% endif %}
+            {% endfor %}
             {% if manual_download_papers %}
             <li><a href="#manual-download-papers">Papers Requiring Manual Download ({{ manual_download_papers|length }})</a></li>
             {% endif %}
@@ -735,12 +689,12 @@
 
             <ul class="stats-list">
                 <li><strong>Total Genes Assessed:</strong> {{ statistics.total_genes_assessed }}</li>
-                <li><strong>Novel Gene Associations:</strong> {{ statistics.novel_genes_count }}</li>
-                <li><strong>Potential Upgrades:</strong> {{ statistics.known_genes_upgraded }}</li>
+                <li><strong>New Genes:</strong> {{ statistics.new_genes_count }}</li>
+                <li><strong>Known Genes with Findings:</strong> {{ statistics.known_genes_with_findings }}</li>
                 <li><strong>Contributing Papers:</strong> {{ statistics.total_contributing_papers }}</li>
                 {% if panels_matched %}<li><strong>Panel Suggestions:</strong> {{ statistics.total_panel_suggestions }}</li>{% endif %}
                 <li><strong>Associations:</strong> {{ statistics.total_associations }}</li>
-                <li><strong>Highlighted New-MoI Associations:</strong> {{ statistics.highlighted_new_moi_count }}</li>
+                <li><strong>Findings:</strong> new diseases: {{ statistics.new_disease_findings }}, new MoIs: {{ statistics.new_moi_findings }}, upgrades: {{ statistics.upgrade_findings }}</li>
                 <li><strong>Unreviewed on Target Panel:</strong> {{ statistics.unreviewed_count }}</li>
                 <li><strong>Preprints with Evidence:</strong> {{ statistics.preprints_relevant }}</li>
                 {% if statistics.refused_papers_count %}<li><strong>Papers Not Read (Extraction Refused):</strong> {{ statistics.refused_papers_count }}</li>{% endif %}
@@ -817,28 +771,23 @@
 
             {{ featured_bucket(
                 favorite_journal_papers.novel,
-                "Contributed to novel genes",
-                "Papers whose extracted evidence supports a gene that is not yet in any panel.",
+                "Contributed to new genes",
+                "Papers whose extracted evidence supports a gene that is on none of the target panels.",
             ) }}
             {{ featured_bucket(
-                favorite_journal_papers.rating_upgrade,
-                "Contributed to rating upgrades",
-                "Papers whose evidence supports raising a known gene's rating (e.g. RED → GREEN).",
-            ) }}
-            {{ featured_bucket(
-                favorite_journal_papers.moi_expansion,
-                "Contributed to new MoI associations",
-                "Papers that contributed to a known gene with a highlighted new-MoI association and no rating change.",
+                favorite_journal_papers.findings,
+                "Contributed to known genes with findings",
+                "Papers that contributed to a known gene with a new disease, a highlighted new MoI, or an association rated higher in this corpus than in PanelApp Australia.",
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.unreviewed,
                 "Contributed to unreviewed genes",
-                "Papers that contributed to a known gene with zero expert reviews on its target panel — our analysis offers the first review even with no rating change.",
+                "Papers that contributed to a known gene without findings and with zero expert reviews on its target panel; our analysis offers the first review.",
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.already_reviewed,
-                "Additional evidence (already reviewed, no rating or MoI change)",
-                "Papers that contributed to a known gene's assessment but did not change its rating or MoI; the gene already has at least one expert review on its target panel.",
+                "Additional evidence (already reviewed, no findings)",
+                "Papers that contributed to a known gene without findings; the gene already has at least one expert review on its target panel.",
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.filtered,
@@ -868,169 +817,16 @@
         </section>
         {% endif %}
 
-        {% if novel_categories and novel_categories.total > 0 %}
-        <section id="novel-genes" class="novel-section">
-            <h2>Novel Gene-Disease Associations</h2>
-            <p><em>Genes not currently in any target panel, sorted by their top association's rating (GREEN candidates first)</em></p>
+        {% for anchor, title, note, gene_groups in gene_sections %}
+        <section id="{{ anchor }}">
+            <h2>{{ title }}</h2>
+            <p><em>{{ note }}</em></p>
             {{ corpus_note() }}
-
-            {% for gene in novel_categories.green + novel_categories.amber + novel_categories.red %}
-            <article class="gene-assessment" id="novel-gene-{{ gene.hgnc_id }}">
-                <h3>
-                    {{ gene_header(gene) }}
-                    <span class="rating-badge rating-grey">Not in panel</span>
-                    <span class="rating-arrow">→</span>
-                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ new_moi_badge(gene) }}
-                    {{ prefill_button(gene, 'add') }}
-                    {{ assignment_slot(gene) }}
-                </h3>
-
-                {{ gene_article_body(gene) }}
-            </article>
+            {% for group in gene_groups %}
+            {{ body_group(group) }}
             {% endfor %}
         </section>
-        {% endif %}
-
-        {% if known_categories and known_categories.total > 0 %}
-        <section id="known-genes" class="known-section">
-            <h2>Known Gene Evidence Updates</h2>
-            <p><em>Genes already in target panels, categorized by their current rating and their top association's rating</em></p>
-            {{ corpus_note() }}
-
-            {% if known_categories.red_to_green %}
-            <div class="subsection-header">
-                <h3><span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.red_to_green|length }})</h3>
-            </div>
-            {% for gene in known_categories.red_to_green %}
-            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
-                <h3>
-                    {{ gene_header(gene) }}
-                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
-                    <span class="rating-arrow">→</span>
-                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ new_moi_badge(gene) }}
-                    {{ prefill_button(gene, 'review') }}
-                    {{ assignment_slot(gene) }}
-                </h3>
-                {{ gene_article_body(gene) }}
-            </article>
-            {% endfor %}
-            {% endif %}
-
-            {% if known_categories.amber_to_green %}
-            <div class="subsection-header">
-                <h3><span class="rating-badge rating-amber">AMBER</span> → <span class="rating-badge rating-green">GREEN</span> Upgrades ({{ known_categories.amber_to_green|length }})</h3>
-            </div>
-            {% for gene in known_categories.amber_to_green %}
-            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
-                <h3>
-                    {{ gene_header(gene) }}
-                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
-                    <span class="rating-arrow">→</span>
-                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ new_moi_badge(gene) }}
-                    {{ prefill_button(gene, 'review') }}
-                    {{ assignment_slot(gene) }}
-                </h3>
-                {{ gene_article_body(gene) }}
-            </article>
-            {% endfor %}
-            {% endif %}
-
-            {% if known_categories.red_to_amber %}
-            <div class="subsection-header">
-                <h3><span class="rating-badge rating-red">RED</span> → <span class="rating-badge rating-amber">AMBER</span> Upgrades ({{ known_categories.red_to_amber|length }})</h3>
-            </div>
-            {% for gene in known_categories.red_to_amber %}
-            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
-                <h3>
-                    {{ gene_header(gene) }}
-                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
-                    <span class="rating-arrow">→</span>
-                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ new_moi_badge(gene) }}
-                    {{ prefill_button(gene, 'review') }}
-                    {{ assignment_slot(gene) }}
-                </h3>
-                {{ gene_article_body(gene) }}
-            </article>
-            {% endfor %}
-            {% endif %}
-
-            {% set no_change_total = known_categories.no_change_new_moi|length + known_categories.no_change_unreviewed|length + known_categories.no_change_reviewed|length %}
-            {% if no_change_total %}
-            <div class="subsection-header">
-                <h3>No Rating Change ({{ no_change_total }})</h3>
-            </div>
-
-            {% if known_categories.no_change_new_moi %}
-            <div class="sub-subsection-header" id="known-no-change-moi">
-                <h4>New MoI ({{ known_categories.no_change_new_moi|length }})</h4>
-            </div>
-            {% for gene in known_categories.no_change_new_moi %}
-            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
-                <h3>
-                    {{ gene_header(gene) }}
-                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
-                    <span class="rating-arrow">→</span>
-                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ new_moi_badge(gene) }}
-                    {{ prefill_button(gene, 'review') }}
-                    {{ assignment_slot(gene) }}
-                </h3>
-                {{ gene_article_body(gene) }}
-            </article>
-            {% endfor %}
-            {% endif %}
-
-            {% if known_categories.no_change_unreviewed %}
-            <div class="sub-subsection-header" id="known-no-change-unreviewed">
-                <h4>Unreviewed on Target Panel ({{ known_categories.no_change_unreviewed|length }})</h4>
-            </div>
-            {% for gene in known_categories.no_change_unreviewed %}
-            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
-                <h3>
-                    {{ gene_header(gene) }}
-                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
-                    <span class="rating-arrow">→</span>
-                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ new_moi_badge(gene) }}
-                    <span class="unreviewed-badge" title="No expert review on PanelApp for this gene/panel">⚠️ Unreviewed</span>
-                    {{ prefill_button(gene, 'review') }}
-                    {{ assignment_slot(gene) }}
-                </h3>
-                <p class="unreviewed-note">
-                    No reviews on {% for panel_id in gene | unreviewed_target_panels %}{{ target_panel_names.get(panel_id, "Panel " ~ panel_id) }}{% if not loop.last %}, {% endif %}{% endfor %}
-                </p>
-                {{ gene_article_body(gene) }}
-            </article>
-            {% endfor %}
-            {% endif %}
-
-            {% if known_categories.no_change_reviewed %}
-            <div class="sub-subsection-header" id="known-no-change-reviewed">
-                <h4>Already Reviewed ({{ known_categories.no_change_reviewed|length }})</h4>
-            </div>
-            {% for gene in known_categories.no_change_reviewed %}
-            <article class="gene-assessment" id="known-gene-{{ gene.hgnc_id }}">
-                <h3>
-                    {{ gene_header(gene) }}
-                    <span class="rating-badge rating-{{ gene.existing_rating | confidence_to_color | lower }}">{{ gene.existing_rating | confidence_to_color }}</span>
-                    <span class="rating-arrow">→</span>
-                    <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
-                    {{ new_moi_badge(gene) }}
-                    {{ prefill_button(gene, 'review') }}
-                    {{ assignment_slot(gene) }}
-                </h3>
-                {{ gene_article_body(gene) }}
-            </article>
-            {% endfor %}
-            {% endif %}
-            {% endif %}
-        </section>
-        {% endif %}
-
+        {% endfor %}
 
         {% if manual_download_papers %}
         <section id="manual-download-papers" class="review-section">

@@ -13,6 +13,7 @@ from palit.panelapp_integration import (
     MondoMatch,
     MondoTerm,
     PrefillAssociation,
+    PrefillData,
     prefill_phenotype,
     prepare_prefill_data,
 )
@@ -64,26 +65,43 @@ def _term(
     )
 
 
-def _prefill(associations: list[PrefillAssociation], doi_to_pmid: dict[str, int | None]) -> Any:
+def _prefill(
+    associations: list[PrefillAssociation],
+    doi_to_pmid: dict[str, int | None],
+    panel_rating: int | None = 1,
+) -> PrefillData:
     return prepare_prefill_data(
         hgnc_id=HGNC_ID,
         associations=associations,
-        form_type="review",
         panel_id=PANEL_ID,
+        panel_rating=panel_rating,
         doi_to_pmid=doi_to_pmid,
     )
 
 
-def test_rating_is_the_top_association_rating() -> None:
-    prefill = _prefill(
-        [
-            PrefillAssociation(_assessment(independent=1, proposed_disease_name="a"), None),
-            PrefillAssociation(_assessment(independent=3, proposed_disease_name="b"), None),
-        ],
-        {},
-    )
-    assert (prefill.rating, prefill.hgnc_id, prefill.panel_id) == ("AMBER", "HGNC:6772", 137)
+RED_AND_AMBER = [
+    PrefillAssociation(_assessment(independent=1, proposed_disease_name="a"), None),
+    PrefillAssociation(_assessment(independent=3, proposed_disease_name="b"), None),
+]
+
+
+def test_add_form_rating_is_the_top_association_rating() -> None:
+    prefill = _prefill(RED_AND_AMBER, {}, panel_rating=None)
+    assert (prefill.form_type, prefill.rating) == ("add", "AMBER")
+    assert (prefill.hgnc_id, prefill.panel_id) == ("HGNC:6772", 137)
     assert prefill.mode_of_pathogenicity is None
+
+
+@pytest.mark.parametrize(
+    ("panel_rating", "rating"),
+    [(1, "AMBER"), (2, "AMBER"), (3, "GREEN"), (0, "AMBER")],
+)
+def test_review_form_rating_is_the_higher_of_panel_and_top_association(
+    panel_rating: int, rating: str
+) -> None:
+    """A GREEN gene with only RED and AMBER associations keeps GREEN."""
+    prefill = _prefill(RED_AND_AMBER, {}, panel_rating=panel_rating)
+    assert (prefill.form_type, prefill.rating) == ("review", rating)
 
 
 def test_moi_aggregates_over_all_associations() -> None:

@@ -59,9 +59,9 @@ class _FakeClient:
 def _panel_data(gene_panels: dict[int, set[int]], panel_ids: list[int]) -> PanelGeneData:
     return PanelGeneData(
         panel_ids=panel_ids,
-        gene_confidence={},
-        gene_panel_mapping=gene_panels,
-        gene_moi={},
+        gene_panel_confidence={
+            hgnc_id: dict.fromkeys(panels, 3) for hgnc_id, panels in gene_panels.items()
+        },
     )
 
 

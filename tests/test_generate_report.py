@@ -14,23 +14,29 @@ from palit.assess_relevance import Refusal, refused_assessment
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.generate_report import (
+    ExistingPanelReviews,
     FavoriteJournalSections,
+    Finding,
+    FindingKind,
     GeneAssessment,
     GeneAssessmentResults,
     PanelValidationResult,
     QuoteRef,
     ReportAssociation,
     StageState,
+    association_finding,
     build_gene_assessment_results,
+    build_report_config,
     calculate_comprehensive_statistics,
     format_inheritance,
+    gene_findings,
     generate_html_report,
+    group_genes,
     is_highlighted_new_moi,
     known_gene_sort_key,
     load_low_confidence_irrelevant_papers,
     load_panel_publications_validation,
     load_quote_refs,
-    novel_gene_sort_key,
     write_viewer_package,
 )
 from palit.hgnc import HgncResolver
@@ -42,6 +48,8 @@ from palit.panelapp_integration import (
     ENUM_TO_PANELAPP_MOI,
     MENDELIOME_PANEL_ID,
     PANELAPP_CRITERIA,
+    PrefillData,
+    calculate_association_rating,
 )
 from palit.papers import doi_to_path
 
@@ -67,6 +75,7 @@ def _association(
     description: str,
     *,
     status: str = "existing",
+    panelapp_rating: str | None = "GREEN",
     independent: int | None = 3,
     green: bool = False,
     mondo_id: str | None = None,
@@ -76,7 +85,10 @@ def _association(
     variants: tuple[str, ...] = (),
     segregation: str = "NR",
 ) -> str:
-    """A stored association: dois instead of paper IDs, criteria as a list."""
+    """A stored association: dois instead of paper IDs, criteria as a list.
+
+    *panelapp_rating* is PanelApp's rating of an existing association.
+    """
     return json.dumps(
         {
             "description": description,
@@ -88,7 +100,7 @@ def _association(
             "proposed_disease_name": None if mondo_id else f"GENEA-related {description}",
             "panelapp_relation": {
                 "status": status,
-                "existing_rating": "GREEN" if status == "existing" else None,
+                "existing_rating": panelapp_rating if status == "existing" else None,
                 "basis": "b",
             },
             "dispute_status": dispute_status,
@@ -469,12 +481,13 @@ def db_path(tmp_path: Path) -> Path:
     return path
 
 
-def _load(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentResults:
+def _load(
+    db_path: Path, hgnc_resolver: HgncResolver, genea_rating: int = 2
+) -> GeneAssessmentResults:
+    """The fixture's genes, with GENEA on the Mendeliome at *genea_rating*."""
     target = PanelGeneData(
         panel_ids=[MENDELIOME_PANEL_ID],
-        gene_confidence={1: 2},
-        gene_panel_mapping={1: {MENDELIOME_PANEL_ID}},
-        gene_moi={1: "MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted"},
+        gene_panel_confidence={1: {MENDELIOME_PANEL_ID: genea_rating}},
     )
     all_panels = AllPanelsData(
         gene_to_panels={1: {MENDELIOME_PANEL_ID, ATAXIA_PANEL_ID}},
@@ -516,10 +529,18 @@ def test_novel_and_known_split(results: GeneAssessmentResults) -> None:
     assert [g.hgnc_symbol for g in results.novel_genes] == ["GENEB"]
     assert [g.hgnc_symbol for g in results.known_genes] == ["GENEA"]
     genea = results.known_genes[0]
-    assert genea.existing_rating == 2
-    assert genea.new_rating == 3  # the top association rating
-    assert genea.has_highlighted_new_moi
-    assert results.novel_genes[0].existing_rating is None
+    assert genea.current_rating == 2
+    assert genea.top_rating == 3
+    # Strongest first: the GREEN new disease, then the AMBER new disease and new MoI in
+    # association order; the RED existing association is rated GREEN in PanelApp.
+    assert genea.findings == [
+        Finding(FindingKind.NEW_DISEASE, 3, 12, None),
+        Finding(FindingKind.NEW_DISEASE, 2, 13, None),
+        Finding(FindingKind.NEW_MOI, 2, 11, None),
+    ]
+    geneb = results.novel_genes[0]
+    assert geneb.current_rating is None
+    assert geneb.findings == []  # a new gene's new disease is no finding of its own
 
 
 def test_associations_by_rating_then_independent_families(results: GeneAssessmentResults) -> None:
@@ -712,7 +733,7 @@ def _render(
         panel_validation=panel_validation,
         low_confidence_papers=[],
         manual_download_papers=[],
-        favorite_journal_papers=FavoriteJournalSections([], [], [], [], [], [], [], [], [], []),
+        favorite_journal_papers=FavoriteJournalSections([], [], [], [], [], [], [], [], []),
         template_dir=ROOT / "templates",
         panel_date="2026-10-01",
         report_id="test",
@@ -846,81 +867,151 @@ def test_gene_without_associations_is_left_out(db_path: Path, hgnc_resolver: Hgn
     assert [g.hgnc_id for g in results.novel_genes] == [3]
     assert [g.hgnc_id for g in results.known_genes] == [1]
     statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
-    assert (statistics.total_genes_assessed, statistics.novel_genes_count) == (2, 1)
+    assert (statistics.total_genes_assessed, statistics.new_genes_count) == (2, 1)
     html = _render(db_path, results)
     assert 'id="novel-gene-3"' in html
     assert "REPEAT1" not in html
     assert "gene-2" not in html
 
 
-def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) -> GeneAssessment:
-    """A gene with one association, a highlighted new-MoI one when *highlighted*."""
-    association = ReportAssociation(
-        id=1,
-        position=0,
-        assessment=json.loads(
-            _association("d", status="new_moi" if highlighted else "existing", independent=2)
-        ),
+def _report_association(association_id: int, assessment_json: str) -> ReportAssociation:
+    assessment = json.loads(assessment_json)
+    return ReportAssociation(
+        id=association_id,
+        position=association_id,
+        assessment=assessment,
         disease_label="d",
         mondo=None,
         mondo_mapping=StageState.NOT_RUN,
-        rating=new,
+        rating=calculate_association_rating(assessment),
         disputes=[],
         variants=[],
         matched_panels=None,
         panel_matching=StageState.NOT_RUN,
     )
+
+
+@pytest.mark.parametrize(
+    ("association", "current_rating", "finding"),
+    [
+        # A new disease of a gene on a target panel, at any corpus rating
+        (_association("d", status="new_disease", independent=1), 3, (FindingKind.NEW_DISEASE, 1)),
+        # A new gene's new disease is no finding of its own
+        (_association("d", status="new_disease", green=True), None, None),
+        # A new MoI only once highlighted
+        (_association("d", status="new_moi", independent=2), 3, (FindingKind.NEW_MOI, 2)),
+        (_association("d", status="new_moi", independent=1), 1, None),
+        (_association("d", status="new_moi", independent=2), None, (FindingKind.NEW_MOI, 2)),
+        # An upgrade over PanelApp's rating of the association, whatever the gene's rating
+        (_association("d", panelapp_rating="AMBER", green=True), 2, (FindingKind.UPGRADE, 3, 2)),
+        (_association("d", panelapp_rating="RED", independent=2), 3, (FindingKind.UPGRADE, 2, 1)),
+        (_association("d", panelapp_rating="GREEN", green=True), 1, None),
+        (_association("d", panelapp_rating="AMBER", independent=2), 1, None),
+        # Without PanelApp's rating of the association, over the gene's current rating
+        (_association("d", panelapp_rating=None, independent=2), 1, (FindingKind.UPGRADE, 2, 1)),
+        (_association("d", panelapp_rating=None, green=True), 3, None),
+        (_association("d", panelapp_rating=None, green=True), None, None),
+    ],
+)
+def test_association_finding(
+    association: str,
+    current_rating: int | None,
+    finding: tuple[FindingKind, int] | tuple[FindingKind, int, int] | None,
+) -> None:
+    expected = None
+    if finding is not None:
+        kind, rating, *from_rating = finding
+        expected = Finding(kind, rating, 7, from_rating[0] if from_rating else None)
+    assert association_finding(_report_association(7, association), current_rating) == expected
+
+
+def _gene(
+    hgnc_id: int,
+    current_rating: int | None,
+    associations: list[str],
+    *,
+    reviewed: bool = True,
+) -> GeneAssessment:
+    """A gene GENE{hgnc_id} with these stored associations, sorted as the report sorts them."""
+    report_associations = sorted(
+        (_report_association(i, a) for i, a in enumerate(associations)),
+        key=lambda a: -a.rating,
+    )
+    evaluations = [{"rating": "GREEN"}] if reviewed else []
     return GeneAssessment(
-        hgnc_id=1,
-        hgnc_symbol=symbol,
-        associations=[association],
+        hgnc_id=hgnc_id,
+        hgnc_symbol=f"GENE{hgnc_id}",
+        associations=report_associations,
         unassessed_reports=[],
         quality_concerns=[],
-        existing_rating=existing,
-        new_rating=new,
+        current_rating=current_rating,
+        findings=gene_findings(report_associations, current_rating),
         contributing_papers=[],
         unassociated_variants=[],
-        prefill_json="{}",
-        existing_panel_reviews=[],
+        prefill=PrefillData("review", MENDELIOME_PANEL_ID, "HGNC:1", "GREEN", "", None, "", "", ""),
+        existing_panel_reviews=(
+            []
+            if current_rating is None
+            else [ExistingPanelReviews(panel_id=MENDELIOME_PANEL_ID, evaluations=evaluations)]
+        ),
         refused_papers=[],
     )
 
 
-def test_novel_sort_rating_then_highlighted_new_moi_then_symbol() -> None:
-    genes = [
-        _sortable("AAA", None, 2, False),
-        _sortable("BBB", None, 3, False),
-        _sortable("CCC", None, 2, True),
-        _sortable("ABC", None, 2, False),
+GREEN_NEW_DISEASE = _association("d", status="new_disease", green=True)
+AMBER_NEW_DISEASE = _association("d", status="new_disease", independent=2)
+AMBER_NEW_MOI = _association("d", status="new_moi", independent=2)
+RED_NEW_DISEASE = _association("d", status="new_disease", independent=1)
+CURATED_GREEN = _association("d", green=True)
+CURATED_RED = _association("d", independent=1)
+
+
+def test_genes_are_placed_once_by_their_strongest_finding() -> None:
+    genes = {
+        "new_amber": _gene(10, None, [AMBER_NEW_DISEASE]),
+        "new_amber_moi": _gene(11, None, [AMBER_NEW_DISEASE, AMBER_NEW_MOI]),
+        "new_red": _gene(12, None, [RED_NEW_DISEASE]),
+        # A RED gene with a GREEN new disease comes before a GREEN gene with two findings
+        "green_gene": _gene(20, 3, [GREEN_NEW_DISEASE, AMBER_NEW_DISEASE]),
+        "red_gene": _gene(21, 1, [GREEN_NEW_DISEASE]),
+        # A GREEN gene with only an AMBER new disease: its best finding is AMBER
+        "amber_finding": _gene(22, 3, [CURATED_GREEN, AMBER_NEW_DISEASE]),
+        "red_finding": _gene(23, 2, [RED_NEW_DISEASE]),
+        "unreviewed": _gene(30, 3, [CURATED_GREEN], reviewed=False),
+        "reviewed": _gene(31, 1, [CURATED_RED]),
+    }
+    novel = [g for g in genes.values() if g.is_novel]
+    known = [g for g in genes.values() if not g.is_novel]
+    groups = group_genes(novel, known, {MENDELIOME_PANEL_ID})
+
+    def layout(gene_groups: list[Any]) -> list[tuple[str, str, list[int], bool, bool]]:
+        return [
+            (g.key, g.label, [gene.hgnc_id for gene in g.genes], g.collapsed, g.preselected)
+            for g in gene_groups
+        ]
+
+    assert layout(groups.new_genes) == [
+        ("new-amber", "New gene AMBER", [11, 10], False, True),  # more findings first
+        ("new-red", "New gene RED", [12], True, True),
     ]
-    assert [g.hgnc_symbol for g in sorted(genes, key=novel_gene_sort_key)] == [
-        "BBB",
-        "CCC",
-        "AAA",
-        "ABC",
+    assert layout(groups.with_findings) == [
+        ("finding-green", "Best finding GREEN", [21, 20], False, True),
+        ("finding-amber", "Best finding AMBER", [22], False, True),
+        ("finding-red", "Best finding RED", [23], True, True),
+    ]
+    assert layout(groups.without_findings) == [
+        ("unreviewed", "Unreviewed on target panel", [30], False, False),
+        ("reviewed", "Already reviewed", [31], True, False),
+    ]
+    assert [(f.kind, f.rating) for f in genes["green_gene"].findings] == [
+        (FindingKind.NEW_DISEASE, 3),
+        (FindingKind.NEW_DISEASE, 2),
     ]
 
 
-def test_known_sort_existing_rating_then_corpus_rating_then_highlighted_new_moi() -> None:
-    genes = [
-        _sortable("GREEN1", 3, 3, False),
-        _sortable("AMBER_PLAIN", 2, 3, False),
-        _sortable("AMBER_NEW_MOI", 2, 3, True),
-        _sortable("AMBER_LOW", 2, 1, True),
-        _sortable("RED1", 1, 1, False),
-    ]
-    assert [g.hgnc_symbol for g in sorted(genes, key=known_gene_sort_key)] == [
-        "RED1",
-        "AMBER_NEW_MOI",
-        "AMBER_PLAIN",
-        "AMBER_LOW",
-        "GREEN1",
-    ]
-
-
-def test_known_sort_rejects_a_gene_without_existing_rating() -> None:
+def test_known_sort_rejects_a_gene_without_current_rating() -> None:
     with pytest.raises(ValueError, match="no rating on the target panels"):
-        known_gene_sort_key(_sortable("NOVEL", None, 3, False))
+        known_gene_sort_key(_gene(1, None, [AMBER_NEW_DISEASE]))
 
 
 def _screen(relevant: bool, confidence: str) -> dict[str, Any]:
@@ -1072,9 +1163,113 @@ def test_association_headings_show_the_relation_then_the_corpus_rating(
     # The novel gene's header already says "Not in panel", so its new disease shows no badge.
     novel = _article(html, "novel-gene-3")
     assert "new disease" not in novel
-    assert novel.count('class="rating-arrow"') == 1  # the gene header's
+    assert 'class="rating-arrow"' not in novel
     for removed in ("Basis:", "As described:", "Grouping:", "Matched panels:", "by Sonnet 5.5"):
         assert removed not in html
+
+
+def _toc(html: str) -> str:
+    return html[html.index('<nav class="toc">') : html.index("</nav>")]
+
+
+def _toc_section(html: str, key: str) -> str:
+    """The ToC section with data-section-key *key*."""
+    toc = _toc(html)
+    start = toc.index(f'data-section-key="{key}"')
+    return toc[start : toc.index("</ul>", start)]
+
+
+def _gene_header(article: str) -> str:
+    return article[: article.index("</h3>")]
+
+
+def test_known_gene_is_placed_once_under_its_best_finding_with_its_findings(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    """GENEA has a GREEN and an AMBER new disease and an AMBER new MoI."""
+    html = _render(db_path, results)
+    toc = _toc(html)
+    assert toc.count('href="#known-gene-1"') == 1
+    assert html.count('id="known-gene-1"') == 1
+    section = _toc_section(html, "finding-green")
+    assert 'data-section-label="Best finding GREEN" data-section-default' in section
+    assert re.findall(r'class="finding-chip rating-(\w+)" href="#association-(\d+)"', section) == [
+        ("green", "12"),
+        ("amber", "13"),
+        ("amber", "11"),
+    ]
+    assert 'data-title="new disease GREEN">D</a>' in section
+    assert 'data-title="new MoI AMBER">M</a>' in section
+    # The body places it under its group's heading, after the new genes
+    body = html[html.index("</nav>") :]
+    assert body.index('id="novel-gene-3"') < body.index('id="group-finding-green"')
+    assert body.index('id="group-finding-green"') < body.index('id="known-gene-1"')
+
+    header = _gene_header(_article(html, "known-gene-1"))
+    assert re.findall(
+        r'<a class="finding-badge rating-(\w+)" href="#association-(\d+)"[^>]*>([^<]+)</a>',
+        header,
+    ) == [
+        ("green", "12", "new disease GREEN"),
+        ("amber", "13", "new disease AMBER"),
+        ("amber", "11", "new MoI AMBER"),
+    ]
+
+
+def test_gene_headers_show_the_current_status_without_an_arrow(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    html = _render(db_path, results)
+    known = _gene_header(_article(html, "known-gene-1"))
+    assert "rating-arrow" not in known
+    order = [
+        '<span class="gene-status">On panel</span>',
+        '<span class="rating-badge rating-amber" data-title="The gene&#39;s highest rating',
+        'class="finding-badge',
+        'class="unreviewed-badge"',
+    ]
+    positions = [known.index(marker) for marker in order]
+    assert positions == sorted(positions)
+    assert "New MoI</span>" not in known
+
+    novel = _gene_header(_article(html, "novel-gene-3"))
+    assert "rating-arrow" not in novel
+    assert '<span class="rating-badge rating-grey">Not in panel</span>' in novel
+    assert "finding-badge" not in novel
+    assert "On panel" not in novel
+
+
+def test_green_gene_with_only_an_amber_finding(db_path: Path, hgnc_resolver: HgncResolver) -> None:
+    """A GREEN gene's review keeps GREEN when its best association is AMBER, and the gene
+    is placed by its AMBER finding."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM associations WHERE id = 12")
+    results = _load(db_path, hgnc_resolver, genea_rating=3)
+    genea = results.known_genes[0]
+    assert genea.top_rating == 2
+    assert (genea.prefill.form_type, genea.prefill.rating) == ("review", "GREEN")
+    config = json.loads(build_report_config("r", [MENDELIOME_PANEL_ID], [], [genea]))
+    assert config["genes"]["HGNC:1"]["suggested_rating"] == "GREEN"
+    novel = results.novel_genes[0]
+    assert (novel.prefill.form_type, novel.prefill.rating) == ("add", "GREEN")
+
+    groups = group_genes(results.novel_genes, results.known_genes, {MENDELIOME_PANEL_ID})
+    assert [(g.key, [gene.hgnc_id for gene in g.genes]) for g in groups.with_findings] == [
+        ("finding-amber", [1])
+    ]
+
+
+def test_statistics_count_genes_and_findings(db_path: Path, results: GeneAssessmentResults) -> None:
+    statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
+    assert (statistics.new_genes_count, statistics.known_genes_with_findings) == (1, 1)
+    assert (
+        statistics.new_disease_findings,
+        statistics.new_moi_findings,
+        statistics.upgrade_findings,
+    ) == (2, 1, 0)
+    assert "<strong>Findings:</strong> new diseases: 2, new MoIs: 1, upgrades: 0" in _render(
+        db_path, results
+    )
 
 
 @pytest.mark.parametrize(

@@ -97,12 +97,16 @@ class ResolvedGene:
 
 @dataclass
 class PanelGeneData:
-    """Combined gene data from PanelApp panels, keyed by HGNC ID."""
+    """The genes and STRs of the target panels, keyed by HGNC ID."""
 
     panel_ids: list[int]  # Ordered list of panel IDs
-    gene_confidence: dict[int, int]  # hgnc_id → confidence level
-    gene_panel_mapping: dict[int, set[int]]  # hgnc_id → set of panel IDs
-    gene_moi: dict[int, str]  # hgnc_id → mode of inheritance
+    # hgnc_id → {panel_id → confidence level} for the panels holding the gene; a panel
+    # holding it as both a gene and an STR gives the higher of the two
+    gene_panel_confidence: dict[int, dict[int, int]]
+
+    def highest_confidence(self, hgnc_id: int) -> int:
+        """The gene's highest confidence level across the target panels holding it."""
+        return max(self.gene_panel_confidence[hgnc_id].values())
 
 
 def find_gene_panel(
@@ -123,7 +127,7 @@ def find_gene_panel(
     Returns:
         Panel ID if found, None if gene is novel (not in any target panel).
     """
-    gene_panels = panel_data.gene_panel_mapping.get(hgnc_id, set())
+    gene_panels = panel_data.gene_panel_confidence.get(hgnc_id, {})
     for panel_id in target_panel_ids:
         if panel_id in gene_panels:
             return panel_id
@@ -397,9 +401,7 @@ class PanelAppClient:
 
         panel_data_cache = self._ensure_cache_loaded()
 
-        gene_confidence: dict[int, int] = {}
-        gene_moi: dict[int, str] = {}
-        gene_panel_mapping: dict[int, set[int]] = {}
+        gene_panel_confidence: dict[int, dict[int, int]] = {}
 
         for panel_id in panel_ids:
             panel_data = panel_data_cache[panel_id]
@@ -421,23 +423,14 @@ class PanelAppClient:
                         f"Entity '{entity_name}' in panel {panel_id} has no confidence_level"
                     )
 
-                gene_panel_mapping.setdefault(hgnc_id, set()).add(panel_id)
+                panels = gene_panel_confidence.setdefault(hgnc_id, {})
+                panels[panel_id] = max(panels.get(panel_id, 0), int(confidence_level))
 
-                # Use highest confidence across panels; track MoI from the same entity
-                confidence_int = int(confidence_level)
-                if hgnc_id not in gene_confidence or confidence_int > gene_confidence[hgnc_id]:
-                    gene_confidence[hgnc_id] = confidence_int
-                    moi = entity.get("mode_of_inheritance") or "Unknown"
-                    gene_moi[hgnc_id] = moi
-
-        logger.info(f"Loaded {len(gene_confidence)} genes from {len(panel_ids)} target panels")
-
-        return PanelGeneData(
-            panel_ids=panel_ids,
-            gene_confidence=gene_confidence,
-            gene_panel_mapping=gene_panel_mapping,
-            gene_moi=gene_moi,
+        logger.info(
+            f"Loaded {len(gene_panel_confidence)} genes from {len(panel_ids)} target panels"
         )
+
+        return PanelGeneData(panel_ids=panel_ids, gene_panel_confidence=gene_panel_confidence)
 
     def get_all_panels_genes(self) -> AllPanelsData:
         """Get genes from ALL panels using cached data, keyed by HGNC ID.

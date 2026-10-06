@@ -403,7 +403,7 @@
        findings shows their associations, strongest first, and folds the others; a gene
        without findings shows all its associations. #}
     {% macro gene_article_body(gene) %}
-        <div class="evidence-summary-expanded gene-associations">
+        <div class="gene-associations">
             {% for assoc in gene.finding_associations or gene.associations %}
             {{ association_block(assoc, gene) }}
             {% endfor %}

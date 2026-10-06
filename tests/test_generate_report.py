@@ -1623,12 +1623,12 @@ def test_association_body_hides_nr_lines(db_path: Path, results: GeneAssessmentR
     assert "Cited evidence" not in html
 
 
-def test_gene_body_box_then_gene_blocks_in_order(
+def test_gene_body_association_cards_then_gene_blocks_in_order(
     db_path: Path, results: GeneAssessmentResults
 ) -> None:
     known = _article(_render(db_path, results), "known-gene-1")
     order = [
-        'class="evidence-summary-expanded gene-associations"',
+        'class="gene-associations"',
         'id="association-11"',  # the last finding
         'class="other-associations"',  # the folded association without a finding
         'id="association-10"',
@@ -1641,6 +1641,7 @@ def test_gene_body_box_then_gene_blocks_in_order(
     assert positions == sorted(positions)
     assert "gnomAD v4 frequencies" not in known
     assert "PanelApp criteria assessment" not in known
+    assert "evidence-summary-expanded gene-associations" not in known
 
 
 def _set_genea_concerns(db_path: Path, concerns: dict[int, list[str]]) -> None:

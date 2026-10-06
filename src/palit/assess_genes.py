@@ -30,6 +30,8 @@ from palit.gencc import GeneGencc, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
     ALL_TIME,
+    FALLBACK_MODEL,
+    MODEL,
     BatchTransport,
     Effort,
     ImmediateTransport,
@@ -69,12 +71,23 @@ from palit.panelapp_integration import (
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 from palit.quotes import is_placeholder
 from palit.run_corpus import RUN_GENES
+from palit.variants import (
+    GeneVariant,
+    GnomadFrequency,
+    GnomadMiss,
+    VariantReport,
+    load_gene_variants,
+)
 
 app = typer.Typer(help="Aggregate evidence across papers into gene-disease-MoI associations")
 logger = logging.getLogger(__name__)
 
 STAGE = "assess_genes"
 EFFORT: Effort = "medium"
+# FALLBACK_MODEL rarely thinks at medium effort, and an aggregation needs a plan
+# before its first association.
+FALLBACK_EFFORT: Effort = "high"
+EFFORT_BY_MODEL: dict[str, Effort] = {MODEL: EFFORT, FALLBACK_MODEL: FALLBACK_EFFORT}
 MAX_TOKENS = 64000
 
 DB_TIMEOUT_SECONDS = 60
@@ -126,6 +139,24 @@ def replace_paper_ids_with_dois(
     for concern in parsed_json["quality_concerns"]:
         _replace_id_list(concern, paper_id_to_doi)
         _replace_citation_ids(concern["citations"], paper_id_to_doi)
+
+
+def replace_variant_ids(parsed_json: dict[str, Any], variant_id_to_key: dict[str, str]) -> None:
+    """Replace each association's ``variant_ids`` with ``variants``, their variant keys.
+
+    A variant ID is a row ID of the prompt's variant table (V1, V2, ...); its key
+    is the variant's ``variant_frequencies.variant_id``. Mutates parsed_json in
+    place and raises ValueError on the first unknown variant ID, a hallucination
+    that is retried.
+    """
+    for entity in parsed_json["disease_entities"]:
+        keys = []
+        for variant_id in entity.pop("variant_ids"):
+            key = variant_id_to_key.get(variant_id)
+            if key is None:
+                raise ValueError(f"Unknown variant ID: {variant_id}")
+            keys.append(key)
+        entity["variants"] = keys
 
 
 def _max_family_count(evidence: dict[str, Any]) -> int | None:
@@ -322,6 +353,11 @@ class PaperBatchProcessor:
             logger.debug(f"Found {len(evidence_list)} papers with evidence for HGNC:{hgnc_id}")
             return evidence_list
 
+    def get_variants_for_gene(self, hgnc_id: int, dois: list[str]) -> list[GeneVariant]:
+        """The gene's distinct variants reported by these papers."""
+        with closing(sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS)) as conn:
+            return load_gene_variants(conn.cursor(), hgnc_id, dois)
+
     def count_remaining(self) -> int:
         """The run's genes that have no aggregation yet."""
         with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
@@ -466,22 +502,127 @@ class PanelAppContext:
         return [{"panel_id": p.panel_id, "evaluations": p.evaluations} for p in self.panel_reviews]
 
 
+@dataclass(frozen=True)
+class VariantRow:
+    """One row of the prompt's variant table, its cells formatted."""
+
+    id: str  # V1, V2, ...
+    hgvs: str
+    paper_ids: str
+    gnomad: str
+
+
+def _scientific(value: float) -> str:
+    return "0" if value == 0 else f"{value:.2e}"
+
+
+def _gnomad_cell(gnomad: GnomadFrequency | GnomadMiss) -> str:
+    match gnomad:
+        case GnomadMiss.NOT_FOUND:
+            return "not in gnomAD"
+        case GnomadMiss.LOOKUP_FAILED:
+            return "lookup failed"
+        case GnomadFrequency():
+            cell = (
+                f"AF {_scientific(gnomad.allele_frequency)} (AC/AN {gnomad.ac}/{gnomad.an}); "
+                f"het {gnomad.heterozygote_count}, hom {gnomad.homozygote_count}, "
+                f"hemi {gnomad.hemizygote_count}"
+            )
+            if gnomad.faf95_popmax is None:
+                return cell
+            return (
+                f"{cell}; FAF95 popmax {_scientific(gnomad.faf95_popmax)} "
+                f"({gnomad.faf95_popmax_population})"
+            )
+
+
+def _hgvs_cell(reports: list[VariantReport]) -> str:
+    """The variant's HGVS forms across *reports*, or the papers' text when it was not normalised.
+
+    Papers may number the variant on different transcripts, so each distinct form is listed.
+    """
+    normalizations = [r.normalization for r in reports if r.normalization is not None]
+    if not normalizations:
+        return " / ".join(dict.fromkeys(r.original_text for r in reports))
+    forms = dict.fromkeys(f"{n.hgvs_c} ({n.hgvs_p.split(':')[-1]})" for n in normalizations)
+    cell = "; ".join(forms)
+    if all(n.candidate_count > 1 for n in normalizations):
+        cell += (
+            f" [written {reports[0].original_text}: {normalizations[0].candidate_count} "
+            "possible DNA changes, the one most frequent in gnomAD shown]"
+        )
+    return cell
+
+
+def _genomic_position(variant: GeneVariant) -> int:
+    """The position of a normalised variant's pseudo-VCF (chr-pos-ref-alt); 0 otherwise."""
+    if variant.gnomad == GnomadMiss.LOOKUP_FAILED:
+        return 0
+    return int(variant.variant_id.split("-")[1])
+
+
+def variant_table(
+    variants: list[GeneVariant], doi_to_paper_id: dict[str, str]
+) -> tuple[list[VariantRow], dict[str, GeneVariant]]:
+    """The prompt's variant table and its variant ID → variant mapping.
+
+    Rows go by their first reporting paper ID, then normalised variants by genomic
+    position before those whose lookup failed, by text.
+    """
+
+    def sort_key(variant: GeneVariant) -> tuple[str, bool, int, str]:
+        return (
+            min(doi_to_paper_id[doi] for doi in variant.dois),
+            variant.gnomad == GnomadMiss.LOOKUP_FAILED,
+            _genomic_position(variant),
+            variant.variant_id,
+        )
+
+    rows: list[VariantRow] = []
+    by_id: dict[str, GeneVariant] = {}
+    for i, variant in enumerate(sorted(variants, key=sort_key), 1):
+        variant_id = f"V{i}"
+        reports = sorted(variant.reports, key=lambda r: doi_to_paper_id[r.doi])
+        rows.append(
+            VariantRow(
+                id=variant_id,
+                hgvs=_hgvs_cell(reports),
+                paper_ids=", ".join(sorted({doi_to_paper_id[r.doi] for r in reports})),
+                gnomad=_gnomad_cell(variant.gnomad),
+            )
+        )
+        by_id[variant_id] = variant
+    return rows, by_id
+
+
+@dataclass(frozen=True)
+class RenderedPrompt:
+    """One gene's aggregation prompt and the mappings of the IDs it introduces."""
+
+    text: str
+    paper_id_to_doi: dict[str, str]
+    variants: dict[str, GeneVariant]  # by variant ID (V1, V2, ...)
+
+
 def render_prompt(
     template_path: Path,
     hgnc_symbol: str,
     evidence_list: list[dict[str, Any]],
+    variants: list[GeneVariant],
     context: PanelAppContext,
     panel_date: str,
     panel_formatted: str,
-) -> tuple[str, dict[str, str]]:
-    """The aggregation prompt for one gene and its paper_id → DOI mapping.
+) -> RenderedPrompt:
+    """The aggregation prompt for one gene, with its paper and variant ID mappings.
 
-    Generates {LastName}{Year} paper IDs for LLM-friendly citation. The LLM cites
-    by paper_id; the caller maps back to DOI after receiving the response.
+    Generates {LastName}{Year} paper IDs for LLM-friendly citation, and V1, V2, ...
+    IDs for the variant table. The LLM refers to papers and variants by these IDs;
+    the caller maps them back to DOIs and variant keys after receiving the response.
     ``panel_formatted`` is the scope panel's description in panel-scoped runs and
     empty otherwise.
     """
     paper_id_to_doi, doi_to_paper_id = generate_paper_ids(evidence_list)
+    variant_rows, variants_by_id = variant_table(variants, doi_to_paper_id)
     prompt_evidence = [
         {
             "paper_id": doi_to_paper_id[e["doi"]],
@@ -509,6 +650,7 @@ def render_prompt(
         gene_symbol=gene_symbol,
         hgnc_symbol=hgnc_symbol,
         evidence_extractions=json.dumps(prompt_evidence, indent=2),
+        variant_rows=variant_rows,
         paa_associations=context.gencc.paa_associations,
         panel_entries=context.panel_entries,
         all_panels=context.all_panels,
@@ -518,7 +660,7 @@ def render_prompt(
         panel_date=panel_date,
         panel_formatted=panel_formatted,
     )
-    return rendered, paper_id_to_doi
+    return RenderedPrompt(text=rendered, paper_id_to_doi=paper_id_to_doi, variants=variants_by_id)
 
 
 @dataclass
@@ -529,6 +671,7 @@ class _GeneBatchItem:
     hgnc_symbol: str
     prompt: str
     paper_id_to_doi: dict[str, str]
+    variants: dict[str, GeneVariant]  # by variant ID (V1, V2, ...)
     evidence_list: list[dict[str, Any]]
     filtered_papers: list[dict[str, Any]] | None
     context: PanelAppContext
@@ -618,10 +761,11 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
         all_panels=gene_record is not None and gene_record.all_panels,
         panel_reviews=panel_reviews,
     )
-    prompt, paper_id_to_doi = render_prompt(
+    prompt = render_prompt(
         prep.prompt_path,
         hgnc_symbol,
         evidence_list,
+        prep.db_processor.get_variants_for_gene(hgnc_id, [e["doi"] for e in evidence_list]),
         context,
         prep.record.panel_date,
         prep.panel_formatted,
@@ -629,8 +773,9 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
     return _GeneBatchItem(
         hgnc_id=hgnc_id,
         hgnc_symbol=hgnc_symbol,
-        prompt=prompt,
-        paper_id_to_doi=paper_id_to_doi,
+        prompt=prompt.text,
+        paper_id_to_doi=prompt.paper_id_to_doi,
+        variants=prompt.variants,
         evidence_list=evidence_list,
         filtered_papers=filtered_papers or None,
         context=context,
@@ -664,14 +809,21 @@ def genes_to_assess(db_path: Path, only: list[int] | None, history: StageHistory
     return [h for h in hgnc_ids if h in wanted]
 
 
-def build_request(item: _GeneBatchItem, output_config: OutputConfigParam, model: str) -> LlmRequest:
+def output_configs(schema: dict[str, Any]) -> dict[str, OutputConfigParam]:
+    """The structured-output config of each model, with that model's effort."""
+    return {model: json_output_config(schema, effort) for model, effort in EFFORT_BY_MODEL.items()}
+
+
+def build_request(
+    item: _GeneBatchItem, configs: dict[str, OutputConfigParam], model: str
+) -> LlmRequest:
     return LlmRequest(
         subject=str(item.hgnc_id),
         params={
             "model": model,
             "max_tokens": MAX_TOKENS,
             "messages": [{"role": "user", "content": item.prompt}],
-            "output_config": output_config,
+            "output_config": configs[model],
         },
     )
 
@@ -731,6 +883,8 @@ def association_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> li
 def log_association_warnings(assessment: dict[str, Any], item: _GeneBatchItem) -> None:
     """Inconsistencies worth reviewing but not worth another attempt."""
     gencc = item.context.gencc
+    variants = {v.variant_id: v for v in item.variants.values()}
+    variant_ids = {v.variant_id: variant_id for variant_id, v in item.variants.items()}
     anchor_mois: dict[str, set[str | None]] = {}
     for a in gencc.paa_associations:
         anchor_mois.setdefault(a.mondo_id, set()).add(a.moi)
@@ -777,6 +931,17 @@ def log_association_warnings(assessment: dict[str, Any], item: _GeneBatchItem) -
             logger.warning(
                 "%s: cites papers missing from its paper_ids: %s", label, sorted(uncited)
             )
+        unreported = [
+            f"{variant_ids[key]} ({key})"
+            for key in entity["variants"]
+            if not variants[key].dois & set(entity["dois"])
+        ]
+        if unreported:
+            logger.warning(
+                "%s: lists variants that none of its paper_ids reports: %s",
+                label,
+                ", ".join(unreported),
+            )
     # The report lists every paper with an extraction for the gene, so a paper the
     # aggregation leaves out stays visible there; the gene isn't worth losing over it.
     missing = uncovered_dois(assessment, dois_with_disease_entities(item.evidence_list))
@@ -813,7 +978,9 @@ def drop_placeholders_and_log_quotes(
 
 
 def assessment_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> list[str]:
-    """Problems that send a gene back for another attempt. Maps paper IDs to DOIs in place.
+    """Problems that send a gene back for another attempt.
+
+    Maps paper IDs to DOIs and variant IDs to variant keys in place.
 
     Expects an answer that validates against the full schema, with its criteria
     already converted to the stored list.
@@ -822,6 +989,10 @@ def assessment_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> lis
         replace_paper_ids_with_dois(assessment, item.paper_id_to_doi)
     except ValueError as e:
         return [f"hallucinated paper ID: {e}"]
+    try:
+        replace_variant_ids(assessment, {vid: v.variant_id for vid, v in item.variants.items()})
+    except ValueError as e:
+        return [f"hallucinated variant ID: {e}"]
     problems = []
     if not validate_entities_criteria_complete(assessment["disease_entities"]):
         problems.append("incomplete per-association criteria")
@@ -993,7 +1164,7 @@ async def _process_assessments(
             return stage_history(conn, STAGE, failures_since=failures_since)
 
     validator = jsonschema.Draft202012Validator(schema)
-    output_config = json_output_config(schema, EFFORT)
+    configs = output_configs(schema)
     items: dict[str, _GeneBatchItem] = {}
     skipped: set[int] = set()
 
@@ -1030,8 +1201,7 @@ async def _process_assessments(
             return
         logger.info("Attempt %d: assessing %d genes", attempt, len(batch))
         requests = [
-            build_request(item, output_config, history.model_for(str(item.hgnc_id)))
-            for item in batch
+            build_request(item, configs, history.model_for(str(item.hgnc_id))) for item in batch
         ]
         outcome = handle_results(await transport.run(STAGE, 1, requests), items, db_path, validator)
         logger.info(

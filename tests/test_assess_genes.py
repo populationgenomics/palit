@@ -12,6 +12,8 @@ import pytest
 from anthropic.types import Message
 
 from palit.assess_genes import (
+    EFFORT,
+    FALLBACK_EFFORT,
     STAGE,
     PanelAppContext,
     PanelReviews,
@@ -24,8 +26,10 @@ from palit.assess_genes import (
     genes_to_assess,
     handle_results,
     log_association_warnings,
+    output_configs,
     render_prompt,
     replace_paper_ids_with_dois,
+    replace_variant_ids,
     store_gene_aggregation,
     target_panels_holding,
     uncopied_citations,
@@ -37,7 +41,6 @@ from palit.llm import (
     MODEL,
     LlmResult,
     ResultStatus,
-    json_output_config,
     stage_history,
 )
 from palit.panelapp_check import INCIDENTALOME_SCOPE, CuratedRecord
@@ -48,6 +51,7 @@ from palit.panelapp_integration import (
     calculate_association_rating,
     criteria_object_to_list,
 )
+from palit.variants import GeneVariant, GnomadMiss, VariantReport
 
 ROOT = Path(__file__).resolve().parents[1]
 AARS1 = 20
@@ -153,6 +157,7 @@ def _association(**fields: Any) -> dict[str, Any]:
         "inheritance_details": "",
         "grouping_rationale": "g",
         "paper_ids": ["Smith2024"],
+        "variant_ids": ["V1"],
         "existing_association_mondo_id": "MONDO:0000001",
         "proposed_disease_name": None,
         "panelapp_relation": {"status": "existing", "existing_rating": "GREEN", "basis": "b"},
@@ -168,6 +173,8 @@ def _association(**fields: Any) -> dict[str, Any]:
             {"factor": "founder_or_recurrent_variant", "present": False, "details": "Not present"}
         ],
         "evidence_assessments": _criteria(),
+        "segregation": "segregates in 2 families",
+        "functional": "NR",
         "summary": "Smith2024 reports 4 individuals from 3 families.",
     }
     return association | fields
@@ -220,6 +227,19 @@ def _evidence(doi: str, author: str, year: str, entities: int = 1) -> dict[str, 
     }
 
 
+def _variant(variant_id: str, *dois: str) -> GeneVariant:
+    """A variant absent from gnomAD, reported by *dois*."""
+    return GeneVariant(
+        variant_id=variant_id,
+        gnomad=GnomadMiss.NOT_FOUND,
+        reports=tuple(VariantReport(doi, "q", variant_id, None) for doi in dois),
+    )
+
+
+VARIANTS = {"V1": _variant("1-100-A-G", "10.1/a"), "V2": _variant("1-200-C-T", "10.1/b")}
+VARIANT_KEYS = {variant_id: v.variant_id for variant_id, v in VARIANTS.items()}
+
+
 def _item(gencc_index: GenccIndex, evidence: list[dict[str, Any]] | None = None) -> _GeneBatchItem:
     evidence_list = evidence or [
         _evidence("10.1/a", "Smith", "2024"),
@@ -230,6 +250,7 @@ def _item(gencc_index: GenccIndex, evidence: list[dict[str, Any]] | None = None)
         hgnc_symbol="GENEA",
         prompt="",
         paper_id_to_doi=dict(PAPER_IDS),
+        variants=dict(VARIANTS),
         evidence_list=evidence_list,
         filtered_papers=None,
         context=PanelAppContext(
@@ -241,6 +262,7 @@ def _item(gencc_index: GenccIndex, evidence: list[dict[str, Any]] | None = None)
 def _stored_form(answer: dict[str, Any]) -> dict[str, Any]:
     criteria_object_to_list(answer["disease_entities"])
     replace_paper_ids_with_dois(answer, PAPER_IDS)
+    replace_variant_ids(answer, VARIANT_KEYS)
     return answer
 
 
@@ -281,6 +303,180 @@ def test_unknown_paper_id_is_rejected() -> None:
     criteria_object_to_list(answer["disease_entities"])
     with pytest.raises(ValueError, match="Invented2020"):
         replace_paper_ids_with_dois(answer, PAPER_IDS)
+
+
+def test_schema_requires_variant_ids_segregation_and_functional() -> None:
+    validator = jsonschema.Draft202012Validator(SCHEMA)
+    validator.validate(_answer(_association(variant_ids=[], segregation="NR", functional="NR")))
+    for field in ("variant_ids", "segregation", "functional"):
+        association = _association()
+        del association[field]
+        with pytest.raises(jsonschema.ValidationError, match=f"'{field}' is a required property"):
+            validator.validate(_answer(association))
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(_answer(_association(segregation="")))
+
+
+def test_variant_ids_become_variant_keys() -> None:
+    answer = _stored_form(_answer(_association(variant_ids=["V2", "V1", "V2"])))
+    association = answer["disease_entities"][0]
+    assert association["variants"] == ["1-200-C-T", "1-100-A-G", "1-200-C-T"]
+    assert "variant_ids" not in association
+    assert association["segregation"] == "segregates in 2 families"
+    assert association["functional"] == "NR"
+
+
+def test_unknown_variant_id_is_rejected(gencc_index: GenccIndex) -> None:
+    answer = _answer(_association(variant_ids=["V1", "V9"]))
+    criteria_object_to_list(answer["disease_entities"])
+    assert assessment_problems(answer, _item(gencc_index)) == [
+        "hallucinated variant ID: Unknown variant ID: V9"
+    ]
+
+
+def test_variants_none_of_whose_papers_the_association_uses_are_logged(
+    gencc_index: GenccIndex, caplog: pytest.LogCaptureFixture
+) -> None:
+    item = _item(gencc_index)
+    log_association_warnings(_stored_form(_answer(_association(variant_ids=["V1"]))), item)
+    assert "none of its paper_ids reports" not in caplog.text
+
+    answer = _answer(_association(variant_ids=["V1", "V2"]))
+    criteria_object_to_list(answer["disease_entities"])
+    assert assessment_problems(answer, item) == []
+    log_association_warnings(answer, item)
+    assert (
+        "GENEA 'disease A' (Biallelic): lists variants that none of its paper_ids reports: "
+        "V2 (1-200-C-T)"
+    ) in caplog.text
+
+
+def _frequency(ac: int, an: int, het: int, hom: int, faf: float | None, pop: str | None) -> str:
+    return json.dumps(
+        {
+            "ac": ac,
+            "an": an,
+            "homozygote_count": hom,
+            "heterozygote_count": het,
+            "hemizygote_count": 0,
+            "faf95_popmax": faf,
+            "faf95_popmax_population": pop,
+        }
+    )
+
+
+def _normalized(hgvs_c: str, hgvs_p: str, original_text: str, candidates: int = 1) -> str:
+    return json.dumps(
+        {
+            "hgvs_c": hgvs_c,
+            "hgvs_p": hgvs_p,
+            "original_text": original_text,
+            "total_normalizations": candidates,
+            "selected_for_max_ac": None,
+        }
+    )
+
+
+def test_prompt_lists_the_genes_variants_with_their_gnomad_figures(
+    tmp_path: Path, curated_record: CuratedRecord
+) -> None:
+    """One row per distinct variant of the gene's papers, by first reporting paper ID."""
+    db_path = tmp_path / "run.sqlite"
+    failed = json.dumps(
+        {
+            "original_text": "c.2990C>T",
+            "error_code": "NORMALIZATION_ESEQUENCEMISMATCH",
+            "error_message": "m",
+            "upstream": None,
+        }
+    )
+    not_found = json.dumps({"variant_not_found": True})
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, title, authors, source_date, source, source_type, "
+            "evidence_extraction_json) VALUES (?, 't', ?, ?, 'pubmed', 'initial', ?)",
+            [
+                ("10.1/a", "Smith, A", "2024-01-01", _extraction(GENEA, "GENEA")),
+                ("10.1/b", "Jones, B", "2023-01-01", _extraction(GENEA, "GENEA")),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (?, 'GENEA', ?, 'recent_evidence')",
+            [(GENEA, "10.1/a"), (GENEA, "10.1/b")],
+        )
+        conn.executemany(
+            "INSERT INTO variant_frequencies (variant_id, hgnc_id, paper_doi, quote, "
+            "normalization, gnomad) VALUES (?, ?, ?, 'q', ?, ?)",
+            [
+                (
+                    "1-200-C-T",
+                    GENEA,
+                    "10.1/a",
+                    _normalized("NM_1.1:c.30C>T", "NP_1.1:p.Arg10Ter", "p.R10*", candidates=2),
+                    _frequency(2, 1613934, 2, 0, None, None),
+                ),
+                (
+                    "1-100-G-A",
+                    GENEA,
+                    "10.1/a",
+                    _normalized("NM_1.1:c.20G>A", "NP_1.1:p.Arg7Gln", "p.R7Q"),
+                    _frequency(200, 1600000, 198, 1, 2.3e-05, "nfe"),
+                ),
+                (
+                    "1-100-G-A",
+                    GENEA,
+                    "10.1/b",
+                    _normalized("NM_2.1:c.50G>A", "NP_2.1:p.Arg17Gln", "c.50G>A"),
+                    _frequency(200, 1600000, 198, 1, 2.3e-05, "nfe"),
+                ),
+                (
+                    "1-50-T-C",
+                    GENEA,
+                    "10.1/b",
+                    _normalized("NM_2.1:c.10T>C", "NP_2.1:p.Leu4Pro", "c.10T>C"),
+                    not_found,
+                ),
+                ("c.2990C>T", GENEA, "10.1/b", failed, json.dumps({"normalization_error": True})),
+                # Not this gene's, and not from one of its papers:
+                ("1-300-A-T", GENEB, "10.1/a", failed, not_found),
+                ("1-400-A-T", GENEA, "10.1/z", failed, not_found),
+            ],
+        )
+    processor = PaperBatchProcessor(db_path)
+    evidence = processor.get_evidence_for_gene(GENEA)
+    assert all("variants" not in g for e in evidence for g in e["gene_evaluations"])
+    variants = processor.get_variants_for_gene(GENEA, [e["doi"] for e in evidence])
+
+    prompt = render_prompt(
+        PROMPT_PATH, "GENEA", evidence, variants, _context(curated_record, GENEA), "2026-09-01", ""
+    )
+
+    assert {vid: v.variant_id for vid, v in prompt.variants.items()} == {
+        "V1": "1-50-T-C",
+        "V2": "1-100-G-A",
+        "V3": "c.2990C>T",
+        "V4": "1-200-C-T",
+    }
+    assert (
+        "ID | HGVS | reported by | gnomAD v4.1\n"
+        "V1 | NM_2.1:c.10T>C (p.Leu4Pro) | Jones2023 | not in gnomAD\n"
+        "V2 | NM_2.1:c.50G>A (p.Arg17Gln); NM_1.1:c.20G>A (p.Arg7Gln) | Jones2023, Smith2024 | "
+        "AF 1.25e-04 (AC/AN 200/1600000); het 198, hom 1, hemi 0; FAF95 popmax 2.30e-05 (nfe)\n"
+        "V3 | c.2990C>T | Jones2023 | lookup failed\n"
+        "V4 | NM_1.1:c.30C>T (p.Arg10Ter) [written p.R10*: 2 possible DNA changes, the one most "
+        "frequent in gnomAD shown] | Smith2024 | AF 1.24e-06 (AC/AN 2/1613934); het 2, hom 0, "
+        "hemi 0\n\nEVIDENCE EXTRACTIONS TO AGGREGATE:"
+    ) in prompt.text
+
+
+def test_prompt_without_variants_says_so(curated_record: CuratedRecord) -> None:
+    prompt = _render(_context(curated_record, GENEA), "GENEA")
+    assert (
+        "VARIANTS OF GENEA (gnomAD v4.1):\nNone: the contributing papers report no variant of "
+        "GENEA, so every association's `variant_ids` is []."
+    ) in prompt
 
 
 def test_papers_left_out_are_logged_not_rejected(
@@ -529,11 +725,12 @@ def _context(
 
 def _render(context: PanelAppContext, symbol: str, panel_formatted: str = "") -> str:
     evidence = [_evidence("10.1/a", "Smith", "2024")]
-    prompt, mapping = render_prompt(
-        PROMPT_PATH, symbol, evidence, context, "2026-09-01", panel_formatted
+    prompt = render_prompt(
+        PROMPT_PATH, symbol, evidence, [], context, "2026-09-01", panel_formatted
     )
-    assert mapping == {"Smith2024": "10.1/a"}
-    return prompt
+    assert prompt.paper_id_to_doi == {"Smith2024": "10.1/a"}
+    assert prompt.variants == {}
+    return prompt.text
 
 
 def test_incidentalome_only_gene_shows_entries_from_all_panels(
@@ -721,11 +918,21 @@ def test_genes_refused_by_model_go_to_the_fallback_and_refused_for_good_ones_sta
     assert [history.model_for(str(g)) for g in (1, 2)] == [MODEL, FALLBACK_MODEL]
 
     item = _item(gencc_index)
-    output_config = json_output_config({"type": "object"}, "medium")
-    primary = build_request(item, output_config, MODEL)
-    fallback = build_request(item, output_config, FALLBACK_MODEL)
+    configs = output_configs({"type": "object"})
+    primary = build_request(item, configs, MODEL)
+    fallback = build_request(item, configs, FALLBACK_MODEL)
     assert fallback.params["model"] == FALLBACK_MODEL
-    assert {**fallback.params, "model": MODEL} == primary.params
+    assert {**fallback.params, "model": MODEL, "output_config": configs[MODEL]} == primary.params
+
+
+def test_a_fallback_model_request_carries_the_higher_effort(gencc_index: GenccIndex) -> None:
+    item = _item(gencc_index)
+    configs = output_configs(SCHEMA)
+    primary = build_request(item, configs, MODEL)
+    fallback = build_request(item, configs, FALLBACK_MODEL)
+    assert primary.params["output_config"]["effort"] == EFFORT == "medium"
+    assert fallback.params["output_config"]["effort"] == FALLBACK_EFFORT == "high"
+    assert fallback.params["output_config"]["format"] == primary.params["output_config"]["format"]
 
 
 def test_only_genes_with_recent_evidence_from_a_relevant_paper_are_assessed(

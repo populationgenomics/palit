@@ -41,6 +41,13 @@
                             "type": "string"
                         }
                     },
+                    "variant_ids": {
+                        "type": "array",
+                        "description": "IDs (V1, V2, ...) from the variant table of the variants this association's families carry; empty if none.",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
                     "existing_association_mondo_id": {
                         "type": [
                             "string",
@@ -231,6 +238,16 @@
                         ],
                         "additionalProperties": false
                     },
+                    "segregation": {
+                        "type": "string",
+                        "description": "The strongest segregation evidence across this association's papers, e.g. 'LOD 3.2' or 'de novo in 4 trios (parental testing)', or NR.",
+                        "minLength": 1
+                    },
+                    "functional": {
+                        "type": "string",
+                        "description": "The functional evidence for this association across its papers: systems and readouts, or NR.",
+                        "minLength": 1
+                    },
                     "summary": {
                         "type": "string",
                         "description": "Facts from the contributing papers for this association, about 45 words.",
@@ -243,6 +260,7 @@
                     "inheritance_details",
                     "grouping_rationale",
                     "paper_ids",
+                    "variant_ids",
                     "existing_association_mondo_id",
                     "proposed_disease_name",
                     "panelapp_relation",
@@ -256,6 +274,8 @@
                     "citations",
                     "evidence_weakening_factors",
                     "evidence_assessments",
+                    "segregation",
+                    "functional",
                     "summary"
                 ],
                 "additionalProperties": false

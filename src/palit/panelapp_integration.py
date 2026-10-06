@@ -115,6 +115,41 @@ ENUM_TO_PANELAPP_MOI = {
     "NR": "",
 }
 
+PATERNAL_ALLELE_EXPRESSED = "imprinted, paternal allele expressed"
+MATERNAL_ALLELE_EXPRESSED = "imprinted, maternal allele expressed"
+
+# The phrases an aggregated association's inheritance_details may hold, joined by "; "
+INHERITANCE_DETAILS_VOCABULARY: frozenset[str] = frozenset(
+    {
+        "reduced penetrance",
+        "variable expressivity",
+        "mosaic",
+        PATERNAL_ALLELE_EXPRESSED,
+        MATERNAL_ALLELE_EXPRESSED,
+        "sex-limited",
+    }
+)
+
+# The PanelApp MoI of a monoallelic gene whose associations name one imprinting direction.
+# A maternally imprinted gene is silenced on the maternal allele, so the paternal one is expressed.
+IMPRINTING_TO_PANELAPP_MOI = {
+    PATERNAL_ALLELE_EXPRESSED: (
+        "MONOALLELIC, autosomal or pseudoautosomal, maternally imprinted (paternal allele expressed)"
+    ),
+    MATERNAL_ALLELE_EXPRESSED: (
+        "MONOALLELIC, autosomal or pseudoautosomal, paternally imprinted (maternal allele expressed)"
+    ),
+}
+# The PanelApp MoI of a monoallelic gene whose associations name both imprinting directions
+IMPRINTED_STATUS_UNKNOWN_PANELAPP_MOI = (
+    "MONOALLELIC, autosomal or pseudoautosomal, imprinted status unknown"
+)
+
+
+def inheritance_details_items(details: str) -> list[str]:
+    """The "; "-separated items of an association's inheritance_details; none for ""."""
+    return details.split("; ") if details else []
+
 
 MondoMatch = Literal["panelapp_gencc", "exact", "broader"]
 
@@ -154,36 +189,28 @@ class PrefillData:
     comments: str  # one plain-text section per association
 
 
-def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> tuple[str, str]:
-    """Derive overall inheritance mode and details from disease_entities.
+def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> str:
+    """Derive the overall inheritance mode from disease_entities.
 
     PanelApp requires a single MoI per gene, but our schema captures MoI per
     disease entity. This function aggregates across entities for PanelApp compatibility.
 
     Args:
-        disease_entities: List of disease entity dicts, each with inheritance_mode
-            and inheritance_details fields
+        disease_entities: List of disease entity dicts, each with an inheritance_mode field
 
     Returns:
-        Tuple of (inheritance_mode, inheritance_details)
+        The inheritance mode:
         - If all entities have the same mode -> that mode
         - If mixed Monoallelic + Biallelic -> Monoallelic_and_biallelic
         - If mixed with X-linked/Mitochondrial -> Other
         - If all NR -> NR
     """
     modes: set[str] = set()
-    details_list: list[str] = []
 
     for entity in disease_entities:
         mode = entity.get("inheritance_mode")
         if mode and mode != "NR":
             modes.add(mode)
-        detail = entity.get("inheritance_details")
-        if detail and detail.strip():
-            details_list.append(detail)
-
-    # Combine details (unique, sorted)
-    combined_details = "; ".join(sorted(set(details_list))) if details_list else ""
 
     # Drop "Other" when more specific modes are present (e.g. a somatic
     # mosaicism entity alongside several Monoallelic entities should not
@@ -194,23 +221,49 @@ def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> tuple[str, s
 
     # Derive mode
     if not modes:
-        return "NR", combined_details
+        return "NR"
 
     if len(modes) == 1:
-        return modes.pop(), combined_details
+        return modes.pop()
 
     # Multiple modes - check for mono+bi combination
     if modes == {"Monoallelic", "Biallelic"}:
-        return "Monoallelic_and_biallelic", combined_details
+        return "Monoallelic_and_biallelic"
 
     # If Monoallelic_and_biallelic is already in there with either mono or bi
     if "Monoallelic_and_biallelic" in modes:
         remaining = modes - {"Monoallelic_and_biallelic", "Monoallelic", "Biallelic"}
         if not remaining:
-            return "Monoallelic_and_biallelic", combined_details
+            return "Monoallelic_and_biallelic"
 
     # Mixed with X-linked, Mitochondrial, or Other
-    return "Other", combined_details
+    return "Other"
+
+
+def derive_panelapp_moi(associations: list[dict[str, Any]]) -> str:
+    """The gene's PanelApp MoI string, aggregated over its associations.
+
+    A gene whose aggregate mode is Monoallelic takes its imprinting status from
+    the inheritance_details of its Monoallelic associations (the only ones that
+    yield that mode): one imprinting direction gives that direction's PanelApp
+    MoI, both give "imprinted status unknown", none gives "NOT imprinted".
+    Imprinting phrases on associations of other modes don't change the MoI.
+    """
+    mode = derive_aggregate_moi(associations)
+    if mode != "Monoallelic":
+        return ENUM_TO_PANELAPP_MOI[mode]
+    directions = {
+        item
+        for association in associations
+        if association["inheritance_mode"] == "Monoallelic"
+        for item in inheritance_details_items(association["inheritance_details"])
+        if item in IMPRINTING_TO_PANELAPP_MOI
+    }
+    if not directions:
+        return ENUM_TO_PANELAPP_MOI["Monoallelic"]
+    if len(directions) == 1:
+        return IMPRINTING_TO_PANELAPP_MOI[directions.pop()]
+    return IMPRINTED_STATUS_UNKNOWN_PANELAPP_MOI
 
 
 def prefill_phenotype(association: PrefillAssociation) -> str:
@@ -260,9 +313,9 @@ def prepare_prefill_data(
     """One PanelApp prefill for the gene, as the union over its associations.
 
     The rating is the top association rating and the MoI is aggregated over all
-    associations. Phenotypes, publications and comment sections follow the order
-    of *associations* (the report's order); repeated phenotypes and publications
-    are listed once.
+    associations (see derive_panelapp_moi). Phenotypes, publications and comment
+    sections follow the order of *associations* (the report's order); repeated
+    phenotypes and publications are listed once.
 
     Args:
         hgnc_id: HGNC ID (integer) of the gene
@@ -277,9 +330,6 @@ def prepare_prefill_data(
     assessments = [a.assessment for a in associations]
     rating_str = panelapp_confidence_to_color(calculate_gene_rating(assessments)).upper()
 
-    inheritance_mode, _ = derive_aggregate_moi(assessments)
-    moi = ENUM_TO_PANELAPP_MOI[inheritance_mode]
-
     dois = dict.fromkeys(doi for assessment in assessments for doi in assessment["dois"])
     publications = ";".join(
         doi if (pmid := doi_to_pmid[doi]) is None else str(pmid) for doi in dois
@@ -293,7 +343,7 @@ def prepare_prefill_data(
         panel_id=panel_id,
         hgnc_id=f"HGNC:{hgnc_id}",
         rating=rating_str,
-        moi=moi,
+        moi=derive_panelapp_moi(assessments),
         mode_of_pathogenicity=None,
         publications=publications,
         phenotypes=phenotypes,

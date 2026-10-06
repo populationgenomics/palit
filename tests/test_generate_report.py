@@ -14,7 +14,6 @@ from palit.assess_relevance import Refusal, refused_assessment
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.generate_report import (
-    INHERITANCE_DETAILS_VOCABULARY,
     FavoriteJournalSections,
     GeneAssessment,
     GeneAssessmentResults,
@@ -24,6 +23,7 @@ from palit.generate_report import (
     StageState,
     build_gene_assessment_results,
     calculate_comprehensive_statistics,
+    combine_inheritance_details,
     format_inheritance,
     generate_html_report,
     is_highlighted_new_moi,
@@ -985,19 +985,22 @@ def test_association_headings_show_the_relation_then_the_corpus_rating(
             "mosaic; imprinted, paternal allele expressed",
             "Monoallelic (mosaic; imprinted, paternal allele expressed)",
         ),
-        ("de novo", "Monoallelic"),
-        ("reduced penetrance; consanguineous family", "Monoallelic"),
-        ("Reduced penetrance", "Monoallelic"),
-        ("reduced penetrance;variable expressivity", "Monoallelic"),
+        ("de novo", "Monoallelic (de novo)"),
+        (
+            "reduced penetrance; consanguineous family",
+            "Monoallelic (reduced penetrance; consanguineous family)",
+        ),
     ],
 )
-def test_inheritance_details_show_only_from_the_vocabulary(details: str, shown: str) -> None:
+def test_inheritance_details_show_verbatim(details: str, shown: str) -> None:
     assert format_inheritance("Monoallelic", details) == shown
 
 
-def test_the_aggregation_prompt_and_schema_name_the_inheritance_details_vocabulary() -> None:
-    prompt = (ROOT / "prompts" / "aggregate_assessment_prompt.j2").read_text()
-    schema = (ROOT / "prompts" / "aggregate_assessment_schema.json").read_text()
-    for phrase in INHERITANCE_DETAILS_VOCABULARY:
-        assert f'"{phrase}"' in prompt
-        assert f'\\"{phrase}\\"' in schema
+def test_paper_inheritance_details_combine_distinct_and_sorted() -> None:
+    entities = [
+        {"inheritance_details": "imprinting"},
+        {"inheritance_details": ""},
+        {"inheritance_details": "de novo"},
+        {"inheritance_details": "imprinting"},
+    ]
+    assert combine_inheritance_details(entities) == "de novo; imprinting"

@@ -306,6 +306,25 @@ def test_papers_left_out_are_logged_not_rejected(
     assert assessment_problems(unmapped, item) == []
 
 
+def test_inheritance_details_outside_the_vocabulary_are_logged_not_rejected(
+    gencc_index: GenccIndex, caplog: pytest.LogCaptureFixture
+) -> None:
+    item = _item(gencc_index)
+    answer = _stored_form(_answer(_association(inheritance_details="reduced penetrance; mosaic")))
+    log_association_warnings(answer, item)
+    assert "outside the vocabulary" not in caplog.text
+
+    details = "reduced penetrance; consanguineous"
+    unmapped = _answer(_association(inheritance_details=details))
+    criteria_object_to_list(unmapped["disease_entities"])
+    assert assessment_problems(unmapped, item) == []
+    log_association_warnings(_stored_form(_answer(_association(inheritance_details=details))), item)
+    assert (
+        f"GENEA 'disease A' (Biallelic): inheritance_details {details!r} has items outside "
+        "the vocabulary: ['consanguineous']"
+    ) in caplog.text
+
+
 def test_association_fields_are_checked(gencc_index: GenccIndex) -> None:
     item = _item(gencc_index)
     answer = _stored_form(

@@ -1,10 +1,14 @@
 """Tests for the per-gene PanelApp prefill built from a gene's associations."""
 
+from pathlib import Path
 from typing import Any
+
+import pytest
 
 from palit.gencc import MondoRef
 from palit.panelapp_integration import (
     ENUM_TO_PANELAPP_MOI,
+    INHERITANCE_DETAILS_VOCABULARY,
     PANELAPP_CRITERIA,
     MondoMatch,
     MondoTerm,
@@ -13,6 +17,7 @@ from palit.panelapp_integration import (
     prepare_prefill_data,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
 HGNC_ID = 6772
 PANEL_ID = 137
 
@@ -22,13 +27,14 @@ def _assessment(
     green: bool = False,
     independent: int = 1,
     inheritance_mode: str = "Monoallelic",
+    inheritance_details: str = "",
     dois: list[str] | None = None,
     proposed_disease_name: str | None = None,
     summary: str = "Summary.",
 ) -> dict[str, Any]:
     return {
         "inheritance_mode": inheritance_mode,
-        "inheritance_details": "",
+        "inheritance_details": inheritance_details,
         "independent_family_count": independent,
         "evidence_assessments": [
             {"name": name, "result": green or name in ("criterion_D", "criterion_E")}
@@ -93,6 +99,78 @@ def test_moi_aggregates_over_all_associations() -> None:
         {},
     )
     assert prefill.moi == ENUM_TO_PANELAPP_MOI["Monoallelic_and_biallelic"]
+
+
+PATERNAL = "imprinted, paternal allele expressed"
+MATERNAL = "imprinted, maternal allele expressed"
+
+
+@pytest.mark.parametrize(
+    ("details", "moi"),
+    [
+        (
+            ["reduced penetrance; " + PATERNAL, PATERNAL],
+            "MONOALLELIC, autosomal or pseudoautosomal, "
+            "maternally imprinted (paternal allele expressed)",
+        ),
+        (
+            [MATERNAL, ""],
+            "MONOALLELIC, autosomal or pseudoautosomal, "
+            "paternally imprinted (maternal allele expressed)",
+        ),
+        (
+            [PATERNAL, "mosaic; " + MATERNAL],
+            "MONOALLELIC, autosomal or pseudoautosomal, imprinted status unknown",
+        ),
+        (["reduced penetrance", ""], ENUM_TO_PANELAPP_MOI["Monoallelic"]),
+    ],
+)
+def test_monoallelic_moi_carries_the_imprinting_direction(details: list[str], moi: str) -> None:
+    associations = [
+        PrefillAssociation(
+            _assessment(inheritance_details=d, proposed_disease_name=f"disease {i}"), None
+        )
+        for i, d in enumerate(details)
+    ]
+    # An "Other" association does not change the Monoallelic mode or its imprinting status.
+    other = _assessment(
+        inheritance_mode="Other", inheritance_details=MATERNAL, proposed_disease_name="other"
+    )
+    associations.append(PrefillAssociation(other, None))
+    assert _prefill(associations, {}).moi == moi
+
+
+def test_imprinting_does_not_change_other_modes() -> None:
+    prefill = _prefill(
+        [
+            PrefillAssociation(
+                _assessment(
+                    inheritance_mode="Monoallelic",
+                    inheritance_details=PATERNAL,
+                    proposed_disease_name="a",
+                ),
+                None,
+            ),
+            PrefillAssociation(
+                _assessment(
+                    inheritance_mode="Biallelic",
+                    inheritance_details=MATERNAL,
+                    proposed_disease_name="b",
+                ),
+                None,
+            ),
+        ],
+        {},
+    )
+    assert prefill.moi == ENUM_TO_PANELAPP_MOI["Monoallelic_and_biallelic"]
+
+
+def test_the_aggregation_prompt_and_schema_name_the_inheritance_details_vocabulary() -> None:
+    prompt = (ROOT / "prompts" / "aggregate_assessment_prompt.j2").read_text()
+    schema = (ROOT / "prompts" / "aggregate_assessment_schema.json").read_text()
+    for phrase in INHERITANCE_DETAILS_VOCABULARY:
+        assert f'"{phrase}"' in prompt
+        assert f'\\"{phrase}\\"' in schema
 
 
 def test_phenotype_per_mondo_match() -> None:

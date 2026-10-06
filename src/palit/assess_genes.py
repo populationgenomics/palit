@@ -57,9 +57,11 @@ from palit.panelapp_client import (
     format_panel_for_prompt,
 )
 from palit.panelapp_integration import (
+    INHERITANCE_DETAILS_VOCABULARY,
     NEW_RELATION_STATUSES,
     calculate_association_rating,
     criteria_object_to_list,
+    inheritance_details_items,
     panelapp_confidence_to_color,
     validate_entities_criteria_complete,
     validate_independent_family_counts,
@@ -738,6 +740,19 @@ def log_association_warnings(assessment: dict[str, Any], item: _GeneBatchItem) -
         label = f"{item.hgnc_symbol} {entity['description']!r} ({entity['inheritance_mode']})"
         if status in NEW_RELATION_STATUSES and relation["existing_rating"] is not None:
             logger.warning("%s: %s association with existing_rating %s", label, status, relation)
+        details = entity["inheritance_details"]
+        unknown_details = [
+            item
+            for item in inheritance_details_items(details)
+            if item not in INHERITANCE_DETAILS_VOCABULARY
+        ]
+        if unknown_details:
+            logger.warning(
+                "%s: inheritance_details %r has items outside the vocabulary: %s",
+                label,
+                details,
+                unknown_details,
+            )
         mondo_id = entity["existing_association_mondo_id"]
         if mondo_id is not None and status in NEW_RELATION_STATUSES:
             if entity["inheritance_mode"] in anchor_mois[mondo_id]:

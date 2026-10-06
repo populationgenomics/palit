@@ -64,18 +64,6 @@ GNOMAD_HET_THRESHOLD = 30  # Monoallelic (dominant) - heterozygote count
 GNOMAD_HOM_THRESHOLD = 15  # Biallelic (recessive) - homozygote count
 GNOMAD_HEMI_THRESHOLD = 30  # X-linked - hemizygote count
 
-# The inheritance details the report shows next to a mode of inheritance, joined by "; "
-INHERITANCE_DETAILS_VOCABULARY: frozenset[str] = frozenset(
-    {
-        "reduced penetrance",
-        "variable expressivity",
-        "mosaic",
-        "imprinted, paternal allele expressed",
-        "imprinted, maternal allele expressed",
-        "sex-limited",
-    }
-)
-
 # A new_moi association is highlighted only from this many independent families on
 MIN_FAMILIES_FOR_MOI_EXPANSION = 2
 
@@ -1159,7 +1147,7 @@ def load_gene(
         quality_concerns=gene_level["quality_concerns"],
         existing_rating=None if is_novel else target_panel_data.gene_confidence[hgnc_id],
         new_rating=calculate_gene_rating(association_jsons),
-        aggregate_moi=derive_aggregate_moi(association_jsons)[0],
+        aggregate_moi=derive_aggregate_moi(association_jsons),
         contributing_papers=contributing_papers,
         variant_frequencies=load_variant_frequencies_for_gene(cursor, hgnc_id, contributing_papers),
         missing_panels=missing_panels,
@@ -1840,17 +1828,21 @@ def calculate_comprehensive_statistics(
 
 
 def format_inheritance(mode: str, details: str = "") -> str:
-    """The mode for display, with *details* in parentheses if they are in the vocabulary.
-
-    *details* show only when every "; "-separated item of them is in
-    INHERITANCE_DETAILS_VOCABULARY; other details, such as segregation or
-    zygosity notes, are left out.
-    """
+    """The mode for display, followed by *details* in parentheses when there are any."""
     formatted_mode = mode.replace("_", " ")
-    items = details.split("; ") if details else []
-    if items and all(item in INHERITANCE_DETAILS_VOCABULARY for item in items):
+    if details and details.strip():
         return f"{formatted_mode} ({details})"
     return formatted_mode
+
+
+def combine_inheritance_details(disease_entities: list[dict[str, Any]]) -> str:
+    """The distinct non-empty inheritance_details of *disease_entities*, sorted, joined by "; "."""
+    details = {
+        detail
+        for entity in disease_entities
+        if (detail := entity.get("inheritance_details")) and detail.strip()
+    }
+    return "; ".join(sorted(details))
 
 
 def get_variant_frequency_flag(variant: VariantFrequency, inheritance_mode: str) -> dict[str, Any]:
@@ -2087,8 +2079,8 @@ def generate_html_report(
     # decode %2F back to / (e.g. 10.1038%252Fxyz → opens 10.1038%2Fxyz.pdf).
     env.filters["paper_key"] = doi_to_key
     env.filters["short_id"] = lambda display_id: display_id.removeprefix("PMID ")
-    env.filters["derive_moi"] = lambda pgs: derive_aggregate_moi(pgs)[0]
-    env.filters["derive_moi_details"] = lambda pgs: derive_aggregate_moi(pgs)[1]
+    env.filters["derive_moi"] = derive_aggregate_moi
+    env.filters["derive_moi_details"] = combine_inheritance_details
     env.filters["papers_for_dois"] = papers_for_dois
     env.filters["unreviewed_target_panels"] = lambda gene: unreviewed_target_panels(
         gene, target_panel_id_set

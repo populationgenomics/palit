@@ -396,7 +396,7 @@ class GeneAssessment:
     associations: list[ReportAssociation]  # by corpus rating, then independent families
     unassessed_reports: list[dict[str, Any]]  # [{phenotype, inheritance_mode, dois, reason}]
     quality_concerns: list[dict[str, Any]]  # [{concern, dois, citations}]
-    existing_rating: int | None  # the gene's rating on its first target panel; None if novel
+    existing_rating: int | None  # the gene's highest rating on the target panels; None if novel
     new_rating: int  # the top association rating: 3 (GREEN), 2 (AMBER), 1 (RED)
     aggregate_moi: str  # derive_aggregate_moi over the associations, for gnomAD flags
     contributing_papers: list[DetailedPaper]

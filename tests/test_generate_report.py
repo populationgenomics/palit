@@ -540,7 +540,7 @@ def test_novel_and_known_split(results: GeneAssessmentResults) -> None:
     ]
     geneb = results.novel_genes[0]
     assert geneb.current_rating is None
-    assert geneb.findings == []  # a new gene's new disease is no finding of its own
+    assert geneb.findings == [Finding(FindingKind.NEW_DISEASE, 3, 20, None)]
 
 
 def test_associations_by_rating_then_independent_families(results: GeneAssessmentResults) -> None:
@@ -707,10 +707,10 @@ def test_prefill_unions_the_associations_in_report_order(results: GeneAssessment
     assert prefill["publications"] == "111"
     assert [section.split("\n")[0] for section in prefill["comments"].split("\n\n")] == [
         "GENEA-related ataxia variant, MONDO:0000200 (broader MONDO term: ataxia)"
-        " | Monoallelic | GREEN in this corpus",
-        "GENEA-related other disease | Monoallelic | AMBER in this corpus",
-        "GENEA-related biallelic disease | Biallelic | AMBER in this corpus",
-        "disease A, replacement, MONDO:0000009 | Monoallelic | RED in this corpus",
+        " | Monoallelic | GREEN on the papers reviewed",
+        "GENEA-related other disease | Monoallelic | AMBER on the papers reviewed",
+        "GENEA-related biallelic disease | Biallelic | AMBER on the papers reviewed",
+        "disease A, replacement, MONDO:0000009 | Monoallelic | RED on the papers reviewed",
     ]
     assert prefill["comments"].split("\n")[1] == "PMID 111 reports ataxia variant."
     novel = json.loads(results.novel_genes[0].prefill_json)
@@ -746,15 +746,31 @@ def _render(
 
 
 def _panels(section: str) -> str:
-    """The Panels block of an association section."""
-    start = section.index('<div class="association-panels">')
-    return section[start : section.index("</div>", start)]
+    """The Panels block of an association section: a collapsed list of its matched
+    panels, or a note why there is none."""
+    match = re.search(r'<(details|p) class="association-panels">.*?</\1>', section, re.DOTALL)
+    assert match is not None
+    return match.group()
+
+
+def _strip_tags(html: str) -> str:
+    return re.sub(r"<[^>]+>", "", html)
+
+
+def _panel_summary(section: str) -> str:
+    """The summary line of an association's collapsed Panels list, tags stripped."""
+    panels = _panels(section)
+    assert panels.startswith('<details class="association-panels">')
+    match = re.search(r"<summary>(.*?)</summary>", panels, re.DOTALL)
+    assert match is not None
+    return _strip_tags(match.group(1))
 
 
 def _panel_items(section: str) -> list[str]:
     """The Panels list items of an association section, tags stripped."""
-    items = re.findall(r"<li>(.*?)</li>", _panels(section), re.DOTALL)
-    return [re.sub(r"<[^>]+>", "", item) for item in items]
+    return [
+        _strip_tags(item) for item in re.findall(r"<li>(.*?)</li>", _panels(section), re.DOTALL)
+    ]
 
 
 def test_each_association_lists_its_panels_after_its_papers(
@@ -764,6 +780,12 @@ def test_each_association_lists_its_panels_after_its_papers(
     html = _render(db_path, results)
     reused = _association_section(html, 10)
     assert reused.index("<strong>Papers:</strong>") < reused.index("<strong>Panels:</strong>")
+    # The summary names the panels in the list's order, noting those the gene is already on
+    assert _panel_summary(reused) == "Panels: Epilepsy, Ataxia (already on)"
+    assert (
+        '<summary><strong>Panels:</strong> Epilepsy, Ataxia <span class="muted">(already on)</span>'
+        "</summary>"
+    ) in reused
     assert _panel_items(reused) == [
         "Epilepsy: epilepsy too",
         "Ataxia (gene already on panel): ataxia",
@@ -772,13 +794,16 @@ def test_each_association_lists_its_panels_after_its_papers(
         f'<a href="https://panelapp-aus.org/panels/{EPILEPSY_PANEL_ID}" target="_blank">'
         "<strong>Epilepsy</strong></a>: epilepsy too"
     ) in reused
+    assert _panel_summary(_association_section(html, 11)) == "Panels: Epilepsy"
     assert _panel_items(_association_section(html, 11)) == ["Epilepsy: seizures"]
+    assert _panel_summary(_association_section(html, 12)) == "Panels: Ataxia (already on)"
     assert _panel_items(_association_section(html, 12)) == [
         "Ataxia (gene already on panel): cerebellar"
     ]
-    assert (
-        '<span class="muted">not matched yet: match-panels has not run for this association</span>'
-        in _panels(_association_section(html, 13))
+    # Without a match, the note stands in a plain paragraph, not a collapsed list
+    assert _panels(_association_section(html, 13)) == (
+        '<p class="association-panels"><strong>Panels:</strong> <span class="muted">'
+        "not matched yet: match-panels has not run for this association</span></p>"
     )
     assert "<li><strong>Panel Suggestions:</strong> 1</li>" in html
     assert "Suggested panels" not in html
@@ -790,8 +815,10 @@ def test_association_matched_to_no_panel_says_so(
     with sqlite3.connect(db_path) as conn:
         conn.execute("UPDATE associations SET matched_panels_json = '[]' WHERE id = 13")
     panels = _panels(_association_section(_render(db_path, _load(db_path, hgnc_resolver)), 13))
-    assert '<span class="muted">matched to no panel</span>' in panels
-    assert "<li>" not in panels
+    assert panels == (
+        '<p class="association-panels"><strong>Panels:</strong> '
+        '<span class="muted">matched to no panel</span></p>'
+    )
 
 
 def test_report_says_which_associations_were_refused_or_failed(
@@ -896,8 +923,8 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
     [
         # A new disease of a gene on a target panel, at any corpus rating
         (_association("d", status="new_disease", independent=1), 3, (FindingKind.NEW_DISEASE, 1)),
-        # A new gene's new disease is no finding of its own
-        (_association("d", status="new_disease", green=True), None, None),
+        # A new gene's new disease too
+        (_association("d", status="new_disease", green=True), None, (FindingKind.NEW_DISEASE, 3)),
         # A new MoI only once highlighted
         (_association("d", status="new_moi", independent=2), 3, (FindingKind.NEW_MOI, 2)),
         (_association("d", status="new_moi", independent=1), 1, None),
@@ -992,12 +1019,12 @@ def test_genes_are_placed_once_by_their_strongest_finding() -> None:
 
     assert layout(groups.new_genes) == [
         ("new-amber", "New gene AMBER", [11, 10], False, True),  # more findings first
-        ("new-red", "New gene RED", [12], True, True),
+        ("new-red", "New gene RED", [12], False, True),
     ]
     assert layout(groups.with_findings) == [
         ("finding-green", "Best finding GREEN", [21, 20], False, True),
         ("finding-amber", "Best finding AMBER", [22], False, True),
-        ("finding-red", "Best finding RED", [23], True, True),
+        ("finding-red", "Best finding RED", [23], False, True),
     ]
     assert layout(groups.without_findings) == [
         ("unreviewed", "Unreviewed on target panel", [30], False, False),
@@ -1007,6 +1034,15 @@ def test_genes_are_placed_once_by_their_strongest_finding() -> None:
         (FindingKind.NEW_DISEASE, 3),
         (FindingKind.NEW_DISEASE, 2),
     ]
+    # A new gene's new diseases are findings, but it is placed by its top association
+    assert {
+        name: [(f.kind, f.rating) for f in genes[name].findings]
+        for name in ("new_amber", "new_amber_moi", "new_red")
+    } == {
+        "new_amber": [(FindingKind.NEW_DISEASE, 2)],
+        "new_amber_moi": [(FindingKind.NEW_DISEASE, 2), (FindingKind.NEW_MOI, 2)],
+        "new_red": [(FindingKind.NEW_DISEASE, 1)],
+    }
 
 
 def test_known_sort_rejects_a_gene_without_current_rating() -> None:
@@ -1160,10 +1196,12 @@ def test_association_headings_show_the_relation_then_the_corpus_rating(
     assert known.count(">new disease</span>") == 2
     assert known.count('data-title="PanelApp Australia: b">GREEN</span>') == 1
     assert known.count(">\N{HEAVY PLUS SIGN} new MoI</span>") == 1
-    # The novel gene's header already says "Not in panel", so its new disease shows no badge.
+    # The novel gene's header already says "Not in panel", so its new disease's heading
+    # shows the rating alone; the finding is a header badge only.
     novel = _article(html, "novel-gene-3")
-    assert "new disease" not in novel
+    assert ">new disease</span>" not in novel
     assert 'class="rating-arrow"' not in novel
+    assert novel.count("new disease GREEN</a>") == 1
     for removed in ("Basis:", "As described:", "Grouping:", "Matched panels:", "by Sonnet 5.5"):
         assert removed not in html
 
@@ -1235,7 +1273,10 @@ def test_gene_headers_show_the_current_status_without_an_arrow(
     novel = _gene_header(_article(html, "novel-gene-3"))
     assert "rating-arrow" not in novel
     assert '<span class="rating-badge rating-grey">Not in panel</span>' in novel
-    assert "finding-badge" not in novel
+    assert re.findall(
+        r'<a class="finding-badge rating-(\w+)" href="#association-(\d+)"[^>]*>([^<]+)</a>', novel
+    ) == [("green", "20", "new disease GREEN")]
+    assert novel.index("Not in panel") < novel.index('class="finding-badge')
     assert "On panel" not in novel
 
 
@@ -1262,12 +1303,13 @@ def test_green_gene_with_only_an_amber_finding(db_path: Path, hgnc_resolver: Hgn
 def test_statistics_count_genes_and_findings(db_path: Path, results: GeneAssessmentResults) -> None:
     statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
     assert (statistics.new_genes_count, statistics.known_genes_with_findings) == (1, 1)
+    # GENEA's two new diseases and new MoI, and the new gene GENEB's new disease
     assert (
         statistics.new_disease_findings,
         statistics.new_moi_findings,
         statistics.upgrade_findings,
-    ) == (2, 1, 0)
-    assert "<strong>Findings:</strong> new diseases: 2, new MoIs: 1, upgrades: 0" in _render(
+    ) == (3, 1, 0)
+    assert "<strong>Findings:</strong> new diseases: 3, new MoIs: 1, upgrades: 0" in _render(
         db_path, results
     )
 

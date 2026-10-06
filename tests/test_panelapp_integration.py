@@ -284,11 +284,11 @@ def test_comment_sections_in_association_order_with_headings() -> None:
         {},
     )
     assert prefill.comments.split("\n\n") == [
-        "craniosynostosis 7, MONDO:0044315 | Monoallelic | GREEN in this corpus\n"
+        "craniosynostosis 7, MONDO:0044315 | Monoallelic | GREEN on the papers reviewed\n"
         "PMID 1 reports 18 families.",
         "SMAD6-related HHT-like disorder, MONDO:0019180"
         " (broader MONDO term: hereditary hemorrhagic telangiectasia)"
-        " | Monoallelic and biallelic | AMBER in this corpus\n"
+        " | Monoallelic and biallelic | AMBER on the papers reviewed\n"
         "PMID 2 reports 2 families.",
-        "SMAD6-related JIA | Monoallelic | RED in this corpus\nOne family.",
+        "SMAD6-related JIA | Monoallelic | RED on the papers reviewed\nOne family.",
     ]

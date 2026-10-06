@@ -689,17 +689,14 @@ def association_finding(
     """The association's finding, or None when it adds nothing to PanelApp's curation.
 
     *current_rating* is the gene's highest rating on the target panels, None
-    when it is on none of them. A new disease is a finding of a gene on a target
-    panel; a new gene is the finding itself, so its new diseases are not findings
-    of their own. A new MoI is a finding once highlighted. An existing association
-    is an upgrade when its corpus rating is above PanelApp's rating of it, or above
-    the gene's current rating when PanelApp's rating of it is unknown; a new gene's
-    association of unknown rating has nothing to compare with.
+    when it is on none of them. A new disease is a finding, on a known gene and on
+    a new one alike. A new MoI is a finding once highlighted. An existing
+    association is an upgrade when its corpus rating is above PanelApp's rating of
+    it, or above the gene's current rating when PanelApp's rating of it is unknown;
+    a new gene's association of unknown rating has nothing to compare with.
     """
     status = association.relation_status
     if status == "new_disease":
-        if current_rating is None:
-            return None
         return Finding(FindingKind.NEW_DISEASE, association.rating, association.id, None)
     if status == "new_moi":
         if not association.new_moi_highlighted:
@@ -725,7 +722,7 @@ def gene_findings(
 
 
 def new_gene_sort_key(gene: GeneAssessment) -> tuple[int, str]:
-    """Most findings first (a new gene's are new MoIs and upgrades), then by symbol."""
+    """Most findings first, then by symbol."""
     return (-len(gene.findings), gene.hgnc_symbol)
 
 
@@ -747,9 +744,9 @@ def group_genes(
 
     New genes go by their top association rating, known genes with findings by
     the rating of their strongest finding, and known genes without findings by
-    whether any target panel holding them has an expert review. RED groups and
-    the reviewed genes start collapsed in the ToC; the groups of known genes
-    without findings are not preselected for bulk assignment.
+    whether any target panel holding them has an expert review. The reviewed
+    genes start collapsed in the ToC; the groups of known genes without findings
+    are not preselected for bulk assignment.
     """
     novel = sorted(novel_genes, key=new_gene_sort_key)
     known = sorted(known_genes, key=known_gene_sort_key)
@@ -766,7 +763,7 @@ def group_genes(
                 title=title,
                 rating=rating,
                 genes=[g for g in genes if rating_of(g) == rating],
-                collapsed=rating == 1,
+                collapsed=False,
                 preselected=True,
             )
             for rating in (3, 2, 1)

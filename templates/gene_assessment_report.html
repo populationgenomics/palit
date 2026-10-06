@@ -29,7 +29,7 @@
 
     {# What the ratings in association headings mean, and how genes are grouped #}
     {% macro corpus_note() %}
-    <p class="corpus-note">Ratings in association headings come from the papers this run read for the gene, not from everything published, so a rating below PanelApp's is not a downgrade recommendation. Genes are grouped by their strongest finding: a new gene, a new disease or mode of inheritance, or a curated association rated higher in this corpus than in PanelApp.</p>
+    <p class="corpus-note">Ratings in association headings come from the papers read for this report, not from everything published, so a rating below PanelApp's is not a downgrade recommendation. Genes are grouped by their strongest finding: a new gene, a new disease or mode of inheritance, or an association PanelApp already curates, rated higher on these papers.</p>
     {% endmacro %}
 
     {# Macro for linking to a paper: PubMed if PMID available, DOI otherwise #}
@@ -37,14 +37,14 @@
     {% if paper.pmid %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ paper.pmid }}/" target="_blank">{{ paper.pmid }}</a>{% else %}<a href="https://doi.org/{{ paper.doi }}" target="_blank">{{ paper.doi }}</a>{% endif %}
     {%- endmacro %}
 
-    {# A finding: what its association adds to PanelApp Australia, then its corpus rating #}
+    {# A finding: what its association adds to PanelApp Australia, then its rating from this report's papers #}
     {% macro finding_text(finding) -%}
     {% set rating = finding.rating | confidence_to_color | upper %}
     {% if finding.kind == 'new_disease' %}new disease {{ rating }}{% elif finding.kind == 'new_moi' %}new MoI {{ rating }}{% else %}upgrade {{ finding.from_rating | confidence_to_color | upper }}→{{ rating }}{% endif %}
     {%- endmacro %}
 
     {% macro finding_title(finding) -%}
-    {% if finding.kind == 'new_disease' %}A disease PanelApp Australia does not curate for this gene{% elif finding.kind == 'new_moi' %}A mode of inheritance PanelApp Australia does not curate for this disease, with {{ min_families_for_moi_expansion }} or more independent families{% else %}Rated higher in this corpus than in PanelApp Australia{% endif %}
+    {% if finding.kind == 'new_disease' %}A disease PanelApp Australia does not curate for this gene{% elif finding.kind == 'new_moi' %}A mode of inheritance PanelApp Australia does not curate for this disease, with {{ min_families_for_moi_expansion }} or more independent families{% else %}An association PanelApp Australia already curates, rated higher on this report's papers than in PanelApp Australia{% endif %}
     {%- endmacro %}
 
     {# The gene header's finding badges, strongest first, each linking to its association #}
@@ -168,7 +168,7 @@
         {% endif %}
         <span class="rating-arrow">→</span>
         {% endif %}
-        {{ rating_badge(assoc.rating, "Evidence in this corpus: computed from this association's criteria, using only the papers this run read. A lower rating than PanelApp's is not a downgrade recommendation.") }}
+        {{ rating_badge(assoc.rating, "Rating from this report's papers: computed from this association's criteria, using only the papers read for this report. A lower rating than PanelApp's is not a downgrade recommendation.") }}
     </span>
     {% endmacro %}
 
@@ -204,18 +204,18 @@
         'refused': 'not matched: ' ~ model_name ~ ' and its fallback ' ~ fallback_model_name ~ ' both refused match-panels for this association, so it is skipped from now on',
         'failed': 'not matched: match-panels gave no valid answer in any attempt so far; a rerun retries it'
     } %}
-    <div class="association-panels">
-        <strong>Panels:</strong>
-        {% if assoc.matched_panels %}
+    {% if assoc.matched_panels %}
+    <details class="association-panels">
+        <summary><strong>Panels:</strong> {% for match in assoc.matched_panels %}{{ match.panel_name }}{% if match.gene_on_panel %} <span class="muted">(already on)</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</summary>
         <ul>
             {% for match in assoc.matched_panels %}
             <li><a href="https://panelapp-aus.org/panels/{{ match.panel_id }}" target="_blank"><strong>{{ match.panel_name }}</strong></a>{% if match.gene_on_panel %} <span class="muted">(gene already on panel)</span>{% endif %}: {{ match.rationale }}</li>
             {% endfor %}
         </ul>
-        {% else %}
-        <span class="muted">{{ state_notes[assoc.panel_matching.value] }}</span>
-        {% endif %}
-    </div>
+    </details>
+    {% else %}
+    <p class="association-panels"><strong>Panels:</strong> <span class="muted">{{ state_notes[assoc.panel_matching.value] }}</span></p>
+    {% endif %}
     {% endmacro %}
 
     {# Linked list of papers #}
@@ -642,7 +642,7 @@
 
     {# The report's gene sections, each a list of groups: (anchor, title, note, groups) #}
     {% set gene_sections = [
-        ('new-genes', 'New genes', "Genes on none of the target panels, grouped by their top association's rating in this corpus.", groups.new_genes),
+        ('new-genes', 'New genes', "Genes on none of the target panels, grouped by their top association's rating from this report's papers.", groups.new_genes),
         ('known-genes-with-findings', 'Known genes with findings', 'Genes on a target panel with at least one finding, grouped by the rating of their strongest finding.', groups.with_findings),
         ('known-genes-without-findings', 'Known genes without findings', 'Genes on a target panel without findings: PanelApp Australia curates each association at the same or a higher rating, or it adds a mode of inheritance with fewer than ' ~ min_families_for_moi_expansion ~ ' independent families.', groups.without_findings)
     ] | selectattr(3) | list %}
@@ -655,7 +655,7 @@
             <li><a href="#featured-journals">Papers in Featured Journals ({{ favorite_journal_papers.total }})</a></li>
             {% endif %}
             {% if groups.new_genes or groups.with_findings %}
-            <li class="toc-legend">Finding badges: {{ finding_chip('new_disease', 3) }} new disease, {{ finding_chip('new_moi', 2) }} new MoI, {{ finding_chip('upgrade', 1) }} upgrade, coloured by their rating in this corpus</li>
+            <li class="toc-legend">Finding badges: {{ finding_chip('new_disease', 3) }} new disease, {{ finding_chip('new_moi', 2) }} new mode of inheritance, {{ finding_chip('upgrade', 1) }} an association PanelApp already curates, now rated higher. Each badge's colour is its association's rating from this report's papers.</li>
             {% endif %}
             {% for anchor, title, _, gene_groups in gene_sections %}
             <li>
@@ -767,7 +767,7 @@
         {% if favorite_journal_papers.total %}
         <section id="featured-journals">
             <h2>Papers in Featured Journals ({{ favorite_journal_papers.total }})</h2>
-            <p><em>Every paper in the corpus from a hand-picked set of high-impact journals, bucketed by what role they played in this report. Each subsection is collapsed by default.</em></p>
+            <p><em>Every paper read for this report from a hand-picked set of high-impact journals, bucketed by what role they played in this report. Each subsection is collapsed by default.</em></p>
 
             {{ featured_bucket(
                 favorite_journal_papers.novel,
@@ -777,7 +777,7 @@
             {{ featured_bucket(
                 favorite_journal_papers.findings,
                 "Contributed to known genes with findings",
-                "Papers that contributed to a known gene with a new disease, a highlighted new MoI, or an association rated higher in this corpus than in PanelApp Australia.",
+                "Papers that contributed to a known gene with a new disease, a highlighted new MoI, or an association rated higher on this report's papers than in PanelApp Australia.",
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.unreviewed,

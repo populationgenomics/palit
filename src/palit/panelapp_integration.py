@@ -300,7 +300,7 @@ def prefill_comment_section(association: PrefillAssociation) -> str:
         disease += f" (broader MONDO term: {association.mondo.label})"
     moi = assessment["inheritance_mode"].replace("_", " ")
     rating = panelapp_confidence_to_color(calculate_association_rating(assessment)).upper()
-    return f"{disease} | {moi} | {rating} in this corpus\n{assessment['summary']}"
+    return f"{disease} | {moi} | {rating} on the papers reviewed\n{assessment['summary']}"
 
 
 def prepare_prefill_data(

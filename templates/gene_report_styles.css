@@ -711,23 +711,25 @@ section > h2 {
     padding-left: 20px;
 }
 
-.association-panels {
+p.association-panels {
     margin: 6px 0;
 }
 
-.association-panels ul {
-    margin: 2px 0 0 0;
-    padding-left: 20px;
+details.association-panels ul {
+    margin: 0;
+    padding: 6px 10px 6px 30px;
 }
 
-.association-panels li {
+details.association-panels li {
     margin: 2px 0;
 }
 
+details.association-panels,
 details.association-variants {
     margin: 8px 0 0 0;
 }
 
+details.association-panels > summary,
 details.association-variants > summary {
     padding: 4px 10px;
     font-size: 0.9em;

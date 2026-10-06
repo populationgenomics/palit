@@ -73,6 +73,9 @@ def _association(
     dispute_status: str = "None",
     inheritance_mode: str = "Monoallelic",
     dois: tuple[str, ...] = ("10.1/a",),
+    variants: tuple[str, ...] = (),
+    segregation: str = "NR",
+    citations: tuple[dict[str, str], ...] = (),
 ) -> str:
     """A stored association: dois instead of paper IDs, criteria as a list."""
     return json.dumps(
@@ -95,8 +98,11 @@ def _association(
             "family_count": independent,
             "independent_family_count": independent,
             "count_reduction_reasoning": "none",
+            "segregation": segregation,
+            "functional": "NR",
             "disease_mechanism": "NR",
-            "citations": [],
+            "variants": list(variants),
+            "citations": list(citations),
             "evidence_weakening_factors": [],
             "evidence_assessments": _criteria(green),
             "summary": f"Smith2024 reports {description}.",
@@ -174,14 +180,43 @@ def _context(gencc_rows: list[dict[str, Any]], disputes: list[dict[str, Any]]) -
     )
 
 
+def _variant(variant_id: str, het: int, hom: int) -> tuple[str, str, str]:
+    """A variant row's (variant_id, normalization, gnomad) as extract-evidence stores them."""
+    normalization = {"hgvs_c": f"c.{variant_id}", "hgvs_p": None, "original_text": variant_id}
+    gnomad = {
+        "ac": het + 2 * hom,
+        "an": 1000,
+        "homozygote_count": hom,
+        "heterozygote_count": het,
+        "hemizygote_count": 0,
+        "faf95_popmax": 0.001,
+        "faf95_popmax_population": "nfe",
+    }
+    return variant_id, json.dumps(normalization), json.dumps(gnomad)
+
+
+# GENEA's variants: common in heterozygotes, common in homozygotes, and one in no association
+COMMON_HET = "1-100-A-G"
+COMMON_HOM = "1-200-C-T"
+UNLISTED = "1-300-G-A"
+GENEA_VARIANTS = [
+    _variant(COMMON_HET, 40, 2),
+    _variant(COMMON_HOM, 5, 20),
+    _variant(UNLISTED, 100, 0),
+]
+
+KEY_CITATION = {"doi": "10.1/a", "quote": "Both families segregate.", "commentary": "Segregation"}
+
+
 def _extraction(hgnc_id: int) -> str:
     return json.dumps({"gene_evaluations": [{"hgnc_id": hgnc_id, "disease_entities": []}]})
 
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
-    """GENEA (HGNC:1), known, with four associations in mixed states and refused papers;
-    GENEB (HGNC:3), novel, with one association; GENEC (HGNC:4) refused by assess-genes."""
+    """GENEA (HGNC:1), known, with four associations in mixed states, variants and refused
+    papers; GENEB (HGNC:3), novel, with one association; GENEC (HGNC:4) refused by
+    assess-genes."""
     path = tmp_path / "run.sqlite"
     with sqlite3.connect(path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
@@ -271,6 +306,7 @@ def db_path(tmp_path: Path) -> Path:
                         independent=1,
                         mondo_id="MONDO:0000001",
                         dispute_status="Disputed",
+                        variants=(COMMON_HET, COMMON_HOM),
                     ),
                     "MONDO:0000001",
                     "disease A",
@@ -288,7 +324,13 @@ def db_path(tmp_path: Path) -> Path:
                     11,
                     1,
                     1,
-                    _association("biallelic disease", status="new_moi", independent=2),
+                    _association(
+                        "biallelic disease",
+                        status="new_moi",
+                        independent=2,
+                        inheritance_mode="Biallelic",
+                        variants=(COMMON_HET, COMMON_HOM, COMMON_HOM),
+                    ),
                     None,
                     None,
                     None,
@@ -300,7 +342,13 @@ def db_path(tmp_path: Path) -> Path:
                     12,
                     1,
                     2,
-                    _association("ataxia variant", status="new_disease", green=True),
+                    _association(
+                        "ataxia variant",
+                        status="new_disease",
+                        green=True,
+                        segregation="Segregates in both families.",
+                        citations=(KEY_CITATION,),
+                    ),
                     "MONDO:0000200",
                     "ataxia",
                     "broader",
@@ -331,6 +379,14 @@ def db_path(tmp_path: Path) -> Path:
                     None,
                 ),
             ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO variant_frequencies (variant_id, hgnc_id, paper_doi, quote,
+                                             normalization, gnomad)
+            VALUES (?, 1, '10.1/a', 'q', ?, ?)
+            """,
+            GENEA_VARIANTS,
         )
         conn.executemany(
             """
@@ -609,7 +665,7 @@ def test_prefill_unions_the_associations_in_report_order(results: GeneAssessment
     prefill = json.loads(results.known_genes[0].prefill_json)
     assert (prefill["form_type"], prefill["panel_id"]) == ("review", MENDELIOME_PANEL_ID)
     assert prefill["rating"] == "GREEN"
-    assert prefill["moi"] == ENUM_TO_PANELAPP_MOI["Monoallelic"]
+    assert prefill["moi"] == ENUM_TO_PANELAPP_MOI["Monoallelic_and_biallelic"]
     assert prefill["phenotypes"].split(";") == [
         "GENEA-related ataxia variant, MONDO:0000200",  # broader: the proposed name
         "GENEA-related other disease",
@@ -621,7 +677,7 @@ def test_prefill_unions_the_associations_in_report_order(results: GeneAssessment
         "GENEA-related ataxia variant, MONDO:0000200 (broader MONDO term: ataxia)"
         " | Monoallelic | GREEN in this corpus",
         "GENEA-related other disease | Monoallelic | AMBER in this corpus",
-        "GENEA-related biallelic disease | Monoallelic | AMBER in this corpus",
+        "GENEA-related biallelic disease | Biallelic | AMBER in this corpus",
         "disease A, replacement, MONDO:0000009 | Monoallelic | RED in this corpus",
     ]
     assert prefill["comments"].split("\n")[1] == "PMID 111 reports ataxia variant."
@@ -669,7 +725,7 @@ def test_panel_matching_shown_once_match_panels_has_run(
         "GENEA-related other disease (Monoallelic):</em> not matched yet: "
         "match-panels has not run for this association"
     ) in html
-    assert "<em>GENEA-related biallelic disease (Monoallelic):</em> seizures" in html
+    assert "<em>GENEA-related biallelic disease (Biallelic):</em> seizures" in html
 
 
 def test_report_says_which_associations_were_refused_or_failed(
@@ -762,6 +818,7 @@ def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) ->
         mondo_mapping=StageState.NOT_RUN,
         rating=new,
         disputes=[],
+        variant_frequencies=[],
         matched_panels=None,
         panel_matching=StageState.NOT_RUN,
     )
@@ -773,9 +830,8 @@ def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) ->
         quality_concerns=[],
         existing_rating=existing,
         new_rating=new,
-        aggregate_moi="Monoallelic",
         contributing_papers=[],
-        variant_frequencies=[],
+        unassociated_variants=[],
         missing_panels=[],
         existing_panels=[],
         prefill_json="{}",
@@ -993,3 +1049,142 @@ def test_association_headings_show_the_relation_then_the_corpus_rating(
 )
 def test_inheritance_details_show_verbatim(details: str, shown: str) -> None:
     assert format_inheritance("Monoallelic", details) == shown
+
+
+def _association_section(html: str, association_id: int) -> str:
+    """The HTML of the association section with id ``association-{association_id}``."""
+    start = html.index(f'<section class="association-block" id="association-{association_id}">')
+    return html[start : html.index("</section>", start)]
+
+
+def _heading(section: str) -> str:
+    return section[: section.index("</header>")]
+
+
+def test_association_variants_and_the_variants_in_no_association(
+    results: GeneAssessmentResults,
+) -> None:
+    genea = results.known_genes[0]
+    variants = {a.id: [v.variant_id for v in a.variant_frequencies] for a in genea.associations}
+    # In the gene's variant order, each variant once
+    assert variants == {10: [COMMON_HET, COMMON_HOM], 11: [COMMON_HET, COMMON_HOM], 12: [], 13: []}
+    assert [v.variant_id for v in genea.unassociated_variants] == [UNLISTED]
+    assert results.novel_genes[0].unassociated_variants == []
+
+
+def test_variant_flags_follow_the_association_moi(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    html = _render(db_path, results)
+
+    def flagged(section: str) -> list[str]:
+        return re.findall(r'<tr class="high-frequency-variant"><td>([^<]+)</td>', section)
+
+    monoallelic, biallelic = _association_section(html, 10), _association_section(html, 11)
+    assert "<summary>Variants (2)</summary>" in monoallelic
+    assert "<summary>Variants (2)</summary>" in biallelic
+    assert flagged(monoallelic) == [f"c.{COMMON_HET}"]  # het 40 > 30
+    assert flagged(biallelic) == [f"c.{COMMON_HOM}"]  # hom 20 > 15
+    assert "Variants (" not in _association_section(html, 12)
+
+    known = _article(html, "known-gene-1")
+    start = known.index('<details class="unassociated-variants">')
+    leftover = known[start : known.index("</details>", start)]
+    assert "Variants in no association (1)" in leftover
+    assert f"c.{UNLISTED}" in leftover
+    assert flagged(leftover) == []  # het 100, but no MoI to judge it by
+    assert "Variants in no association" not in _article(html, "novel-gene-3")
+
+
+def test_association_listing_an_unknown_variant_fails(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    assessment = json.loads(_association("ataxia variant", variants=("9-9-A-T",)))
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE associations SET assessment_json = ? WHERE id = 12", (json.dumps(assessment),)
+        )
+    with pytest.raises(ValueError, match="9-9-A-T"):
+        _load(db_path, hgnc_resolver)
+
+
+def test_association_heading_rating_disease_moi_dispute_then_mondo(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    html = _render(db_path, results)
+    reused = _heading(_association_section(html, 10))
+    order = [
+        'class="rating-badge rating-green" data-title="PanelApp Australia: b"',
+        'class="rating-arrow"',
+        'class="rating-badge rating-red"',
+        'class="association-disease">disease A<',
+        'class="moi-pill">Monoallelic<',
+        'class="dispute-badge dispute-disputed"',
+        'class="mondo-term" href="https://monarchinitiative.org/MONDO:0000001"',
+        ">obsolete in MONDO, replaced by MONDO:0000009<",
+    ]
+    positions = [reused.index(marker) for marker in order]
+    assert positions == sorted(positions)
+
+    assert 'class="moi-pill moi-pill-new">Biallelic<' in _heading(_association_section(html, 11))
+    broader = _heading(_association_section(html, 12))
+    assert (
+        '<span class="mondo-term">ataxia (<a href="https://monarchinitiative.org/MONDO:0000200"'
+        in (broader)
+    )
+    assert "most specific term that includes it. no exact term" in broader
+    assert ">broader term</span>" in broader
+    assert ">No MONDO term yet</span>" in _heading(_association_section(html, 11))
+    for removed in ("MONDO exact", "Broader MONDO term", "mondo-badge"):
+        assert removed not in html
+
+    # A novel gene's new disease shows the corpus rating alone, first in the heading.
+    novel = _heading(_association_section(html, 20))
+    assert "rating-arrow" not in novel
+    assert novel.index('class="rating-badge rating-green"') < novel.index("association-disease")
+
+
+def test_association_body_hides_nr_lines_and_links_key_evidence(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    html = _render(db_path, results)
+    ataxia = _association_section(html, 12)
+    assert "<strong>Segregation:</strong> Segregates in both families." in ataxia
+    assert 'data-title="Segregation">[111, not located]</a>' in ataxia
+    reused = _association_section(html, 10)
+    for hidden in ("Segregation:", "Functional:", "Mechanism:", "Key evidence:"):
+        assert hidden not in reused
+    assert reused.index("Papers:") < reused.index("Disputed in GenCC by:")
+    assert "Cited evidence" not in html
+
+
+def test_gene_body_box_then_gene_blocks_in_order(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    concern = {"concern": "Overlapping cohorts.", "dois": ["10.1/a"], "citations": []}
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE gene_aggregations SET quality_concerns_json = ? WHERE hgnc_id = 1",
+            (json.dumps([concern]),),
+        )
+    known = _article(_render(db_path, _load(db_path, hgnc_resolver)), "known-gene-1")
+    order = [
+        'class="evidence-summary-expanded gene-associations"',
+        'id="association-10"',  # the lowest rated association comes last
+        "Overlapping cohorts.",
+        'class="unassessed-reports"',
+        'class="refused-papers"',
+        'class="panel-recommendations"',
+        'class="unassociated-variants"',
+        'class="criteria-assessment"',
+        "Contributing papers (1)",
+    ]
+    positions = [known.index(marker) for marker in order]
+    assert positions == sorted(positions)
+    assert "gnomAD v4 frequencies" not in known
+
+    criteria = known[
+        known.index('class="criteria-assessment"') : known.index("Contributing papers")
+    ]
+    assert criteria.count('<section class="per-entity-criteria-section">') == 4
+    assert "<span>GENEA-related ataxia variant</span>" in criteria

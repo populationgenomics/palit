@@ -45,7 +45,6 @@ from palit.panelapp_integration import (
     RelationStatus,
     calculate_association_rating,
     calculate_gene_rating,
-    derive_aggregate_moi,
     panelapp_confidence_to_color,
     prepare_prefill_data,
 )
@@ -359,6 +358,7 @@ class ReportAssociation:
     mondo_mapping: StageState  # STORED for a reused GenCC row too
     rating: int  # computed from this association's criteria: 3 GREEN, 2 AMBER, 1 RED
     disputes: list[DisputeRef]
+    variant_frequencies: list[VariantFrequency]  # the association's variants, in the gene's order
     matched_panels: list[PanelMatch] | None  # None unless panel_matching is STORED
     panel_matching: StageState
 
@@ -398,9 +398,8 @@ class GeneAssessment:
     quality_concerns: list[dict[str, Any]]  # [{concern, dois, citations}]
     existing_rating: int | None  # the gene's highest rating on the target panels; None if novel
     new_rating: int  # the top association rating: 3 (GREEN), 2 (AMBER), 1 (RED)
-    aggregate_moi: str  # derive_aggregate_moi over the associations, for gnomAD flags
     contributing_papers: list[DetailedPaper]
-    variant_frequencies: list[VariantFrequency]  # Variants with frequency data
+    unassociated_variants: list[VariantFrequency]  # the gene's variants that no association lists
     missing_panels: list[PanelSuggestion]  # matched panels the gene is not on
     existing_panels: list[PanelSuggestion]  # matched panels the gene is already on
     prefill_json: str  # HTML-escaped JSON for data-prefill attribute
@@ -717,6 +716,24 @@ def load_variant_frequencies_for_gene(
     return variant_frequencies
 
 
+def association_variants(
+    assessment: dict[str, Any], gene_variants: list[VariantFrequency]
+) -> list[VariantFrequency]:
+    """The gene's variants that the association lists, in the gene's variant order.
+
+    The association names its variants by ``variant_frequencies.variant_id``,
+    each of which must be among the gene's variants.
+    """
+    listed = set(assessment["variants"])
+    unknown = listed - {variant.variant_id for variant in gene_variants}
+    if unknown:
+        raise ValueError(
+            f"Association {assessment['description']!r} lists variants that are not among "
+            f"its gene's variant rows: {sorted(unknown)}"
+        )
+    return [variant for variant in gene_variants if variant.variant_id in listed]
+
+
 def is_highlighted_new_moi(assessment: dict[str, Any]) -> bool:
     """A new_moi association is highlighted once enough independent families support it."""
     return (
@@ -984,10 +1001,12 @@ def load_associations(
     panelapp_context: dict[str, Any],
     display_ids: dict[str, str],
     all_panels_data: AllPanelsData,
+    gene_variants: list[VariantFrequency],
 ) -> list[ReportAssociation]:
     """The gene's associations, by corpus rating and then independent family count.
 
-    Each association carries the state of map-mondo and match-panels for it, from
+    Each association carries its variants among *gene_variants*, and the state
+    of map-mondo and match-panels for it, from
     its latest request of each stage. Both stages send immediate requests only,
     which are recorded once they have completed.
     """
@@ -1036,6 +1055,7 @@ def load_associations(
                 disputes=association_disputes(
                     assessment, row["mondo_id"], panelapp_context["disputes"]
                 ),
+                variant_frequencies=association_variants(assessment, gene_variants),
                 matched_panels=_panel_matches(row["matched_panels_json"], hgnc_id, all_panels_data),
                 panel_matching=stage_state(
                     row["matched_panels_json"] is not None,
@@ -1103,13 +1123,16 @@ def load_gene(
         if paper.doi in doi_to_display_id:
             paper.display_id = doi_to_display_id[paper.doi]
 
+    gene_variants = load_variant_frequencies_for_gene(cursor, hgnc_id, contributing_papers)
     associations = load_associations(
         cursor,
         hgnc_id,
         json.loads(row["panelapp_context_json"]),
         display_ids,
         all_panels_data,
+        gene_variants,
     )
+    associated_ids = {v.variant_id for a in associations for v in a.variant_frequencies}
     gene_level = replace_paper_ids_for_display(
         {
             "unassessed_reports": json.loads(row["unassessed_reports_json"]),
@@ -1118,7 +1141,6 @@ def load_gene(
         display_ids,
     )
     missing_panels, existing_panels = union_panel_suggestions(associations)
-    association_jsons = [a.assessment for a in associations]
 
     # Gene is novel if not in any target panel; the list keeps target-panel order
     gene_panels = target_panel_data.gene_panel_mapping.get(hgnc_id, set())
@@ -1146,10 +1168,9 @@ def load_gene(
         unassessed_reports=gene_level["unassessed_reports"],
         quality_concerns=gene_level["quality_concerns"],
         existing_rating=None if is_novel else target_panel_data.gene_confidence[hgnc_id],
-        new_rating=calculate_gene_rating(association_jsons),
-        aggregate_moi=derive_aggregate_moi(association_jsons),
+        new_rating=calculate_gene_rating([a.assessment for a in associations]),
         contributing_papers=contributing_papers,
-        variant_frequencies=load_variant_frequencies_for_gene(cursor, hgnc_id, contributing_papers),
+        unassociated_variants=[v for v in gene_variants if v.variant_id not in associated_ids],
         missing_panels=missing_panels,
         existing_panels=existing_panels,
         prefill_json=json.dumps(asdict(prefill_data)),
@@ -1835,12 +1856,15 @@ def format_inheritance(mode: str, details: str = "") -> str:
     return formatted_mode
 
 
-def get_variant_frequency_flag(variant: VariantFrequency, inheritance_mode: str) -> dict[str, Any]:
+def get_variant_frequency_flag(
+    variant: VariantFrequency, inheritance_mode: str | None
+) -> dict[str, Any]:
     """Determine if variant should be flagged based on inheritance mode.
 
     Args:
         variant: VariantFrequency object with gnomAD data
-        inheritance_mode: One of the PanelApp inheritance mode enums
+        inheritance_mode: The inheritance mode enum of the association the variant
+            belongs to; None for a variant in no association, which is never flagged
 
     Returns:
         Dict with:
@@ -1852,8 +1876,8 @@ def get_variant_frequency_flag(variant: VariantFrequency, inheritance_mode: str)
     warning_message = ""
     flagged_metric = ""
 
-    # Skip if variant not found in gnomAD
-    if variant.gnomad_not_found:
+    # Skip if variant not found in gnomAD, or if there is no MoI to judge it by
+    if variant.gnomad_not_found or inheritance_mode is None:
         return {
             "should_flag": False,
             "warning_message": "",
@@ -2118,11 +2142,6 @@ def generate_html_report(
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
         model_name=MODEL_NAME,
         fallback_model_name=FALLBACK_MODEL_NAME,
-        gnomad_thresholds={
-            "het": GNOMAD_HET_THRESHOLD,
-            "hom": GNOMAD_HOM_THRESHOLD,
-            "hemi": GNOMAD_HEMI_THRESHOLD,
-        },
     )
 
     return html

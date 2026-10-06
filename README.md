@@ -199,9 +199,10 @@ uv run palit assess-genes --panel-date $PANEL_DATE
 
 # 10. Map each association that reuses no PanelApp Australia GenCC row onto a
 #     MONDO term. Claude searches the local MONDO release with tools and
-#     answers with a term and a match type: exact when the term names the
-#     disease, broader when it is the most specific term that includes the
-#     disease. The report marks broader terms. Requests go out immediately, not
+#     answers with a term and a match type: exact when the term is for this
+#     gene's form of the disease (its definition or OMIM cross-reference names
+#     the gene), broader when MONDO has no such term and this is the most
+#     specific term that includes the disease. The report marks broader terms. Requests go out immediately, not
 #     as batches, because a mapping takes several tool rounds. Each
 #     association's conversation runs on its own, with up to 50 requests in
 #     flight across them (DEFAULT_IMMEDIATE_WORKERS), and its mapping is stored

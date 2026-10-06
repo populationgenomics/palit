@@ -17,7 +17,7 @@
                 "exact",
                 "broader"
             ],
-            "description": "exact: the term names this disease; broader: the most specific term that includes the disease"
+            "description": "exact: a term for this gene's form of the disease; broader: no such term, so the most specific term that includes the disease"
         },
         "rationale": {
             "type": "string",

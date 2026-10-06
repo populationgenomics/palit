@@ -5,8 +5,8 @@ Each association without a MONDO term goes to the model with its proposed diseas
 name, description, MoI and summary, and the gene's PanelApp Australia GenCC rows.
 The model searches the local MONDO release with the tools in
 :mod:`palit.mondo_tools` and answers with one term and a match type: ``exact``
-when the term names the disease, ``broader`` when it is the most specific term
-that includes it.
+when the term is for this gene's form of the disease, ``broader`` when MONDO has
+no such term and this is the most specific term that includes the disease.
 
 Requests go out immediately rather than as batches: inputs are small and a
 mapping takes several tool rounds. Each association's conversation runs on its own,

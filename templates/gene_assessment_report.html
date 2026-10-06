@@ -27,9 +27,9 @@
     </script>
     {% endif %}
 
-    {# What the ratings in association headings mean, and how genes are grouped #}
-    {% macro corpus_note() %}
-    <p class="corpus-note">Ratings in association headings come from the papers read for this report, not from everything published, so a rating below PanelApp's is not a downgrade recommendation. Genes are grouped by their strongest finding: a new gene, a new disease or mode of inheritance, or an association PanelApp already curates, rated higher on these papers.</p>
+    {# What the ratings in association headings mean; a new gene has no PanelApp rating to fall below #}
+    {% macro corpus_note(new_genes) %}
+    <p class="corpus-note">Ratings in association headings come from the papers read for this report, not from everything published{% if new_genes %}.{% else %}, so a rating below PanelApp's is not a downgrade recommendation.{% endif %}</p>
     {% endmacro %}
 
     {# Macro for linking to a paper: PubMed if PMID available, DOI otherwise #}
@@ -847,7 +847,7 @@
         <section id="{{ anchor }}">
             <h2>{{ title }}</h2>
             <p><em>{{ note }}</em></p>
-            {{ corpus_note() }}
+            {{ corpus_note(anchor == 'new-genes') }}
             {% for group in gene_groups %}
             {{ body_group(group) }}
             {% endfor %}

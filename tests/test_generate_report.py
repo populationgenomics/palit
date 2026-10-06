@@ -1307,6 +1307,21 @@ def test_known_gene_is_placed_once_under_its_best_finding_with_its_findings(
     ]
 
 
+def test_only_known_gene_sections_say_a_lower_rating_is_no_downgrade(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    html = _render(db_path, results)
+
+    def note(section_id: str) -> str:
+        section = html[html.index(f'<section id="{section_id}">') :]
+        note = section[section.index('class="corpus-note"') :]
+        return note[: note.index("</p>")]
+
+    assert "from everything published." in note("new-genes")
+    assert "downgrade" not in note("new-genes")
+    assert "not a downgrade recommendation" in note("known-genes-with-findings")
+
+
 def test_gene_headers_show_the_current_status_without_an_arrow(
     db_path: Path, results: GeneAssessmentResults
 ) -> None:

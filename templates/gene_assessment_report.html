@@ -37,26 +37,38 @@
     {% if paper.pmid %}<a href="https://pubmed.ncbi.nlm.nih.gov/{{ paper.pmid }}/" target="_blank">{{ paper.pmid }}</a>{% else %}<a href="https://doi.org/{{ paper.doi }}" target="_blank">{{ paper.doi }}</a>{% endif %}
     {%- endmacro %}
 
-    {# A finding: what its association adds to PanelApp Australia, then its rating from this report's papers #}
-    {% macro finding_text(finding) -%}
-    {% set rating = finding.rating | confidence_to_color | upper %}
-    {% if finding.kind == 'new_disease' %}new disease {{ rating }}{% elif finding.kind == 'new_moi' %}new MoI {{ rating }}{% else %}upgrade {{ finding.from_rating | confidence_to_color | upper }}→{{ rating }}{% endif %}
+    {# A finding group: what its associations add to PanelApp Australia, then their rating
+       from this report's papers, after their count when there are several #}
+    {% macro finding_text(group) -%}
+    {% set rating = group.rating | confidence_to_color | upper %}
+    {% if group.count > 1 %}{{ group.count }}× {% endif %}{% if group.kind == 'new_disease' %}new disease {{ rating }}{% elif group.kind == 'new_moi' %}new MoI {{ rating }}{% else %}upgrade {{ group.from_rating | confidence_to_color | upper }}→{{ rating }}{% endif %}
     {%- endmacro %}
 
-    {% macro finding_title(finding) -%}
-    {% if finding.kind == 'new_disease' %}A disease PanelApp Australia does not curate for this gene{% elif finding.kind == 'new_moi' %}A mode of inheritance PanelApp Australia does not curate for this disease, with {{ min_families_for_moi_expansion }} or more independent families{% else %}An association PanelApp Australia already curates, rated higher on this report's papers than in PanelApp Australia{% endif %}
+    {% macro finding_title(group) -%}
+    {% if group.count == 1 %}
+    {% if group.kind == 'new_disease' %}A disease PanelApp Australia does not curate for this gene{% elif group.kind == 'new_moi' %}A mode of inheritance PanelApp Australia does not curate for this disease, with {{ min_families_for_moi_expansion }} or more independent families{% else %}An association PanelApp Australia already curates, rated higher on this report's papers than in PanelApp Australia{% endif %}
+    {% else %}
+    {% if group.kind == 'new_disease' %}Diseases PanelApp Australia does not curate for this gene{% elif group.kind == 'new_moi' %}Modes of inheritance PanelApp Australia does not curate for these diseases, each with {{ min_families_for_moi_expansion }} or more independent families{% else %}Associations PanelApp Australia already curates, rated higher on this report's papers than in PanelApp Australia{% endif %}
+    {% endif %}
     {%- endmacro %}
 
-    {# The gene header's finding badges, strongest first, each linking to its association #}
+    {# A finding group's tooltip: *lead*, then the diseases of its associations, one per line #}
+    {% macro finding_tooltip(group, lead) -%}
+    {{ lead }}:{% for assoc in group.associations %}&#10;• {{ assoc.disease_label }}{% endfor %}
+    {%- endmacro %}
+
+    {# The gene header's finding badges, strongest first, one per finding group, each
+       linking to the group's first association #}
     {% macro finding_badges(gene) %}
-    {% for finding in gene.findings %}
-    <a class="finding-badge rating-{{ finding.rating | confidence_to_color | lower }}" href="#association-{{ finding.association_id }}" data-title="{{ finding_title(finding) }}">{{ finding_text(finding) }}</a>
+    {% for group in gene.finding_groups %}
+    <a class="finding-badge rating-{{ group.rating | confidence_to_color | lower }}" href="#association-{{ group.association_id }}" data-title="{{ finding_tooltip(group, finding_title(group)) }}">{{ finding_text(group) }}</a>
     {% endfor %}
     {% endmacro %}
 
-    {# A one-letter finding badge for the ToC; the legend above the gene lists explains the letters #}
-    {% macro finding_chip(kind, rating, href=none, title=none) -%}
-    <a class="finding-chip rating-{{ rating | confidence_to_color | lower }}"{% if href %} href="{{ href }}"{% endif %}{% if title %} data-title="{{ title }}"{% endif %}>{{ {'new_disease': 'D', 'new_moi': 'M', 'upgrade': '↑'}[kind] }}</a>
+    {# A one-letter finding badge for the ToC, with the group's count when it has several;
+       the legend above the gene lists explains the letters #}
+    {% macro finding_chip(kind, rating, href=none, title=none, count=1) -%}
+    <a class="finding-chip rating-{{ rating | confidence_to_color | lower }}"{% if href %} href="{{ href }}"{% endif %}{% if title %} data-title="{{ title }}"{% endif %}>{{ {'new_disease': 'D', 'new_moi': 'M', 'upgrade': '↑'}[kind] }}{% if count > 1 %}<sup>{{ count }}</sup>{% endif %}</a>
     {%- endmacro %}
 
     {# Link to a quote in the report's PDF viewer, with its page, or marked when the PDF can't place it #}
@@ -145,13 +157,24 @@
     {% endif %}
     {% endmacro %}
 
-    {# The association's relation to PanelApp Australia, then its rating in this corpus.
-       A new disease of a gene on no target panel shows the rating alone: the gene
-       header already says the gene is not in a panel. #}
+    {# The association's rating in this corpus and its relation to PanelApp Australia. A
+       finding shows the change it brings: the relation, an arrow, then the rating; a new
+       disease of a gene on no target panel shows the rating alone, as the gene header
+       already says the gene is not in a panel. An association without a finding shows
+       its rating, then the relation as a quiet note. #}
     {% macro association_rating(assoc, gene) %}
     {% set relation = assoc.assessment.panelapp_relation %}
     {% set basis = 'PanelApp Australia: ' ~ relation.basis %}
+    {% set corpus_rating = rating_badge(assoc.rating, "Rating from this report's papers: computed from this association's criteria, using only the papers read for this report. A lower rating than PanelApp's is not a downgrade recommendation.") %}
     <span class="association-rating">
+        {% if assoc.id not in gene.finding_association_ids %}
+        {{ corpus_rating }}
+        {% if assoc.relation_status == 'existing' %}
+        <span class="relation-note" data-title="{{ basis }}">curated in PanelApp{% if relation.existing_rating %}: {{ relation.existing_rating }}{% else %}, own rating unknown{% endif %}</span>
+        {% else %}
+        <span class="relation-note" data-title="Fewer than {{ min_families_for_moi_expansion }} independent families, so not highlighted. {{ basis }}">new MoI, fewer than {{ min_families_for_moi_expansion }} independent families</span>
+        {% endif %}
+        {% else %}
         {% if not (assoc.relation_status == 'new_disease' and gene.is_novel) %}
         {% if assoc.relation_status == 'existing' %}
             {% if relation.existing_rating %}
@@ -161,14 +184,13 @@
             {% endif %}
         {% elif assoc.relation_status == 'new_disease' %}
             <span class="relation-badge" data-title="{{ basis }}">new disease</span>
-        {% elif assoc.new_moi_highlighted %}
-            <span class="moi-badge moi-expansion" data-title="{{ basis }}">➕ new MoI</span>
         {% else %}
-            <span class="relation-badge" data-title="Fewer than {{ min_families_for_moi_expansion }} independent families, so not highlighted. {{ basis }}">new MoI</span>
+            <span class="moi-badge moi-expansion" data-title="{{ basis }}">➕ new MoI</span>
         {% endif %}
         <span class="rating-arrow">→</span>
         {% endif %}
-        {{ rating_badge(assoc.rating, "Rating from this report's papers: computed from this association's criteria, using only the papers read for this report. A lower rating than PanelApp's is not a downgrade recommendation.") }}
+        {{ corpus_rating }}
+        {% endif %}
     </span>
     {% endmacro %}
 
@@ -258,6 +280,10 @@
             <div>{{ variant_frequency_table(assoc.variants, e.inheritance_mode) }}</div>
         </details>
         {% endif %}
+        <details class="association-criteria">
+            <summary>PanelApp criteria</summary>
+            <div>{{ criteria_grid(e, contributing_papers=gene.contributing_papers) }}</div>
+        </details>
     </section>
     {% endmacro %}
 
@@ -356,32 +382,33 @@
     </div>
     {% endmacro %}
 
-    {# The criteria behind each association's rating, one card per association #}
-    {% macro criteria_assessment(gene) %}
-    <details class="criteria-assessment">
-        <summary><strong>PanelApp criteria assessment</strong></summary>
-        {% for assoc in gene.associations %}
-        <section class="per-entity-criteria-section">
-            <h6 class="per-entity-criteria-heading">
-                {{ rating_badge(assoc.rating) }}
-                <span>{{ assoc.disease_label }}</span>
-                {{ moi_pill(assoc) }}
-            </h6>
-            <div class="per-entity-criteria-body">
-                {{ criteria_grid(assoc.assessment, contributing_papers=gene.contributing_papers) }}
-            </div>
-        </section>
-        {% endfor %}
+    {# The associations without findings, folded after the gene's quality concerns. The
+       summary names their diseases, with the MoI where a disease appears twice. #}
+    {% macro other_associations(gene) %}
+    {% set others = gene.other_associations %}
+    {% set labels = others | map(attribute='disease_label') | list %}
+    <details class="other-associations">
+        <summary><strong>{% if gene.other_associations_curated %}Already curated in PanelApp{% else %}Other associations{% endif %} ({{ others | length }}):</strong> {% for assoc in others %}{{ assoc.disease_label }}{% if labels.count(assoc.disease_label) > 1 %} <span class="muted">({{ assoc.assessment.inheritance_mode | format_inheritance }})</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</summary>
+        <div>
+            {% for assoc in others %}
+            {{ association_block(assoc, gene) }}
+            {% endfor %}
+        </div>
     </details>
     {% endmacro %}
 
-    {# Macro for rendering gene article body - everything below the header #}
+    {# Macro for rendering gene article body - everything below the header. A gene with
+       findings shows their associations, strongest first, and folds the others; a gene
+       without findings shows all its associations. #}
     {% macro gene_article_body(gene) %}
         <div class="evidence-summary-expanded gene-associations">
-            {% for assoc in gene.associations %}
+            {% for assoc in gene.finding_associations or gene.associations %}
             {{ association_block(assoc, gene) }}
             {% endfor %}
             {{ quality_concerns(gene) }}
+            {% if gene.findings and gene.other_associations %}
+            {{ other_associations(gene) }}
+            {% endif %}
         </div>
 
         {{ unassessed_reports(gene) }}
@@ -396,8 +423,6 @@
             </div>
         </details>
         {% endif %}
-
-        {{ criteria_assessment(gene) }}
 
         <details>
             <summary><strong>Contributing papers ({{ gene.contributing_papers|length }})</strong></summary>
@@ -461,7 +486,7 @@
         {% if group.collapsed %}<details class="toc-collapsed-section"><summary>Show gene list</summary>{% endif %}
         <ul class="toc-gene-list">
             {% for gene in group.genes %}
-            <li><a href="#{{ gene.anchor }}">{{ gene.hgnc_symbol }}</a>{% for finding in gene.findings %}{{ finding_chip(finding.kind, finding.rating, '#association-' ~ finding.association_id, finding_text(finding)) }}{% endfor %}</li>
+            <li><a href="#{{ gene.anchor }}">{{ gene.hgnc_symbol }}</a>{% for group in gene.finding_groups %}{{ finding_chip(group.kind, group.rating, '#association-' ~ group.association_id, finding_tooltip(group, finding_text(group)), group.count) }}{% endfor %}</li>
             {% endfor %}
         </ul>
         {% if group.collapsed %}</details>{% endif %}

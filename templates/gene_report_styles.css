@@ -196,6 +196,12 @@ h6 { font-size: 0.95em; color: #7f8c8d; }
     vertical-align: 1px;
 }
 
+.toc .finding-chip sup {
+    margin-left: 1px;
+    font-size: 0.75em;
+    line-height: 0;
+}
+
 .toc .finding-chip:hover {
     text-decoration: none;
     filter: brightness(0.95);
@@ -464,6 +470,15 @@ section > h2 {
     text-decoration: underline;
 }
 
+/* A finding group's tooltip lists its associations' diseases one per line. The ToC's
+   tooltip rule in literature-assignments.css sets an auto width, which would wrap
+   every word; the lines need the width of the longest. */
+.finding-badge[data-title]::before,
+.toc .finding-chip[data-title]::before {
+    white-space: pre-line;
+    width: max-content;
+}
+
 .finding-badge.rating-green { border-color: #155724; }
 .finding-badge.rating-amber { border-color: #856404; }
 .finding-badge.rating-red { border-color: #721c24; }
@@ -586,8 +601,7 @@ section > h2 {
     gap: 6px;
 }
 
-.association-rating .rating-badge,
-.per-entity-criteria-heading .rating-badge {
+.association-rating .rating-badge {
     margin-left: 0;
     font-weight: 700;
     letter-spacing: 0.03em;
@@ -610,6 +624,12 @@ section > h2 {
 
 .association-rating .moi-badge {
     margin-left: 0;
+}
+
+/* An association without a finding: its relation to PanelApp after its rating, quietly */
+.association-rating .relation-note {
+    font-size: 0.85em;
+    color: #6c757d;
 }
 
 .association-disease {
@@ -725,12 +745,14 @@ details.association-panels li {
 }
 
 details.association-panels,
-details.association-variants {
+details.association-variants,
+details.association-criteria {
     margin: 8px 0 0 0;
 }
 
 details.association-panels > summary,
-details.association-variants > summary {
+details.association-variants > summary,
+details.association-criteria > summary {
     padding: 4px 10px;
     font-size: 0.9em;
     background: rgba(255, 255, 255, 0.6);
@@ -744,8 +766,36 @@ details.association-variants .variant-frequency-table {
     margin-top: 0;
 }
 
+details.association-criteria .criteria-grid {
+    margin: 0;
+}
+
 .gene-associations > .quality-concerns {
     margin-bottom: 0;
+}
+
+/* The associations without findings, folded at the end of the gene's box. Their
+   blocks stay on the box's blue. */
+details.other-associations {
+    margin: 14px 0 0 0;
+}
+
+details.other-associations > summary {
+    padding: 6px 10px;
+    font-size: 0.9em;
+    background: rgba(255, 255, 255, 0.6);
+}
+
+details.other-associations > div {
+    padding: 0;
+    border: none;
+    background: none;
+}
+
+details.other-associations > div > .association-block {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #90caf9;
 }
 
 /* Gene-level blocks after the associations */

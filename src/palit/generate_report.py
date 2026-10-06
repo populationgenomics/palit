@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import StrEnum
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -428,6 +429,33 @@ class Finding:
     # when PanelApp's rating of the association is unknown
     from_rating: int | None
 
+    @property
+    def badge(self) -> tuple[FindingKind, int, int | None]:
+        """What the finding's badge shows; a gene's findings with the same badge share one."""
+        return (self.kind, self.rating, self.from_rating)
+
+
+@dataclass(frozen=True)
+class FindingGroup:
+    """A gene's findings with the same badge: one badge in the gene header, one ToC chip.
+
+    Its associations are adjacent in the gene's box, so the badge links to the first.
+    """
+
+    kind: FindingKind
+    rating: int
+    from_rating: int | None  # upgrades only, as in Finding
+    associations: list[ReportAssociation]  # in report order
+
+    @property
+    def association_id(self) -> int:
+        """The association the badge links to: the group's first."""
+        return self.associations[0].id
+
+    @property
+    def count(self) -> int:
+        return len(self.associations)
+
 
 @dataclass(frozen=True)
 class RefusedPaper:
@@ -445,11 +473,13 @@ class GeneAssessment:
 
     hgnc_id: int
     hgnc_symbol: str
-    associations: list[ReportAssociation]  # by corpus rating, then independent families
+    # The associations with findings in the order of their findings, then the others
+    # by corpus rating and independent families
+    associations: list[ReportAssociation]
     unassessed_reports: list[dict[str, Any]]  # [{phenotype, inheritance_mode, dois, reason}]
     quality_concerns: list[dict[str, Any]]  # [{concern, dois, citations}]
     current_rating: int | None  # the gene's highest rating on the target panels; None if novel
-    findings: list[Finding]  # strongest first, in association order within a rating
+    findings: list[Finding]  # in badge order, see gene_findings
     contributing_papers: list[DetailedPaper]
     unassociated_variants: list[ReportVariant]  # the gene's variants that no association lists
     prefill: PrefillData
@@ -465,6 +495,36 @@ class GeneAssessment:
     def anchor(self) -> str:
         """The id of the gene's article in the report."""
         return f"{'novel' if self.is_novel else 'known'}-gene-{self.hgnc_id}"
+
+    @property
+    def finding_groups(self) -> list[FindingGroup]:
+        """The findings merged by badge, strongest first."""
+        by_id = {a.id: a for a in self.associations}
+        return [
+            FindingGroup(kind, rating, from_rating, [by_id[f.association_id] for f in findings])
+            for (kind, rating, from_rating), findings in groupby(self.findings, lambda f: f.badge)
+        ]
+
+    @property
+    def finding_association_ids(self) -> set[int]:
+        return {f.association_id for f in self.findings}
+
+    @property
+    def finding_associations(self) -> list[ReportAssociation]:
+        """The associations with findings, in badge order."""
+        finding_ids = self.finding_association_ids
+        return [a for a in self.associations if a.id in finding_ids]
+
+    @property
+    def other_associations(self) -> list[ReportAssociation]:
+        """The associations without findings, by corpus rating."""
+        finding_ids = self.finding_association_ids
+        return [a for a in self.associations if a.id not in finding_ids]
+
+    @property
+    def other_associations_curated(self) -> bool:
+        """PanelApp Australia curates every association without a finding."""
+        return all(a.relation_status == "existing" for a in self.other_associations)
 
     @property
     def top_rating(self) -> int:
@@ -712,27 +772,29 @@ def association_finding(
 def gene_findings(
     associations: list[ReportAssociation], current_rating: int | None
 ) -> list[Finding]:
-    """The findings of a gene's associations, strongest first.
+    """The findings of a gene's associations in badge order: strongest first, those with
+    the same badge together.
 
-    *associations* are in report order, highest corpus rating first, so their
-    findings are too.
+    *associations* are by association_sort_key. A badge is placed by its first
+    finding among them, so the badges go by rating and then by their strongest
+    association; within a badge, the findings keep the order of *associations*.
     """
-    findings = [association_finding(a, current_rating) for a in associations]
-    return [finding for finding in findings if finding is not None]
+    by_badge: dict[tuple[FindingKind, int, int | None], list[Finding]] = {}
+    for association in associations:
+        finding = association_finding(association, current_rating)
+        if finding is not None:
+            by_badge.setdefault(finding.badge, []).append(finding)
+    return [finding for findings in by_badge.values() for finding in findings]
 
 
-def new_gene_sort_key(gene: GeneAssessment) -> tuple[int, str]:
-    """Most findings first, then by symbol."""
-    return (-len(gene.findings), gene.hgnc_symbol)
-
-
-def known_gene_sort_key(gene: GeneAssessment) -> tuple[int, int, str]:
-    """Lowest current rating first, then most findings, then by symbol."""
-    if gene.current_rating is None:
-        raise ValueError(
-            f"Known gene {gene.hgnc_symbol} (HGNC:{gene.hgnc_id}) has no rating on the target panels"
-        )
-    return (gene.current_rating, -len(gene.findings), gene.hgnc_symbol)
+def report_order(
+    associations: list[ReportAssociation], findings: list[Finding]
+) -> list[ReportAssociation]:
+    """The associations with findings in the order of *findings*, then the others in
+    their order in *associations*."""
+    by_id = {a.id: a for a in associations}
+    finding_ids = [f.association_id for f in findings]
+    return [by_id[i] for i in finding_ids] + [a for a in associations if a.id not in finding_ids]
 
 
 def group_genes(
@@ -740,7 +802,7 @@ def group_genes(
     known_genes: list[GeneAssessment],
     target_panel_ids: set[int],
 ) -> GeneGroups:
-    """Place each gene in one group.
+    """Place each gene in one group, each group's genes by HGNC symbol.
 
     New genes go by their top association rating, known genes with findings by
     the rating of their strongest finding, and known genes without findings by
@@ -748,8 +810,8 @@ def group_genes(
     genes start collapsed in the ToC; the groups of known genes without findings
     are not preselected for bulk assignment.
     """
-    novel = sorted(novel_genes, key=new_gene_sort_key)
-    known = sorted(known_genes, key=known_gene_sort_key)
+    novel = sorted(novel_genes, key=lambda g: g.hgnc_symbol)
+    known = sorted(known_genes, key=lambda g: g.hgnc_symbol)
 
     def by_rating(
         key: str,
@@ -1140,7 +1202,15 @@ def load_gene(
     gene_variants = load_report_variants(
         cursor, hgnc_id, [papers_by_doi[doi] for doi in paper_id_to_doi.values()]
     )
-    associations = load_associations(
+
+    # The gene is novel if it is on no target panel. A known gene's prefill reviews it
+    # on the first target panel holding it; a novel gene's adds it to the first one.
+    panel_confidence = target_panel_data.gene_panel_confidence.get(hgnc_id, {})
+    holding = [pid for pid in target_panel_data.panel_ids if pid in panel_confidence]
+    current_rating = target_panel_data.highest_confidence(hgnc_id) if holding else None
+    prefill_panel_id = holding[0] if holding else target_panel_data.panel_ids[0]
+
+    rated_associations = load_associations(
         cursor,
         hgnc_id,
         json.loads(row["panelapp_context_json"]),
@@ -1148,6 +1218,8 @@ def load_gene(
         all_panels_data,
         gene_variants,
     )
+    findings = gene_findings(rated_associations, current_rating)
+    associations = report_order(rated_associations, findings)
     associated_ids = {v.variant_id for a in associations for v in a.variants}
     gene_level = replace_paper_ids_for_display(
         {
@@ -1157,12 +1229,6 @@ def load_gene(
         display_ids,
     )
 
-    # The gene is novel if it is on no target panel. A known gene's prefill reviews it
-    # on the first target panel holding it; a novel gene's adds it to the first one.
-    panel_confidence = target_panel_data.gene_panel_confidence.get(hgnc_id, {})
-    holding = [pid for pid in target_panel_data.panel_ids if pid in panel_confidence]
-    current_rating = target_panel_data.highest_confidence(hgnc_id) if holding else None
-    prefill_panel_id = holding[0] if holding else target_panel_data.panel_ids[0]
     prefill = prepare_prefill_data(
         hgnc_id=hgnc_id,
         associations=[PrefillAssociation(a.assessment, a.mondo) for a in associations],
@@ -1178,7 +1244,7 @@ def load_gene(
         unassessed_reports=gene_level["unassessed_reports"],
         quality_concerns=gene_level["quality_concerns"],
         current_rating=current_rating,
-        findings=gene_findings(associations, current_rating),
+        findings=findings,
         contributing_papers=contributing_papers,
         unassociated_variants=[v for v in gene_variants if v.variant_id not in associated_ids],
         prefill=prefill,

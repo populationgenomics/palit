@@ -180,6 +180,28 @@
     {% endif %}
     {% endmacro %}
 
+    {# The panels match-panels matched the association to, or why it has none #}
+    {% macro association_panels(assoc) %}
+    {% set state_notes = {
+        'stored': 'matched to no panel',
+        'not_run': 'not matched yet: match-panels has not run for this association',
+        'refused': 'not matched: ' ~ model_name ~ ' and its fallback ' ~ fallback_model_name ~ ' both refused match-panels for this association, so it is skipped from now on',
+        'failed': 'not matched: match-panels gave no valid answer in any attempt so far; a rerun retries it'
+    } %}
+    <div class="association-panels">
+        <strong>Panels:</strong>
+        {% if assoc.matched_panels %}
+        <ul>
+            {% for match in assoc.matched_panels %}
+            <li><a href="https://panelapp-aus.org/panels/{{ match.panel_id }}" target="_blank"><strong>{{ match.panel_name }}</strong></a>{% if match.gene_on_panel %} <span class="muted">(gene already on panel)</span>{% endif %}: {{ match.rationale }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <span class="muted">{{ state_notes[assoc.panel_matching.value] }}</span>
+        {% endif %}
+    </div>
+    {% endmacro %}
+
     {# Linked list of papers #}
     {% macro paper_links(papers) -%}
     {% for paper in papers %}{% if paper.preprint %}⚠️ {% endif %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}
@@ -210,6 +232,9 @@
         <p><strong>Mechanism:</strong> {{ e.disease_mechanism }}</p>
         {% endif %}
         <p><strong>Papers:</strong> {{ paper_links(e.dois | papers_for_dois(gene.contributing_papers)) }}</p>
+        {% if panels_matched %}
+        {{ association_panels(assoc) }}
+        {% endif %}
         {{ association_disputes(assoc) }}
         {% if assoc.variants %}
         <details class="association-variants">
@@ -315,59 +340,6 @@
     </div>
     {% endmacro %}
 
-    {# Panels matched by any of the gene's associations, compared with the gene's current panels #}
-    {% macro panel_recommendations(gene) %}
-    {% set unmatched = gene.unmatched_by_state %}
-    {% set unmatched_labels = {'not_run': 'not run yet', 'refused': 'refused', 'failed': 'failed'} %}
-    {% set without_panels = gene.associations | rejectattr('matched_panels') | list %}
-    {% set state_notes = {
-        'stored': 'matched to no panel',
-        'not_run': 'not matched yet: match-panels has not run for this association',
-        'refused': 'not matched: ' ~ model_name ~ ' and its fallback ' ~ fallback_model_name ~ ' both refused match-panels for this association, so it is skipped from now on',
-        'failed': 'not matched: match-panels gave no valid answer in any attempt so far; a rerun retries it'
-    } %}
-    {% if gene.missing_panels or gene.existing_panels or without_panels %}
-    <details class="panel-recommendations">
-        <summary>
-            <strong>Suggested panels:</strong>
-            {% if gene.missing_panels %}{{ gene.missing_panels | map(attribute='panel_name') | join(', ') }}{% elif unmatched %}<em>none so far</em>{% else %}<em>none</em>{% endif %}
-            {% if unmatched %} <em class="muted">({{ unmatched.values() | sum }} of {{ gene.associations | length }} associations not matched: {% for state, count in unmatched.items() %}{{ count }} {{ unmatched_labels[state.value] }}{% if not loop.last %}, {% endif %}{% endfor %})</em>{% endif %}
-        </summary>
-        <div class="panel-details">
-            {% for heading, suggestions in [("Panels the gene is not on", gene.missing_panels), ("Panels the gene is already on", gene.existing_panels)] %}
-            {% if suggestions %}
-            <div class="panel-section">
-                <h4>{{ heading }}</h4>
-                <ul>
-                {% for panel in suggestions %}
-                    <li>
-                        <a href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank"><strong>{{ panel.panel_name }}</strong></a>{% if gene.associations | length == 1 %}: {{ panel.reasons[0].rationale }}{% else %}
-                        <ul>
-                            {% for reason in panel.reasons %}
-                            <li><em>{{ reason.disease_label }} ({{ reason.inheritance_mode | format_inheritance }}):</em> {{ reason.rationale }}</li>
-                            {% endfor %}
-                        </ul>{% endif %}
-                    </li>
-                {% endfor %}
-                </ul>
-            </div>
-            {% endif %}
-            {% endfor %}
-            {% if without_panels %}
-            <div class="panel-section">
-                <h4>Associations without a matched panel</h4>
-                <ul>
-                {% for assoc in without_panels %}
-                    <li><em>{{ assoc.disease_label }} ({{ assoc.assessment.inheritance_mode | format_inheritance }}):</em> {{ state_notes[assoc.panel_matching.value] }}</li>
-                {% endfor %}
-                </ul>
-            </div>
-            {% endif %}
-        </div>
-    </details>
-    {% endif %}
-    {% endmacro %}
-
     {# The criteria behind each association's rating, one card per association #}
     {% macro criteria_assessment(gene) %}
     <details class="criteria-assessment">
@@ -398,9 +370,6 @@
 
         {{ unassessed_reports(gene) }}
         {{ refused_papers(gene) }}
-        {% if panels_matched %}
-        {{ panel_recommendations(gene) }}
-        {% endif %}
 
         {% if gene.unassociated_variants %}
         <details class="unassociated-variants">

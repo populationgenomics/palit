@@ -327,6 +327,7 @@ def db_path(tmp_path: Path) -> Path:
                         [
                             {"panel_id": ATAXIA_PANEL_ID, "rationale": "ataxia"},
                             {"panel_id": 4242, "rationale": "panel gone"},
+                            {"panel_id": EPILEPSY_PANEL_ID, "rationale": "epilepsy too"},
                         ]
                     ),
                 ),
@@ -563,12 +564,18 @@ def test_disputes_with_the_association_status_same_term_first(
     assert by_id[12].disputes == []
 
 
-def test_matched_panels_per_association_and_union(results: GeneAssessmentResults) -> None:
+def test_matched_panels_the_gene_is_not_on_come_first(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
     genea = results.known_genes[0]
     by_id = {a.id: a for a in genea.associations}
     reused_matches = by_id[10].matched_panels
     assert reused_matches is not None
-    assert [(m.panel_name, m.gene_on_panel) for m in reused_matches] == [("Ataxia", True)]
+    # Panel 4242 is gone from PanelApp, so its match is skipped.
+    assert [(m.panel_name, m.gene_on_panel) for m in reused_matches] == [
+        ("Epilepsy", False),
+        ("Ataxia", True),
+    ]
     assert by_id[13].matched_panels is None
     assert {a.id: a.panel_matching for a in genea.associations} == {
         10: StageState.STORED,
@@ -576,14 +583,9 @@ def test_matched_panels_per_association_and_union(results: GeneAssessmentResults
         12: StageState.STORED,
         13: StageState.NOT_RUN,
     }
-    assert genea.unmatched_by_state == {StageState.NOT_RUN: 1}
-
-    assert [(s.panel_name, [r.disease_label for r in s.reasons]) for s in genea.missing_panels] == [
-        ("Epilepsy", ["GENEA-related biallelic disease"])
-    ]
-    assert [
-        (s.panel_name, [r.disease_label for r in s.reasons]) for s in genea.existing_panels
-    ] == [("Ataxia", ["GENEA-related ataxia variant", "disease A"])]
+    # Associations 10 and 11 both match Epilepsy, which the gene is not on; Ataxia it is on.
+    statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
+    assert statistics.total_panel_suggestions == 1
 
 
 def _add_requests(
@@ -633,7 +635,6 @@ def test_panel_matching_state_of_an_unmatched_association(
     genea = _load(db_path, hgnc_resolver).known_genes[0]
     (association,) = [a for a in genea.associations if a.id == 13]
     assert association.panel_matching == state
-    assert genea.unmatched_by_state == {state: 1}
 
 
 @pytest.mark.parametrize(("requests", "state"), STATE_CASES)
@@ -723,19 +724,53 @@ def _render(
     )
 
 
-def test_panel_matching_shown_once_match_panels_has_run(
+def _panels(section: str) -> str:
+    """The Panels block of an association section."""
+    start = section.index('<div class="association-panels">')
+    return section[start : section.index("</div>", start)]
+
+
+def _panel_items(section: str) -> list[str]:
+    """The Panels list items of an association section, tags stripped."""
+    items = re.findall(r"<li>(.*?)</li>", _panels(section), re.DOTALL)
+    return [re.sub(r"<[^>]+>", "", item) for item in items]
+
+
+def test_each_association_lists_its_panels_after_its_papers(
     db_path: Path, results: GeneAssessmentResults
 ) -> None:
     assert results.panels_matched
     html = _render(db_path, results)
-    assert "Suggested panels:" in html
-    assert "Panel Suggestions:" in html
-    assert "Associations without a matched panel" in html
+    reused = _association_section(html, 10)
+    assert reused.index("<strong>Papers:</strong>") < reused.index("<strong>Panels:</strong>")
+    assert _panel_items(reused) == [
+        "Epilepsy: epilepsy too",
+        "Ataxia (gene already on panel): ataxia",
+    ]
     assert (
-        "GENEA-related other disease (Monoallelic):</em> not matched yet: "
-        "match-panels has not run for this association"
-    ) in html
-    assert "<em>GENEA-related biallelic disease (Biallelic):</em> seizures" in html
+        f'<a href="https://panelapp-aus.org/panels/{EPILEPSY_PANEL_ID}" target="_blank">'
+        "<strong>Epilepsy</strong></a>: epilepsy too"
+    ) in reused
+    assert _panel_items(_association_section(html, 11)) == ["Epilepsy: seizures"]
+    assert _panel_items(_association_section(html, 12)) == [
+        "Ataxia (gene already on panel): cerebellar"
+    ]
+    assert (
+        '<span class="muted">not matched yet: match-panels has not run for this association</span>'
+        in _panels(_association_section(html, 13))
+    )
+    assert "<li><strong>Panel Suggestions:</strong> 1</li>" in html
+    assert "Suggested panels" not in html
+
+
+def test_association_matched_to_no_panel_says_so(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE associations SET matched_panels_json = '[]' WHERE id = 13")
+    panels = _panels(_association_section(_render(db_path, _load(db_path, hgnc_resolver)), 13))
+    assert '<span class="muted">matched to no panel</span>' in panels
+    assert "<li>" not in panels
 
 
 def test_report_says_which_associations_were_refused_or_failed(
@@ -747,10 +782,13 @@ def test_report_says_which_associations_were_refused_or_failed(
     _add_requests(db_path, MAP_MONDO_STAGE, "13", [refused])
     _add_requests(db_path, MAP_MONDO_STAGE, "20", [("succeeded", "2026-10-01T10", MODEL)])
     html = _render(db_path, _load(db_path, hgnc_resolver))
-    assert "Opus 5.5 and its fallback Sonnet 5.5 both refused match-panels" in html
-    assert "match-panels gave no valid answer in any attempt so far" in html
-    assert "(1 of 4 associations not matched: 1 refused)" in html
-    assert "(1 of 1 associations not matched: 1 failed)" in html
+    assert (
+        "not matched: Opus 5.5 and its fallback Sonnet 5.5 both refused match-panels for this "
+        "association, so it is skipped from now on"
+    ) in _panels(_association_section(html, 13))
+    assert (
+        "not matched: match-panels gave no valid answer in any attempt so far; a rerun retries it"
+    ) in _panels(_association_section(html, 20))
     assert "No MONDO term: map-mondo refused" in html
     assert "No MONDO term: mapping failed" in html
     assert "No MONDO term yet" in html  # association 11
@@ -764,7 +802,7 @@ def test_panel_matching_omitted_when_match_panels_never_ran(
     results = _load(db_path, hgnc_resolver)
     assert not results.panels_matched
     html = _render(db_path, results)
-    for text in ("Matched panels:", "not matched yet", "Suggested panels:", "Panel Suggestions:"):
+    for text in ('class="association-panels"', "Panels:</strong>", "Panel Suggestions:"):
         assert text not in html
 
 
@@ -842,8 +880,6 @@ def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) ->
         new_rating=new,
         contributing_papers=[],
         unassociated_variants=[],
-        missing_panels=[],
-        existing_panels=[],
         prefill_json="{}",
         existing_panel_reviews=[],
         refused_papers=[],
@@ -1294,7 +1330,6 @@ def test_gene_body_box_then_gene_blocks_in_order(
         "Overlapping cohorts.",
         'class="unassessed-reports"',
         'class="refused-papers"',
-        'class="panel-recommendations"',
         'class="unassociated-variants"',
         'class="criteria-assessment"',
         "Contributing papers (1)",

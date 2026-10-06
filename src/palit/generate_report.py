@@ -5,7 +5,6 @@ import json
 import logging
 import shutil
 import sqlite3
-from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -325,24 +324,6 @@ class PanelMatch:
 
 
 @dataclass(frozen=True)
-class PanelSuggestionReason:
-    """Why one association of the gene was matched to a panel."""
-
-    disease_label: str
-    inheritance_mode: str
-    rationale: str
-
-
-@dataclass
-class PanelSuggestion:
-    """A panel matched by at least one of the gene's associations."""
-
-    panel_id: int
-    panel_name: str
-    reasons: list[PanelSuggestionReason]
-
-
-@dataclass(frozen=True)
 class ExistingPanelReviews:
     """PanelApp evaluations captured at assess time for one target panel that held the gene.
 
@@ -409,7 +390,8 @@ class ReportAssociation:
     rating: int  # computed from this association's criteria: 3 GREEN, 2 AMBER, 1 RED
     disputes: list[DisputeRef]
     variants: list[ReportVariant]  # the association's variants, in the gene's order
-    matched_panels: list[PanelMatch] | None  # None unless panel_matching is STORED
+    # None unless panel_matching is STORED; panels the gene is not on first, each group by name
+    matched_panels: list[PanelMatch] | None
     panel_matching: StageState
 
     @property
@@ -450,8 +432,6 @@ class GeneAssessment:
     new_rating: int  # the top association rating: 3 (GREEN), 2 (AMBER), 1 (RED)
     contributing_papers: list[DetailedPaper]
     unassociated_variants: list[ReportVariant]  # the gene's variants that no association lists
-    missing_panels: list[PanelSuggestion]  # matched panels the gene is not on
-    existing_panels: list[PanelSuggestion]  # matched panels the gene is already on
     prefill_json: str  # HTML-escaped JSON for data-prefill attribute
     existing_panel_reviews: list[ExistingPanelReviews]  # per target panel; empty if novel
     refused_papers: list[RefusedPaper]
@@ -464,16 +444,6 @@ class GeneAssessment:
     @property
     def has_highlighted_new_moi(self) -> bool:
         return any(a.new_moi_highlighted for a in self.associations)
-
-    @property
-    def unmatched_by_state(self) -> dict[StageState, int]:
-        """The number of associations without panel matches per state, in StageState order."""
-        counts = Counter(a.panel_matching for a in self.associations)
-        return {
-            state: counts[state]
-            for state in StageState
-            if state != StageState.STORED and counts[state]
-        }
 
 
 @dataclass(frozen=True)
@@ -535,7 +505,7 @@ class ComprehensiveStats:
     initial_papers: int
     expansion_papers: int
 
-    # Panel suggestions
+    # Distinct (gene, panel) pairs an association matched where the gene is not on the panel
     total_panel_suggestions: int
 
     # Associations, and new_moi associations highlighted for curators
@@ -910,7 +880,10 @@ def association_disputes(
 def _panel_matches(
     matched_panels_json: str | None, hgnc_id: int, all_panels_data: AllPanelsData
 ) -> list[PanelMatch] | None:
-    """An association's matched panels, or None while it has none stored."""
+    """An association's matched panels, or None while it has none stored.
+
+    The panels the gene is not on come first; within each group, by panel name.
+    """
     if matched_panels_json is None:
         return None
     current_panels = all_panels_data.gene_to_panels.get(hgnc_id, set())
@@ -931,7 +904,7 @@ def _panel_matches(
                 gene_on_panel=panel_id in current_panels,
             )
         )
-    return sorted(matches, key=lambda m: m.panel_name)
+    return sorted(matches, key=lambda m: (m.gene_on_panel, m.panel_name))
 
 
 def load_associations(
@@ -1006,34 +979,6 @@ def load_associations(
     return sorted(associations, key=association_sort_key)
 
 
-def union_panel_suggestions(
-    associations: list[ReportAssociation],
-) -> tuple[list[PanelSuggestion], list[PanelSuggestion]]:
-    """The panels matched by any association, split into (gene not on it, gene on it).
-
-    Each panel lists the associations that matched it, with their rationales.
-    Both lists are sorted by panel name.
-    """
-    by_panel: dict[int, tuple[PanelSuggestion, bool]] = {}
-    for association in associations:
-        for match in association.matched_panels or []:
-            entry = by_panel.get(match.panel_id)
-            if entry is None:
-                entry = (PanelSuggestion(match.panel_id, match.panel_name, []), match.gene_on_panel)
-                by_panel[match.panel_id] = entry
-            entry[0].reasons.append(
-                PanelSuggestionReason(
-                    disease_label=association.disease_label,
-                    inheritance_mode=association.assessment["inheritance_mode"],
-                    rationale=match.rationale,
-                )
-            )
-    suggestions = sorted(by_panel.values(), key=lambda e: e[0].panel_name)
-    missing = [suggestion for suggestion, on_panel in suggestions if not on_panel]
-    existing = [suggestion for suggestion, on_panel in suggestions if on_panel]
-    return missing, existing
-
-
 def load_gene(
     cursor: sqlite3.Cursor,
     row: sqlite3.Row,
@@ -1084,7 +1029,6 @@ def load_gene(
         },
         display_ids,
     )
-    missing_panels, existing_panels = union_panel_suggestions(associations)
 
     # Gene is novel if not in any target panel; the list keeps target-panel order
     gene_panels = target_panel_data.gene_panel_mapping.get(hgnc_id, set())
@@ -1115,8 +1059,6 @@ def load_gene(
         new_rating=calculate_gene_rating([a.assessment for a in associations]),
         contributing_papers=contributing_papers,
         unassociated_variants=[v for v in gene_variants if v.variant_id not in associated_ids],
-        missing_panels=missing_panels,
-        existing_panels=existing_panels,
         prefill_json=json.dumps(asdict(prefill_data)),
         existing_panel_reviews=existing_panel_reviews,
         refused_papers=load_refused_papers(cursor, hgnc_id),
@@ -1723,11 +1665,18 @@ def calculate_comprehensive_statistics(
             if current_confidence is not None and current_confidence < 3 and gene.new_rating == 3:
                 known_upgraded += 1
 
-        # Count total panel suggestions (no need for hardcoded panel IDs)
-        total_panel_suggestions = 0
         all_genes = results.novel_genes + results.known_genes
-        for gene in all_genes:
-            total_panel_suggestions += len(gene.missing_panels)
+        total_panel_suggestions = sum(
+            len(
+                {
+                    match.panel_id
+                    for association in gene.associations
+                    for match in association.matched_panels or []
+                    if not match.gene_on_panel
+                }
+            )
+            for gene in all_genes
+        )
 
         # Paper source breakdown - show ALL papers for statistics
         cursor.execute("""
@@ -1780,7 +1729,6 @@ def calculate_comprehensive_statistics(
             # Source breakdown
             initial_papers=source_counts.get("initial", 0),
             expansion_papers=source_counts.get("expansion", 0),
-            # Panel suggestions
             total_panel_suggestions=total_panel_suggestions,
             total_associations=len(all_associations),
             highlighted_new_moi_count=sum(a.new_moi_highlighted for a in all_associations),

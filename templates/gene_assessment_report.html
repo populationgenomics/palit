@@ -28,9 +28,9 @@
     {% endif %}
 
     {# What the ratings in association headings mean; a new gene has no PanelApp rating to fall below #}
-    {% macro corpus_note(new_genes) %}
-    <p class="corpus-note">Ratings in association headings come from the papers read for this report, not from everything published{% if new_genes %}.{% else %}, so a rating below PanelApp's is not a downgrade recommendation.{% endif %}</p>
-    {% endmacro %}
+    {% macro rating_caveat(new_genes) -%}
+    Ratings in association headings come from the papers read for this report, not from everything published{% if new_genes %}.{% else %}, so a rating below PanelApp's is not a downgrade recommendation.{% endif %}
+    {%- endmacro %}
 
     {# Macro for linking to a paper: PubMed if PMID available, DOI otherwise #}
     {% macro paper_link(paper) %}
@@ -668,7 +668,7 @@
 
     {# The report's gene sections, each a list of groups: (anchor, title, note, groups) #}
     {% set gene_sections = [
-        ('new-genes', 'New genes', "Genes on none of the target panels, grouped by their top association's rating from this report's papers.", groups.new_genes),
+        ('new-genes', 'New genes', "Genes on none of the target panels, grouped by their top association's rating.", groups.new_genes),
         ('known-genes-with-findings', 'Known genes with findings', 'Genes on a target panel with at least one finding, grouped by the rating of their strongest finding.', groups.with_findings),
         ('known-genes-without-findings', 'Known genes without findings', 'Genes on a target panel without findings: PanelApp Australia curates each association at the same or a higher rating, or it adds a mode of inheritance with fewer than ' ~ min_families_for_moi_expansion ~ ' independent families.', groups.without_findings)
     ] | selectattr(3) | list %}
@@ -846,8 +846,7 @@
         {% for anchor, title, note, gene_groups in gene_sections %}
         <section id="{{ anchor }}">
             <h2>{{ title }}</h2>
-            <p><em>{{ note }}</em></p>
-            {{ corpus_note(anchor == 'new-genes') }}
+            <p class="section-intro">{{ note }} {{ rating_caveat(anchor == 'new-genes') }}</p>
             {% for group in gene_groups %}
             {{ body_group(group) }}
             {% endfor %}

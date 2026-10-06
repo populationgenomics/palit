@@ -560,13 +560,8 @@ section > h2 {
 /* Associations: one card per gene-disease-MoI association, in the look of the
    June report's evidence summary */
 
-.corpus-note {
-    font-size: 0.9em;
+.section-intro {
     color: #4a5568;
-    background: #f1f5f9;
-    border-left: 4px solid #94a3b8;
-    padding: 8px 12px;
-    border-radius: 4px;
 }
 
 .muted {

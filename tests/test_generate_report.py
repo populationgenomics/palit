@@ -1314,7 +1314,7 @@ def test_only_known_gene_sections_say_a_lower_rating_is_no_downgrade(
 
     def note(section_id: str) -> str:
         section = html[html.index(f'<section id="{section_id}">') :]
-        note = section[section.index('class="corpus-note"') :]
+        note = section[section.index('class="section-intro"') :]
         return note[: note.index("</p>")]
 
     assert "from everything published." in note("new-genes")

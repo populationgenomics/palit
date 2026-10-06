@@ -107,11 +107,7 @@ CREATE TABLE gene_aggregations (
     -- PanelApp's evaluations endpoint: [{"panel_id": <int>, "evaluations": [<raw evaluation
     -- dicts>]}, ...] in target-panel order. NULL when the gene was on no target panel.
     existing_panel_reviews_json JSON,
-    unassessed_reports_json JSON NOT NULL, -- [{phenotype, inheritance_mode, dois, reason}]
-    -- [{concern, association_positions, citations: [{doi, quote}]}]; association_positions
-    -- are the associations.position values of the associations a concern bears on, empty
-    -- for a concern about the gene as a whole.
-    quality_concerns_json JSON NOT NULL
+    unassessed_reports_json JSON NOT NULL  -- [{phenotype, inheritance_mode, dois, reason}]
 );
 
 -- One row per gene-disease-MoI association of one gene in this run. Storing a gene's
@@ -123,7 +119,9 @@ CREATE TABLE associations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,  -- per-run identity
     hgnc_id INTEGER NOT NULL REFERENCES gene_aggregations(hgnc_id) ON DELETE CASCADE,
     position INTEGER NOT NULL,             -- order in the model output
-    assessment_json JSON NOT NULL,         -- the association object, with dois and criteria as a list
+    -- The association object, with dois and criteria as a list; its quality_concerns
+    -- are [{concern, citations: [{doi, quote}]}]
+    assessment_json JSON NOT NULL,
     mondo_id TEXT,                         -- NULL until map-mondo has run for this row
     mondo_label TEXT,
     -- panelapp_gencc: reuses a PanelApp Australia GenCC row's disease (set by assess-genes);

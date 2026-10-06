@@ -28,7 +28,6 @@ from palit.assess_genes import (
     log_association_warnings,
     output_configs,
     render_prompt,
-    replace_association_indexes,
     replace_paper_ids_with_dois,
     replace_variant_ids,
     store_gene_aggregation,
@@ -118,23 +117,35 @@ def test_uncopied_citations_are_kept_and_placeholders_dropped() -> None:
                         "citations": [{"doi": "10.1/a", "quote": "paraphrase", "commentary": "c"}],
                     },
                 ],
-            }
-        ],
-        "quality_concerns": [
-            {
-                "concern": "x",
-                "citations": [{"doi": "10.1/b", "quote": "", "commentary": ""}],
+                "quality_concerns": [
+                    {
+                        "concern": "x",
+                        "citations": [
+                            {"doi": "10.1/b", "quote": ""},
+                            {"doi": "10.1/b", "quote": "concern paraphrase"},
+                        ],
+                    },
+                    {"concern": "y", "citations": [{"doi": "10.1/b", "quote": "copied"}]},
+                ],
             }
         ],
     }
     assert drop_placeholder_citations(assessment) == 2
-    total, uncopied = uncopied_citations(assessment, {"10.1/a": {"exact quote"}, "10.1/b": set()})
-    assert total == 2
-    assert uncopied == [("10.1/a", "paraphrase")]
-    criterion_a, criterion_b = assessment["disease_entities"][0]["evidence_assessments"]
+    total, uncopied = uncopied_citations(
+        assessment, {"10.1/a": {"exact quote"}, "10.1/b": {"copied"}}
+    )
+    assert total == 4
+    assert uncopied == [("10.1/a", "paraphrase"), ("10.1/b", "concern paraphrase")]
+    (association,) = assessment["disease_entities"]
+    criterion_a, criterion_b = association["evidence_assessments"]
     assert [c["quote"] for c in criterion_a["citations"]] == ["exact quote"]
     assert criterion_b["citations"] == [{"doi": "10.1/a", "quote": "paraphrase", "commentary": "c"}]
-    assert assessment["quality_concerns"][0]["citations"] == []
+    assert [
+        [c["quote"] for c in concern["citations"]] for concern in association["quality_concerns"]
+    ] == [
+        ["concern paraphrase"],
+        ["copied"],
+    ]
 
 
 # --- Aggregation into associations -------------------------------------------------
@@ -178,6 +189,9 @@ def _association(**fields: Any) -> dict[str, Any]:
         "segregation": "segregates in 2 families",
         "functional": "NR",
         "summary": "Smith2024 reports 4 individuals from 3 families.",
+        "quality_concerns": [
+            {"concern": "c", "citations": [{"paper_id": "Jones2023", "quote": "q2"}]}
+        ],
     }
     return association | fields
 
@@ -202,13 +216,6 @@ def _answer(*associations: dict[str, Any]) -> dict[str, Any]:
                 "inheritance_mode": "Monoallelic",
                 "paper_ids": ["Jones2023"],
                 "reason": "r",
-            }
-        ],
-        "quality_concerns": [
-            {
-                "concern": "c",
-                "association_indexes": [0],
-                "citations": [{"paper_id": "Jones2023", "quote": "q2"}],
             }
         ],
     }
@@ -265,7 +272,6 @@ def _stored_form(answer: dict[str, Any]) -> dict[str, Any]:
     criteria_object_to_list(answer["disease_entities"])
     replace_paper_ids_with_dois(answer, PAPER_IDS)
     replace_variant_ids(answer, VARIANT_KEYS)
-    replace_association_indexes(answer)
     return answer
 
 
@@ -279,13 +285,25 @@ def test_schema_accepts_the_three_relation_statuses_and_enforces_min_length() ->
         validator.validate(_answer(_association(summary="")))
 
 
+def test_schema_holds_quality_concerns_in_each_association_only() -> None:
+    validator = jsonschema.Draft202012Validator(SCHEMA)
+    validator.validate(_answer(_association(quality_concerns=[])))
+    association = _association()
+    del association["quality_concerns"]
+    with pytest.raises(jsonschema.ValidationError, match="'quality_concerns' is a required"):
+        validator.validate(_answer(association))
+    with pytest.raises(jsonschema.ValidationError, match="Additional properties"):
+        validator.validate(_answer(_association()) | {"quality_concerns": []})
+
+
 def test_paper_ids_become_dois_everywhere() -> None:
     answer = _stored_form(_answer(_association()))
     association = answer["disease_entities"][0]
     assert association["dois"] == ["10.1/a"] and "paper_ids" not in association
     assert answer["unassessed_reports"][0]["dois"] == ["10.1/b"]
-    assert answer["quality_concerns"][0]["citations"] == [{"quote": "q2", "doi": "10.1/b"}]
-    assert "dois" not in answer["quality_concerns"][0]
+    assert association["quality_concerns"] == [
+        {"concern": "c", "citations": [{"quote": "q2", "doi": "10.1/b"}]}
+    ]
 
 
 def test_criterion_citations_become_dois() -> None:
@@ -306,30 +324,18 @@ def test_unknown_paper_id_is_rejected() -> None:
         replace_paper_ids_with_dois(answer, PAPER_IDS)
 
 
-def test_concern_association_indexes_become_distinct_sorted_positions() -> None:
-    answer = _answer(_association(), _new_association("new_disease", 2))
-    answer["quality_concerns"][0]["association_indexes"] = [1, 0, 1]
-    answer["quality_concerns"].append(
-        {
-            "concern": "same cohort under both associations",
-            "association_indexes": [],
-            "citations": [{"paper_id": "Smith2024", "quote": "q"}],
-        }
+def test_a_concern_shared_by_two_associations_is_stored_in_each() -> None:
+    def shared() -> dict[str, Any]:
+        return {"concern": "same cohort", "citations": [{"paper_id": "Smith2024", "quote": "q"}]}
+
+    answer = _answer(
+        _association(quality_concerns=[shared()]),
+        _new_association("new_disease", 2) | {"quality_concerns": [shared()]},
     )
-    concerns = _stored_form(answer)["quality_concerns"]
-    assert [c["association_positions"] for c in concerns] == [[0, 1], []]
-    assert all("association_indexes" not in c for c in concerns)
-
-
-def test_concern_with_an_out_of_range_association_index_is_rejected(
-    gencc_index: GenccIndex,
-) -> None:
-    answer = _answer(_association())
-    answer["quality_concerns"][0]["association_indexes"] = [0, 1]
-    criteria_object_to_list(answer["disease_entities"])
-    assert assessment_problems(answer, _item(gencc_index)) == [
-        "quality concern with an unknown association: index 1 with 1 associations"
-    ]
+    stored = _stored_form(answer)["disease_entities"]
+    assert [a["quality_concerns"] for a in stored] == [
+        [{"concern": "same cohort", "citations": [{"quote": "q", "doi": "10.1/a"}]}]
+    ] * 2
 
 
 def test_concern_without_a_citation_is_logged(
@@ -340,12 +346,11 @@ def test_concern_without_a_citation_is_logged(
     log_association_warnings(_stored_form(answer), item)
     assert "quality concern without a citation" not in caplog.text
 
-    answer = _answer(_association())
-    answer["quality_concerns"][0]["citations"] = []
+    answer = _answer(_association(quality_concerns=[{"concern": "c", "citations": []}]))
     criteria_object_to_list(answer["disease_entities"])
     assert assessment_problems(answer, item) == []
     log_association_warnings(answer, item)
-    assert "GENEA: quality concern without a citation: 'c'" in caplog.text
+    assert "GENEA 'disease A' (Biallelic): quality concern without a citation: 'c'" in caplog.text
 
 
 def test_schema_requires_variant_ids_segregation_and_functional() -> None:
@@ -718,9 +723,12 @@ def test_storage_takes_mondo_from_the_reused_gencc_row(
         rows = conn.execute(
             "SELECT position, mondo_id, mondo_label, mondo_match FROM associations ORDER BY position"
         ).fetchall()
-        unassessed, concerns, context = conn.execute(
-            "SELECT unassessed_reports_json, quality_concerns_json, panelapp_context_json "
-            "FROM gene_aggregations"
+        unassessed, context = conn.execute(
+            "SELECT unassessed_reports_json, panelapp_context_json FROM gene_aggregations"
+        ).fetchone()
+        (concerns,) = conn.execute(
+            "SELECT json_extract(assessment_json, '$.quality_concerns') FROM associations "
+            "WHERE position = 0"
         ).fetchone()
     assert rows == [
         (0, "MONDO:0000001", "disease A", "panelapp_gencc"),
@@ -728,11 +736,7 @@ def test_storage_takes_mondo_from_the_reused_gencc_row(
     ]
     assert json.loads(unassessed)[0]["dois"] == ["10.1/b"]
     assert json.loads(concerns) == [
-        {
-            "concern": "c",
-            "citations": [{"quote": "q2", "doi": "10.1/b"}],
-            "association_positions": [0],
-        }
+        {"concern": "c", "citations": [{"quote": "q2", "doi": "10.1/b"}]}
     ]
     assert [row["mondo_id"] for row in json.loads(context)["gencc_rows"]] == [
         "MONDO:0000001",
@@ -1050,10 +1054,16 @@ def test_quotes_not_copied_from_the_extractions_never_reject_a_gene(
         {"paper_id": "Smith2024", "quote": "Three families were affected.", "commentary": "c"},
         {"paper_id": "Smith2024", "quote": "placeholder", "commentary": "placeholder"},
     ]
-    answer = _answer(association)
-    answer["quality_concerns"][0]["citations"] = [
-        {"paper_id": "Jones2023", "quote": "Segregation was not tested."}
+    association["quality_concerns"] = [
+        {
+            "concern": "c",
+            "citations": [
+                {"paper_id": "Jones2023", "quote": "Segregation was not tested."},
+                {"paper_id": "Jones2023", "quote": ""},
+            ],
+        }
     ]
+    answer = _answer(association)
     validator = jsonschema.Draft202012Validator(SCHEMA)
 
     outcome = handle_results(
@@ -1066,12 +1076,11 @@ def test_quotes_not_copied_from_the_extractions_never_reject_a_gene(
     assert outcome.stored == 1
     with sqlite3.connect(db_path) as conn:
         (stored,) = conn.execute("SELECT assessment_json FROM associations").fetchone()
-        (concerns,) = conn.execute("SELECT quality_concerns_json FROM gene_aggregations").fetchone()
         (rejection,) = conn.execute("SELECT rejection FROM llm_requests").fetchone()
     criterion_a = json.loads(stored)["evidence_assessments"][0]
     assert [c["quote"] for c in criterion_a["citations"]] == ["Three families were affected."]
-    assert [c["quote"] for c in json.loads(concerns)[0]["citations"]] == [
-        "Segregation was not tested."
+    assert json.loads(stored)["quality_concerns"] == [
+        {"concern": "c", "citations": [{"quote": "Segregation was not tested.", "doi": "10.1/b"}]}
     ]
     assert rejection is None
 

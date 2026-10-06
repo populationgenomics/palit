@@ -120,11 +120,7 @@ def aggregate_quotes(cursor: sqlite3.Cursor, doi: str) -> set[str]:
         entity = json.loads(assessment_json)
         for criterion in entity["evidence_assessments"]:
             citations += criterion["citations"]
-    cursor.execute(
-        f"SELECT quality_concerns_json FROM gene_aggregations WHERE hgnc_id IN ({genes})", (doi,)
-    )
-    for (concerns_json,) in cursor.fetchall():
-        for concern in json.loads(concerns_json):
+        for concern in entity["quality_concerns"]:
             citations += concern["citations"]
     return {citation["quote"] for citation in citations if citation["doi"] == doi}
 
@@ -357,17 +353,6 @@ class DisputeRef:
     same_term: bool
 
 
-@dataclass(frozen=True)
-class QualityConcern:
-    """A concern the gene's aggregation raises about its evidence, paper IDs in display form."""
-
-    concern: str
-    citations: list[dict[str, Any]]  # [{doi, quote}]
-    # The associations.position values of the associations it bears on; empty for a
-    # concern about the gene as a whole
-    association_positions: list[int]
-
-
 class StageState(StrEnum):
     """Where map-mondo or match-panels stands for one association."""
 
@@ -408,7 +393,6 @@ class ReportAssociation:
     # None unless panel_matching is STORED; panels the gene is not on first, each group by name
     matched_panels: list[PanelMatch] | None
     panel_matching: StageState
-    quality_concerns: list[QualityConcern]  # the concerns that name this association
 
     @property
     def relation_status(self) -> RelationStatus:
@@ -492,8 +476,6 @@ class GeneAssessment:
     # by corpus rating and independent families
     associations: list[ReportAssociation]
     unassessed_reports: list[dict[str, Any]]  # [{phenotype, inheritance_mode, dois, reason}]
-    # The concerns about the gene as a whole; those about associations are on the associations
-    quality_concerns: list[QualityConcern]
     current_rating: int | None  # the gene's highest rating on the target panels; None if novel
     findings: list[Finding]  # in badge order, see gene_findings
     contributing_papers: list[DetailedPaper]
@@ -1119,14 +1101,12 @@ def load_associations(
     display_ids: dict[str, str],
     all_panels_data: AllPanelsData,
     gene_variants: list[ReportVariant],
-    quality_concerns: list[QualityConcern],
 ) -> list[ReportAssociation]:
     """The gene's associations, by corpus rating and then independent family count.
 
-    Each association carries its variants among *gene_variants*, the concerns
-    among *quality_concerns* that name its position, and the state of map-mondo
-    and match-panels for it, from its latest request of each stage. Both stages
-    send immediate requests only, which are recorded once they have completed.
+    Each association carries its variants among *gene_variants* and the state of
+    map-mondo and match-panels for it, from its latest request of each stage. Both
+    stages send immediate requests only, which are recorded once they have completed.
     """
 
     def latest(column: str) -> str:
@@ -1180,29 +1160,9 @@ def load_associations(
                     row["matching_status"],
                     row["matching_model"],
                 ),
-                quality_concerns=[
-                    c for c in quality_concerns if row["position"] in c.association_positions
-                ],
             )
         )
     return sorted(associations, key=association_sort_key)
-
-
-def load_quality_concerns(
-    quality_concerns_json: str, display_ids: dict[str, str]
-) -> list[QualityConcern]:
-    """The gene's stored quality concerns, paper IDs in display form."""
-    stored = replace_paper_ids_for_display(
-        {"quality_concerns": json.loads(quality_concerns_json)}, display_ids
-    )
-    return [
-        QualityConcern(
-            concern=c["concern"],
-            citations=c["citations"],
-            association_positions=c["association_positions"],
-        )
-        for c in stored["quality_concerns"]
-    ]
 
 
 def prefill_associations(
@@ -1263,7 +1223,6 @@ def load_gene(
     current_rating = target_panel_data.highest_confidence(hgnc_id) if holding else None
     prefill_panel_id = holding[0] if holding else target_panel_data.panel_ids[0]
 
-    quality_concerns = load_quality_concerns(row["quality_concerns_json"], display_ids)
     rated_associations = load_associations(
         cursor,
         hgnc_id,
@@ -1271,16 +1230,7 @@ def load_gene(
         display_ids,
         all_panels_data,
         gene_variants,
-        quality_concerns,
     )
-    unknown_positions = {p for c in quality_concerns for p in c.association_positions} - {
-        a.position for a in rated_associations
-    }
-    if unknown_positions:
-        raise ValueError(
-            f"HGNC:{hgnc_id} has quality concerns naming association positions it does not "
-            f"have: {sorted(unknown_positions)}"
-        )
     findings = gene_findings(rated_associations, current_rating)
     associations = report_order(rated_associations, findings)
     associated_ids = {v.variant_id for a in associations for v in a.variants}
@@ -1303,7 +1253,6 @@ def load_gene(
         hgnc_symbol=hgnc_resolver.get_symbol(hgnc_id),
         associations=associations,
         unassessed_reports=unassessed_reports,
-        quality_concerns=[c for c in quality_concerns if not c.association_positions],
         current_rating=current_rating,
         findings=findings,
         contributing_papers=contributing_papers,
@@ -1340,7 +1289,7 @@ def build_gene_assessment_results(
     cursor.execute(
         """
         SELECT hgnc_id, paper_id_mapping, filtered_papers_json, panelapp_context_json,
-               existing_panel_reviews_json, unassessed_reports_json, quality_concerns_json
+               existing_panel_reviews_json, unassessed_reports_json
         FROM gene_aggregations g
         WHERE EXISTS (SELECT 1 FROM associations a WHERE a.hgnc_id = g.hgnc_id)
         ORDER BY hgnc_id

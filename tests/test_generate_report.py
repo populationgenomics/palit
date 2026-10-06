@@ -85,10 +85,12 @@ def _association(
     dois: tuple[str, ...] = ("10.1/a",),
     variants: tuple[str, ...] = (),
     segregation: str = "NR",
+    concerns: tuple[str, ...] = (),
 ) -> str:
     """A stored association: dois instead of paper IDs, criteria as a list.
 
-    *panelapp_rating* is PanelApp's rating of an existing association.
+    *panelapp_rating* is PanelApp's rating of an existing association. Each of its
+    quality *concerns* cites Paper A.
     """
     return json.dumps(
         {
@@ -117,6 +119,13 @@ def _association(
             "evidence_weakening_factors": [],
             "evidence_assessments": _criteria(green),
             "summary": f"Smith2024 reports {description}.",
+            "quality_concerns": [
+                {
+                    "concern": concern,
+                    "citations": [{"doi": "10.1/a", "quote": f"Quote for {concern}"}],
+                }
+                for concern in concerns
+            ],
         }
     )
 
@@ -289,9 +298,8 @@ def db_path(tmp_path: Path) -> Path:
         conn.executemany(
             """
             INSERT INTO gene_aggregations (hgnc_id, assessment_raw, paper_id_mapping,
-                panelapp_context_json, existing_panel_reviews_json, unassessed_reports_json,
-                quality_concerns_json)
-            VALUES (?, '{}', ?, ?, ?, ?, '[]')
+                panelapp_context_json, existing_panel_reviews_json, unassessed_reports_json)
+            VALUES (?, '{}', ?, ?, ?, ?)
             """,
             [
                 (
@@ -925,8 +933,8 @@ def test_gene_without_associations_is_left_out(db_path: Path, hgnc_resolver: Hgn
         conn.execute(
             """
             INSERT INTO gene_aggregations (hgnc_id, assessment_raw, paper_id_mapping,
-                panelapp_context_json, unassessed_reports_json, quality_concerns_json)
-            VALUES (2, '{}', ?, ?, ?, '[]')
+                panelapp_context_json, unassessed_reports_json)
+            VALUES (2, '{}', ?, ?, ?)
             """,
             (
                 json.dumps({"Brown2025": "10.1/r"}),
@@ -968,7 +976,6 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
         variants=[],
         matched_panels=None,
         panel_matching=StageState.NOT_RUN,
-        quality_concerns=[],
     )
 
 
@@ -1025,7 +1032,6 @@ def _gene(
         hgnc_symbol=f"GENE{hgnc_id}",
         associations=report_order(rated, findings),
         unassessed_reports=[],
-        quality_concerns=[],
         current_rating=current_rating,
         findings=findings,
         contributing_papers=[],
@@ -1175,12 +1181,8 @@ def test_quotes_an_aggregation_adds_follow_the_extraction_quotes_unlocated(
         {"doi": "10.1/a", "quote": "Aggregate quote.", "commentary": "c"},
         {"doi": "10.1/b", "quote": "Other paper's quote.", "commentary": "c"},
     ]
-    concerns = [
-        {
-            "concern": "c",
-            "citations": [{"doi": "10.1/a", "quote": "Concern quote."}],
-            "association_positions": [],
-        }
+    association["quality_concerns"] = [
+        {"concern": "c", "citations": [{"doi": "10.1/a", "quote": "Concern quote."}]}
     ]
     with sqlite3.connect(db_path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
@@ -1193,9 +1195,8 @@ def test_quotes_an_aggregation_adds_follow_the_extraction_quotes_unlocated(
         )
         conn.execute(
             "INSERT INTO gene_aggregations (hgnc_id, assessment_raw, paper_id_mapping, "
-            "panelapp_context_json, unassessed_reports_json, quality_concerns_json) "
-            "VALUES (1, '{}', '{}', '{}', '[]', ?)",
-            (json.dumps(concerns),),
+            "panelapp_context_json, unassessed_reports_json) "
+            "VALUES (1, '{}', '{}', '{}', '[]')"
         )
         conn.execute(
             "INSERT INTO associations (hgnc_id, position, assessment_json) VALUES (1, 0, ?)",
@@ -1623,19 +1624,12 @@ def test_association_body_hides_nr_lines(db_path: Path, results: GeneAssessmentR
 
 
 def test_gene_body_box_then_gene_blocks_in_order(
-    db_path: Path, hgnc_resolver: HgncResolver
+    db_path: Path, results: GeneAssessmentResults
 ) -> None:
-    concern = {"concern": "Overlapping cohorts.", "citations": [], "association_positions": []}
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE gene_aggregations SET quality_concerns_json = ? WHERE hgnc_id = 1",
-            (json.dumps([concern]),),
-        )
-    known = _article(_render(db_path, _load(db_path, hgnc_resolver)), "known-gene-1")
+    known = _article(_render(db_path, results), "known-gene-1")
     order = [
         'class="evidence-summary-expanded gene-associations"',
         'id="association-11"',  # the last finding
-        "Overlapping cohorts.",
         'class="other-associations"',  # the folded association without a finding
         'id="association-10"',
         'class="unassessed-reports"',
@@ -1649,21 +1643,21 @@ def test_gene_body_box_then_gene_blocks_in_order(
     assert "PanelApp criteria assessment" not in known
 
 
-def _set_genea_concerns(db_path: Path, concerns: list[tuple[str, list[int]]]) -> None:
-    """GENEA's quality concerns as (concern, association positions), each citing Paper A."""
-    stored = [
-        {
-            "concern": concern,
-            "citations": [{"doi": "10.1/a", "quote": f"Quote for {concern}"}],
-            "association_positions": positions,
-        }
-        for concern, positions in concerns
-    ]
+def _set_genea_concerns(db_path: Path, concerns: dict[int, list[str]]) -> None:
+    """The quality concerns of GENEA's associations by association id, each citing Paper A."""
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE gene_aggregations SET quality_concerns_json = ? WHERE hgnc_id = 1",
-            (json.dumps(stored),),
-        )
+        for association_id, texts in concerns.items():
+            (assessment_json,) = conn.execute(
+                "SELECT assessment_json FROM associations WHERE id = ?", (association_id,)
+            ).fetchone()
+            assessment = json.loads(assessment_json)
+            assessment["quality_concerns"] = json.loads(_association("d", concerns=tuple(texts)))[
+                "quality_concerns"
+            ]
+            conn.execute(
+                "UPDATE associations SET assessment_json = ? WHERE id = ?",
+                (json.dumps(assessment), association_id),
+            )
 
 
 def _concern_block(section: str) -> str:
@@ -1671,57 +1665,43 @@ def _concern_block(section: str) -> str:
     return section[start : section.index("</div>", start)]
 
 
-def test_quality_concerns_show_in_the_associations_they_name(
+def test_quality_concerns_show_in_their_associations(
     db_path: Path, hgnc_resolver: HgncResolver
 ) -> None:
-    """A concern naming the finding 13 (position 3) and the folded curated 10 (position 0)
-    shows in both; a concern naming no association stays at the foot of the gene's box."""
+    """A concern the model states in the finding 13 and the folded curated 10 shows in
+    both; the gene has no concerns box of its own."""
     _set_genea_concerns(
         db_path,
-        [("Shared cohort.", [0, 3]), ("Gene-wide issue.", []), ("Ataxia only.", [2])],
+        {10: ["Shared cohort."], 13: ["Shared cohort.", "Smith2024 is one group."]},
     )
     results = _load(db_path, hgnc_resolver)
     genea = results.known_genes[0]
-    assert {a.id: [c.concern for c in a.quality_concerns] for a in genea.associations} == {
-        12: ["Ataxia only."],
-        13: ["Shared cohort."],
+    assert {
+        a.id: [c["concern"] for c in a.assessment["quality_concerns"]] for a in genea.associations
+    } == {
+        12: [],
+        13: ["Shared cohort.", "PMID 111 is one group."],
         11: [],
         10: ["Shared cohort."],
     }
-    assert [c.concern for c in genea.quality_concerns] == ["Gene-wide issue."]
 
     html = _render(db_path, results)
     finding = _association_section(html, 13)
     block = _concern_block(finding)
     assert "<strong>⚠️ Quality concerns</strong>" in block
-    assert "Shared cohort." in block
+    assert "Shared cohort." in block and "PMID 111 is one group." in block
     assert re.search(r"\[111, not located\]</a>", block)
     papers, panels = finding.index("<strong>Papers:</strong>"), finding.index("Panels:</strong>")
     assert papers < finding.index("association-concerns") < panels
     assert "Shared cohort." in _concern_block(_association_section(html, 10))
-    assert "Ataxia only." in _concern_block(_association_section(html, 12))
-    assert "association-concerns" not in _association_section(html, 11)
+    for association_id in (11, 12):
+        assert "association-concerns" not in _association_section(html, association_id)
 
     article = _article(html, "known-gene-1")
     assert article.count("Shared cohort.") == 2
-    assert article.count("Gene-wide issue.") == 1
-    order = [
-        'id="association-11"',  # the last finding
-        "Quality concerns about the gene as a whole",
-        "Gene-wide issue.",
-        'class="other-associations"',
-        'id="association-10"',  # its concern folds away with it
-    ]
-    positions = [article.index(marker) for marker in order]
-    assert positions == sorted(positions)
-
-
-def test_quality_concern_naming_an_unknown_association_fails(
-    db_path: Path, hgnc_resolver: HgncResolver
-) -> None:
-    _set_genea_concerns(db_path, [("Lost association.", [1, 7])])
-    with pytest.raises(ValueError, match=r"\[7\]"):
-        _load(db_path, hgnc_resolver)
+    assert "about the gene as a whole" not in article
+    # The folded association's concern folds away with it
+    assert article.index('class="other-associations"') < article.index('id="association-10"')
 
 
 def test_each_association_shows_its_criteria_after_its_toggles(

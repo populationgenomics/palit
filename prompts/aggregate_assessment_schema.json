@@ -226,6 +226,45 @@
                         "type": "string",
                         "description": "Facts from the contributing papers for this association, about 45 words.",
                         "minLength": 1
+                    },
+                    "quality_concerns": {
+                        "type": "array",
+                        "description": "Quality concerns bearing on this association; empty if none.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "concern": {
+                                    "type": "string",
+                                    "description": "The issue and why it matters, with paper IDs.",
+                                    "minLength": 1
+                                },
+                                "citations": {
+                                    "type": "array",
+                                    "description": "Citations to the problematic claim.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "paper_id": {
+                                                "type": "string"
+                                            },
+                                            "quote": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "required": [
+                                            "paper_id",
+                                            "quote"
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                }
+                            },
+                            "required": [
+                                "concern",
+                                "citations"
+                            ],
+                            "additionalProperties": false
+                        }
                     }
                 },
                 "required": [
@@ -249,7 +288,8 @@
                     "evidence_assessments",
                     "segregation",
                     "functional",
-                    "summary"
+                    "summary",
+                    "quality_concerns"
                 ],
                 "additionalProperties": false
             }
@@ -297,59 +337,11 @@
                 ],
                 "additionalProperties": false
             }
-        },
-        "quality_concerns": {
-            "type": "array",
-            "description": "Cross-paper quality concerns; empty if none.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "concern": {
-                        "type": "string",
-                        "description": "The issue and why it matters, with paper IDs.",
-                        "minLength": 1
-                    },
-                    "association_indexes": {
-                        "type": "array",
-                        "items": {
-                            "type": "integer"
-                        },
-                        "description": "The 0-based positions in disease_entities of the associations the concern bears on; empty for a concern about the gene as a whole (e.g. two papers reporting the same cohort under different associations)."
-                    },
-                    "citations": {
-                        "type": "array",
-                        "description": "Citations to the problematic claim.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "paper_id": {
-                                    "type": "string"
-                                },
-                                "quote": {
-                                    "type": "string"
-                                }
-                            },
-                            "required": [
-                                "paper_id",
-                                "quote"
-                            ],
-                            "additionalProperties": false
-                        }
-                    }
-                },
-                "required": [
-                    "concern",
-                    "association_indexes",
-                    "citations"
-                ],
-                "additionalProperties": false
-            }
         }
     },
     "required": [
         "disease_entities",
-        "unassessed_reports",
-        "quality_concerns"
+        "unassessed_reports"
     ],
     "additionalProperties": false,
     "$defs": {

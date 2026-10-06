@@ -272,7 +272,7 @@ For each entity, set `criterion_E.result` to false when one or more of the follo
 
 Otherwise set `criterion_E.result` to true for the entity.
 
-Note: E is about gene-disease *validity* for this entity (is there convincing contradiction about causation?). Paper-internal contradictions and minor outliers belong in `quality_concerns` or this entity's `evidence_weakening_factors`, not E.
+Note: E is about gene-disease *validity* for this entity (is there convincing contradiction about causation?). Paper-internal contradictions and minor outliers belong in this entity's `quality_concerns` or `evidence_weakening_factors`, not E.
 
 WEAKENING FACTORS DO NOT FAIL E: the six `evidence_weakening_factors` (founder/recurrent variant, inherited-without-segregation, missense-without-functional, population-frequency, non-Mendelian, sub-Pillar-2 functional) are confidence caveats — already reflected in `independent_family_count`, the criterion rationales, and the checklist. They are NOT, individually or aggregated, grounds to set `criterion_E` false; do not synthesise them into a "contradictory evidence" finding. A recurrent/founder allele, inherited variants lacking segregation, or a single high-frequency outlier never fail E. With a strong `independent_family_count`, set E false only for a compelling, reproduced contradiction.
 
@@ -313,8 +313,9 @@ NEVER infer, estimate, or make assumptions about missing data.
   * segregation: the strongest segregation evidence across this association's papers, as one short phrase with its numbers (e.g., "LOD 3.2", "de novo in 4 trios (parental testing)", "segregates in 2 multigenerational families"). "NR" when no paper reports segregation for this association.
   * functional: the functional evidence for this association across its papers, as short phrases naming the system and its readout (e.g., "zebrafish knockdown recapitulates the phenotype; patient fibroblasts show reduced protein"). "NR" when no paper reports functional evidence for this association.
   * summary: this association's facts from the contributing papers; see ASSOCIATION SUMMARY below.
+  * quality_concerns: the quality concerns that affect this association; see QUALITY CONCERNS below.
 - unassessed_reports: gene-level list of reports below the BAR FOR NEW ASSOCIATIONS (STEP 3); an empty array [] when there are none. Each entry: `phenotype` (the phenotype as the papers describe it), `inheritance_mode` (one of the inheritance_mode values above), `paper_ids` (IDs of the papers reporting it), and `reason` (one factual sentence on why no family qualifies, e.g. "One proband, heterozygous missense, no segregation or functional data." or "GWAS signal only.").
-  Examples (showing association descriptors only; `evidence_weakening_factors`, `evidence_assessments` and `summary` are required but elided for readability — see the JSON OUTPUT FORMAT below for full shape; MONDO ids are placeholders):
+  Examples (showing association descriptors only; `evidence_weakening_factors`, `evidence_assessments`, `summary` and `quality_concerns` are required but elided for readability — see the JSON OUTPUT FORMAT below for full shape; MONDO ids are placeholders):
 {% raw %}
   - Reusing a GenCC row: [{"description": "developmental and epileptic encephalopathy with infantile spasms, onset 3-6 months", "inheritance_mode": "Monoallelic", "inheritance_details": "", "grouping_rationale": "Smith2024 (DEE with infantile spasms) and Jones2023 (early-onset epileptic encephalopathy) describe one gain-of-function spectrum; matches the GenCC row developmental and epileptic encephalopathy, 5.", "paper_ids": ["Smith2024", "Jones2023"], "variant_ids": ["V1", "V2", "V4"], "existing_association_mondo_id": "<MONDO id copied from that GenCC row>", "proposed_disease_name": null, "panelapp_relation": {"status": "existing", "existing_rating": "GREEN", "basis": "GenCC row developmental and epileptic encephalopathy, 5, Strong"}, "dispute_status": "None", "patient_count": 15, "reported_family_count": 8, "family_count": 8, "independent_family_count": 8, "count_reduction_reasoning": "No reduction (8 families)", "disease_mechanism": "gain-of-function", "segregation": "de novo in 8 trios (parental testing)", "functional": "patch clamp of 3 variants in HEK293 cells shows increased sodium current"}]
   - New association (phenotype expansion) with qualifying families: [{"description": "isolated tetralogy of Fallot", "inheritance_mode": "Biallelic", "inheritance_details": "", "grouping_rationale": "Wang2022 is the only paper reporting a cardiac phenotype; no PanelApp Australia association, entry phenotype or review mentions congenital heart disease.", "paper_ids": ["Wang2022"], "variant_ids": ["V3"], "existing_association_mondo_id": null, "proposed_disease_name": "AGBL2-related tetralogy of Fallot", "panelapp_relation": {"status": "new_disease", "existing_rating": null, "basis": "no PanelApp Australia association with a cardiac phenotype"}, "dispute_status": "None", "patient_count": 4, "reported_family_count": 3, "family_count": 2, "independent_family_count": 2, "count_reduction_reasoning": "No reduction (2 families)", "disease_mechanism": "NR", "segregation": "NR", "functional": "NR"}]
@@ -323,7 +324,6 @@ NEVER infer, estimate, or make assumptions about missing data.
   - Association curated from about March 2025 onward (in a review, not in GenCC): [{"description": "adult-onset hereditary spastic paraplegia", "inheritance_mode": "Biallelic", "inheritance_details": "", "grouping_rationale": "Kim2025 and Park2025 report the same pure spastic paraplegia; a 2025-06 Mendeliome review added this phenotype.", "paper_ids": ["Kim2025", "Park2025"], "variant_ids": ["V2"], "existing_association_mondo_id": null, "proposed_disease_name": "SPTAN1-related hereditary spastic paraplegia", "panelapp_relation": {"status": "existing", "existing_rating": "AMBER", "basis": "Mendeliome review 2025-06-02 adds spastic paraplegia as AMBER"}, "dispute_status": "None", "patient_count": 7, "reported_family_count": 5, "family_count": 5, "independent_family_count": 5, "count_reduction_reasoning": "No reduction (5 families)", "disease_mechanism": "NR", "segregation": "segregates in 1 consanguineous family with 3 affected siblings", "functional": "NR"}]
   - Dispute submission applies (upheld; criterion-gating then applies): [{"description": "congenital heart disease (atrioventricular septal defect, tricuspid atresia, tetralogy of Fallot)", "inheritance_mode": "Monoallelic", "inheritance_details": "reduced penetrance", "grouping_rationale": "Ferese2018's AVSD families and Yehya2021's tetralogy of Fallot proband form one congenital heart disease association; matches the GenCC row congenital heart disease.", "paper_ids": ["Ferese2018", "Yehya2021"], "variant_ids": ["V1", "V5"], "existing_association_mondo_id": "<MONDO id copied from that GenCC row>", "proposed_disease_name": null, "panelapp_relation": {"status": "existing", "existing_rating": "RED", "basis": "GenCC row congenital heart disease, Limited"}, "dispute_status": "Disputed", "patient_count": 13, "reported_family_count": 5, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "loss-of-function", "segregation": "inherited from an unaffected parent in 3 families", "functional": "NR"}]
 {% endraw %}
-- quality_concerns: cross-paper concerns, each naming the associations it bears on; see QUALITY CONCERNS below.
 
 **Style:** Use UK English spelling, except in verbatim quotes. In authored text, describe inheritance as monoallelic or biallelic (or X-linked, mitochondrial), never as autosomal dominant/recessive or AD/AR; GenCC and PanelApp source strings stay verbatim when you quote them.
 
@@ -397,7 +397,8 @@ CONFIDENCE LEVELS:
 - LOW: Uncertain due to insufficient or conflicting information
 
 QUALITY CONCERNS - CROSS-PAPER SYNTHESIS:
-Synthesize quality concerns from individual paper extractions and identify new issues
+Each association lists its own quality concerns in its `quality_concerns` array.
+Synthesize them from individual paper extractions and identify new issues
 that emerge from cross-paper comparison.
 
 1. **Significant concerns from individual papers**
@@ -414,23 +415,23 @@ that emerge from cross-paper comparison.
 3. **Evidence gaps visible in aggregate** (only those NOT covered by `evidence_weakening_factors`)
    - No independent replication across different research groups (e.g., a single laboratory contributes all evidence)
 
-Each concern names the associations it bears on in `association_indexes`: their 0-based positions in your `disease_entities` array (0 is the first entry). Prefer attaching a concern to the specific associations it affects; for example, a variant classified differently across papers bears on the associations whose families carry it. Use an empty array [] only for a concern about the gene as a whole, such as two papers reporting the same cohort under different associations.
+A concern goes into the `quality_concerns` of every association it affects. A concern that affects several associations is stated in each of them, in full: for example, two papers reporting the same cohort under two different associations, a variant classified differently across papers whose families fall under two associations, or all the evidence for several associations coming from one research group. A concern about a paper whose reports for this gene appear only in `unassessed_reports` belongs in that entry's `reason`, not in any association.
 
 Every concern cites at least one quote in `citations`, at the problematic claim. The citations identify the papers the concern is about.
 
 RELATIONSHIP TO CRITERION E AND `evidence_weakening_factors`:
 Three different mechanisms address three different concerns:
 - `evidence_weakening_factors` (per entity) are the structured checklist of *known* failure modes (founder variants, missense-without-functional, non-Mendelian phenotype, etc.). Apply these when scoring criteria for the entity; do NOT also list them in `quality_concerns`.
-- `quality_concerns` (attached to the associations they bear on, or to the gene as a whole) address paper reliability and cross-paper contradictions that don't fit the structured checklist (can you trust what the papers report?).
+- `quality_concerns` (per entity) address paper reliability and cross-paper contradictions that don't fit the structured checklist (can you trust what the papers report?).
 - `Criterion E` (per entity) addresses the entity's gene-disease validity (is there *convincing contradictory* evidence about causation for this entity?).
 
-If no significant concerns, use an empty array: []
+An association without significant concerns has an empty array: []
 
 Before generating your JSON response, thoroughly think through the grouping and the evidence assessments. The response schema is complex:
 - Settle the set of associations (STEPS 1–3) and each one's PanelApp Australia relation and dispute decision before writing any entry.
 - Settle each new association's `independent_family_count` (QUALIFYING VARIANT GATE, FAMILY COUNTS) before writing its entry. When it is 0 or null, the report goes into `unassessed_reports` and gets no `disease_entities` entry (BAR FOR NEW ASSOCIATIONS, STEP 3).
 - Check COVERAGE (STEP 3): every contributing paper with a disease entity for this gene is in the `paper_ids` of an association or of an `unassessed_reports` entry.
-- Write the quality concerns once the `disease_entities` array is settled, so that each concern's `association_indexes` point at the final positions.
+- Decide which associations each quality concern affects; it goes into the `quality_concerns` of each of them.
 - Assign each variant in the VARIANTS table to the associations whose families carry it (`variant_ids`), and check its gnomAD figures against the QUALIFYING VARIANT GATE for that association's MoI.
 - Write out each association's `summary` and every criterion `rationale`, including for criteria that evaluate to false; none may be empty.
 - For each association, its `evidence_weakening_factors` MUST contain exactly 6 entries, one per factor enum value, each with `factor`, `present`, `details`. Fill these out FIRST for each association.
@@ -476,18 +477,14 @@ Respond in JSON format with your aggregate evaluation:
       },
       "segregation": "strongest segregation evidence, e.g. LOD 3.2, or NR",
       "functional": "functional evidence: systems and readouts, or NR",
-      "summary": "about 45 words of facts from the contributing papers, per ASSOCIATION SUMMARY"
+      "summary": "about 45 words of facts from the contributing papers, per ASSOCIATION SUMMARY",
+      "quality_concerns": [
+        {"concern": "description of the issue, referencing specific paper IDs", "citations": [{"paper_id": "AuthorYear", "quote": "<quote copied from that paper, at the problematic claim>"}]}
+      ]
     }
   ],
   "unassessed_reports": [
     {"phenotype": "phenotype as the papers describe it", "inheritance_mode": "<one of the enum values>", "paper_ids": ["AuthorYear"], "reason": "why no family qualifies"}
-  ],
-  "quality_concerns": [
-    {
-      "concern": "description of the issue, referencing specific paper IDs",
-      "association_indexes": [0],
-      "citations": [{"paper_id": "AuthorYear", "quote": "<quote copied from that paper, at the problematic claim>"}]
-    }
   ]
 }
 {% endraw %}

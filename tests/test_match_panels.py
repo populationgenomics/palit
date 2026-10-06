@@ -64,8 +64,8 @@ def db_path(tmp_path: Path) -> Path:
         conn.execute(
             """
             INSERT INTO gene_aggregations (hgnc_id, assessment_raw, paper_id_mapping,
-                panelapp_context_json, unassessed_reports_json, quality_concerns_json)
-            VALUES (11273, '{}', '{}', '{}', '[]', '[]')
+                panelapp_context_json, unassessed_reports_json)
+            VALUES (11273, '{}', '{}', '{}', '[]')
             """
         )
         conn.executemany(

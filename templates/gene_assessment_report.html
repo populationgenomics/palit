@@ -270,10 +270,10 @@
         <p><strong>Mechanism:</strong> {{ e.disease_mechanism }}</p>
         {% endif %}
         <p><strong>Papers:</strong> {{ paper_links(e.dois | papers_for_dois(gene.contributing_papers)) }}</p>
-        {% if assoc.quality_concerns %}
+        {% if e.quality_concerns %}
         <div class="quality-concerns association-concerns">
             <strong>⚠️ Quality concerns</strong>
-            {{ concern_list(assoc.quality_concerns, gene) }}
+            {{ concern_list(e.quality_concerns, gene) }}
         </div>
         {% endif %}
         {% if panels_matched %}
@@ -318,7 +318,7 @@
     {% endif %}
     {% endmacro %}
 
-    {# Quality concerns of the gene's aggregation, each with links to the quotes it cites #}
+    {# An association's quality concerns, each with links to the quotes it cites #}
     {% macro concern_list(concerns, gene) %}
     <ul>
         {% for concern in concerns %}
@@ -330,16 +330,6 @@
         </li>
         {% endfor %}
     </ul>
-    {% endmacro %}
-
-    {# The quality concerns about the gene as a whole; each association shows its own #}
-    {% macro quality_concerns(gene) %}
-    {% if gene.quality_concerns %}
-    <div class="quality-concerns">
-        <h5><strong>⚠️ Quality concerns about the gene as a whole</strong></h5>
-        {{ concern_list(gene.quality_concerns, gene) }}
-    </div>
-    {% endif %}
     {% endmacro %}
 
     {# The gene's papers that both models refused in extract-evidence #}
@@ -393,7 +383,7 @@
     </div>
     {% endmacro %}
 
-    {# The associations without findings, folded after the gene's quality concerns. The
+    {# The associations without findings, folded after those with findings. The
        summary names their diseases, with the MoI where a disease appears twice, separated
        by semicolons as MONDO labels may hold commas. #}
     {% macro other_associations(gene) %}
@@ -417,7 +407,6 @@
             {% for assoc in gene.finding_associations or gene.associations %}
             {{ association_block(assoc, gene) }}
             {% endfor %}
-            {{ quality_concerns(gene) }}
             {% if gene.findings and gene.other_associations %}
             {{ other_associations(gene) }}
             {% endif %}

@@ -510,7 +510,6 @@ section > h2 {
     margin: 15px 0;
 }
 
-.quality-concerns h5,
 .quality-concerns h6 {
     margin: 0 0 10px 0;
     color: #e65100;
@@ -770,11 +769,7 @@ details.association-criteria .criteria-grid {
     margin: 0;
 }
 
-.gene-associations > .quality-concerns {
-    margin-bottom: 0;
-}
-
-/* An association's own quality concerns: compact, like its GenCC disputes */
+/* An association's quality concerns: compact, like its GenCC disputes */
 .quality-concerns.association-concerns {
     font-size: 0.9em;
     border-left-width: 3px;

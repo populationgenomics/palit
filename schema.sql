@@ -108,7 +108,10 @@ CREATE TABLE gene_aggregations (
     -- dicts>]}, ...] in target-panel order. NULL when the gene was on no target panel.
     existing_panel_reviews_json JSON,
     unassessed_reports_json JSON NOT NULL, -- [{phenotype, inheritance_mode, dois, reason}]
-    quality_concerns_json JSON NOT NULL    -- [{concern, dois, citations: [{doi, quote}]}]
+    -- [{concern, association_positions, citations: [{doi, quote}]}]; association_positions
+    -- are the associations.position values of the associations a concern bears on, empty
+    -- for a concern about the gene as a whole.
+    quality_concerns_json JSON NOT NULL
 );
 
 -- One row per gene-disease-MoI association of one gene in this run. Storing a gene's

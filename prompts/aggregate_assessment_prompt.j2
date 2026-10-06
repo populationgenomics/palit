@@ -323,7 +323,7 @@ NEVER infer, estimate, or make assumptions about missing data.
   - Association curated from about March 2025 onward (in a review, not in GenCC): [{"description": "adult-onset hereditary spastic paraplegia", "inheritance_mode": "Biallelic", "inheritance_details": "", "grouping_rationale": "Kim2025 and Park2025 report the same pure spastic paraplegia; a 2025-06 Mendeliome review added this phenotype.", "paper_ids": ["Kim2025", "Park2025"], "variant_ids": ["V2"], "existing_association_mondo_id": null, "proposed_disease_name": "SPTAN1-related hereditary spastic paraplegia", "panelapp_relation": {"status": "existing", "existing_rating": "AMBER", "basis": "Mendeliome review 2025-06-02 adds spastic paraplegia as AMBER"}, "dispute_status": "None", "patient_count": 7, "reported_family_count": 5, "family_count": 5, "independent_family_count": 5, "count_reduction_reasoning": "No reduction (5 families)", "disease_mechanism": "NR", "segregation": "segregates in 1 consanguineous family with 3 affected siblings", "functional": "NR"}]
   - Dispute submission applies (upheld; criterion-gating then applies): [{"description": "congenital heart disease (atrioventricular septal defect, tricuspid atresia, tetralogy of Fallot)", "inheritance_mode": "Monoallelic", "inheritance_details": "reduced penetrance", "grouping_rationale": "Ferese2018's AVSD families and Yehya2021's tetralogy of Fallot proband form one congenital heart disease association; matches the GenCC row congenital heart disease.", "paper_ids": ["Ferese2018", "Yehya2021"], "variant_ids": ["V1", "V5"], "existing_association_mondo_id": "<MONDO id copied from that GenCC row>", "proposed_disease_name": null, "panelapp_relation": {"status": "existing", "existing_rating": "RED", "basis": "GenCC row congenital heart disease, Limited"}, "dispute_status": "Disputed", "patient_count": 13, "reported_family_count": 5, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "loss-of-function", "segregation": "inherited from an unaffected parent in 3 families", "functional": "NR"}]
 {% endraw %}
-- quality_concerns: gene-level cross-paper concerns; see QUALITY CONCERNS below.
+- quality_concerns: cross-paper concerns, each naming the associations it bears on; see QUALITY CONCERNS below.
 
 **Style:** Use UK English spelling, except in verbatim quotes. In authored text, describe inheritance as monoallelic or biallelic (or X-linked, mitochondrial), never as autosomal dominant/recessive or AD/AR; GenCC and PanelApp source strings stay verbatim when you quote them.
 
@@ -414,10 +414,14 @@ that emerge from cross-paper comparison.
 3. **Evidence gaps visible in aggregate** (only those NOT covered by `evidence_weakening_factors`)
    - No independent replication across different research groups (e.g., a single laboratory contributes all evidence)
 
+Each concern names the associations it bears on in `association_indexes`: their 0-based positions in your `disease_entities` array (0 is the first entry). Prefer attaching a concern to the specific associations it affects; for example, a variant classified differently across papers bears on the associations whose families carry it. Use an empty array [] only for a concern about the gene as a whole, such as two papers reporting the same cohort under different associations.
+
+Every concern cites at least one quote in `citations`, at the problematic claim. The citations identify the papers the concern is about.
+
 RELATIONSHIP TO CRITERION E AND `evidence_weakening_factors`:
 Three different mechanisms address three different concerns:
 - `evidence_weakening_factors` (per entity) are the structured checklist of *known* failure modes (founder variants, missense-without-functional, non-Mendelian phenotype, etc.). Apply these when scoring criteria for the entity; do NOT also list them in `quality_concerns`.
-- `quality_concerns` (gene-level) address paper reliability and cross-paper contradictions that don't fit the structured checklist (can you trust what the papers report?).
+- `quality_concerns` (attached to the associations they bear on, or to the gene as a whole) address paper reliability and cross-paper contradictions that don't fit the structured checklist (can you trust what the papers report?).
 - `Criterion E` (per entity) addresses the entity's gene-disease validity (is there *convincing contradictory* evidence about causation for this entity?).
 
 If no significant concerns, use an empty array: []
@@ -426,6 +430,7 @@ Before generating your JSON response, thoroughly think through the grouping and 
 - Settle the set of associations (STEPS 1–3) and each one's PanelApp Australia relation and dispute decision before writing any entry.
 - Settle each new association's `independent_family_count` (QUALIFYING VARIANT GATE, FAMILY COUNTS) before writing its entry. When it is 0 or null, the report goes into `unassessed_reports` and gets no `disease_entities` entry (BAR FOR NEW ASSOCIATIONS, STEP 3).
 - Check COVERAGE (STEP 3): every contributing paper with a disease entity for this gene is in the `paper_ids` of an association or of an `unassessed_reports` entry.
+- Write the quality concerns once the `disease_entities` array is settled, so that each concern's `association_indexes` point at the final positions.
 - Assign each variant in the VARIANTS table to the associations whose families carry it (`variant_ids`), and check its gnomAD figures against the QUALIFYING VARIANT GATE for that association's MoI.
 - Write out each association's `summary` and every criterion `rationale`, including for criteria that evaluate to false; none may be empty.
 - For each association, its `evidence_weakening_factors` MUST contain exactly 6 entries, one per factor enum value, each with `factor`, `present`, `details`. Fill these out FIRST for each association.
@@ -480,7 +485,7 @@ Respond in JSON format with your aggregate evaluation:
   "quality_concerns": [
     {
       "concern": "description of the issue, referencing specific paper IDs",
-      "paper_ids": ["AuthorYear"],
+      "association_indexes": [0],
       "citations": [{"paper_id": "AuthorYear", "quote": "<quote copied from that paper, at the problematic claim>"}]
     }
   ]

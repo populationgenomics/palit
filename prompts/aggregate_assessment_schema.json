@@ -309,12 +309,12 @@
                         "description": "The issue and why it matters, with paper IDs.",
                         "minLength": 1
                     },
-                    "paper_ids": {
+                    "association_indexes": {
                         "type": "array",
                         "items": {
-                            "type": "string"
+                            "type": "integer"
                         },
-                        "description": "Paper IDs this concern applies to."
+                        "description": "The 0-based positions in disease_entities of the associations the concern bears on; empty for a concern about the gene as a whole (e.g. two papers reporting the same cohort under different associations)."
                     },
                     "citations": {
                         "type": "array",
@@ -339,7 +339,7 @@
                 },
                 "required": [
                     "concern",
-                    "paper_ids",
+                    "association_indexes",
                     "citations"
                 ],
                 "additionalProperties": false

@@ -124,10 +124,10 @@ def replace_paper_ids_with_dois(
 ) -> None:
     """Replace every paper ID in an aggregation with its DOI.
 
-    Citations get ``doi`` for ``paper_id``; the ``paper_ids`` lists of associations,
-    unassessed reports and quality concerns become ``dois``. Expects the criteria as
-    a list (after ``criteria_object_to_list``). Mutates parsed_json in place and
-    raises ValueError on the first unknown paper ID, a hallucination that is retried.
+    Citations get ``doi`` for ``paper_id``; the ``paper_ids`` lists of associations
+    and unassessed reports become ``dois``. Expects the criteria as a list (after
+    ``criteria_object_to_list``). Mutates parsed_json in place and raises ValueError
+    on the first unknown paper ID, a hallucination that is retried.
     """
     for entity in parsed_json["disease_entities"]:
         _replace_id_list(entity, paper_id_to_doi)
@@ -136,7 +136,6 @@ def replace_paper_ids_with_dois(
     for report in parsed_json["unassessed_reports"]:
         _replace_id_list(report, paper_id_to_doi)
     for concern in parsed_json["quality_concerns"]:
-        _replace_id_list(concern, paper_id_to_doi)
         _replace_citation_ids(concern["citations"], paper_id_to_doi)
 
 
@@ -156,6 +155,24 @@ def replace_variant_ids(parsed_json: dict[str, Any], variant_id_to_key: dict[str
                 raise ValueError(f"Unknown variant ID: {variant_id}")
             keys.append(key)
         entity["variants"] = keys
+
+
+def replace_association_indexes(parsed_json: dict[str, Any]) -> None:
+    """Replace each quality concern's ``association_indexes`` with ``association_positions``.
+
+    An index is a 0-based position in ``disease_entities``, which is the
+    ``associations.position`` that ``store_gene_aggregation`` gives the association.
+    The positions are stored distinct and sorted. Mutates parsed_json in place and
+    raises ValueError on the first index outside ``disease_entities``, a
+    hallucination that is retried.
+    """
+    count = len(parsed_json["disease_entities"])
+    for concern in parsed_json["quality_concerns"]:
+        indexes = concern.pop("association_indexes")
+        for index in indexes:
+            if not 0 <= index < count:
+                raise ValueError(f"index {index} with {count} associations")
+        concern["association_positions"] = sorted(set(indexes))
 
 
 def _max_family_count(evidence: dict[str, Any]) -> int | None:
@@ -940,6 +957,11 @@ def log_association_warnings(assessment: dict[str, Any], item: _GeneBatchItem) -
                 label,
                 ", ".join(unreported),
             )
+    for concern in assessment["quality_concerns"]:
+        if not concern["citations"]:
+            logger.warning(
+                "%s: quality concern without a citation: %r", item.hgnc_symbol, concern["concern"]
+            )
     # The report lists every paper with an extraction for the gene, so a paper the
     # aggregation leaves out stays visible there; the gene isn't worth losing over it.
     missing = uncovered_dois(assessment, dois_with_disease_entities(item.evidence_list))
@@ -978,7 +1000,8 @@ def drop_placeholders_and_log_quotes(
 def assessment_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> list[str]:
     """Problems that send a gene back for another attempt.
 
-    Maps paper IDs to DOIs and variant IDs to variant keys in place.
+    Maps paper IDs to DOIs, variant IDs to variant keys and the quality concerns'
+    association indexes to association positions in place.
 
     Expects an answer that validates against the full schema, with its criteria
     already converted to the stored list.
@@ -991,6 +1014,10 @@ def assessment_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> lis
         replace_variant_ids(assessment, {vid: v.variant_id for vid, v in item.variants.items()})
     except ValueError as e:
         return [f"hallucinated variant ID: {e}"]
+    try:
+        replace_association_indexes(assessment)
+    except ValueError as e:
+        return [f"quality concern with an unknown association: {e}"]
     problems = []
     if not validate_entities_criteria_complete(assessment["disease_entities"]):
         problems.append("incomplete per-association criteria")

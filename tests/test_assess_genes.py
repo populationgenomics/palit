@@ -28,6 +28,7 @@ from palit.assess_genes import (
     log_association_warnings,
     output_configs,
     render_prompt,
+    replace_association_indexes,
     replace_paper_ids_with_dois,
     replace_variant_ids,
     store_gene_aggregation,
@@ -206,7 +207,7 @@ def _answer(*associations: dict[str, Any]) -> dict[str, Any]:
         "quality_concerns": [
             {
                 "concern": "c",
-                "paper_ids": ["Jones2023"],
+                "association_indexes": [0],
                 "citations": [{"paper_id": "Jones2023", "quote": "q2"}],
             }
         ],
@@ -264,6 +265,7 @@ def _stored_form(answer: dict[str, Any]) -> dict[str, Any]:
     criteria_object_to_list(answer["disease_entities"])
     replace_paper_ids_with_dois(answer, PAPER_IDS)
     replace_variant_ids(answer, VARIANT_KEYS)
+    replace_association_indexes(answer)
     return answer
 
 
@@ -282,8 +284,8 @@ def test_paper_ids_become_dois_everywhere() -> None:
     association = answer["disease_entities"][0]
     assert association["dois"] == ["10.1/a"] and "paper_ids" not in association
     assert answer["unassessed_reports"][0]["dois"] == ["10.1/b"]
-    assert answer["quality_concerns"][0]["dois"] == ["10.1/b"]
     assert answer["quality_concerns"][0]["citations"] == [{"quote": "q2", "doi": "10.1/b"}]
+    assert "dois" not in answer["quality_concerns"][0]
 
 
 def test_criterion_citations_become_dois() -> None:
@@ -302,6 +304,48 @@ def test_unknown_paper_id_is_rejected() -> None:
     criteria_object_to_list(answer["disease_entities"])
     with pytest.raises(ValueError, match="Invented2020"):
         replace_paper_ids_with_dois(answer, PAPER_IDS)
+
+
+def test_concern_association_indexes_become_distinct_sorted_positions() -> None:
+    answer = _answer(_association(), _new_association("new_disease", 2))
+    answer["quality_concerns"][0]["association_indexes"] = [1, 0, 1]
+    answer["quality_concerns"].append(
+        {
+            "concern": "same cohort under both associations",
+            "association_indexes": [],
+            "citations": [{"paper_id": "Smith2024", "quote": "q"}],
+        }
+    )
+    concerns = _stored_form(answer)["quality_concerns"]
+    assert [c["association_positions"] for c in concerns] == [[0, 1], []]
+    assert all("association_indexes" not in c for c in concerns)
+
+
+def test_concern_with_an_out_of_range_association_index_is_rejected(
+    gencc_index: GenccIndex,
+) -> None:
+    answer = _answer(_association())
+    answer["quality_concerns"][0]["association_indexes"] = [0, 1]
+    criteria_object_to_list(answer["disease_entities"])
+    assert assessment_problems(answer, _item(gencc_index)) == [
+        "quality concern with an unknown association: index 1 with 1 associations"
+    ]
+
+
+def test_concern_without_a_citation_is_logged(
+    gencc_index: GenccIndex, caplog: pytest.LogCaptureFixture
+) -> None:
+    item = _item(gencc_index)
+    answer = _answer(_association())
+    log_association_warnings(_stored_form(answer), item)
+    assert "quality concern without a citation" not in caplog.text
+
+    answer = _answer(_association())
+    answer["quality_concerns"][0]["citations"] = []
+    criteria_object_to_list(answer["disease_entities"])
+    assert assessment_problems(answer, item) == []
+    log_association_warnings(answer, item)
+    assert "GENEA: quality concern without a citation: 'c'" in caplog.text
 
 
 def test_schema_requires_variant_ids_segregation_and_functional() -> None:
@@ -683,7 +727,13 @@ def test_storage_takes_mondo_from_the_reused_gencc_row(
         (1, None, None, None),
     ]
     assert json.loads(unassessed)[0]["dois"] == ["10.1/b"]
-    assert json.loads(concerns)[0]["dois"] == ["10.1/b"]
+    assert json.loads(concerns) == [
+        {
+            "concern": "c",
+            "citations": [{"quote": "q2", "doi": "10.1/b"}],
+            "association_positions": [0],
+        }
+    ]
     assert [row["mondo_id"] for row in json.loads(context)["gencc_rows"]] == [
         "MONDO:0000001",
         "MONDO:0000002",

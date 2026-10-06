@@ -341,12 +341,12 @@
                 <ul>
                 {% for panel in suggestions %}
                     <li>
-                        <a href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank"><strong>{{ panel.panel_name }}</strong></a>
+                        <a href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank"><strong>{{ panel.panel_name }}</strong></a>{% if gene.associations | length == 1 %}: {{ panel.reasons[0].rationale }}{% else %}
                         <ul>
                             {% for reason in panel.reasons %}
                             <li><em>{{ reason.disease_label }} ({{ reason.inheritance_mode | format_inheritance }}):</em> {{ reason.rationale }}</li>
                             {% endfor %}
-                        </ul>
+                        </ul>{% endif %}
                     </li>
                 {% endfor %}
                 </ul>

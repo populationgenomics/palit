@@ -3,6 +3,7 @@
 import enum
 import json
 import re
+import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -185,7 +186,11 @@ def _extract_first_author_last_name(authors: str) -> str:
 
     Authors are semicolon-separated in "Last, First" format:
     "Smith, John A; Doe, Jane B; ..." -> "Smith"
-    "van der Berg, Anna; Doe, Jane; ..." -> "VanderBerg"
+    "van der Berg, Anna; Doe, Jane; ..." -> "VanDerBerg"
+    "Traschütz, Andreas; ..." -> "Traschutz"
+
+    Letters with diacritics keep their base letter: an ID with letters missing
+    ("Traschtz") looks like a typo, so the model writes the real name instead.
     """
     if not authors:
         return "Unknown"
@@ -194,7 +199,10 @@ def _extract_first_author_last_name(authors: str) -> str:
     last_name = first_author.split(",")[0].strip()
     if not last_name:
         return "Unknown"
-    parts = last_name.split()
+    ascii_name = "".join(
+        char for char in unicodedata.normalize("NFKD", last_name) if not unicodedata.combining(char)
+    )
+    parts = ascii_name.split()
     # Join multi-word last names, capitalize each part, remove non-alpha
     return "".join(re.sub(r"[^A-Za-z]", "", p).capitalize() for p in parts)
 

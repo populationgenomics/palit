@@ -694,7 +694,10 @@ def test_display_ids_and_gene_level_blocks(results: GeneAssessmentResults) -> No
     assert [p.doi for p in genea.contributing_papers] == ["10.1/a"]
 
 
-def test_prefill_unions_the_associations_in_report_order(results: GeneAssessmentResults) -> None:
+def test_review_prefill_unions_the_findings_in_report_order(
+    results: GeneAssessmentResults,
+) -> None:
+    """GENEA's curated RED association 10 is no finding, so its review leaves it out."""
     prefill = json.loads(results.known_genes[0].prefill_json)
     assert (prefill["form_type"], prefill["panel_id"]) == ("review", MENDELIOME_PANEL_ID)
     assert prefill["rating"] == "GREEN"
@@ -703,7 +706,6 @@ def test_prefill_unions_the_associations_in_report_order(results: GeneAssessment
         "GENEA-related ataxia variant, MONDO:0000200",  # broader: the proposed name
         "GENEA-related other disease",
         "GENEA-related biallelic disease",
-        "disease A, replacement, MONDO:0000009",  # the obsolete GenCC term's replacement
     ]
     assert prefill["publications"] == "111"
     assert [section.split("\n")[0] for section in prefill["comments"].split("\n\n")] == [
@@ -711,12 +713,62 @@ def test_prefill_unions_the_associations_in_report_order(results: GeneAssessment
         " | Monoallelic | GREEN on the papers reviewed",
         "GENEA-related other disease | Monoallelic | AMBER on the papers reviewed",
         "GENEA-related biallelic disease | Biallelic | AMBER on the papers reviewed",
-        "disease A, replacement, MONDO:0000009 | Monoallelic | RED on the papers reviewed",
     ]
     assert prefill["comments"].split("\n")[1] == "PMID 111 reports ataxia variant."
-    novel = json.loads(results.novel_genes[0].prefill_json)
-    assert (novel["form_type"], novel["panel_id"]) == ("add", MENDELIOME_PANEL_ID)
-    assert novel["publications"] == "222"
+
+
+def test_review_prefill_of_a_green_gene_lists_only_its_amber_finding(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """A GREEN gene with a curated GREEN association and a new AMBER disease: the review
+    describes the new disease alone, rated GREEN, the gene's rating on the panel."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM associations WHERE hgnc_id = 1")
+    _add_genea_associations(
+        db_path,
+        [
+            (30, 0, _association("curated disease", green=True, inheritance_mode="Biallelic")),
+            (31, 1, _association("new disease", status="new_disease", independent=2)),
+        ],
+    )
+    genea = _load(db_path, hgnc_resolver, genea_rating=3).known_genes[0]
+    assert [a.id for a in genea.finding_associations] == [31]
+    prefill = genea.prefill
+    assert (prefill.form_type, prefill.rating) == ("review", "GREEN")
+    assert prefill.phenotypes == "GENEA-related new disease"
+    # The MoI covers the curated biallelic association too: a review replaces the evaluation's MoI.
+    assert prefill.moi == ENUM_TO_PANELAPP_MOI["Monoallelic_and_biallelic"]
+    assert prefill.comments == (
+        "GENEA-related new disease | Monoallelic | AMBER on the papers reviewed\n"
+        "PMID 111 reports new disease."
+    )
+
+
+def test_review_prefill_of_a_gene_without_findings_lists_all_its_associations(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """A review that described the findings alone would be empty."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM associations WHERE id IN (11, 12, 13)")
+    genea = _load(db_path, hgnc_resolver).known_genes[0]
+    assert genea.findings == []
+    assert (genea.prefill.form_type, genea.prefill.rating) == ("review", "AMBER")
+    assert genea.prefill.phenotypes == "disease A, replacement, MONDO:0000009"
+
+
+def test_add_prefill_lists_every_association(db_path: Path, hgnc_resolver: HgncResolver) -> None:
+    """GENEB's curated association of unknown PanelApp rating is no finding of a new gene,
+    yet the add form lists it with the new disease."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO associations (id, hgnc_id, position, assessment_json) VALUES (21, 3, 1, ?)",
+            (_association("curated B", panelapp_rating=None, dois=("10.1/b",)),),
+        )
+    geneb = _load(db_path, hgnc_resolver).novel_genes[0]
+    assert [f.association_id for f in geneb.findings] == [20]
+    assert (geneb.prefill.form_type, geneb.prefill.panel_id) == ("add", MENDELIOME_PANEL_ID)
+    assert geneb.prefill.phenotypes == "GENEA-related B disease;GENEA-related curated B"
+    assert geneb.prefill.publications == "222"
 
 
 NO_PANEL_VALIDATION = PanelValidationResult(0, 0, [], [], [], [], 0.0, 0.0)
@@ -916,6 +968,7 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
         variants=[],
         matched_panels=None,
         panel_matching=StageState.NOT_RUN,
+        quality_concerns=[],
     )
 
 
@@ -1125,8 +1178,8 @@ def test_quotes_an_aggregation_adds_follow_the_extraction_quotes_unlocated(
     concerns = [
         {
             "concern": "c",
-            "dois": ["10.1/a"],
             "citations": [{"doi": "10.1/a", "quote": "Concern quote."}],
+            "association_positions": [],
         }
     ]
     with sqlite3.connect(db_path) as conn:
@@ -1456,7 +1509,13 @@ def test_variants_come_from_the_papers_the_aggregation_read(
 def test_variants_without_gnomad_figures_render_on_one_line(
     db_path: Path, hgnc_resolver: HgncResolver
 ) -> None:
+    """A variant whose lookup failed keeps its citations but has no gnomAD link: its key
+    is the paper's text, which gnomAD cannot open."""
     with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO citation_locations (paper_doi, quote, bboxes_json) "
+            "VALUES ('10.1/a', 'q', '[]')"
+        )
         conn.execute(
             "UPDATE variant_frequencies SET gnomad = ? WHERE variant_id = ?",
             (json.dumps({"variant_not_found": True}), UNLISTED),
@@ -1489,6 +1548,17 @@ def test_variants_without_gnomad_figures_render_on_one_line(
     assert not_found.count("<td>—</td>") == 4
     assert failed.startswith("<tr><td><em>E99fs</em></td><td>—</td>")
     assert ">error</span></td><td>—</td><td>—</td><td>—</td><td>—</td>" in failed
+    cite = (
+        '<a href="viewer/index.html?paper=10.1%252Fa&amp;q=0" target="_blank">'
+        "[111, not located]</a>"
+    )
+    gnomad = (
+        f'<a href="https://gnomad.broadinstitute.org/variant/{UNLISTED}?dataset=gnomad_r4" '
+        'target="_blank">gnomAD</a>'
+    )
+    assert not_found.endswith(f"<td>{gnomad} | {cite}</td></tr>")
+    assert failed.endswith(f"<td>{cite}</td></tr>")
+    assert "gnomad.broadinstitute.org" not in failed
 
 
 def test_association_listing_an_unknown_variant_fails(
@@ -1555,7 +1625,7 @@ def test_association_body_hides_nr_lines(db_path: Path, results: GeneAssessmentR
 def test_gene_body_box_then_gene_blocks_in_order(
     db_path: Path, hgnc_resolver: HgncResolver
 ) -> None:
-    concern = {"concern": "Overlapping cohorts.", "dois": ["10.1/a"], "citations": []}
+    concern = {"concern": "Overlapping cohorts.", "citations": [], "association_positions": []}
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "UPDATE gene_aggregations SET quality_concerns_json = ? WHERE hgnc_id = 1",
@@ -1577,6 +1647,81 @@ def test_gene_body_box_then_gene_blocks_in_order(
     assert positions == sorted(positions)
     assert "gnomAD v4 frequencies" not in known
     assert "PanelApp criteria assessment" not in known
+
+
+def _set_genea_concerns(db_path: Path, concerns: list[tuple[str, list[int]]]) -> None:
+    """GENEA's quality concerns as (concern, association positions), each citing Paper A."""
+    stored = [
+        {
+            "concern": concern,
+            "citations": [{"doi": "10.1/a", "quote": f"Quote for {concern}"}],
+            "association_positions": positions,
+        }
+        for concern, positions in concerns
+    ]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE gene_aggregations SET quality_concerns_json = ? WHERE hgnc_id = 1",
+            (json.dumps(stored),),
+        )
+
+
+def _concern_block(section: str) -> str:
+    start = section.index('<div class="quality-concerns association-concerns">')
+    return section[start : section.index("</div>", start)]
+
+
+def test_quality_concerns_show_in_the_associations_they_name(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """A concern naming the finding 13 (position 3) and the folded curated 10 (position 0)
+    shows in both; a concern naming no association stays at the foot of the gene's box."""
+    _set_genea_concerns(
+        db_path,
+        [("Shared cohort.", [0, 3]), ("Gene-wide issue.", []), ("Ataxia only.", [2])],
+    )
+    results = _load(db_path, hgnc_resolver)
+    genea = results.known_genes[0]
+    assert {a.id: [c.concern for c in a.quality_concerns] for a in genea.associations} == {
+        12: ["Ataxia only."],
+        13: ["Shared cohort."],
+        11: [],
+        10: ["Shared cohort."],
+    }
+    assert [c.concern for c in genea.quality_concerns] == ["Gene-wide issue."]
+
+    html = _render(db_path, results)
+    finding = _association_section(html, 13)
+    block = _concern_block(finding)
+    assert "<strong>⚠️ Quality concerns</strong>" in block
+    assert "Shared cohort." in block
+    assert re.search(r"\[111, not located\]</a>", block)
+    papers, panels = finding.index("<strong>Papers:</strong>"), finding.index("Panels:</strong>")
+    assert papers < finding.index("association-concerns") < panels
+    assert "Shared cohort." in _concern_block(_association_section(html, 10))
+    assert "Ataxia only." in _concern_block(_association_section(html, 12))
+    assert "association-concerns" not in _association_section(html, 11)
+
+    article = _article(html, "known-gene-1")
+    assert article.count("Shared cohort.") == 2
+    assert article.count("Gene-wide issue.") == 1
+    order = [
+        'id="association-11"',  # the last finding
+        "Quality concerns about the gene as a whole",
+        "Gene-wide issue.",
+        'class="other-associations"',
+        'id="association-10"',  # its concern folds away with it
+    ]
+    positions = [article.index(marker) for marker in order]
+    assert positions == sorted(positions)
+
+
+def test_quality_concern_naming_an_unknown_association_fails(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    _set_genea_concerns(db_path, [("Lost association.", [1, 7])])
+    with pytest.raises(ValueError, match=r"\[7\]"):
+        _load(db_path, hgnc_resolver)
 
 
 def test_each_association_shows_its_criteria_after_its_toggles(
@@ -1670,7 +1815,7 @@ def test_findings_with_the_same_badge_merge_and_come_first(
     positions = [article.index(f'id="association-{i}"') for i in (12, 13, 14, 11, 10, 15)]
     assert positions == sorted(positions)
     assert article.index('class="other-associations"') > positions[3]
-    assert _fold_summary(article) == ("Other associations (2): disease A, GENEA-related rare moi")
+    assert _fold_summary(article) == "Other associations (2): disease A; GENEA-related rare moi"
     rare_moi = _heading(_association_section(html, 15))
     assert "rating-arrow" not in rare_moi
     assert ">new MoI, fewer than 2 independent families</span>" in rare_moi
@@ -1697,12 +1842,12 @@ def test_fold_of_curated_associations_names_their_diseases(
     assert results.known_genes[0].other_associations_curated
     article = _article(_render(db_path, results), "known-gene-1")
     assert _fold_summary(article) == (
-        "Already curated in PanelApp (2): disease A (Monoallelic), disease A (Biallelic)"
+        "Already curated in PanelApp (2): disease A (Monoallelic); disease A (Biallelic)"
     )
     assert article.count('<details class="other-associations">') == 1
     assert (
         "<summary><strong>Already curated in PanelApp (2):</strong> disease A "
-        '<span class="muted">(Monoallelic)</span>, disease A '
+        '<span class="muted">(Monoallelic)</span>; disease A '
         '<span class="muted">(Biallelic)</span></summary>'
     ) in article
 

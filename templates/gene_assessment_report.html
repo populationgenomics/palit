@@ -270,6 +270,12 @@
         <p><strong>Mechanism:</strong> {{ e.disease_mechanism }}</p>
         {% endif %}
         <p><strong>Papers:</strong> {{ paper_links(e.dois | papers_for_dois(gene.contributing_papers)) }}</p>
+        {% if assoc.quality_concerns %}
+        <div class="quality-concerns association-concerns">
+            <strong>⚠️ Quality concerns</strong>
+            {{ concern_list(assoc.quality_concerns, gene) }}
+        </div>
+        {% endif %}
         {% if panels_matched %}
         {{ association_panels(assoc) }}
         {% endif %}
@@ -312,21 +318,26 @@
     {% endif %}
     {% endmacro %}
 
-    {# Gene-level quality concerns #}
+    {# Quality concerns of the gene's aggregation, each with links to the quotes it cites #}
+    {% macro concern_list(concerns, gene) %}
+    <ul>
+        {% for concern in concerns %}
+        <li>
+            {{ concern.concern }}
+            {% for link in concern.citations | prepare_citation_links(gene.contributing_papers) %}
+            {{ cite(link) }}
+            {% endfor %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endmacro %}
+
+    {# The quality concerns about the gene as a whole; each association shows its own #}
     {% macro quality_concerns(gene) %}
     {% if gene.quality_concerns %}
     <div class="quality-concerns">
-        <h5><strong>⚠️ Quality Concerns</strong></h5>
-        <ul>
-            {% for concern in gene.quality_concerns %}
-            <li>
-                {{ concern.concern }}
-                {% for link in concern.citations | prepare_citation_links(gene.contributing_papers) %}
-                {{ cite(link) }}
-                {% endfor %}
-            </li>
-            {% endfor %}
-        </ul>
+        <h5><strong>⚠️ Quality concerns about the gene as a whole</strong></h5>
+        {{ concern_list(gene.quality_concerns, gene) }}
     </div>
     {% endif %}
     {% endmacro %}
@@ -383,12 +394,13 @@
     {% endmacro %}
 
     {# The associations without findings, folded after the gene's quality concerns. The
-       summary names their diseases, with the MoI where a disease appears twice. #}
+       summary names their diseases, with the MoI where a disease appears twice, separated
+       by semicolons as MONDO labels may hold commas. #}
     {% macro other_associations(gene) %}
     {% set others = gene.other_associations %}
     {% set labels = others | map(attribute='disease_label') | list %}
     <details class="other-associations">
-        <summary><strong>{% if gene.other_associations_curated %}Already curated in PanelApp{% else %}Other associations{% endif %} ({{ others | length }}):</strong> {% for assoc in others %}{{ assoc.disease_label }}{% if labels.count(assoc.disease_label) > 1 %} <span class="muted">({{ assoc.assessment.inheritance_mode | format_inheritance }})</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</summary>
+        <summary><strong>{% if gene.other_associations_curated %}Already curated in PanelApp{% else %}Other associations{% endif %} ({{ others | length }}):</strong> {% for assoc in others %}{{ assoc.disease_label }}{% if labels.count(assoc.disease_label) > 1 %} <span class="muted">({{ assoc.assessment.inheritance_mode | format_inheritance }})</span>{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}</summary>
         <div>
             {% for assoc in others %}
             {{ association_block(assoc, gene) }}
@@ -547,7 +559,7 @@
             <td>—</td><td>—</td><td>—</td><td>—</td>
             {%- endif %}
             {#- Links -#}
-            <td><a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>{% for citation in variant.citations %} | {{ cite(citation) }}{% endfor %}</td></tr>
+            <td>{% if variant.gnomad_link %}<a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>{% endif %}{% for citation in variant.citations %}{% if variant.gnomad_link or not loop.first %} | {% endif %}{{ cite(citation) }}{% endfor %}</td></tr>
             {% endfor %}
         </tbody>
     </table>

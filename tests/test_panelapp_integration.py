@@ -69,10 +69,14 @@ def _prefill(
     associations: list[PrefillAssociation],
     doi_to_pmid: dict[str, int | None],
     panel_rating: int | None = 1,
+    moi_associations: list[dict[str, Any]] | None = None,
 ) -> PrefillData:
     return prepare_prefill_data(
         hgnc_id=HGNC_ID,
         associations=associations,
+        moi_associations=(
+            [a.assessment for a in associations] if moi_associations is None else moi_associations
+        ),
         panel_id=PANEL_ID,
         panel_rating=panel_rating,
         doi_to_pmid=doi_to_pmid,
@@ -292,3 +296,13 @@ def test_comment_sections_in_association_order_with_headings() -> None:
         "PMID 2 reports 2 families.",
         "SMAD6-related JIA | Monoallelic | RED on the papers reviewed\nOne family.",
     ]
+
+
+def test_review_moi_covers_every_association_not_only_the_described_ones() -> None:
+    curated = _assessment(inheritance_mode="Monoallelic", proposed_disease_name="curated")
+    finding = _assessment(inheritance_mode="Biallelic", independent=3, proposed_disease_name="new")
+    prefill = _prefill(
+        [PrefillAssociation(finding, None)], {}, panel_rating=3, moi_associations=[curated, finding]
+    )
+    assert prefill.phenotypes == "new"
+    assert prefill.moi == "BOTH monoallelic and biallelic, autosomal or pseudoautosomal"

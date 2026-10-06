@@ -774,6 +774,27 @@ details.association-criteria .criteria-grid {
     margin-bottom: 0;
 }
 
+/* An association's own quality concerns: compact, like its GenCC disputes */
+.quality-concerns.association-concerns {
+    font-size: 0.9em;
+    border-left-width: 3px;
+    border-radius: 0;
+    padding: 6px 10px;
+    margin: 6px 0;
+}
+
+.quality-concerns.association-concerns > strong {
+    color: #e65100;
+}
+
+.quality-concerns.association-concerns ul {
+    margin: 4px 0 0 0;
+}
+
+.quality-concerns.association-concerns li {
+    margin: 2px 0;
+}
+
 /* The associations without findings, folded at the end of the gene's box. Their
    blocks stay on the box's blue. */
 details.other-associations {

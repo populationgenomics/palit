@@ -306,23 +306,29 @@ def prefill_comment_section(association: PrefillAssociation) -> str:
 def prepare_prefill_data(
     hgnc_id: int,
     associations: list[PrefillAssociation],
+    moi_associations: list[dict[str, Any]],
     panel_id: int,
     panel_rating: int | None,
     doi_to_pmid: dict[str, int | None],
 ) -> PrefillData:
-    """One PanelApp prefill for the gene, as the union over its associations.
+    """One PanelApp prefill for the gene, as the union over *associations*.
 
-    A gene not on *panel_id* gets an add form rated with its top association
-    rating. A gene on it gets a review form rated with the higher of its rating
-    there and its top association rating: the corpus holds only the papers this
-    run read, so a lower rating is no downgrade recommendation. The MoI is
-    aggregated over all associations (see derive_panelapp_moi). Phenotypes,
-    publications and comment sections follow the order of *associations* (the
-    report's order); repeated phenotypes and publications are listed once.
+    *associations* are the ones the prefill describes, which the caller chooses
+    (the report's choice is generate_report.prefill_associations). A gene not
+    on *panel_id* gets an add form rated with the top rating of *associations*. A
+    gene on it gets a review form rated with the higher of its rating there and
+    that top rating: the corpus holds only the papers this run read, so a lower
+    rating is no downgrade recommendation. The MoI is aggregated over
+    *moi_associations* (see derive_panelapp_moi): a review replaces the
+    evaluation's MoI, so it has to cover every association of the gene, not only
+    the described ones. Phenotypes, publications and
+    comment sections follow the order of *associations*; repeated phenotypes and
+    publications are listed once.
 
     Args:
         hgnc_id: HGNC ID (integer) of the gene
-        associations: The gene's associations, in report order
+        associations: The associations the prefill describes, in report order
+        moi_associations: Every association of the gene, for the MoI
         panel_id: Target panel ID
         panel_rating: The gene's confidence level on *panel_id*; None when it is not on it
         doi_to_pmid: PMID (None when the paper has none) of every DOI the associations cite
@@ -350,7 +356,7 @@ def prepare_prefill_data(
         panel_id=panel_id,
         hgnc_id=f"HGNC:{hgnc_id}",
         rating=panelapp_confidence_to_color(rating).upper(),
-        moi=derive_panelapp_moi(assessments),
+        moi=derive_panelapp_moi(moi_associations),
         mode_of_pathogenicity=None,
         publications=publications,
         phenotypes=phenotypes,

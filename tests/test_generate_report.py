@@ -1,6 +1,7 @@
 """Tests for loading and ordering a report's genes and associations."""
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -9,13 +10,11 @@ import pytest
 from anthropic.types import Message
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
-from palit.assess_relevance import CHECK_STAGE as RELEVANCE_CHECK_STAGE
-from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.assess_relevance import Refusal, refused_assessment
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.generate_report import (
-    FallbackNotes,
+    INHERITANCE_DETAILS_VOCABULARY,
     FavoriteJournalSections,
     GeneAssessment,
     GeneAssessmentResults,
@@ -25,6 +24,7 @@ from palit.generate_report import (
     StageState,
     build_gene_assessment_results,
     calculate_comprehensive_statistics,
+    format_inheritance,
     generate_html_report,
     is_highlighted_new_moi,
     known_gene_sort_key,
@@ -182,10 +182,7 @@ def _extraction(hgnc_id: int) -> str:
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
     """GENEA (HGNC:1), known, with four associations in mixed states and refused papers;
-    GENEB (HGNC:3), novel, with one association; GENEC (HGNC:4) refused by assess-genes.
-
-    Sonnet 5.5 extracted 10.1/a after Opus 5.5 refused it, screened 10.1/b, and aggregated
-    GENEB after Opus 5.5 refused it."""
+    GENEB (HGNC:3), novel, with one association; GENEC (HGNC:4) refused by assess-genes."""
     path = tmp_path / "run.sqlite"
     with sqlite3.connect(path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
@@ -394,25 +391,12 @@ def db_path(tmp_path: Path) -> Path:
                     "2026-10-01T05",
                 ),
                 ("e7", EXTRACTION_STAGE, "10.1/b", MODEL, "succeeded", None, "2026-10-01T05"),
-                ("s1", RELEVANCE_STAGE, "10.1/b", MODEL, "refused", "bio", "2026-09-01T01"),
-                (
-                    "s2",
-                    RELEVANCE_STAGE,
-                    "10.1/b",
-                    FALLBACK_MODEL,
-                    "succeeded",
-                    None,
-                    "2026-09-01T02",
-                ),
-                ("s3", RELEVANCE_CHECK_STAGE, "10.1/b", MODEL, "succeeded", None, "2026-09-01T03"),
-                ("s4", RELEVANCE_STAGE, "10.1/a", MODEL, "succeeded", None, "2026-09-01T01"),
                 ("g1", ASSESS_GENES_STAGE, "4", FALLBACK_MODEL, "refused", "bio", "2026-10-01T05"),
                 # refused by MODEL only, without an aggregation: not a refused gene
                 ("g3", ASSESS_GENES_STAGE, "2", MODEL, "refused", "bio", "2026-10-01T05"),
                 # refused once, then aggregated by the fallback model
                 ("g2", ASSESS_GENES_STAGE, "3", MODEL, "refused", "bio", "2026-10-01T06"),
                 ("g4", ASSESS_GENES_STAGE, "3", FALLBACK_MODEL, "succeeded", None, "2026-10-01T07"),
-                ("g5", ASSESS_GENES_STAGE, "1", MODEL, "succeeded", None, "2026-10-01T07"),
                 ("m1", MATCH_PANELS_STAGE, "10", MODEL, "succeeded", None, "2026-10-01T07"),
             ],
         )
@@ -570,7 +554,6 @@ STATE_CASES = [
         [("refused", "2026-10-01T11", FALLBACK_MODEL), ("errored", "2026-10-01T10", MODEL)],
         StageState.REFUSED,
     ),
-    ([("errored", "2026-10-01T10", MODEL), ("pending", None, FALLBACK_MODEL)], StageState.PENDING),
 ]
 
 
@@ -614,23 +597,6 @@ def test_refused_papers_and_genes(results: GeneAssessmentResults) -> None:
     ]
     assert results.novel_genes[0].refused_papers[0].doi == "10.1/other"
     assert [(g.hgnc_id, g.hgnc_symbol) for g in results.refused_genes] == [(4, "GENEC")]
-
-
-def test_results_of_the_fallback_model_are_marked(
-    db_path: Path, results: GeneAssessmentResults
-) -> None:
-    genea, geneb = results.known_genes[0], results.novel_genes[0]
-    assert (genea.aggregated_by_fallback, geneb.aggregated_by_fallback) == (False, True)
-    [paper_a] = genea.contributing_papers
-    [paper_b] = geneb.contributing_papers
-    assert paper_a.fallback == FallbackNotes(relevance_levels=(), extraction=True)
-    assert paper_b.fallback == FallbackNotes(relevance_levels=("scope screen",), extraction=False)
-
-    html = _render(db_path, results)
-    assert html.count(">Aggregated by Sonnet 5.5</span>") == 1
-    assert html.count(">Extracted by Sonnet 5.5</span>") == 1
-    assert html.count(">Assessed by Sonnet 5.5</span>") == 1
-    assert "Opus 5.5 refused the scope screen of this paper; Sonnet 5.5" in html
 
 
 def test_display_ids_and_gene_level_blocks(results: GeneAssessmentResults) -> None:
@@ -697,10 +663,14 @@ def test_panel_matching_shown_once_match_panels_has_run(
 ) -> None:
     assert results.panels_matched
     html = _render(db_path, results)
-    assert "Matched panels:" in html
-    assert "not matched yet" in html
     assert "Suggested panels:" in html
     assert "Panel Suggestions:" in html
+    assert "Associations without a matched panel" in html
+    assert (
+        "GENEA-related other disease (Monoallelic):</em> not matched yet: "
+        "match-panels has not run for this association"
+    ) in html
+    assert "<em>GENEA-related biallelic disease (Monoallelic):</em> seizures" in html
 
 
 def test_report_says_which_associations_were_refused_or_failed(
@@ -812,7 +782,6 @@ def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) ->
         prefill_json="{}",
         existing_panel_reviews=[],
         refused_papers=[],
-        aggregated_by_fallback=False,
     )
 
 
@@ -977,3 +946,58 @@ def test_quotes_an_aggregation_adds_follow_the_extraction_quotes_unlocated(
         ("Aggregate quote.", []),
         ("Concern quote.", []),
     ]
+
+
+def _article(html: str, anchor: str) -> str:
+    """The HTML of the gene article with id *anchor*."""
+    start = html.index(f'<article class="gene-assessment" id="{anchor}">')
+    depth, position = 0, start
+    for match in re.finditer(r"<article\b|</article>", html[start:]):
+        depth += 1 if match.group() == "<article" else -1
+        position = start + match.end()
+        if depth == 0:
+            break
+    return html[start:position]
+
+
+def test_association_headings_show_the_relation_then_the_corpus_rating(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    html = _render(db_path, results)
+    known = _article(html, "known-gene-1")
+    assert known.count(">new disease</span>") == 2
+    assert known.count('data-title="PanelApp Australia: b">GREEN</span>') == 1
+    assert known.count(">\N{HEAVY PLUS SIGN} new MoI</span>") == 1
+    # The novel gene's header already says "Not in panel", so its new disease shows no badge.
+    novel = _article(html, "novel-gene-3")
+    assert "new disease" not in novel
+    assert novel.count('class="rating-arrow"') == 1  # the gene header's
+    for removed in ("Basis:", "As described:", "Grouping:", "Matched panels:", "by Sonnet 5.5"):
+        assert removed not in html
+
+
+@pytest.mark.parametrize(
+    ("details", "shown"),
+    [
+        ("", "Monoallelic"),
+        ("reduced penetrance", "Monoallelic (reduced penetrance)"),
+        (
+            "mosaic; imprinted, paternal allele expressed",
+            "Monoallelic (mosaic; imprinted, paternal allele expressed)",
+        ),
+        ("de novo", "Monoallelic"),
+        ("reduced penetrance; consanguineous family", "Monoallelic"),
+        ("Reduced penetrance", "Monoallelic"),
+        ("reduced penetrance;variable expressivity", "Monoallelic"),
+    ],
+)
+def test_inheritance_details_show_only_from_the_vocabulary(details: str, shown: str) -> None:
+    assert format_inheritance("Monoallelic", details) == shown
+
+
+def test_the_aggregation_prompt_and_schema_name_the_inheritance_details_vocabulary() -> None:
+    prompt = (ROOT / "prompts" / "aggregate_assessment_prompt.j2").read_text()
+    schema = (ROOT / "prompts" / "aggregate_assessment_schema.json").read_text()
+    for phrase in INHERITANCE_DETAILS_VOCABULARY:
+        assert f'"{phrase}"' in prompt
+        assert f'\\"{phrase}\\"' in schema

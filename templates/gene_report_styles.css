@@ -308,6 +308,26 @@ section > h2 {
     border-radius: 5px;
     padding: 20px;
     background: #fafafa;
+    /* Off-screen genes skip layout and paint; the HTML stays complete, so find
+       in page and anchor links still reach them. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 1000px;
+}
+
+/* Tooltips in a gene header open below it: the gene article clips its painting. */
+.gene-assessment > h3 [data-title]::before {
+    bottom: auto;
+    top: 100%;
+    margin-bottom: 0;
+    margin-top: 5px;
+}
+
+.gene-assessment > h3 [data-title]::after {
+    bottom: auto;
+    top: 100%;
+    margin-top: -5px;
+    border-top-color: transparent;
+    border-bottom-color: #333;
 }
 
 .unreviewed-badge {
@@ -426,22 +446,6 @@ section > h2 {
     border: 1px solid #90caf9;
 }
 
-/* Verdicts of the relevance-time PanelApp check (context, not assessment) */
-
-.panelapp-check-verdicts {
-    background: #eef4fb;
-    border-left: 4px solid #5b8fc9;
-    border-radius: 4px;
-    padding: 12px 16px;
-    margin: 15px 0;
-    font-size: 0.95em;
-}
-
-.panelapp-check-verdicts ul {
-    margin: 6px 0 0 0;
-    padding-left: 20px;
-}
-
 /* Quality Concerns */
 
 .quality-concerns {
@@ -503,7 +507,6 @@ section > h2 {
 /* MONDO term markers on associations. A broader term is flagged loudly so it is
    not read as the diagnosis; an unmapped or obsolete term is flagged too. */
 
-.mondo-gencc,
 .mondo-exact {
     background: #f5f5f5;
     color: #424242;
@@ -574,7 +577,6 @@ section > h2 {
     border-radius: 4px;
     background: white;
     margin: 16px 0;
-    overflow: hidden;
 }
 
 /* A highlighted new-MoI association, as MoI expansions were highlighted */
@@ -589,6 +591,7 @@ section > h2 {
 .association-heading {
     margin: 0;
     padding: 10px 16px;
+    border-top-right-radius: 3px;
     background: #eef2f7;
     border-bottom: 1px solid #cbd5e1;
     color: #2c3e50;
@@ -623,15 +626,15 @@ section > h2 {
 }
 
 .association-transition {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;
-    margin: 4px 0;
 }
 
 .association-transition .rating-badge,
-.association-transition .moi-badge {
+.association-transition .moi-badge,
+.association-transition .dispute-badge {
     margin-left: 0;
 }
 
@@ -639,9 +642,25 @@ section > h2 {
     margin: 0 2px;
 }
 
-.transition-label {
-    font-size: 0.85em;
-    color: #4a5568;
+/* The transition sits at the right end of the heading, so its tooltips open leftwards. */
+.association-transition [data-title]::before {
+    left: auto;
+    right: 0;
+    transform: none;
+}
+
+.association-transition [data-title],
+.family-counts[data-title] {
+    cursor: help;
+}
+
+.family-counts[data-title] {
+    border-bottom: 1px dotted #666;
+}
+
+.family-counts[data-title]::before {
+    left: 0;
+    transform: none;
 }
 
 .relation-badge {
@@ -652,13 +671,6 @@ section > h2 {
     background: #f8f9fa;
     color: #495057;
     border: 1px solid #adb5bd;
-}
-
-.relation-basis,
-.grouping-rationale,
-.association-description {
-    font-size: 0.9em;
-    color: #4a5568;
 }
 
 .association-disputes {
@@ -674,28 +686,6 @@ section > h2 {
     padding-left: 20px;
 }
 
-.panel-chip {
-    display: inline-block;
-    padding: 1px 7px;
-    margin: 2px 4px 2px 0;
-    border-radius: 10px;
-    font-size: 0.85em;
-    text-decoration: none;
-    position: relative;
-}
-
-.panel-chip-held {
-    background: #f1f5f9;
-    color: #475569;
-    border: 1px solid #cbd5e1;
-}
-
-.panel-chip-missing {
-    background: #e8f5e9;
-    color: #1b5e20;
-    border: 1px solid #81c784;
-}
-
 .association-citations ul {
     margin: 6px 0;
     padding-left: 20px;
@@ -708,11 +698,7 @@ section > h2 {
 
 /* Gene-level blocks after the associations */
 
-.unassessed-reports {
-    margin: 15px 0;
-}
-
-.unassessed-reports h5 {
+.unassessed-reports .muted {
     margin: 0 0 4px 0;
 }
 
@@ -1028,22 +1014,6 @@ details.panel-recommendations .panel-details {
     border: 1px solid #ffc107;
     vertical-align: middle;
     margin-right: 4px;
-}
-
-/* A result the fallback model gave after the primary model refused the request */
-.fallback-badge {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 0.7em;
-    font-weight: 600;
-    background: #eef2f8;
-    color: #3d5a80;
-    border: 1px solid #a9bcd6;
-    vertical-align: middle;
-    margin-left: 6px;
-    cursor: help;
-    position: relative;
 }
 
 .detailed-paper.paper-filtered {
@@ -1409,7 +1379,12 @@ footer hr {
     border-bottom-color: #333;
 }
 
-/* Shared tooltip styles for all data-title elements */
+/* Shared tooltip styles for all data-title elements. Each element anchors its own
+   tooltip, so that a containing gene article does not. */
+[data-title] {
+    position: relative;
+}
+
 [data-title]::before {
     content: attr(data-title);
     position: absolute;
@@ -1421,7 +1396,12 @@ footer hr {
     border-radius: 4px;
     padding: 4px 8px;
     font-size: 0.8em;
-    white-space: nowrap;
+    font-weight: normal;
+    text-transform: none;
+    text-align: left;
+    line-height: 1.4;
+    width: max-content;
+    max-width: 420px;
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.1s ease-in-out;

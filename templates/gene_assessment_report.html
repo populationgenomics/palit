@@ -29,7 +29,7 @@
 
     {# What the ratings in gene headers and associations mean #}
     {% macro corpus_note() %}
-    <p class="corpus-note">Each gene lists its gene-disease-MoI associations. Ratings after an arrow are the evidence in this corpus: they are computed from the papers this run read for the gene (new papers, tournament picks and publications PanelApp already cites), not from everything published. They are not recommendations; a corpus rating below PanelApp's rating is not a downgrade recommendation. A gene's header shows its top association's rating.</p>
+    <p class="corpus-note">Ratings after an arrow come from the papers this run read for the gene, not from everything published, so a rating below PanelApp's is not a downgrade recommendation. A gene's header shows its top association's rating.</p>
     {% endmacro %}
 
     {# Macro for linking to a paper: PubMed if PMID available, DOI otherwise #}
@@ -41,18 +41,6 @@
     {% macro new_moi_badge(gene) %}
     {% if gene.has_highlighted_new_moi %}
         <span class="moi-badge moi-expansion" data-title="At least one association adds a mode of inheritance PanelApp Australia does not curate for its disease, with {{ min_families_for_moi_expansion }} or more independent families">➕ New MoI</span>
-    {% endif %}
-    {% endmacro %}
-
-    {# Note on a result the fallback model gave after the primary model refused the request #}
-    {% macro fallback_note(verb, what) -%}
-    <span class="fallback-badge" data-title="{{ model_name }} refused {{ what }}; {{ fallback_model_name }}, the fallback model, answered it">{{ verb }} by {{ fallback_model_name }}</span>
-    {%- endmacro %}
-
-    {# Gene-header note for an aggregation the fallback model wrote #}
-    {% macro aggregation_fallback_note(gene) %}
-    {% if gene.aggregated_by_fallback %}
-        {{ fallback_note('Aggregated', 'the aggregation of this gene') }}
     {% endif %}
     {% endmacro %}
 
@@ -90,43 +78,35 @@
     {% endif %}
     {% endmacro %}
 
-    {# Macro for rendering disease entity breakdown table - reusable across contexts #}
-    {% macro disease_entity_table(disease_entities, hgnc_id, contributing_papers=none) %}
+    {# A paper's disease entities with their counts. Rows render as one line each:
+       the report holds thousands of these tables. #}
+    {% macro disease_entity_table(disease_entities) %}
     {% if disease_entities %}
-        <table class="disease-entity-table">
-            <thead>
-                <tr>
-                    <th>Disease entities</th>
-                    <th>MoI</th>
-                    <th>Patients</th>
-                    {% if disease_entities[0].reported_family_count is defined %}<th>Reported families</th>{% endif %}
-                    <th>Qualifying families</th>
-                    {% if disease_entities[0].citations is defined and contributing_papers %}<th>Citations</th>{% endif %}
-                </tr>
-            </thead>
-            <tbody>
-                {% set sorted_entities = disease_entities | sort_by_rating_count %}
-                {% set max_independent = sorted_entities[0].independent_family_count if sorted_entities and sorted_entities[0].independent_family_count is not none else none %}
-                {% for entity in sorted_entities %}
-                <tr>
-                    <td>
-                        {{ entity.description }}
-                    </td>
-                    <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
-                    <td>{{ entity.patient_count }}</td>
-                    {% if entity.reported_family_count is defined %}<td>{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }}</td>{% endif %}
-                    <td{% if entity.independent_family_count is not none and entity.independent_family_count == max_independent and max_independent > 0 %} class="disease-entity-max-family-count"{% endif %}{% if entity.count_reduction_reasoning %} data-title="{{ entity.count_reduction_reasoning }}"{% endif %}>{% if entity.family_count is none %}NR{% elif entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %}{{ entity.family_count }} → {{ entity.independent_family_count }}{% else %}{{ entity.family_count }}{% endif %}</td>
-                    {% if entity.citations is defined and contributing_papers %}<td>{% if entity.citations %}{% set citation_links = entity.citations | prepare_citation_links(contributing_papers) %}{% for link in citation_links %}{{ cite(link) }} {% endfor %}{% else %}N/A{% endif %}</td>{% endif %}
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    {% set with_reported = disease_entities[0].reported_family_count is defined %}
+    <table class="disease-entity-table">
+    <thead><tr><th>Disease entities</th><th>MoI</th><th>Patients</th>{% if with_reported %}<th>Reported families</th>{% endif %}<th>Qualifying families</th></tr></thead>
+    <tbody>
+    {% set sorted_entities = disease_entities | sort_by_rating_count %}
+    {% set max_independent = sorted_entities[0].independent_family_count if sorted_entities[0].independent_family_count is not none else none %}
+    {% for entity in sorted_entities %}
+    <tr><td>{{ entity.description }}</td>
+    {#- MoI -#}
+    <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
+    {#- Patients -#}
+    <td>{{ entity.patient_count }}</td>
+    {#- Reported families -#}
+    {% if with_reported %}<td>{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }}</td>{% endif %}
+    {#- Qualifying families -#}
+    <td{% if entity.independent_family_count is not none and entity.independent_family_count == max_independent and max_independent > 0 %} class="disease-entity-max-family-count"{% endif %}{% if entity.count_reduction_reasoning %} data-title="{{ entity.count_reduction_reasoning }}"{% endif %}>{% if entity.family_count is none %}NR{% elif entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %}{{ entity.family_count }} → {{ entity.independent_family_count }}{% else %}{{ entity.family_count }}{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+    </table>
     {% endif %}
     {% endmacro %}
 
-    {# A rating badge for a 1-3 PanelApp confidence level #}
-    {% macro rating_badge(rating) -%}
-    <span class="rating-badge rating-{{ rating | confidence_to_color | lower }}">{{ rating | confidence_to_color }}</span>
+    {# A rating badge for a 1-3 PanelApp confidence level, with an optional tooltip #}
+    {% macro rating_badge(rating, title=none) -%}
+    <span class="rating-badge rating-{{ rating | confidence_to_color | lower }}"{% if title %} data-title="{{ title }}"{% endif %}>{{ rating | confidence_to_color }}</span>
     {%- endmacro %}
 
     {# The association's MONDO term, with every non-exact or unusual state marked #}
@@ -134,15 +114,12 @@
     {% set m = assoc.mondo %}
     {% if assoc.mondo_mapping == 'not_run' %}
     <span class="mondo-badge mondo-unmapped" data-title="map-mondo has not run for this association">No MONDO term yet</span>
-    {% elif assoc.mondo_mapping == 'pending' %}
-    <span class="mondo-badge mondo-unmapped" data-title="A map-mondo request for this association is in flight">No MONDO term yet</span>
     {% elif assoc.mondo_mapping == 'refused' %}
     <span class="mondo-badge mondo-unmapped" data-title="{{ model_name }} and its fallback {{ fallback_model_name }} both refused map-mondo for this association, so it is skipped from now on">No MONDO term: map-mondo refused</span>
     {% elif assoc.mondo_mapping == 'failed' %}
     <span class="mondo-badge mondo-unmapped" data-title="map-mondo gave no valid MONDO term in any attempt so far; a rerun retries it">No MONDO term: mapping failed</span>
     {% elif m.match == 'panelapp_gencc' %}
     <a class="mondo-id" href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>
-    <span class="mondo-badge mondo-gencc" data-title="The disease of a PanelApp Australia GenCC row, reused with its MONDO term">PanelApp Australia GenCC</span>
     {% if m.obsolete %}<span class="mondo-badge mondo-obsolete" data-title="The GenCC row's MONDO term is obsolete in the loaded MONDO release">Obsolete in MONDO{% if m.replaced_by %}: replaced by {{ m.replaced_by | map(attribute='mondo_id') | join(', ') }}{% else %}, no replacement named{% endif %}</span>{% endif %}
     {% elif m.match == 'exact' %}
     <span class="mondo-badge mondo-exact" data-title="{{ m.rationale }}">MONDO exact</span>
@@ -153,32 +130,38 @@
     {% endif %}
     {% endmacro %}
 
-    {# The association's relation to PanelApp Australia, then its rating in this corpus #}
-    {% macro association_transition(assoc) %}
+    {# The association's relation to PanelApp Australia, then its rating in this corpus.
+       A new disease of a gene on no target panel shows the rating alone: the gene
+       header already says the gene is not in a panel. #}
+    {% macro association_transition(assoc, gene) %}
     {% set relation = assoc.assessment.panelapp_relation %}
-    <div class="association-transition">
-        <span class="transition-label">PanelApp Australia:</span>
+    {% set basis = 'PanelApp Australia: ' ~ relation.basis %}
+    <span class="association-transition">
+        {% if not (assoc.relation_status == 'new_disease' and gene.is_novel) %}
         {% if assoc.relation_status == 'existing' %}
             {% if relation.existing_rating %}
-            <span class="rating-badge rating-{{ relation.existing_rating | lower }}" data-title="{{ relation.basis }}">{{ relation.existing_rating }}</span>
+            <span class="rating-badge rating-{{ relation.existing_rating | lower }}" data-title="{{ basis }}">{{ relation.existing_rating }}</span>
             {% else %}
-            <span class="rating-badge rating-grey" data-title="{{ relation.basis }}">curated, own rating unknown</span>
+            <span class="rating-badge rating-grey" data-title="{{ basis }}">curated, own rating unknown</span>
             {% endif %}
         {% elif assoc.relation_status == 'new_disease' %}
-            <span class="relation-badge relation-new" data-title="{{ relation.basis }}">new disease</span>
+            <span class="relation-badge relation-new" data-title="{{ basis }}">new disease</span>
         {% elif assoc.new_moi_highlighted %}
-            <span class="moi-badge moi-expansion" data-title="{{ relation.basis }}">➕ new MoI</span>
+            <span class="moi-badge moi-expansion" data-title="{{ basis }}">➕ new MoI</span>
         {% else %}
-            <span class="relation-badge relation-new" data-title="Fewer than {{ min_families_for_moi_expansion }} independent families, so not highlighted. {{ relation.basis }}">new MoI</span>
+            <span class="relation-badge relation-new" data-title="Fewer than {{ min_families_for_moi_expansion }} independent families, so not highlighted. {{ basis }}">new MoI</span>
         {% endif %}
         <span class="rating-arrow">→</span>
-        <span class="transition-label" data-title="Computed from this association's criteria, using only the papers this run read. A lower rating than PanelApp's is not a downgrade recommendation.">Evidence in this corpus:</span>
-        {{ rating_badge(assoc.rating) }}
+        {% endif %}
+        {{ rating_badge(assoc.rating, "Evidence in this corpus: computed from this association's criteria, using only the papers this run read. A lower rating than PanelApp's is not a downgrade recommendation.") }}
         {% if assoc.assessment.dispute_status != 'None' %}
         <span class="dispute-badge dispute-{{ assoc.assessment.dispute_status | lower }}">{{ assoc.assessment.dispute_status }}</span>
         {% endif %}
-    </div>
-    <p class="relation-basis"><strong>Basis:</strong> {{ relation.basis }}</p>
+    </span>
+    {% endmacro %}
+
+    {# The GenCC submissions behind the association's dispute status #}
+    {% macro association_disputes(assoc) %}
     {% if assoc.assessment.dispute_status != 'None' %}
     <div class="association-disputes">
         {% if assoc.disputes %}
@@ -200,27 +183,6 @@
     {% for paper in papers %}{% if paper.preprint %}⚠️ {% endif %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}
     {%- endmacro %}
 
-    {# The matched panels of one association #}
-    {% macro association_panels(assoc) %}
-    <p class="association-panels"><strong>Matched panels:</strong>
-    {% if assoc.panel_matching == 'not_run' %}
-        <em class="muted">not matched yet (match-panels has not run for this association)</em>
-    {% elif assoc.panel_matching == 'pending' %}
-        <em class="muted">not matched yet (a match-panels request is in flight)</em>
-    {% elif assoc.panel_matching == 'refused' %}
-        <em class="muted">not matched ({{ model_name }} and its fallback {{ fallback_model_name }} both refused match-panels for this association, so it is skipped from now on)</em>
-    {% elif assoc.panel_matching == 'failed' %}
-        <em class="muted">not matched (match-panels gave no valid answer in any attempt so far; a rerun retries it)</em>
-    {% elif not assoc.matched_panels %}
-        <em class="muted">none</em>
-    {% else %}
-        {% for panel in assoc.matched_panels %}
-        <a class="panel-chip {{ 'panel-chip-held' if panel.gene_on_panel else 'panel-chip-missing' }}" href="https://panelapp-aus.org/panels/{{ panel.panel_id }}" target="_blank" data-title="{{ panel.rationale }}">{{ panel.panel_name }}{% if not panel.gene_on_panel %} (gene not on panel){% endif %}</a>
-        {% endfor %}
-    {% endif %}
-    </p>
-    {% endmacro %}
-
     {# One gene-disease-MoI association #}
     {% macro association_block(assoc, gene) %}
     {% set e = assoc.assessment %}
@@ -229,22 +191,16 @@
             <span class="association-disease">{{ assoc.disease_label }}</span>
             {{ mondo_marker(assoc) }}
             <span class="association-moi">{{ e.inheritance_mode | format_inheritance(e.inheritance_details) }}</span>
+            {{ association_transition(assoc, gene) }}
         </header>
         <div class="association-body">
-            {{ association_transition(assoc) }}
-            {% if e.description | lower != assoc.disease_label | lower %}
-            <p class="association-description"><strong>As described:</strong> {{ e.description }}</p>
-            {% endif %}
+            {{ association_disputes(assoc) }}
             <div class="summary-content">{{ e.summary | markdown_to_html }}</div>
-            <p class="grouping-rationale"><strong>Grouping:</strong> {{ e.grouping_rationale }}</p>
             {{ family_counts(e) }}
             {% if e.disease_mechanism and e.disease_mechanism != 'NR' %}
             <p class="association-mechanism"><strong>Mechanism:</strong> {{ e.disease_mechanism }}</p>
             {% endif %}
             <p class="association-papers"><strong>Papers:</strong> {{ paper_links(e.dois | papers_for_dois(gene.contributing_papers)) }}</p>
-            {% if panels_matched %}
-            {{ association_panels(assoc) }}
-            {% endif %}
             {% if e.citations %}
             <details class="association-citations">
                 <summary><strong>Cited evidence ({{ e.citations | length }})</strong></summary>
@@ -257,7 +213,7 @@
             {% endif %}
             <details class="association-criteria">
                 <summary><strong>PanelApp criteria</strong></summary>
-                {{ criteria_grid(e, gene.hgnc_id, contributing_papers=gene.contributing_papers) }}
+                {{ criteria_grid(e, contributing_papers=gene.contributing_papers) }}
             </details>
         </div>
     </section>
@@ -266,23 +222,25 @@
     {# Reports below the bar for new associations, and papers whose reports all fall under an exclusion #}
     {% macro unassessed_reports(gene) %}
     {% if gene.unassessed_reports %}
-    <div class="unassessed-reports">
-        <h5><strong>Unassessed reports ({{ gene.unassessed_reports | length }})</strong></h5>
-        <p class="muted"><em>Phenotypes the papers report for this gene without a qualifying family, or whose reports fall under an exclusion; they are not associations and have no rating.</em></p>
-        <table class="disease-entity-table">
-            <thead><tr><th>Phenotype</th><th>MoI</th><th>Papers</th><th>Reason</th></tr></thead>
-            <tbody>
-                {% for report in gene.unassessed_reports %}
-                <tr>
-                    <td>{{ report.phenotype }}</td>
-                    <td>{{ report.inheritance_mode | format_inheritance }}</td>
-                    <td>{{ paper_links(report.dois | papers_for_dois(gene.contributing_papers)) }}</td>
-                    <td>{{ report.reason }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+    <details class="unassessed-reports">
+        <summary><strong>Unassessed reports ({{ gene.unassessed_reports | length }})</strong></summary>
+        <div>
+            <p class="muted"><em>Phenotypes the papers report for this gene without a qualifying family, or whose reports fall under an exclusion; they are not associations and have no rating.</em></p>
+            <table class="disease-entity-table">
+                <thead><tr><th>Phenotype</th><th>MoI</th><th>Papers</th><th>Reason</th></tr></thead>
+                <tbody>
+                    {% for report in gene.unassessed_reports %}
+                    <tr>
+                        <td>{{ report.phenotype }}</td>
+                        <td>{{ report.inheritance_mode | format_inheritance }}</td>
+                        <td>{{ paper_links(report.dois | papers_for_dois(gene.contributing_papers)) }}</td>
+                        <td>{{ report.reason }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </details>
     {% endif %}
     {% endmacro %}
 
@@ -320,84 +278,58 @@
     {% endif %}
     {% endmacro %}
 
-    {# Verdicts of the relevance-time PanelApp check #}
-    {% macro relevance_verdicts(gene) %}
-    {% set verdicts = gene.contributing_papers | panelapp_verdicts(gene.hgnc_id) %}
-    {% if verdicts %}
-    <div class="panelapp-check-verdicts">
-        <strong>PanelApp check at screening</strong> <em>(context only, not part of the assessment)</em>:
-        <ul>
-            {% for v in verdicts %}
-            <li>{{ paper_link(v.paper) }}: <strong>{{ v.label }}</strong> ({{ v.disease }}) - {{ v.reason }}</li>
-            {% endfor %}
-        </ul>
-    </div>
-    {% endif %}
-    {% endmacro %}
-
     {# Reported, qualifying and independent families of an entity or association #}
     {% macro family_counts(entity) %}
-    <p class="entity-count-summary"><strong>Patients:</strong> {{ entity.patient_count }}; <strong>Families:</strong> {% if entity.family_count is none %}NR{% else %}{% if entity.reported_family_count is defined %}{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }} reported, {% endif %}{{ entity.family_count }} qualifying{% if entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %} → {{ entity.independent_family_count }} independent{% endif %}{% endif %} <span class="count-note">(A/B/C use the independent count){% if entity.count_reduction_reasoning %}: {{ entity.count_reduction_reasoning }}{% endif %}</span></p>
+    {% set count_note = 'A/B/C use the independent count.' ~ ((' ' ~ entity.count_reduction_reasoning) if entity.count_reduction_reasoning else '') %}
+    <p class="entity-count-summary"><strong>Patients:</strong> {{ entity.patient_count }}; <strong>Families:</strong> <span class="family-counts" data-title="{{ count_note }}">{% if entity.family_count is none %}NR{% else %}{% if entity.reported_family_count is defined %}{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }} reported, {% endif %}{{ entity.family_count }} qualifying{% if entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %} → {{ entity.independent_family_count }} independent{% endif %}{% endif %}</span></p>
     {% endmacro %}
 
-    {# Macro for rendering criteria assessment grid for a SINGLE disease entity (per-entity criteria). #}
-    {% macro criteria_grid(entity, hgnc_id, contributing_papers=none, paper=none) %}
+    {# The PanelApp criteria of one association or one paper's disease entity, with the
+       citations behind each. Cites link through the gene's papers or the one paper. #}
+    {% macro criteria_grid(entity, contributing_papers=none, paper=none) %}
+    {% set criteria_meta = {
+        'criterion_A': ('Criterion A - Multiple Independent Cases', 'OR'),
+        'criterion_B': ('Criterion B - Cis-regulatory Mutations', 'OR'),
+        'criterion_C': ('Criterion C - Fewer Cases with Functional Evidence', 'AND'),
+        'criterion_D': ('Criterion D - Mendelian Inheritance', 'AND'),
+        'criterion_E': ('Criterion E - No Contradictory Evidence', none)
+    } %}
     <div class="criteria-grid">
-        {% set criteria_meta = {
-            'criterion_A': ('Criterion A - Multiple Independent Cases', 'OR'),
-            'criterion_B': ('Criterion B - Cis-regulatory Mutations', 'OR'),
-            'criterion_C': ('Criterion C - Fewer Cases with Functional Evidence', 'AND'),
-            'criterion_D': ('Criterion D - Mendelian Inheritance', 'AND'),
-            'criterion_E': ('Criterion E - No Contradictory Evidence', none)
-        } %}
-        {% for crit in entity.evidence_assessments %}
-            {% set crit_label = criteria_meta[crit.name][0] %}
-            {% set separator = criteria_meta[crit.name][1] %}
-            <span class="criterion-header criterion-{{ 'true' if crit.result else 'false' }}">
-                {{ '✓' if crit.result else '✗' }} {{ crit_label }} | Confidence: {{ crit.confidence }}
-            </span>
-            <strong>Rationale:</strong> {{ crit.rationale }}
-            {% if crit.citations %}
-            <div class="evidence-card">
-                <ul>
-                    {% if contributing_papers %}
-                        {% for citation in crit.citations %}
-                        <li>
-                            {{ citation.commentary }}
-                            {% set citation_links = [citation] | prepare_citation_links(contributing_papers) %}
-                            {% for link in citation_links %}
-                            {{ cite(link) }}
-                            {% endfor %}
-                        </li>
-                        {% endfor %}
-                    {% elif paper %}
-                        {% for citation in crit.citations %}
-                        <li>
-                            {{ citation.commentary }}
-                            {% for link in [citation] | paper_citation_links(paper) %}{{ cite(link) }}{% endfor %}
-                        </li>
-                        {% endfor %}
-                    {% endif %}
-                </ul>
-            </div>
-            {% endif %}
-
-            {% if separator %}
-            <div class="criterion-separator">{{ separator }}</div>
-            {% endif %}
-        {% endfor %}
+    {% for crit in entity.evidence_assessments %}
+    {% set crit_label, separator = criteria_meta[crit.name] %}
+    <span class="criterion-header criterion-{{ 'true' if crit.result else 'false' }}">{{ '✓' if crit.result else '✗' }} {{ crit_label }} | Confidence: {{ crit.confidence }}</span>
+    <strong>Rationale:</strong> {{ crit.rationale }}
+    {% if crit.citations %}
+    <div class="evidence-card"><ul>
+    {% for citation in crit.citations %}
+    {% set links = [citation] | prepare_citation_links(contributing_papers) if contributing_papers else [citation] | paper_citation_links(paper) %}
+    <li>{{ citation.commentary }}{% for link in links %} {{ cite(link) }}{% endfor %}</li>
+    {% endfor %}
+    </ul></div>
+    {% endif %}
+    {% if separator %}
+    <div class="criterion-separator">{{ separator }}</div>
+    {% endif %}
+    {% endfor %}
     </div>
     {% endmacro %}
 
     {# Panels matched by any of the gene's associations, compared with the gene's current panels #}
     {% macro panel_recommendations(gene) %}
     {% set unmatched = gene.unmatched_by_state %}
-    {% set unmatched_labels = {'not_run': 'not run yet', 'pending': 'in flight', 'refused': 'refused', 'failed': 'failed'} %}
-    {% if gene.missing_panels or unmatched %}
+    {% set unmatched_labels = {'not_run': 'not run yet', 'refused': 'refused', 'failed': 'failed'} %}
+    {% set without_panels = gene.associations | rejectattr('matched_panels') | list %}
+    {% set state_notes = {
+        'stored': 'matched to no panel',
+        'not_run': 'not matched yet: match-panels has not run for this association',
+        'refused': 'not matched: ' ~ model_name ~ ' and its fallback ' ~ fallback_model_name ~ ' both refused match-panels for this association, so it is skipped from now on',
+        'failed': 'not matched: match-panels gave no valid answer in any attempt so far; a rerun retries it'
+    } %}
+    {% if gene.missing_panels or gene.existing_panels or without_panels %}
     <details class="panel-recommendations">
         <summary>
             <strong>Suggested panels:</strong>
-            {% if gene.missing_panels %}{{ gene.missing_panels | map(attribute='panel_name') | join(', ') }}{% else %}<em>none so far</em>{% endif %}
+            {% if gene.missing_panels %}{{ gene.missing_panels | map(attribute='panel_name') | join(', ') }}{% elif unmatched %}<em>none so far</em>{% else %}<em>none</em>{% endif %}
             {% if unmatched %} <em class="muted">({{ unmatched.values() | sum }} of {{ gene.associations | length }} associations not matched: {% for state, count in unmatched.items() %}{{ count }} {{ unmatched_labels[state.value] }}{% if not loop.last %}, {% endif %}{% endfor %})</em>{% endif %}
         </summary>
         <div class="panel-details">
@@ -420,6 +352,16 @@
             </div>
             {% endif %}
             {% endfor %}
+            {% if without_panels %}
+            <div class="panel-section">
+                <h4>Associations without a matched panel</h4>
+                <ul>
+                {% for assoc in without_panels %}
+                    <li><em>{{ assoc.disease_label }} ({{ assoc.assessment.inheritance_mode | format_inheritance }}):</em> {{ state_notes[assoc.panel_matching.value] }}</li>
+                {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
         </div>
     </details>
     {% endif %}
@@ -443,11 +385,9 @@
         {% if gene.variant_frequencies %}
         <div class="variant-frequency-section">
             <h5><strong>gnomAD v4 frequencies</strong></h5>
-            {{ variant_frequency_table(gene.variant_frequencies, gene.aggregate_moi, gene.hgnc_id, include_faf=true) }}
+            {{ variant_frequency_table(gene.variant_frequencies, gene.aggregate_moi) }}
         </div>
         {% endif %}
-
-        {{ relevance_verdicts(gene) }}
 
         <details>
             <summary><strong>Contributing papers ({{ gene.contributing_papers|length }})</strong></summary>
@@ -471,8 +411,14 @@
         </details>
     {% endmacro %}
 
-    {# Macro for rendering variant frequency tables - reduces duplication #}
-    {% macro variant_frequency_table(variants, inheritance_mode, hgnc_id, include_faf=true) %}
+    {# A gnomAD count cell, flagged when the count is above the threshold of the gene's MoI #}
+    {% macro gnomad_count_cell(count, metric, flag_info) -%}
+    <td>{% if count is not none %}{{ count }}{% if flag_info.should_flag and metric in flag_info.flagged_metric %} <span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>{% endif %}{% else %}—{% endif %}</td>
+    {%- endmacro %}
+
+    {# The gene's variants with their gnomAD v4 frequencies. Each row renders as one
+       line: the report holds tens of thousands of rows. #}
+    {% macro variant_frequency_table(variants, inheritance_mode) %}
     <table class="variant-frequency-table">
         <thead>
             <tr>
@@ -482,87 +428,28 @@
                 <th data-title="Number of heterozygotes">het</th>
                 <th data-title="Number of homozygotes">hom</th>
                 <th data-title="Number of hemizygotes">hemi</th>
-                {% if include_faf %}
                 <th data-title="Grpmax Filtering Allele Frequency: the maximum credible genetic ancestry group alternate allele frequency as a lower bound of the 95% confidence interval">FAF</th>
-                {% endif %}
                 <th>Links</th>
             </tr>
         </thead>
         <tbody>
             {% for variant in variants %}
             {% set flag_info = variant | get_variant_flag(inheritance_mode) %}
-            <tr class="{% if flag_info.should_flag %}high-frequency-variant{% endif %}">
-                <td>
-                    {% if variant.hgvs_c %}
-                        {{ variant.hgvs_c }}
-                    {% else %}
-                        <em>{{ variant.original_text }}</em>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if variant.hgvs_p %}
-                        {{ variant.hgvs_p }}
-                    {% else %}
-                        —
-                    {% endif %}
-                </td>
-                <td>
-                    {% if variant.gnomad_not_found %}
-                        <em>not found</em>
-                    {% elif variant.gnomad_error %}
-                        <span class="hover-value lookup-error" data-title="{{ variant.gnomad_error }}">error</span>
-                    {% elif variant.gnomad_ac is not none %}
-                        <span class="hover-value" data-title="AN = {{ variant.gnomad_an }}">{{ variant.gnomad_ac }}</span>
-                    {% else %}
-                        —
-                    {% endif %}
-                </td>
-                <td>
-                    {% if variant.gnomad_het is not none %}
-                        {{ variant.gnomad_het }}
-                        {% if flag_info.should_flag and "het" in flag_info.flagged_metric %}
-                            <span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>
-                        {% endif %}
-                    {% else %}
-                        —
-                    {% endif %}
-                </td>
-                <td>
-                    {% if variant.gnomad_hom is not none %}
-                        {{ variant.gnomad_hom }}
-                        {% if flag_info.should_flag and "hom" in flag_info.flagged_metric %}
-                            <span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>
-                        {% endif %}
-                    {% else %}
-                        —
-                    {% endif %}
-                </td>
-                <td>
-                    {% if variant.gnomad_hemi is not none %}
-                        {{ variant.gnomad_hemi }}
-                        {% if flag_info.should_flag and "hemi" in flag_info.flagged_metric %}
-                            <span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>
-                        {% endif %}
-                    {% else %}
-                        —
-                    {% endif %}
-                </td>
-                {% if include_faf %}
-                <td>
-                    {% if variant.gnomad_faf95_popmax is not none %}
-                        <span class="hover-value" data-title="{{ variant.gnomad_faf95_popmax_population }}">{{ "%.2e" | format(variant.gnomad_faf95_popmax) }}</span>
-                    {% else %}
-                        —
-                    {% endif %}
-                </td>
-                {% endif %}
-                <td>
-                    <a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>
-                    {% for citation in variant.citations %}
-                        | {{ cite(citation) }}
-                    {% endfor %}
-                </td>
-            </tr>
+            <tr{% if flag_info.should_flag %} class="high-frequency-variant"{% endif %}>
+            {#- HGVS c. -#}
+            <td>{% if variant.hgvs_c %}{{ variant.hgvs_c }}{% else %}<em>{{ variant.original_text }}</em>{% endif %}</td>
+            {#- HGVS p. -#}
+            <td>{{ variant.hgvs_p or '—' }}</td>
+            {#- AC -#}
+            <td>{% if variant.gnomad_not_found %}<em>not found</em>{% elif variant.gnomad_error %}<span class="hover-value lookup-error" data-title="{{ variant.gnomad_error }}">error</span>{% elif variant.gnomad_ac is not none %}<span class="hover-value" data-title="AN = {{ variant.gnomad_an }}">{{ variant.gnomad_ac }}</span>{% else %}—{% endif %}</td>
+            {#- het, hom, hemi -#}
+            {{ gnomad_count_cell(variant.gnomad_het, 'het', flag_info) }}
+            {{- gnomad_count_cell(variant.gnomad_hom, 'hom', flag_info) }}
+            {{- gnomad_count_cell(variant.gnomad_hemi, 'hemi', flag_info) }}
+            {#- FAF -#}
+            <td>{% if variant.gnomad_faf95_popmax is not none %}<span class="hover-value" data-title="{{ variant.gnomad_faf95_popmax_population }}">{{ "%.2e" | format(variant.gnomad_faf95_popmax) }}</span>{% else %}—{% endif %}</td>
+            {#- Links -#}
+            <td><a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>{% for citation in variant.citations %} | {{ cite(citation) }}{% endfor %}</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -606,7 +493,7 @@
         {% set check = paper.relevance_assessment.panelapp_check %}
         {% set refused = paper.relevance_assessment.refused %}
         <details class="llm-relevance-assessment">
-            <summary><strong>LLM Relevance Assessment</strong>{% if paper.fallback.relevance_levels %} {{ fallback_note('Assessed', 'the ' ~ (paper.fallback.relevance_levels | join(' and ')) ~ ' of this paper') }}{% endif %}</summary>
+            <summary><strong>LLM Relevance Assessment</strong></summary>
             <p><strong>Relevant:</strong> {{ 'Yes' if paper.relevance_assessment.relevant else 'No' }}</p>
             {% if refused %}
             <p><strong>Refused:</strong> {{ model_name }} and its fallback {{ fallback_model_name }} both refused the {{ 'scope screen' if refused.level == 'screen' else 'PanelApp check' }} of this paper ({{ refused.model }}, category: {{ refused.category or 'none given' }}), so it counts as not relevant without a verdict.</p>
@@ -635,7 +522,7 @@
 
         {% if include_evidence and paper.evidence_extraction %}
         <details class="individual-evidence-extraction">
-            <summary><strong>Evidence</strong>{% if paper.fallback.extraction %} {{ fallback_note('Extracted', 'the evidence extraction of this paper') }}{% endif %}</summary>
+            <summary><strong>Evidence</strong></summary>
             {% set gene_eval = (paper.evidence_extraction.gene_evaluations | selectattr('hgnc_id', 'defined') | selectattr('hgnc_id', 'equalto', gene.hgnc_id) | list)[0] %}
             <div class="gene-evaluation">
                 <div class="evidence-summary-expanded">
@@ -647,7 +534,7 @@
                         <li><strong>Mode of inheritance:</strong> {{ gene_eval.disease_entities | derive_moi | format_inheritance(gene_eval.disease_entities | derive_moi_details) }}</li>
                     </ul>
 
-                    {{ disease_entity_table(gene_eval.disease_entities, gene.hgnc_id) }}
+                    {{ disease_entity_table(gene_eval.disease_entities) }}
 
                     {% if gene_eval.quality_concerns %}
                     <div class="quality-concerns">
@@ -668,19 +555,10 @@
                 <section class="per-entity-criteria-section">
                     <h6 class="per-entity-criteria-heading">{{ entity.description }}</h6>
                     <div class="per-entity-criteria-body">
-                        {{ criteria_grid(entity, gene.hgnc_id, paper=paper) }}
+                        {{ criteria_grid(entity, paper=paper) }}
                     </div>
                 </section>
                 {% endfor %}
-
-                <div class="variant-frequency-section">
-                    <h6><strong>gnomAD v4 frequencies</strong></h6>
-                    {% if paper.variant_frequencies %}
-                    {{ variant_frequency_table(paper.variant_frequencies, gene.aggregate_moi, gene.hgnc_id, include_faf=false) }}
-                    {% else %}
-                    <p><em>No variants with frequency data extracted from this paper.</em></p>
-                    {% endif %}
-                </div>
             </div>
         </details>
         {% elif include_evidence %}
@@ -1009,7 +887,6 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
-                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'add') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1038,7 +915,6 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
-                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1059,7 +935,6 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
-                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1080,7 +955,6 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
-                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1107,7 +981,6 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
-                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>
@@ -1128,7 +1001,6 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
-                    {{ aggregation_fallback_note(gene) }}
                     <span class="unreviewed-badge" title="No expert review on PanelApp for this gene/panel">⚠️ Unreviewed</span>
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
@@ -1153,7 +1025,6 @@
                     <span class="rating-arrow">→</span>
                     <span class="rating-badge rating-{{ gene.new_rating | confidence_to_color | lower }}">{{ gene.new_rating | confidence_to_color }}</span>
                     {{ new_moi_badge(gene) }}
-                    {{ aggregation_fallback_note(gene) }}
                     {{ prefill_button(gene, 'review') }}
                     {{ assignment_slot(gene) }}
                 </h3>

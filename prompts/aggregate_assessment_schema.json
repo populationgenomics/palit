@@ -26,7 +26,7 @@
                     },
                     "inheritance_details": {
                         "type": "string",
-                        "description": "Inheritance clarifications, or empty string."
+                        "description": "Empty string, or one or more of these phrases joined by \"; \": \"reduced penetrance\", \"variable expressivity\", \"mosaic\", \"imprinted, paternal allele expressed\", \"imprinted, maternal allele expressed\", \"sex-limited\". Segregation, consanguinity, zygosity, de novo status and other evidence belong in the summary."
                     },
                     "grouping_rationale": {
                         "type": "string",

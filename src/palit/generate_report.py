@@ -6,7 +6,7 @@ import logging
 import shutil
 import sqlite3
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -20,8 +20,6 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
-from palit.assess_relevance import CHECK_STAGE as RELEVANCE_CHECK_STAGE
-from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.hgnc import HgncResolver
@@ -65,6 +63,18 @@ logger = logging.getLogger(__name__)
 GNOMAD_HET_THRESHOLD = 30  # Monoallelic (dominant) - heterozygote count
 GNOMAD_HOM_THRESHOLD = 15  # Biallelic (recessive) - homozygote count
 GNOMAD_HEMI_THRESHOLD = 30  # X-linked - hemizygote count
+
+# The inheritance details the report shows next to a mode of inheritance, joined by "; "
+INHERITANCE_DETAILS_VOCABULARY: frozenset[str] = frozenset(
+    {
+        "reduced penetrance",
+        "variable expressivity",
+        "mosaic",
+        "imprinted, paternal allele expressed",
+        "imprinted, maternal allele expressed",
+        "sex-limited",
+    }
+)
 
 # A new_moi association is highlighted only from this many independent families on
 MIN_FAMILIES_FOR_MOI_EXPANSION = 2
@@ -185,42 +195,6 @@ class VariantFrequency:
     citations: list[CitationLink]  # Papers reporting this variant, sorted by display_id
 
 
-def answered_by_fallback(cursor: sqlite3.Cursor, stage: str, subject: str) -> bool:
-    """Whether the latest answered request of *stage* about *subject* went to FALLBACK_MODEL.
-
-    The stored result of a stage comes from its latest answered request: a
-    subject with a result is not selected again.
-    """
-    cursor.execute(
-        """
-        SELECT model FROM llm_requests
-        WHERE stage = ? AND subject = ? AND status = 'succeeded'
-        ORDER BY completed_at DESC LIMIT 1
-        """,
-        (stage, subject),
-    )
-    row = cursor.fetchone()
-    return row is not None and row[0] == FALLBACK_MODEL
-
-
-@dataclass(frozen=True)
-class FallbackNotes:
-    """Which of a paper's results came from FALLBACK_MODEL after MODEL refused it."""
-
-    relevance_levels: tuple[str, ...]  # "scope screen" and/or "PanelApp check"
-    extraction: bool
-
-
-def load_fallback_notes(cursor: sqlite3.Cursor, doi: str) -> FallbackNotes:
-    levels = (("scope screen", RELEVANCE_STAGE), ("PanelApp check", RELEVANCE_CHECK_STAGE))
-    return FallbackNotes(
-        relevance_levels=tuple(
-            label for label, stage in levels if answered_by_fallback(cursor, stage, doi)
-        ),
-        extraction=answered_by_fallback(cursor, EXTRACTION_STAGE, doi),
-    )
-
-
 @dataclass
 class DetailedPaper:
     """Complete paper information for detailed display."""
@@ -236,12 +210,10 @@ class DetailedPaper:
     relevance_assessment: dict[str, Any] | None
     evidence_extraction: dict[str, Any] | None
     quote_refs: dict[str, QuoteRef]  # this paper's quotes -> position in its citations file
-    fallback: FallbackNotes
     preprint: bool = False
     pmid: int | None = None  # For PubMed display links
     display_id: str = ""  # "PMID {pmid}" for published papers, AuthorYear for preprints
     paper_gene_symbol: str | None = None
-    variant_frequencies: list[VariantFrequency] = field(default_factory=list)
     filtered_reason: str | None = None  # Set when paper was excluded from assessment
 
 
@@ -368,7 +340,6 @@ class StageState(StrEnum):
 
     STORED = "stored"  # the association holds the stage's result
     NOT_RUN = "not_run"  # no request of the stage for this association
-    PENDING = "pending"  # the latest request is in a batch not collected yet
     REFUSED = "refused"  # FALLBACK_MODEL refused the latest request; the stage skips it from now on
     FAILED = "failed"  # requests ran but none gave a valid result; a rerun retries it
 
@@ -383,8 +354,6 @@ def stage_state(stored: bool, latest_status: str | None, latest_model: str | Non
         return StageState.STORED
     if latest_status is None:
         return StageState.NOT_RUN
-    if latest_status == "pending":
-        return StageState.PENDING
     if latest_status == ResultStatus.REFUSED and latest_model == FALLBACK_MODEL:
         return StageState.REFUSED
     return StageState.FAILED
@@ -449,7 +418,11 @@ class GeneAssessment:
     prefill_json: str  # HTML-escaped JSON for data-prefill attribute
     existing_panel_reviews: list[ExistingPanelReviews]  # per target panel; empty if novel
     refused_papers: list[RefusedPaper]
-    aggregated_by_fallback: bool  # FALLBACK_MODEL wrote the aggregation after MODEL refused it
+
+    @property
+    def is_novel(self) -> bool:
+        """The gene is on none of the target panels."""
+        return self.existing_rating is None
 
     @property
     def has_highlighted_new_moi(self) -> bool:
@@ -756,52 +729,6 @@ def load_variant_frequencies_for_gene(
     return variant_frequencies
 
 
-def load_variant_frequencies_for_paper(
-    cursor: sqlite3.Cursor, paper: "DetailedPaper"
-) -> list[VariantFrequency]:
-    """Load variant frequency information for a specific paper."""
-    doi = paper.doi
-    # Load variant frequencies from database for this paper
-    cursor.execute(
-        """
-        SELECT
-            vf.variant_id,
-            vf.quote,
-            vf.normalization,
-            vf.gnomad
-        FROM variant_frequencies vf
-        WHERE vf.paper_doi = ?
-        ORDER BY vf.hgnc_id, vf.variant_id
-    """,
-        (doi,),
-    )
-
-    variant_frequencies = []
-    for row in cursor.fetchall():
-        variant_id = row["variant_id"]
-
-        try:
-            normalization = json.loads(row["normalization"])
-            gnomad = json.loads(row["gnomad"])
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON for variant {variant_id} in paper {doi}: {e}")
-            continue
-
-        link = citation_link(paper, row["quote"])
-        citations = [link] if link is not None else []
-
-        variant_frequencies.append(
-            _create_variant_frequency_from_db_row(
-                variant_id=variant_id,
-                normalization=normalization,
-                gnomad=gnomad,
-                citations=citations,
-            )
-        )
-
-    return variant_frequencies
-
-
 def is_highlighted_new_moi(assessment: dict[str, Any]) -> bool:
     """A new_moi association is highlighted once enough independent families support it."""
     return (
@@ -897,7 +824,6 @@ def load_contributing_papers(
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=evidence_extraction,
                 quote_refs=load_quote_refs(cursor, doi),
-                fallback=load_fallback_notes(cursor, doi),
                 preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
                 pmid=paper_row["pmid"],
                 paper_gene_symbol=paper_row["paper_gene_symbol"],
@@ -1074,14 +1000,15 @@ def load_associations(
     """The gene's associations, by corpus rating and then independent family count.
 
     Each association carries the state of map-mondo and match-panels for it, from
-    its latest request of each stage (a pending request counts as the latest).
+    its latest request of each stage. Both stages send immediate requests only,
+    which are recorded once they have completed.
     """
 
     def latest(column: str) -> str:
         return f"""
             (SELECT r.{column} FROM llm_requests r
              WHERE r.stage = ? AND r.subject = CAST(a.id AS TEXT)
-             ORDER BY r.completed_at IS NOT NULL, r.completed_at DESC
+             ORDER BY r.completed_at DESC
              LIMIT 1)
         """
 
@@ -1187,7 +1114,6 @@ def load_gene(
     for paper in contributing_papers:
         if paper.doi in doi_to_display_id:
             paper.display_id = doi_to_display_id[paper.doi]
-        paper.variant_frequencies = load_variant_frequencies_for_paper(cursor, paper)
 
     associations = load_associations(
         cursor,
@@ -1241,7 +1167,6 @@ def load_gene(
         prefill_json=json.dumps(asdict(prefill_data)),
         existing_panel_reviews=existing_panel_reviews,
         refused_papers=load_refused_papers(cursor, hgnc_id),
-        aggregated_by_fallback=answered_by_fallback(cursor, ASSESS_GENES_STAGE, str(hgnc_id)),
     )
 
 
@@ -1281,7 +1206,7 @@ def build_gene_assessment_results(
     known_genes: list[GeneAssessment] = []
     for row in cursor.fetchall():
         gene = load_gene(conn.cursor(), row, hgnc_resolver, target_panel_data, all_panels_data)
-        (novel_genes if gene.existing_rating is None else known_genes).append(gene)
+        (novel_genes if gene.is_novel else known_genes).append(gene)
 
     novel_genes.sort(key=novel_gene_sort_key)
     known_genes.sort(key=known_gene_sort_key)
@@ -1462,7 +1387,6 @@ def load_panel_publications_validation(
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=evidence_extraction,
                 quote_refs=load_quote_refs(cursor, row["doi"]),
-                fallback=load_fallback_notes(cursor, row["doi"]),
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
             )
@@ -1563,7 +1487,6 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                     relevance_assessment=relevance_assessment,
                     evidence_extraction=evidence_extraction,
                     quote_refs=load_quote_refs(cursor, row["doi"]),
-                    fallback=load_fallback_notes(cursor, row["doi"]),
                     preprint=is_preprint(row["journal"], row["pmid"]),
                     pmid=row["pmid"],
                 )
@@ -1625,7 +1548,6 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
                 relevance_assessment=relevance_assessment,
                 evidence_extraction=None,
                 quote_refs={},
-                fallback=load_fallback_notes(cursor, row["doi"]),
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
             )
@@ -1917,24 +1839,18 @@ def calculate_comprehensive_statistics(
         )
 
 
-def format_inheritance(mode: str, details: str | None = None) -> str:
-    """Format inheritance mode and details for human-readable display.
+def format_inheritance(mode: str, details: str = "") -> str:
+    """The mode for display, with *details* in parentheses if they are in the vocabulary.
 
-    Args:
-        mode: Inheritance mode enum value (may contain underscores)
-        details: Optional inheritance details
-
-    Returns:
-        Formatted string with mode and details if provided
+    *details* show only when every "; "-separated item of them is in
+    INHERITANCE_DETAILS_VOCABULARY; other details, such as segregation or
+    zygosity notes, are left out.
     """
-    # Remove underscores and format the mode
-    formatted_mode = mode.replace("_", " ") if mode else ""
-
-    # Add details in parentheses if provided and not empty
-    if details and details.strip():
+    formatted_mode = mode.replace("_", " ")
+    items = details.split("; ") if details else []
+    if items and all(item in INHERITANCE_DETAILS_VOCABULARY for item in items):
         return f"{formatted_mode} ({details})"
-    else:
-        return formatted_mode
+    return formatted_mode
 
 
 def get_variant_frequency_flag(variant: VariantFrequency, inheritance_mode: str) -> dict[str, Any]:
@@ -2030,36 +1946,6 @@ def prepare_aggregate_citation_links(
         if link is not None:
             links.add(link)
     return sorted(links, key=lambda link: (link.display_id, link.quote_index))
-
-
-@dataclass(frozen=True)
-class PanelAppVerdict:
-    """The relevance-time PanelApp check's verdict on one gene in one contributing paper."""
-
-    paper: DetailedPaper
-    label: str  # e.g. "new disease"
-    disease: str
-    reason: str
-
-
-def panelapp_verdicts(papers: list[DetailedPaper], hgnc_id: int) -> list[PanelAppVerdict]:
-    """The PanelApp-check verdicts for *hgnc_id* across *papers*, for display only."""
-    verdicts = []
-    for paper in papers:
-        check = (paper.relevance_assessment or {}).get("panelapp_check")
-        if check is None:
-            continue
-        for association in check["associations"]:
-            if association["hgnc_id"] == hgnc_id:
-                verdicts.append(
-                    PanelAppVerdict(
-                        paper=paper,
-                        label=association["verdict"].replace("_", " "),
-                        disease=association["disease"],
-                        reason=association["reason"],
-                    )
-                )
-    return verdicts
 
 
 def prepare_paper_citation_links(
@@ -2194,7 +2080,6 @@ def generate_html_report(
     env.filters["format_inheritance"] = format_inheritance
     env.filters["prepare_citation_links"] = prepare_aggregate_citation_links
     env.filters["paper_citation_links"] = prepare_paper_citation_links
-    env.filters["panelapp_verdicts"] = panelapp_verdicts
     env.filters["get_variant_flag"] = get_variant_frequency_flag
     env.filters["confidence_to_color"] = panelapp_confidence_to_color
     # Double-encode: first quote produces the on-disk filename (e.g. 10.1038%2Fxyz),

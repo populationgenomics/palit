@@ -56,7 +56,7 @@ Requests go to Claude Opus 5.5 (`MODEL` in `src/palit/llm.py`). When Opus 5.5 re
 
 A stage also gives up on a subject once it has rejected two of its answers, or seen them cut off at `max_tokens`, since the subject's latest accepted answer (`MAX_FAILED_ANSWERS` in `src/palit/llm.py`); later invocations skip it as failed for good. `--retry-failed` on `assess-relevance`, `extract-evidence`, `assess-genes`, `map-mondo` and `match-panels` sends such subjects again, until they fail that often within the invocation.
 
-Stages send their requests as Message Batches, except that a model's requests in a round go out as immediate requests when there are fewer than 10 of them (`MIN_BATCH_REQUESTS`), since a batch can take hours however few requests it holds. `map-mondo` sends all of its requests immediately.
+Stages send their requests as Message Batches, except that a model's requests in a round go out as immediate requests when there are fewer than 10 of them (`MIN_BATCH_REQUESTS`), since a batch can take hours however few requests it holds. `map-mondo` and `match-panels` send all of their requests immediately. A `map-mondo` mapping takes several tool rounds. Every `match-panels` request starts with the same system prompt, the list of all panels, of about 61,000 tokens. Once the first request to a model has written that prefix to the prompt cache, the model's other immediate requests read it from the cache at a fraction of the batch price. In a batch, most requests write the cache instead of reading it.
 
 `assess-relevance` settles a paper refused for good as not relevant, so that `ledger writeback` marks it settled and later runs do not ingest it again. Its `relevance_assessment_json` keeps the usual two-level shape and records the refusal:
 
@@ -210,7 +210,10 @@ uv run palit assess-genes --panel-date $PANEL_DATE
 uv run palit map-mondo
 
 # 11. Match each association to diagnostic panels by its disease, MoI and
-#     summary
+#     summary. Requests go out immediately, not as batches, so that they read
+#     the shared panel list from the prompt cache, and each association's
+#     matches are stored as they arrive. Re-runs match only the associations
+#     still without matches.
 uv run palit match-panels --panel-date $PANEL_DATE
 
 # 12. Generate the report package: index.html, the PDF viewer page, and each

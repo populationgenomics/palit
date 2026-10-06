@@ -8,8 +8,9 @@ Stages build their own ``MessageCreateParamsNonStreaming`` and hand a list of
   re-attaches to uncollected batches on :meth:`BatchTransport.resume`. A model's
   requests go out immediately instead when there are fewer than
   :data:`MIN_BATCH_REQUESTS` of them.
-* :class:`ImmediateTransport` (prompt development, single-item debugging) sends
-  requests concurrently through a fixed pool of workers.
+* :class:`ImmediateTransport` sends requests concurrently through a fixed pool
+  of workers: for prompt development, and in the stages whose requests are
+  cheaper or faster outside a batch (see their module docstrings).
 
 Both return :class:`LlmResult` objects. The stage writes its own output and calls
 :func:`record_result` for every result in the same SQLite transaction, so a crash

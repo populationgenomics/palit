@@ -7,12 +7,21 @@ the association's disease, mode of inheritance and summary. Matches are stored
 on the association row, in the transaction that records the request. An
 association MODEL refused goes to FALLBACK_MODEL in the next attempt (see
 :mod:`palit.llm`).
+
+Requests go out immediately rather than as batches, so that every request but
+the first per model reads the panel list from the cache. Concurrent requests
+in a batch mostly write the cache instead of reading it. A cache entry belongs
+to one model, so in each attempt the first request to each model goes out alone,
+and the model's other requests follow once it has returned. Each result is
+stored as soon as it arrives.
 """
 
 import asyncio
 import json
 import logging
 import sqlite3
+from collections import defaultdict
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -25,7 +34,7 @@ from anthropic.types.output_config_param import OutputConfigParam
 
 from palit.llm import (
     ALL_TIME,
-    BatchTransport,
+    DEFAULT_IMMEDIATE_WORKERS,
     Effort,
     ImmediateTransport,
     LlmRequest,
@@ -45,6 +54,7 @@ from palit.llm import (
 )
 from palit.llm_usage import print_stage_summary
 from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
+from palit.progress import LoggingProgress as Progress
 
 app = typer.Typer(help="Match gene-disease-MoI associations to diagnostic panels")
 logger = logging.getLogger(__name__)
@@ -75,6 +85,12 @@ class PanelMatch:
     rationale: str
 
 
+@dataclass
+class MatchOutcome:
+    stored: int = 0
+    to_fallback: int = 0  # the refusals by MODEL: these go to FALLBACK_MODEL in the next attempt
+
+
 def format_all_panels_for_prompt(panels: dict[int, dict[str, Any]]) -> str:
     """All panel descriptions, ordered by panel id."""
     return "\n".join(
@@ -88,7 +104,7 @@ def format_all_panels_for_prompt(panels: dict[int, dict[str, Any]]) -> str:
 
 
 def select_associations(db_path: Path, history: StageHistory) -> list[Association]:
-    """Associations without panel matches, except ones skipped for good and ones in flight.
+    """Associations without panel matches, except the ones skipped for good.
 
     Only rows of a stored aggregation count: rows left behind by deleting a
     ``gene_aggregations`` row are skipped.
@@ -100,14 +116,8 @@ def select_associations(db_path: Path, history: StageHistory) -> list[Associatio
             FROM associations a
             JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
             WHERE a.matched_panels_json IS NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM llm_requests r
-                  WHERE r.stage = ? AND r.subject = CAST(a.id AS TEXT)
-                    AND r.status = 'pending'
-              )
             ORDER BY a.id
-            """,
-            (STAGE,),
+            """
         ).fetchall()
     associations = []
     for association_id, assessment_json in rows:
@@ -223,47 +233,99 @@ def parse_matches(answer: dict[str, Any], name_to_id: dict[str, int]) -> list[Pa
     return matches
 
 
-def handle_results(
-    results: list[LlmResult],
+def handle_result(
+    result: LlmResult,
     db_path: Path,
     validator: jsonschema.protocols.Validator,
     name_to_id: dict[str, int],
-) -> int:
-    """Record every result and store valid matches; returns the number stored."""
-    stored = 0
-    with sqlite3.connect(db_path) as conn:
-        for result in results:
-            association_id = int(result.subject)
-            message = result.message
-            if result.status == ResultStatus.REFUSED:
-                record_result(conn, result)
-                log_refusal(result, f"association {association_id}")
-                continue
-            if result.status != ResultStatus.SUCCEEDED or message is None:
-                record_result(conn, result)
-                if result.error_type == "invalid_request_error":
-                    raise RuntimeError(
-                        f"invalid match-panels request for association {association_id}"
-                    )
-                continue
-            try:
-                answer = parse_json_output(message)
-                validator.validate(answer)
-                matches = parse_matches(answer, name_to_id)
-            except (ValueError, jsonschema.ValidationError) as e:
-                rejection = invalid_answer_reason(e)
-                logger.warning(
-                    "Invalid panel matching for association %d: %s", association_id, rejection
-                )
-                record_result(conn, result, rejection=rejection)
-                continue
+) -> bool:
+    """Record *result* and store its matches if they are valid; True when they were stored.
+
+    Raises RuntimeError, after recording it, when the request was invalid.
+    """
+    association_id = int(result.subject)
+    message = result.message
+    if result.status == ResultStatus.REFUSED:
+        log_refusal(result, f"association {association_id}")
+    if result.status != ResultStatus.SUCCEEDED or message is None:
+        with sqlite3.connect(db_path) as conn:
             record_result(conn, result)
-            if store_matched_panels(conn, association_id, matches, message.to_json()):
-                stored += 1
-    return stored
+        if result.error_type == "invalid_request_error":
+            raise RuntimeError(f"invalid match-panels request for association {association_id}")
+        return False
+    try:
+        answer = parse_json_output(message)
+        validator.validate(answer)
+        matches = parse_matches(answer, name_to_id)
+    except (ValueError, jsonschema.ValidationError) as e:
+        rejection = invalid_answer_reason(e)
+        logger.warning("Invalid panel matching for association %d: %s", association_id, rejection)
+        with sqlite3.connect(db_path) as conn:
+            record_result(conn, result, rejection=rejection)
+        return False
+    with sqlite3.connect(db_path) as conn:
+        record_result(conn, result)
+        return store_matched_panels(conn, association_id, matches, message.to_json())
 
 
-async def _process_panel_matching(
+async def send_primed(
+    transport: Transport,
+    requests: Sequence[LlmRequest],
+    on_result: Callable[[LlmResult], None],
+) -> None:
+    """Send *requests* and pass each result to *on_result* as it arrives.
+
+    The requests to one model share their cached prefix, and a cache entry belongs
+    to one model. So the first request to each model goes out alone, writes the
+    cache, and the model's other requests go out once it has returned, to read
+    the cache. The models' requests run concurrently and share
+    DEFAULT_IMMEDIATE_WORKERS request slots. An exception from *on_result*, such
+    as for an invalid request, cancels the outstanding requests and propagates
+    in an ExceptionGroup.
+    """
+    by_model: dict[str, list[LlmRequest]] = defaultdict(list)
+    for request in requests:
+        by_model[request.params["model"]].append(request)
+    slots = asyncio.Semaphore(DEFAULT_IMMEDIATE_WORKERS)
+
+    async def send(request: LlmRequest) -> None:
+        async with slots:
+            (result,) = await transport.run(STAGE, 1, [request])
+        on_result(result)
+
+    async with asyncio.TaskGroup() as tasks:
+
+        async def send_model_group(first: LlmRequest, rest: list[LlmRequest]) -> None:
+            await send(first)
+            for request in rest:
+                tasks.create_task(send(request))
+
+        for first, *rest in by_model.values():
+            tasks.create_task(send_model_group(first, rest))
+
+
+async def run_attempt(
+    transport: Transport,
+    requests: Sequence[LlmRequest],
+    db_path: Path,
+    validator: jsonschema.protocols.Validator,
+    name_to_id: dict[str, int],
+) -> MatchOutcome:
+    """Send *requests* with :func:`send_primed`, store each result as it arrives, count outcomes."""
+    outcome = MatchOutcome()
+    with Progress() as progress:
+        task = progress.add_task("Matching associations", total=len(requests))
+
+        def on_result(result: LlmResult) -> None:
+            outcome.stored += handle_result(result, db_path, validator, name_to_id)
+            outcome.to_fallback += result.goes_to_fallback
+            progress.advance(task)
+
+        await send_primed(transport, requests, on_result)
+    return outcome
+
+
+async def match_associations(
     *,
     transport: Transport,
     db_path: Path,
@@ -288,10 +350,6 @@ async def _process_panel_matching(
 
     validator = jsonschema.Draft202012Validator(schema)
     output_config = json_output_config(schema, EFFORT)
-    resumed = await transport.resume(STAGE)
-    if resumed:
-        stored = handle_results(resumed, db_path, validator, name_to_id)
-        logger.info("Collected %d results from earlier batches, stored %d", len(resumed), stored)
     log_failed_for_good(load_history().failures, STAGE)
     for attempt in range(1, max_retries + 1):
         history = load_history()
@@ -310,17 +368,15 @@ async def _process_panel_matching(
             )
             for association in associations
         ]
-        results = await transport.run(STAGE, 1, requests)
-        stored = handle_results(results, db_path, validator, name_to_id)
-        to_fallback = sum(result.goes_to_fallback for result in results)
+        outcome = await run_attempt(transport, requests, db_path, validator, name_to_id)
         logger.info(
             "Attempt %d: stored %d of %d; %d go to the fallback model",
             attempt,
-            stored,
+            outcome.stored,
             len(associations),
-            to_fallback,
+            outcome.to_fallback,
         )
-        if stored + to_fallback == 0:
+        if outcome.stored + outcome.to_fallback == 0:
             logger.error("No progress in attempt %d - stopping", attempt)
             return
 
@@ -349,11 +405,6 @@ def main(
         "or cut off at max_tokens, MAX_FAILED_ANSWERS times) again, until they fail that often "
         "in this invocation",
     ),
-    immediate: bool = typer.Option(
-        False,
-        "--immediate",
-        help="Send requests immediately instead of as Message Batches (for prompt development)",
-    ),
 ) -> None:
     """Match gene-disease-MoI associations to diagnostic panels."""
     if not db_path.exists():
@@ -374,12 +425,8 @@ def main(
     logger.info("%s associations without panel matches", f"{count_unmatched(db_path):,}")
 
     async def run() -> None:
-        client = make_client()
-        transport: Transport = (
-            ImmediateTransport(client) if immediate else BatchTransport(client, db_path)
-        )
-        await _process_panel_matching(
-            transport=transport,
+        await match_associations(
+            transport=ImmediateTransport(make_client()),
             db_path=db_path,
             schema=schema,
             system=system,

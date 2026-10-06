@@ -23,7 +23,6 @@ from palit.generate_report import (
     StageState,
     build_gene_assessment_results,
     calculate_comprehensive_statistics,
-    combine_inheritance_details,
     format_inheritance,
     generate_html_report,
     is_highlighted_new_moi,
@@ -994,13 +993,3 @@ def test_association_headings_show_the_relation_then_the_corpus_rating(
 )
 def test_inheritance_details_show_verbatim(details: str, shown: str) -> None:
     assert format_inheritance("Monoallelic", details) == shown
-
-
-def test_paper_inheritance_details_combine_distinct_and_sorted() -> None:
-    entities = [
-        {"inheritance_details": "imprinting"},
-        {"inheritance_details": ""},
-        {"inheritance_details": "de novo"},
-        {"inheritance_details": "imprinting"},
-    ]
-    assert combine_inheritance_details(entities) == "de novo; imprinting"

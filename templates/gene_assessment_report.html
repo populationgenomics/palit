@@ -529,11 +529,6 @@
                     <h5><strong>Summary</strong></h5>
                     <p>{{ gene_eval.summary }}</p>
 
-                    <h5><strong>Evidence Details</strong></h5>
-                    <ul>
-                        <li><strong>Mode of inheritance:</strong> {{ gene_eval.disease_entities | derive_moi | format_inheritance(gene_eval.disease_entities | derive_moi_details) }}</li>
-                    </ul>
-
                     {{ disease_entity_table(gene_eval.disease_entities) }}
 
                     {% if gene_eval.quality_concerns %}

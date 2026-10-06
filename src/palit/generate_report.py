@@ -1835,16 +1835,6 @@ def format_inheritance(mode: str, details: str = "") -> str:
     return formatted_mode
 
 
-def combine_inheritance_details(disease_entities: list[dict[str, Any]]) -> str:
-    """The distinct non-empty inheritance_details of *disease_entities*, sorted, joined by "; "."""
-    details = {
-        detail
-        for entity in disease_entities
-        if (detail := entity.get("inheritance_details")) and detail.strip()
-    }
-    return "; ".join(sorted(details))
-
-
 def get_variant_frequency_flag(variant: VariantFrequency, inheritance_mode: str) -> dict[str, Any]:
     """Determine if variant should be flagged based on inheritance mode.
 
@@ -2079,8 +2069,6 @@ def generate_html_report(
     # decode %2F back to / (e.g. 10.1038%252Fxyz → opens 10.1038%2Fxyz.pdf).
     env.filters["paper_key"] = doi_to_key
     env.filters["short_id"] = lambda display_id: display_id.removeprefix("PMID ")
-    env.filters["derive_moi"] = derive_aggregate_moi
-    env.filters["derive_moi_details"] = combine_inheritance_details
     env.filters["papers_for_dois"] = papers_for_dois
     env.filters["unreviewed_target_panels"] = lambda gene: unreviewed_target_panels(
         gene, target_panel_id_set

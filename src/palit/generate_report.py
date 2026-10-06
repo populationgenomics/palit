@@ -55,13 +55,14 @@ from palit.papers import (
     is_preprint,
     replace_paper_ids_for_display,
 )
+from palit.variants import GeneVariant, GnomadFrequency, GnomadMiss, load_gene_variants
 
 logger = logging.getLogger(__name__)
 
-# Variant frequency thresholds for flagging based on inheritance mode
-GNOMAD_HET_THRESHOLD = 30  # Monoallelic (dominant) - heterozygote count
-GNOMAD_HOM_THRESHOLD = 15  # Biallelic (recessive) - homozygote count
-GNOMAD_HEMI_THRESHOLD = 30  # X-linked - hemizygote count
+# gnomAD counts above which a variant is flagged, by the MoI of its association
+GNOMAD_HET_THRESHOLD = 30  # heterozygotes; monoallelic and any other MoI
+GNOMAD_HOM_THRESHOLD = 15  # homozygotes; biallelic
+GNOMAD_HEMI_THRESHOLD = 30  # hemizygotes; X-linked
 
 # A new_moi association is highlighted only from this many independent families on
 MIN_FAMILIES_FOR_MOI_EXPANSION = 2
@@ -115,7 +116,6 @@ def aggregate_quotes(cursor: sqlite3.Cursor, doi: str) -> set[str]:
     cursor.execute(f"SELECT assessment_json FROM associations WHERE hgnc_id IN ({genes})", (doi,))
     for (assessment_json,) in cursor.fetchall():
         entity = json.loads(assessment_json)
-        citations += entity["citations"]
         for criterion in entity["evidence_assessments"]:
             citations += criterion["citations"]
     cursor.execute(
@@ -161,25 +161,75 @@ def citation_link(paper: "DetailedPaper", quote: str) -> CitationLink | None:
     )
 
 
-@dataclass
-class VariantFrequency:
-    """Variant frequency information from gnomAD."""
+POPULATION_NAMES = {
+    "afr": "African/African American",
+    "ami": "Amish",
+    "amr": "Admixed American",
+    "asj": "Ashkenazi Jewish",
+    "eas": "East Asian",
+    "fin": "Finnish",
+    "mid": "Middle Eastern",
+    "nfe": "European (non-Finnish)",
+    "sas": "South Asian",
+}
 
-    variant_id: str  # gnomAD pseudo-VCF format
-    hgvs_c: str | None
-    hgvs_p: str | None
-    original_text: str
-    gnomad_ac: int | None
-    gnomad_an: int | None
-    gnomad_hom: int | None  # Number of homozygotes
-    gnomad_het: int | None  # Number of heterozygotes (computed)
-    gnomad_hemi: int | None  # Number of hemizygotes
-    gnomad_faf95_popmax: float | None  # FAF95 popmax value
-    gnomad_faf95_popmax_population: str | None  # Population name for FAF95
-    gnomad_link: str  # Direct link to gnomAD
-    gnomad_not_found: bool  # True if variant not found in gnomAD
-    gnomad_error: str | None  # Error message if gnomAD lookup failed
-    citations: list[CitationLink]  # Papers reporting this variant, sorted by display_id
+
+@dataclass(frozen=True)
+class ReportVariant:
+    """One of the gene's distinct variants, a row of the report's variant tables."""
+
+    variant: GeneVariant
+    citations: list[CitationLink]  # its reports' quotes, by display ID, then quote index
+
+    @property
+    def variant_id(self) -> str:
+        return self.variant.variant_id
+
+    @property
+    def hgvs_forms(self) -> list[tuple[str, str]]:
+        """The distinct (HGVS c., HGVS p.) forms of its reports; empty when not normalised.
+
+        Papers may number the variant on different transcripts, so there can be several.
+        """
+        return list(
+            dict.fromkeys(
+                (r.normalization.hgvs_c, r.normalization.hgvs_p)
+                for r in self.variant.reports
+                if r.normalization is not None
+            )
+        )
+
+    @property
+    def original_text(self) -> str:
+        """The variant as the papers wrote it."""
+        return " / ".join(dict.fromkeys(r.original_text for r in self.variant.reports))
+
+    @property
+    def frequency(self) -> GnomadFrequency | None:
+        """Its gnomAD figures; None when it is absent from gnomAD or its lookup failed."""
+        gnomad = self.variant.gnomad
+        return gnomad if isinstance(gnomad, GnomadFrequency) else None
+
+    @property
+    def not_in_gnomad(self) -> bool:
+        return self.variant.gnomad == GnomadMiss.NOT_FOUND
+
+    @property
+    def lookup_failed(self) -> bool:
+        return self.variant.gnomad == GnomadMiss.LOOKUP_FAILED
+
+    @property
+    def faf95_population(self) -> str | None:
+        """The name of the FAF95 popmax population, where gnomAD gives one."""
+        frequency = self.frequency
+        if frequency is None or frequency.faf95_popmax_population is None:
+            return None
+        code = frequency.faf95_popmax_population
+        return POPULATION_NAMES.get(code, code)
+
+    @property
+    def gnomad_link(self) -> str:
+        return f"https://gnomad.broadinstitute.org/variant/{self.variant_id}?dataset=gnomad_r4"
 
 
 @dataclass
@@ -358,7 +408,7 @@ class ReportAssociation:
     mondo_mapping: StageState  # STORED for a reused GenCC row too
     rating: int  # computed from this association's criteria: 3 GREEN, 2 AMBER, 1 RED
     disputes: list[DisputeRef]
-    variant_frequencies: list[VariantFrequency]  # the association's variants, in the gene's order
+    variants: list[ReportVariant]  # the association's variants, in the gene's order
     matched_panels: list[PanelMatch] | None  # None unless panel_matching is STORED
     panel_matching: StageState
 
@@ -399,7 +449,7 @@ class GeneAssessment:
     existing_rating: int | None  # the gene's highest rating on the target panels; None if novel
     new_rating: int  # the top association rating: 3 (GREEN), 2 (AMBER), 1 (RED)
     contributing_papers: list[DetailedPaper]
-    unassociated_variants: list[VariantFrequency]  # the gene's variants that no association lists
+    unassociated_variants: list[ReportVariant]  # the gene's variants that no association lists
     missing_panels: list[PanelSuggestion]  # matched panels the gene is not on
     existing_panels: list[PanelSuggestion]  # matched panels the gene is already on
     prefill_json: str  # HTML-escaped JSON for data-prefill attribute
@@ -572,153 +622,42 @@ def format_gene_with_aliases(gene_assessment: GeneAssessment) -> str:
         return hgnc_symbol
 
 
-POPULATION_NAMES = {
-    "afr": "African/African American",
-    "ami": "Amish",
-    "amr": "Admixed American",
-    "asj": "Ashkenazi Jewish",
-    "eas": "East Asian",
-    "fin": "Finnish",
-    "mid": "Middle Eastern",
-    "nfe": "European (non-Finnish)",
-    "sas": "South Asian",
-}
+def load_report_variants(
+    cursor: sqlite3.Cursor, hgnc_id: int, papers: list[DetailedPaper]
+) -> list[ReportVariant]:
+    """The gene's distinct variants reported by *papers*, with links to their quotes.
 
-
-def _create_variant_frequency_from_db_row(
-    variant_id: str,
-    normalization: dict[str, Any],
-    gnomad: dict[str, Any],
-    citations: list[CitationLink],
-) -> VariantFrequency:
-    """Create a VariantFrequency object from database row data.
-
-    The ``gnomad`` JSON is the flat shape written by
-    extract-evidence's variant lookups: success rows carry ``ac`` / ``an`` /
-    ``homozygote_count`` / ``heterozygote_count`` / ``hemizygote_count``
-    / ``faf95_popmax`` / ``faf95_popmax_population`` directly; sentinel
-    rows carry ``{"variant_not_found": true}`` or
-    ``{"normalization_error": true}``.
+    *papers* are the papers the gene's aggregation read, so these are the variants
+    of its prompt's variant table. Variants with gnomAD figures come first, then
+    those absent from gnomAD, then those whose lookup failed, each by variant_id.
     """
-    gnomad_not_found = gnomad.get("variant_not_found", False)
-    gnomad_error = "normalization_error" if gnomad.get("normalization_error") else None
+    papers_by_doi = {paper.doi: paper for paper in papers}
 
-    popmax_pop = gnomad.get("faf95_popmax_population")
-    gnomad_faf95_popmax_population = (
-        POPULATION_NAMES.get(popmax_pop, popmax_pop) if popmax_pop else None
-    )
-
-    return VariantFrequency(
-        variant_id=variant_id,
-        hgvs_c=normalization.get("hgvs_c"),
-        hgvs_p=normalization.get("hgvs_p"),
-        original_text=normalization.get("original_text", ""),
-        gnomad_ac=gnomad.get("ac"),
-        gnomad_an=gnomad.get("an"),
-        gnomad_hom=gnomad.get("homozygote_count"),
-        gnomad_het=gnomad.get("heterozygote_count"),
-        gnomad_hemi=gnomad.get("hemizygote_count"),
-        gnomad_faf95_popmax=gnomad.get("faf95_popmax"),
-        gnomad_faf95_popmax_population=gnomad_faf95_popmax_population,
-        gnomad_link=f"https://gnomad.broadinstitute.org/variant/{variant_id}?dataset=gnomad_r4",
-        gnomad_not_found=gnomad_not_found,
-        gnomad_error=gnomad_error,
-        citations=citations,
-    )
-
-
-def load_variant_frequencies_for_gene(
-    cursor: sqlite3.Cursor, hgnc_id: int, contributing_papers: list[DetailedPaper]
-) -> list[VariantFrequency]:
-    """Load variant frequency information for a specific gene.
-
-    Variants are deduplicated by ``variant_id``: when the same allele is
-    reported by multiple contributing papers, the gnomAD numbers (queried
-    by genomic coordinate) are identical and would otherwise render as
-    visually duplicate rows. Per-paper citation links are merged into the
-    returned VariantFrequency's ``citations`` list.
-
-    Args:
-        cursor: Database cursor
-        hgnc_id: HGNC ID of the gene to load variants for
-        contributing_papers: Papers contributing to this gene assessment
-
-    Returns:
-        List of VariantFrequency objects with successful gnomAD lookups
-        first, then ``variant_not_found``, then normalization errors;
-        ``variant_id`` breaks ties within each bucket. Each entry carries
-        a deduplicated, ordered list of citations.
-    """
-    papers_by_doi = {paper.doi: paper for paper in contributing_papers}
-    contributing_dois = list(papers_by_doi)
-    placeholders = ",".join("?" * len(contributing_dois))
-    cursor.execute(
-        f"""
-        SELECT
-            vf.variant_id,
-            vf.paper_doi,
-            vf.quote,
-            vf.normalization,
-            vf.gnomad
-        FROM variant_frequencies vf
-        WHERE vf.hgnc_id = ?
-          AND vf.paper_doi IN ({placeholders})
-    """,
-        (hgnc_id, *contributing_dois),
-    )
-
-    rows_by_variant: dict[str, list[sqlite3.Row]] = {}
-    for row in cursor.fetchall():
-        rows_by_variant.setdefault(row["variant_id"], []).append(row)
-
-    parsed: list[tuple[str, dict[str, Any], dict[str, Any], list[sqlite3.Row]]] = []
-    for variant_id, rows in rows_by_variant.items():
-        try:
-            normalization = json.loads(rows[0]["normalization"])
-            gnomad = json.loads(rows[0]["gnomad"])
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON for variant {variant_id}: {e}")
-            continue
-        parsed.append((variant_id, normalization, gnomad, rows))
-
-    def sort_key(
-        item: tuple[str, dict[str, Any], dict[str, Any], list[sqlite3.Row]],
-    ) -> tuple[int, str]:
-        variant_id, _, gnomad, _ = item
-        if gnomad.get("normalization_error"):
-            bucket = 2
-        elif gnomad.get("variant_not_found"):
-            bucket = 1
-        else:
-            bucket = 0
-        return (bucket, variant_id)
-
-    parsed.sort(key=sort_key)
-
-    variant_frequencies: list[VariantFrequency] = []
-    for variant_id, normalization, gnomad, rows in parsed:
-        citation_set: set[CitationLink] = set()
-        for row in rows:
-            link = citation_link(papers_by_doi[row["paper_doi"]], row["quote"])
-            if link is not None:
-                citation_set.add(link)
-        citations = sorted(citation_set, key=lambda c: (c.display_id, c.quote_index))
-
-        variant_frequencies.append(
-            _create_variant_frequency_from_db_row(
-                variant_id=variant_id,
-                normalization=normalization,
-                gnomad=gnomad,
-                citations=citations,
-            )
+    def sort_key(variant: GeneVariant) -> tuple[bool, bool, str]:
+        return (
+            variant.gnomad == GnomadMiss.LOOKUP_FAILED,
+            variant.gnomad == GnomadMiss.NOT_FOUND,
+            variant.variant_id,
         )
 
-    return variant_frequencies
+    report_variants = []
+    for variant in sorted(load_gene_variants(cursor, hgnc_id, list(papers_by_doi)), key=sort_key):
+        links = {citation_link(papers_by_doi[r.doi], r.quote) for r in variant.reports}
+        report_variants.append(
+            ReportVariant(
+                variant=variant,
+                citations=sorted(
+                    (link for link in links if link is not None),
+                    key=lambda link: (link.display_id, link.quote_index),
+                ),
+            )
+        )
+    return report_variants
 
 
 def association_variants(
-    assessment: dict[str, Any], gene_variants: list[VariantFrequency]
-) -> list[VariantFrequency]:
+    assessment: dict[str, Any], gene_variants: list[ReportVariant]
+) -> list[ReportVariant]:
     """The gene's variants that the association lists, in the gene's variant order.
 
     The association names its variants by ``variant_frequencies.variant_id``,
@@ -1001,7 +940,7 @@ def load_associations(
     panelapp_context: dict[str, Any],
     display_ids: dict[str, str],
     all_panels_data: AllPanelsData,
-    gene_variants: list[VariantFrequency],
+    gene_variants: list[ReportVariant],
 ) -> list[ReportAssociation]:
     """The gene's associations, by corpus rating and then independent family count.
 
@@ -1055,7 +994,7 @@ def load_associations(
                 disputes=association_disputes(
                     assessment, row["mondo_id"], panelapp_context["disputes"]
                 ),
-                variant_frequencies=association_variants(assessment, gene_variants),
+                variants=association_variants(assessment, gene_variants),
                 matched_panels=_panel_matches(row["matched_panels_json"], hgnc_id, all_panels_data),
                 panel_matching=stage_state(
                     row["matched_panels_json"] is not None,
@@ -1123,7 +1062,12 @@ def load_gene(
         if paper.doi in doi_to_display_id:
             paper.display_id = doi_to_display_id[paper.doi]
 
-    gene_variants = load_variant_frequencies_for_gene(cursor, hgnc_id, contributing_papers)
+    # paper_id_mapping holds the papers the aggregation read (the contributing papers
+    # less those the preprint gate filtered), so the variants are those of its prompt.
+    papers_by_doi = {paper.doi: paper for paper in contributing_papers}
+    gene_variants = load_report_variants(
+        cursor, hgnc_id, [papers_by_doi[doi] for doi in paper_id_to_doi.values()]
+    )
     associations = load_associations(
         cursor,
         hgnc_id,
@@ -1132,7 +1076,7 @@ def load_gene(
         all_panels_data,
         gene_variants,
     )
-    associated_ids = {v.variant_id for a in associations for v in a.variant_frequencies}
+    associated_ids = {v.variant_id for a in associations for v in a.variants}
     gene_level = replace_paper_ids_for_display(
         {
             "unassessed_reports": json.loads(row["unassessed_reports_json"]),
@@ -1856,86 +1800,49 @@ def format_inheritance(mode: str, details: str = "") -> str:
     return formatted_mode
 
 
-def get_variant_frequency_flag(
-    variant: VariantFrequency, inheritance_mode: str | None
-) -> dict[str, Any]:
-    """Determine if variant should be flagged based on inheritance mode.
+@dataclass(frozen=True)
+class FrequencyFlag:
+    """A variant's gnomAD count above the threshold of the MoI it is judged by."""
 
-    Args:
-        variant: VariantFrequency object with gnomAD data
-        inheritance_mode: The inheritance mode enum of the association the variant
-            belongs to; None for a variant in no association, which is never flagged
+    metric: str  # "het", "hom" or "hemi"
+    genotype: str  # "heterozygote", "homozygote" or "hemizygote"
+    count: int
+    threshold: int
 
-    Returns:
-        Dict with:
-        - should_flag: bool - whether to flag this variant
-        - warning_message: str - mode-specific warning text
-        - flagged_metric: str - what metric triggered the flag (e.g., "AC > 30")
+    @property
+    def warning(self) -> str:
+        return (
+            f"High {self.genotype} count ({self.metric} = {self.count} > {self.threshold}) "
+            "- consider population frequency in assessment"
+        )
+
+
+def variant_frequency_flag(
+    variant: ReportVariant, inheritance_mode: str | None
+) -> FrequencyFlag | None:
+    """The variant's gnomAD count when it is above the threshold of *inheritance_mode*.
+
+    A biallelic association is judged by homozygotes, an X-linked one by
+    hemizygotes, any other by heterozygotes. A variant without gnomAD figures, or
+    in no association (*inheritance_mode* None), is never flagged.
     """
-    should_flag = False
-    warning_message = ""
-    flagged_metric = ""
-
-    # Skip if variant not found in gnomAD, or if there is no MoI to judge it by
-    if variant.gnomad_not_found or inheritance_mode is None:
-        return {
-            "should_flag": False,
-            "warning_message": "",
-            "flagged_metric": "",
-        }
-
-    # Determine which threshold to apply based on inheritance mode
-    if inheritance_mode == "Monoallelic":
-        # Dominant: check heterozygote count
-        if variant.gnomad_het is not None and variant.gnomad_het > GNOMAD_HET_THRESHOLD:
-            should_flag = True
-            flagged_metric = f"het > {GNOMAD_HET_THRESHOLD}"
-            warning_message = f"High heterozygote count (het = {variant.gnomad_het} > {GNOMAD_HET_THRESHOLD}) - consider population frequency in assessment"
-
-    elif inheritance_mode == "Biallelic":
-        # Recessive: check homozygote count
-        if variant.gnomad_hom is not None and variant.gnomad_hom > GNOMAD_HOM_THRESHOLD:
-            should_flag = True
-            flagged_metric = f"hom > {GNOMAD_HOM_THRESHOLD}"
-            warning_message = f"High homozygote count (hom = {variant.gnomad_hom} > {GNOMAD_HOM_THRESHOLD}) - consider population frequency in assessment"
-
-    elif inheritance_mode == "X-linked":
-        # X-linked: check hemizygote count
-        if variant.gnomad_hemi is not None and variant.gnomad_hemi > GNOMAD_HEMI_THRESHOLD:
-            should_flag = True
-            flagged_metric = f"hemi > {GNOMAD_HEMI_THRESHOLD}"
-            warning_message = f"High hemizygote count (hemi = {variant.gnomad_hemi} > {GNOMAD_HEMI_THRESHOLD}) - consider population frequency in assessment"
-
-    elif inheritance_mode == "Monoallelic_and_biallelic":
-        # Both modes: flag if EITHER threshold exceeded
-        het_exceeds = variant.gnomad_het is not None and variant.gnomad_het > GNOMAD_HET_THRESHOLD
-        hom_exceeds = variant.gnomad_hom is not None and variant.gnomad_hom > GNOMAD_HOM_THRESHOLD
-
-        if het_exceeds and hom_exceeds:
-            should_flag = True
-            flagged_metric = f"het > {GNOMAD_HET_THRESHOLD} and hom > {GNOMAD_HOM_THRESHOLD}"
-            warning_message = f"High heterozygote count (het = {variant.gnomad_het}) and homozygote count (hom = {variant.gnomad_hom}) - consider population frequency in assessment"
-        elif het_exceeds:
-            should_flag = True
-            flagged_metric = f"het > {GNOMAD_HET_THRESHOLD}"
-            warning_message = f"High heterozygote count (het = {variant.gnomad_het} > {GNOMAD_HET_THRESHOLD}) - consider population frequency in assessment"
-        elif hom_exceeds:
-            should_flag = True
-            flagged_metric = f"hom > {GNOMAD_HOM_THRESHOLD}"
-            warning_message = f"High homozygote count (hom = {variant.gnomad_hom} > {GNOMAD_HOM_THRESHOLD}) - consider population frequency in assessment"
-
-    else:
-        # Default for Mitochondrial, Other, NR, or unknown: use het threshold
-        if variant.gnomad_het is not None and variant.gnomad_het > GNOMAD_HET_THRESHOLD:
-            should_flag = True
-            flagged_metric = f"het > {GNOMAD_HET_THRESHOLD}"
-            warning_message = f"High heterozygote count (het = {variant.gnomad_het} > {GNOMAD_HET_THRESHOLD}) - consider population frequency in assessment"
-
-    return {
-        "should_flag": should_flag,
-        "warning_message": warning_message,
-        "flagged_metric": flagged_metric,
-    }
+    frequency = variant.frequency
+    if frequency is None or inheritance_mode is None:
+        return None
+    match inheritance_mode:
+        case "Biallelic":
+            flag = FrequencyFlag(
+                "hom", "homozygote", frequency.homozygote_count, GNOMAD_HOM_THRESHOLD
+            )
+        case "X-linked":
+            flag = FrequencyFlag(
+                "hemi", "hemizygote", frequency.hemizygote_count, GNOMAD_HEMI_THRESHOLD
+            )
+        case _:
+            flag = FrequencyFlag(
+                "het", "heterozygote", frequency.heterozygote_count, GNOMAD_HET_THRESHOLD
+            )
+    return flag if flag.count > flag.threshold else None
 
 
 def prepare_aggregate_citation_links(
@@ -2086,7 +1993,7 @@ def generate_html_report(
     env.filters["format_inheritance"] = format_inheritance
     env.filters["prepare_citation_links"] = prepare_aggregate_citation_links
     env.filters["paper_citation_links"] = prepare_paper_citation_links
-    env.filters["get_variant_flag"] = get_variant_frequency_flag
+    env.filters["frequency_flag"] = variant_frequency_flag
     env.filters["confidence_to_color"] = panelapp_confidence_to_color
     # Double-encode: first quote produces the on-disk filename (e.g. 10.1038%2Fxyz),
     # second quote escapes the % for use in file:/// URLs so browsers don't

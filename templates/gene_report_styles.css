@@ -612,28 +612,24 @@ section > h2 {
     font-style: italic;
 }
 
-/* Tooltips in an association heading or its key evidence span the line from its
-   left edge, so that they stay inside the gene article, which clips its painting. */
-.association-heading,
-.key-evidence {
+/* Tooltips in an association heading span the line from its left edge, so that
+   they stay inside the gene article, which clips its painting. */
+.association-heading {
     position: relative;
 }
 
-.association-heading [data-title],
-.key-evidence [data-title] {
+.association-heading [data-title] {
     position: static;
     cursor: help;
 }
 
-.association-heading [data-title]::before,
-.key-evidence [data-title]::before {
+.association-heading [data-title]::before {
     left: 0;
     transform: none;
     max-width: 100%;
 }
 
-.association-heading [data-title]::after,
-.key-evidence [data-title]::after {
+.association-heading [data-title]::after {
     display: none;
 }
 

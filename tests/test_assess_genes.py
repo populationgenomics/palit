@@ -104,15 +104,18 @@ def test_uncopied_citations_are_kept_and_placeholders_dropped() -> None:
     assessment: dict[str, Any] = {
         "disease_entities": [
             {
-                "citations": [
-                    {"doi": "10.1/a", "quote": "exact quote", "commentary": "c"},
-                    {"doi": "10.1/a", "quote": "x", "commentary": "x"},
-                ],
                 "evidence_assessments": [
                     {
                         "name": "criterion_A",
+                        "citations": [
+                            {"doi": "10.1/a", "quote": "exact quote", "commentary": "c"},
+                            {"doi": "10.1/a", "quote": "x", "commentary": "x"},
+                        ],
+                    },
+                    {
+                        "name": "criterion_B",
                         "citations": [{"doi": "10.1/a", "quote": "paraphrase", "commentary": "c"}],
-                    }
+                    },
                 ],
             }
         ],
@@ -127,10 +130,9 @@ def test_uncopied_citations_are_kept_and_placeholders_dropped() -> None:
     total, uncopied = uncopied_citations(assessment, {"10.1/a": {"exact quote"}, "10.1/b": set()})
     assert total == 2
     assert uncopied == [("10.1/a", "paraphrase")]
-    assert [c["quote"] for c in assessment["disease_entities"][0]["citations"]] == ["exact quote"]
-    assert assessment["disease_entities"][0]["evidence_assessments"][0]["citations"] == [
-        {"doi": "10.1/a", "quote": "paraphrase", "commentary": "c"}
-    ]
+    criterion_a, criterion_b = assessment["disease_entities"][0]["evidence_assessments"]
+    assert [c["quote"] for c in criterion_a["citations"]] == ["exact quote"]
+    assert criterion_b["citations"] == [{"doi": "10.1/a", "quote": "paraphrase", "commentary": "c"}]
     assert assessment["quality_concerns"][0]["citations"] == []
 
 
@@ -168,7 +170,6 @@ def _association(**fields: Any) -> dict[str, Any]:
         "independent_family_count": 3,
         "count_reduction_reasoning": "No reduction (3 families)",
         "disease_mechanism": "NR",
-        "citations": [{"paper_id": "Smith2024", "quote": "q", "commentary": "c"}],
         "evidence_weakening_factors": [
             {"factor": "founder_or_recurrent_variant", "present": False, "details": "Not present"}
         ],
@@ -280,8 +281,6 @@ def test_paper_ids_become_dois_everywhere() -> None:
     answer = _stored_form(_answer(_association()))
     association = answer["disease_entities"][0]
     assert association["dois"] == ["10.1/a"] and "paper_ids" not in association
-    assert association["citations"][0]["doi"] == "10.1/a"
-    assert "paper_id" not in association["citations"][0]
     assert answer["unassessed_reports"][0]["dois"] == ["10.1/b"]
     assert answer["quality_concerns"][0]["dois"] == ["10.1/b"]
     assert answer["quality_concerns"][0]["citations"] == [{"quote": "q2", "doi": "10.1/b"}]
@@ -998,12 +997,11 @@ def test_quotes_not_copied_from_the_extractions_never_reject_a_gene(
     db_path = tmp_path / "run.sqlite"
     with sqlite3.connect(db_path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
-    association = _association(
-        citations=[
-            {"paper_id": "Smith2024", "quote": "Three families were affected.", "commentary": "c"},
-            {"paper_id": "Smith2024", "quote": "placeholder", "commentary": "placeholder"},
-        ]
-    )
+    association = _association()
+    association["evidence_assessments"]["criterion_A"]["citations"] = [
+        {"paper_id": "Smith2024", "quote": "Three families were affected.", "commentary": "c"},
+        {"paper_id": "Smith2024", "quote": "placeholder", "commentary": "placeholder"},
+    ]
     answer = _answer(association)
     answer["quality_concerns"][0]["citations"] = [
         {"paper_id": "Jones2023", "quote": "Segregation was not tested."}
@@ -1022,9 +1020,8 @@ def test_quotes_not_copied_from_the_extractions_never_reject_a_gene(
         (stored,) = conn.execute("SELECT assessment_json FROM associations").fetchone()
         (concerns,) = conn.execute("SELECT quality_concerns_json FROM gene_aggregations").fetchone()
         (rejection,) = conn.execute("SELECT rejection FROM llm_requests").fetchone()
-    assert [c["quote"] for c in json.loads(stored)["citations"]] == [
-        "Three families were affected."
-    ]
+    criterion_a = json.loads(stored)["evidence_assessments"][0]
+    assert [c["quote"] for c in criterion_a["citations"]] == ["Three families were affected."]
     assert [c["quote"] for c in json.loads(concerns)[0]["citations"]] == [
         "Segregation was not tested."
     ]

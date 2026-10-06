@@ -131,7 +131,6 @@ def replace_paper_ids_with_dois(
     """
     for entity in parsed_json["disease_entities"]:
         _replace_id_list(entity, paper_id_to_doi)
-        _replace_citation_ids(entity["citations"], paper_id_to_doi)
         for criterion in entity["evidence_assessments"]:
             _replace_citation_ids(criterion["citations"], paper_id_to_doi)
     for report in parsed_json["unassessed_reports"]:
@@ -229,10 +228,9 @@ def evidence_already_in_panelapp(
 
 
 def _citation_lists(parsed_json: dict[str, Any]) -> list[list[dict[str, Any]]]:
-    """Every citation list of an assessment: entities, criteria, quality concerns."""
+    """Every citation list of an assessment: the associations' criteria and quality concerns."""
     lists: list[list[dict[str, Any]]] = []
     for entity in parsed_json["disease_entities"]:
-        lists.append(entity["citations"])
         lists += [criterion["citations"] for criterion in entity["evidence_assessments"]]
     lists += [concern["citations"] for concern in parsed_json["quality_concerns"]]
     return lists
@@ -923,13 +921,13 @@ def log_association_warnings(assessment: dict[str, Any], item: _GeneBatchItem) -
                 label,
                 entity["dispute_status"],
             )
-        cited = {c["doi"] for c in entity["citations"]} | {
+        cited = {
             c["doi"] for criterion in entity["evidence_assessments"] for c in criterion["citations"]
         }
-        uncited = cited - set(entity["dois"])
-        if uncited:
+        unlisted = cited - set(entity["dois"])
+        if unlisted:
             logger.warning(
-                "%s: cites papers missing from its paper_ids: %s", label, sorted(uncited)
+                "%s: criteria cite papers missing from its paper_ids: %s", label, sorted(unlisted)
             )
         unreported = [
             f"{variant_ids[key]} ({key})"

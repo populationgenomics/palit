@@ -44,10 +44,9 @@
     {% endif %}
     {% endmacro %}
 
-    {# Link to a quote in the report's PDF viewer, with its page, or marked when the PDF can't place it.
-       An optional title shows as the link's tooltip. #}
-    {% macro cite(link, title=none) -%}
-    <a href="viewer/index.html?paper={{ link.doi | paper_key | urlencode }}&amp;q={{ link.quote_index }}" target="_blank"{% if title %} data-title="{{ title }}"{% endif %}>[{{ link.display_id | short_id }}{% if link.page %}:p{{ link.page }}{% else %}, not located{% endif %}]</a>
+    {# Link to a quote in the report's PDF viewer, with its page, or marked when the PDF can't place it #}
+    {% macro cite(link) -%}
+    <a href="viewer/index.html?paper={{ link.doi | paper_key | urlencode }}&amp;q={{ link.quote_index }}" target="_blank">[{{ link.display_id | short_id }}{% if link.page %}:p{{ link.page }}{% else %}, not located{% endif %}]</a>
     {%- endmacro %}
 
     {# Macro for rendering prefill button (inline in header) #}
@@ -211,16 +210,11 @@
         <p><strong>Mechanism:</strong> {{ e.disease_mechanism }}</p>
         {% endif %}
         <p><strong>Papers:</strong> {{ paper_links(e.dois | papers_for_dois(gene.contributing_papers)) }}</p>
-        {% if e.citations %}
-        <p class="key-evidence"><strong>Key evidence:</strong>
-            {% for citation in e.citations %}{% for link in [citation] | prepare_citation_links(gene.contributing_papers) %}{{ cite(link, citation.commentary) }} {% endfor %}{% endfor %}
-        </p>
-        {% endif %}
         {{ association_disputes(assoc) }}
-        {% if assoc.variant_frequencies %}
+        {% if assoc.variants %}
         <details class="association-variants">
-            <summary>Variants ({{ assoc.variant_frequencies | length }})</summary>
-            <div>{{ variant_frequency_table(assoc.variant_frequencies, e.inheritance_mode) }}</div>
+            <summary>Variants ({{ assoc.variants | length }})</summary>
+            <div>{{ variant_frequency_table(assoc.variants, e.inheritance_mode) }}</div>
         </details>
         {% endif %}
     </section>
@@ -443,8 +437,8 @@
     {% endmacro %}
 
     {# A gnomAD count cell, flagged when the count is above the threshold of the variants' MoI #}
-    {% macro gnomad_count_cell(count, metric, flag_info) -%}
-    <td>{% if count is not none %}{{ count }}{% if flag_info.should_flag and metric in flag_info.flagged_metric %} <span class="hover-value frequency-warning" data-title="{{ flag_info.warning_message }}">⚠️</span>{% endif %}{% else %}—{% endif %}</td>
+    {% macro gnomad_count_cell(count, metric, flag) -%}
+    <td>{{ count }}{% if flag and flag.metric == metric %} <span class="hover-value frequency-warning" data-title="{{ flag.warning }}">⚠️</span>{% endif %}</td>
     {%- endmacro %}
 
     {# Variants with their gnomAD v4 frequencies, flagged by the threshold of
@@ -466,20 +460,25 @@
         </thead>
         <tbody>
             {% for variant in variants %}
-            {% set flag_info = variant | get_variant_flag(inheritance_mode) %}
-            <tr{% if flag_info.should_flag %} class="high-frequency-variant"{% endif %}>
-            {#- HGVS c. -#}
-            <td>{% if variant.hgvs_c %}{{ variant.hgvs_c }}{% else %}<em>{{ variant.original_text }}</em>{% endif %}</td>
+            {% set flag = variant | frequency_flag(inheritance_mode) %}
+            {% set f = variant.frequency %}
+            <tr{% if flag %} class="high-frequency-variant"{% endif %}>
+            {#- HGVS c., one line per transcript the papers number the variant on -#}
+            <td>{% for hgvs_c, _ in variant.hgvs_forms %}{{ hgvs_c }}{% if not loop.last %}<br>{% endif %}{% else %}<em>{{ variant.original_text }}</em>{% endfor %}</td>
             {#- HGVS p. -#}
-            <td>{{ variant.hgvs_p or '—' }}</td>
+            <td>{% for _, hgvs_p in variant.hgvs_forms %}{{ hgvs_p }}{% if not loop.last %}<br>{% endif %}{% else %}—{% endfor %}</td>
             {#- AC -#}
-            <td>{% if variant.gnomad_not_found %}<em>not found</em>{% elif variant.gnomad_error %}<span class="hover-value lookup-error" data-title="{{ variant.gnomad_error }}">error</span>{% elif variant.gnomad_ac is not none %}<span class="hover-value" data-title="AN = {{ variant.gnomad_an }}">{{ variant.gnomad_ac }}</span>{% else %}—{% endif %}</td>
-            {#- het, hom, hemi -#}
-            {{ gnomad_count_cell(variant.gnomad_het, 'het', flag_info) }}
-            {{- gnomad_count_cell(variant.gnomad_hom, 'hom', flag_info) }}
-            {{- gnomad_count_cell(variant.gnomad_hemi, 'hemi', flag_info) }}
+            <td>{% if variant.not_in_gnomad %}<em>not found</em>{% elif variant.lookup_failed %}<span class="hover-value lookup-error" data-title="The variant text could not be normalised, so it was not looked up">error</span>{% else %}<span class="hover-value" data-title="AN = {{ f.an }}">{{ f.ac }}</span>{% endif %}</td>
+            {#- het, hom, hemi, FAF -#}
+            {% if f %}
+            {{- gnomad_count_cell(f.heterozygote_count, 'het', flag) }}
+            {{- gnomad_count_cell(f.homozygote_count, 'hom', flag) }}
+            {{- gnomad_count_cell(f.hemizygote_count, 'hemi', flag) }}
             {#- FAF -#}
-            <td>{% if variant.gnomad_faf95_popmax is not none %}<span class="hover-value" data-title="{{ variant.gnomad_faf95_popmax_population }}">{{ "%.2e" | format(variant.gnomad_faf95_popmax) }}</span>{% else %}—{% endif %}</td>
+            <td>{% if f.faf95_popmax is not none %}<span class="hover-value" data-title="{{ variant.faf95_population }}">{{ "%.2e" | format(f.faf95_popmax) }}</span>{% else %}—{% endif %}</td>
+            {%- else -%}
+            <td>—</td><td>—</td><td>—</td><td>—</td>
+            {%- endif %}
             {#- Links -#}
             <td><a href="{{ variant.gnomad_link }}" target="_blank">gnomAD</a>{% for citation in variant.citations %} | {{ cite(citation) }}{% endfor %}</td></tr>
             {% endfor %}

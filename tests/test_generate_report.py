@@ -75,7 +75,6 @@ def _association(
     dois: tuple[str, ...] = ("10.1/a",),
     variants: tuple[str, ...] = (),
     segregation: str = "NR",
-    citations: tuple[dict[str, str], ...] = (),
 ) -> str:
     """A stored association: dois instead of paper IDs, criteria as a list."""
     return json.dumps(
@@ -102,7 +101,6 @@ def _association(
             "functional": "NR",
             "disease_mechanism": "NR",
             "variants": list(variants),
-            "citations": list(citations),
             "evidence_weakening_factors": [],
             "evidence_assessments": _criteria(green),
             "summary": f"Smith2024 reports {description}.",
@@ -180,9 +178,20 @@ def _context(gencc_rows: list[dict[str, Any]], disputes: list[dict[str, Any]]) -
     )
 
 
+def _normalization(variant_id: str, hgvs_c: str, hgvs_p: str) -> str:
+    return json.dumps(
+        {
+            "hgvs_c": hgvs_c,
+            "hgvs_p": hgvs_p,
+            "original_text": variant_id,
+            "total_normalizations": 1,
+            "selected_for_max_ac": True,
+        }
+    )
+
+
 def _variant(variant_id: str, het: int, hom: int) -> tuple[str, str, str]:
     """A variant row's (variant_id, normalization, gnomad) as extract-evidence stores them."""
-    normalization = {"hgvs_c": f"c.{variant_id}", "hgvs_p": None, "original_text": variant_id}
     gnomad = {
         "ac": het + 2 * hom,
         "an": 1000,
@@ -192,7 +201,11 @@ def _variant(variant_id: str, het: int, hom: int) -> tuple[str, str, str]:
         "faf95_popmax": 0.001,
         "faf95_popmax_population": "nfe",
     }
-    return variant_id, json.dumps(normalization), json.dumps(gnomad)
+    return (
+        variant_id,
+        _normalization(variant_id, f"c.{variant_id}", f"p.{variant_id}"),
+        json.dumps(gnomad),
+    )
 
 
 # GENEA's variants: common in heterozygotes, common in homozygotes, and one in no association
@@ -204,8 +217,6 @@ GENEA_VARIANTS = [
     _variant(COMMON_HOM, 5, 20),
     _variant(UNLISTED, 100, 0),
 ]
-
-KEY_CITATION = {"doi": "10.1/a", "quote": "Both families segregate.", "commentary": "Segregation"}
 
 
 def _extraction(hgnc_id: int) -> str:
@@ -347,7 +358,6 @@ def db_path(tmp_path: Path) -> Path:
                         status="new_disease",
                         green=True,
                         segregation="Segregates in both families.",
-                        citations=(KEY_CITATION,),
                     ),
                     "MONDO:0000200",
                     "ataxia",
@@ -818,7 +828,7 @@ def _sortable(symbol: str, existing: int | None, new: int, highlighted: bool) ->
         mondo_mapping=StageState.NOT_RUN,
         rating=new,
         disputes=[],
-        variant_frequencies=[],
+        variants=[],
         matched_panels=None,
         panel_matching=StageState.NOT_RUN,
     )
@@ -945,7 +955,7 @@ def test_quotes_an_aggregation_adds_follow_the_extraction_quotes_unlocated(
     db_path = tmp_path / "run.sqlite"
     box = {"page": 3, "top": 1, "left": 1, "bottom": 2, "right": 2}
     association = json.loads(_association("disease A"))
-    association["citations"] = [
+    association["evidence_assessments"][0]["citations"] = [
         {"doi": "10.1/a", "quote": "Located quote.", "commentary": "c"},
         {"doi": "10.1/a", "quote": "Aggregate quote.", "commentary": "c"},
         {"doi": "10.1/b", "quote": "Other paper's quote.", "commentary": "c"},
@@ -1065,7 +1075,7 @@ def test_association_variants_and_the_variants_in_no_association(
     results: GeneAssessmentResults,
 ) -> None:
     genea = results.known_genes[0]
-    variants = {a.id: [v.variant_id for v in a.variant_frequencies] for a in genea.associations}
+    variants = {a.id: [v.variant_id for v in a.variants] for a in genea.associations}
     # In the gene's variant order, each variant once
     assert variants == {10: [COMMON_HET, COMMON_HOM], 11: [COMMON_HET, COMMON_HOM], 12: [], 13: []}
     assert [v.variant_id for v in genea.unassociated_variants] == [UNLISTED]
@@ -1094,6 +1104,119 @@ def test_variant_flags_follow_the_association_moi(
     assert f"c.{UNLISTED}" in leftover
     assert flagged(leftover) == []  # het 100, but no MoI to judge it by
     assert "Variants in no association" not in _article(html, "novel-gene-3")
+
+
+def test_variants_come_from_the_papers_the_aggregation_read(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """A variant reported only by a paper the preprint gate filtered is left out. A
+    variant that two papers number on different transcripts shows both forms and cites
+    both papers."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO papers (doi, pmid, title, source, source_type, source_details,
+                                evidence_extraction_json)
+            VALUES (?, ?, ?, 'pubmed', 'initial', 'f.xml', ?)
+            """,
+            [
+                ("10.1/c", 666, "Paper C", _extraction(1)),
+                ("10.1/pre", None, "Filtered preprint", _extraction(1)),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (1, 'GENEA', ?, 'recent_evidence')",
+            [("10.1/c",), ("10.1/pre",)],
+        )
+        conn.execute(
+            "UPDATE gene_aggregations SET paper_id_mapping = ?, filtered_papers_json = ? "
+            "WHERE hgnc_id = 1",
+            (
+                json.dumps({"Smith2024": "10.1/a", "Lee2025": "10.1/c"}),
+                json.dumps(
+                    [{"doi": "10.1/pre", "reason": "Preprint: 1 families (min 2 required)"}]
+                ),
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO variant_frequencies (variant_id, hgnc_id, paper_doi, quote,
+                                             normalization, gnomad)
+            VALUES (?, 1, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    COMMON_HET,
+                    "10.1/c",
+                    "q2",
+                    _normalization(COMMON_HET, "NM_9.1:c.5del", "NP_9.1:p.Lys2fs"),
+                    GENEA_VARIANTS[0][2],
+                ),
+                (
+                    "1-400-T-C",
+                    "10.1/pre",
+                    "q3",
+                    _normalization("1-400-T-C", "c.9del", "p.Ser3fs"),
+                    GENEA_VARIANTS[2][2],
+                ),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO citation_locations (paper_doi, quote, bboxes_json) VALUES (?, ?, '[]')",
+            [("10.1/a", "q"), ("10.1/c", "q2"), ("10.1/pre", "q3")],
+        )
+    results = _load(db_path, hgnc_resolver)
+    genea = results.known_genes[0]
+    shown = [v.variant_id for a in genea.associations for v in a.variants]
+    assert "1-400-T-C" not in shown + [v.variant_id for v in genea.unassociated_variants]
+
+    row = _association_section(_render(db_path, results), 10)
+    row = row[row.index(f"<td>c.{COMMON_HET}") :]
+    row = row[: row.index("</tr>")]
+    assert (
+        f"<td>c.{COMMON_HET}<br>NM_9.1:c.5del</td><td>p.{COMMON_HET}<br>NP_9.1:p.Lys2fs</td>"
+        in (row)
+    )
+    assert re.findall(r"\[(\d+), not located\]", row) == ["111", "666"]
+
+
+def test_variants_without_gnomad_figures_render_on_one_line(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE variant_frequencies SET gnomad = ? WHERE variant_id = ?",
+            (json.dumps({"variant_not_found": True}), UNLISTED),
+        )
+        conn.execute(
+            """
+            INSERT INTO variant_frequencies (variant_id, hgnc_id, paper_doi, quote,
+                                             normalization, gnomad)
+            VALUES ('E99fs', 1, '10.1/a', 'q', ?, ?)
+            """,
+            (
+                json.dumps(
+                    {
+                        "original_text": "E99fs",
+                        "error_code": "parse",
+                        "error_message": "m",
+                        "upstream": None,
+                    }
+                ),
+                json.dumps({"normalization_error": True}),
+            ),
+        )
+    known = _article(_render(db_path, _load(db_path, hgnc_resolver)), "known-gene-1")
+    start = known.index('<details class="unassociated-variants">')
+    rows = re.findall(r"<tr>.*?</tr>", known[start : known.index("</details>", start)], re.DOTALL)
+    assert [row.count("<td>") for row in rows if "<td>" in row] == [8, 8]
+    not_found, failed = [row for row in rows if "<td>" in row]
+    assert "\n" not in not_found and "\n" not in failed
+    assert f"<td>c.{UNLISTED}</td><td>p.{UNLISTED}</td><td><em>not found</em></td>" in not_found
+    assert not_found.count("<td>—</td>") == 4
+    assert failed.startswith("<tr><td><em>E99fs</em></td><td>—</td>")
+    assert ">error</span></td><td>—</td><td>—</td><td>—</td><td>—</td>" in failed
 
 
 def test_association_listing_an_unknown_variant_fails(
@@ -1144,15 +1267,12 @@ def test_association_heading_rating_disease_moi_dispute_then_mondo(
     assert novel.index('class="rating-badge rating-green"') < novel.index("association-disease")
 
 
-def test_association_body_hides_nr_lines_and_links_key_evidence(
-    db_path: Path, results: GeneAssessmentResults
-) -> None:
+def test_association_body_hides_nr_lines(db_path: Path, results: GeneAssessmentResults) -> None:
     html = _render(db_path, results)
     ataxia = _association_section(html, 12)
     assert "<strong>Segregation:</strong> Segregates in both families." in ataxia
-    assert 'data-title="Segregation">[111, not located]</a>' in ataxia
     reused = _association_section(html, 10)
-    for hidden in ("Segregation:", "Functional:", "Mechanism:", "Key evidence:"):
+    for hidden in ("Segregation:", "Functional:", "Mechanism:"):
         assert hidden not in reused
     assert reused.index("Papers:") < reused.index("Disputed in GenCC by:")
     assert "Cited evidence" not in html

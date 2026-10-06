@@ -147,32 +147,6 @@
                         "description": "Molecular mechanism, or NR.",
                         "minLength": 1
                     },
-                    "citations": {
-                        "type": "array",
-                        "description": "Citations for this association.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "paper_id": {
-                                    "type": "string",
-                                    "description": "Paper ID."
-                                },
-                                "commentary": {
-                                    "type": "string",
-                                    "description": "What the citation shows."
-                                },
-                                "quote": {
-                                    "type": "string"
-                                }
-                            },
-                            "required": [
-                                "paper_id",
-                                "quote",
-                                "commentary"
-                            ],
-                            "additionalProperties": false
-                        }
-                    },
                     "evidence_weakening_factors": {
                         "type": "array",
                         "minItems": 1,
@@ -271,7 +245,6 @@
                     "independent_family_count",
                     "count_reduction_reasoning",
                     "disease_mechanism",
-                    "citations",
                     "evidence_weakening_factors",
                     "evidence_assessments",
                     "segregation",

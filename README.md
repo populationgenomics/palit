@@ -99,6 +99,15 @@ LEDGER=data/pubmed_ingestion_ledger.sqlite
 #    `palit ledger seed` if you have prior corpora.
 uv run palit ledger init --ledger $LEDGER
 
+# 0a. Build the PanelApp snapshot of PANEL_DATE, which every later stage reads:
+#     each public panel at its version on that date, with the reviews of its
+#     genes. PanelApp serves reviews only as they are now and edits them in
+#     place, so each panel records when its reviews were captured
+#     (evaluations_fetched_at); build the snapshot on PANEL_DATE so that the
+#     two agree. About 35,000 review requests, roughly ten minutes. A snapshot
+#     built without reviews gets them with `palit panelapp add-reviews`.
+uv run palit panelapp snapshot --panel-date $PANEL_DATE
+
 # 1. Ingest papers for the window through the ledger. The ledger replaces the old
 #    buffer window + --previous-db: late-indexed stragglers arrive via the FTP
 #    update-file sync (constant cost, unbounded horizon), and papers already settled
@@ -423,6 +432,9 @@ For curating literature for a specific panel (e.g., Arthrogryposis):
 PANEL_DATE=2025-10-20
 PANEL_ID=47  # Arthrogryposis panel ID
 PANEL_NAME=arthrogryposis
+
+# 0. Build the PanelApp snapshot, as in the main workflow
+uv run palit panelapp snapshot --panel-date $PANEL_DATE
 
 # 1. Copy pre-filtered baseline DB papers to new database. Only the paper
 #    metadata is copied: step 2 assesses relevance afresh and schedules the

@@ -1,5 +1,6 @@
 """Tests for loading and ordering a report's genes and associations."""
 
+import dataclasses
 import json
 import re
 import sqlite3
@@ -38,6 +39,7 @@ from palit.generate_report import (
     load_panel_publications_validation,
     load_quote_refs,
     report_order,
+    unreviewed_target_panels,
     write_viewer_package,
 )
 from palit.hgnc import HgncResolver
@@ -1897,3 +1899,12 @@ def test_only_upgrades_of_curated_associations_show_an_arrow(
     assert "rating-arrow" not in unknown
     assert ">curated in PanelApp, own rating unknown</span>" in unknown
     assert "curated, own rating unknown" not in unknown
+
+
+def test_a_target_panel_with_unavailable_reviews_is_not_unreviewed() -> None:
+    gene = _gene(30, 3, [CURATED_GREEN], reviewed=False)
+    assert unreviewed_target_panels(gene, {MENDELIOME_PANEL_ID}) == [MENDELIOME_PANEL_ID]
+    unknown = dataclasses.replace(
+        gene, existing_panel_reviews=[ExistingPanelReviews(MENDELIOME_PANEL_ID, None)]
+    )
+    assert unreviewed_target_panels(unknown, {MENDELIOME_PANEL_ID}) == []

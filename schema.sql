@@ -103,9 +103,10 @@ CREATE TABLE gene_aggregations (
     --    "panel_entries": [entries on the target panels, or on all panels when all_panels],
     --    "all_panels": <bool, true for an Incidentalome-only gene>}
     panelapp_context_json JSON NOT NULL,
-    -- Reviews on every target panel that held the gene at assess time, as fetched via
-    -- PanelApp's evaluations endpoint: [{"panel_id": <int>, "evaluations": [<raw evaluation
-    -- dicts>]}, ...] in target-panel order. NULL when the gene was on no target panel.
+    -- Reviews on every target panel holding the gene as a gene entry, from the PanelApp
+    -- snapshot: [{"panel_id": <int>, "fetched_at": <ISO time the snapshot captured them>,
+    --   "evaluations": [<raw evaluation dicts>]}, ...] in target-panel order.
+    -- NULL when the gene was on no target panel.
     existing_panel_reviews_json JSON,
     unassessed_reports_json JSON NOT NULL  -- [{phenotype, inheritance_mode, dois, reason}]
 );

@@ -51,7 +51,10 @@ class _FakeClient:
             ]
         }
 
-    def get_gene_evaluations(self, panel_id: int, hgnc_id: int) -> list[dict[str, Any]]:
+    def holds_gene(self, panel_id: int, hgnc_id: int) -> bool:
+        return hgnc_id in self._entity_publications
+
+    def gene_reviews(self, panel_id: int, hgnc_id: int) -> list[dict[str, Any]]:
         publications = self._review_publications.get(hgnc_id)
         return [{"publications": publications}] if publications else []
 

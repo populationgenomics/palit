@@ -181,7 +181,11 @@ class PanelAppEvaluationSource:
             for hgnc_id, symbol in genes.items():
                 all_evals: list[dict[str, Any]] = []
                 for panel_id in gene_panels.get(hgnc_id, []):
-                    all_evals.extend(self._client.get_gene_evaluations(panel_id, hgnc_id))
+                    if not self._client.holds_gene(panel_id, hgnc_id):
+                        continue
+                    reviews = self._client.gene_reviews(panel_id, hgnc_id)
+                    if reviews is not None:
+                        all_evals.extend(reviews)
                 results.append(GeneEvaluations(hgnc_id, symbol, all_evals))
                 progress.update(task, advance=1)
 

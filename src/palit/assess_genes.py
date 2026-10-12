@@ -99,7 +99,9 @@ class PanelReviews:
 
     panel_id: int
     panel_name: str
-    evaluations: list[dict[str, Any]]  # raw PanelApp evaluation dicts
+    fetched_at: str  # when the snapshot captured the panel's reviews (ISO timestamp)
+    # Raw PanelApp evaluation dicts; None when PanelApp could not serve them
+    evaluations: list[dict[str, Any]] | None
 
 
 def _resolve_paper_id(paper_id: str, paper_id_to_doi: dict[str, str]) -> str:
@@ -402,21 +404,30 @@ def _review_lines(reviews: list[dict[str, Any]]) -> list[str]:
 
 
 def format_panel_reviews(panel_reviews: list[PanelReviews]) -> str:
-    """Each target panel's reviews of the gene as one XML-tagged block labelled with the panel.
+    """Each target panel's reviews of the gene as one XML-tagged block labelled with the
+    panel and the time its reviews were captured.
 
-    Panels that hold the gene without any review are left out; empty when no panel has one.
+    Panels that hold the gene without any review are left out, and a panel whose reviews
+    PanelApp could not serve says so; empty when no panel has either.
     """
-    blocks = [
-        "\n".join(
-            [
-                f'<previous_reviews panel="{p.panel_name}" panel_id="{p.panel_id}">',
-                *_review_lines(p.evaluations),
-                "</previous_reviews>",
-            ]
-        )
-        for p in panel_reviews
-        if p.evaluations
-    ]
+    blocks = []
+    for p in panel_reviews:
+        if p.evaluations is None:
+            blocks.append(
+                f'<previous_reviews panel="{p.panel_name}" panel_id="{p.panel_id}" '
+                'unavailable="PanelApp could not serve this panel\'s reviews of the gene"/>'
+            )
+        elif p.evaluations:
+            blocks.append(
+                "\n".join(
+                    [
+                        f'<previous_reviews panel="{p.panel_name}" panel_id="{p.panel_id}" '
+                        f'captured="{p.fetched_at}">',
+                        *_review_lines(p.evaluations),
+                        "</previous_reviews>",
+                    ]
+                )
+            )
     return "\n\n".join(blocks)
 
 
@@ -495,7 +506,10 @@ class PanelAppContext:
         """The ``existing_panel_reviews_json`` of ``gene_aggregations``."""
         if not self.panel_reviews:
             return None
-        return [{"panel_id": p.panel_id, "evaluations": p.evaluations} for p in self.panel_reviews]
+        return [
+            {"panel_id": p.panel_id, "fetched_at": p.fetched_at, "evaluations": p.evaluations}
+            for p in self.panel_reviews
+        ]
 
 
 @dataclass(frozen=True)
@@ -695,14 +709,20 @@ def target_panels_holding(hgnc_id: int, panel_data: PanelGeneData) -> list[int]:
 def fetch_panel_reviews(
     hgnc_id: int, client: PanelAppClient, panel_data: PanelGeneData
 ) -> list[PanelReviews]:
-    """The gene's reviews on every target panel that holds it."""
+    """The gene's reviews, from the snapshot, on every target panel that holds it as a
+    gene entry.
+
+    The snapshot has no reviews of repeat-expansion entries.
+    """
     return [
         PanelReviews(
             panel_id=panel_id,
             panel_name=client.get_panel_data(panel_id)["name"],
-            evaluations=client.get_gene_evaluations(panel_id, hgnc_id),
+            fetched_at=client.reviews_fetched_at(panel_id),
+            evaluations=client.gene_reviews(panel_id, hgnc_id),
         )
         for panel_id in target_panels_holding(hgnc_id, panel_data)
+        if client.holds_gene(panel_id, hgnc_id)
     ]
 
 
@@ -714,7 +734,7 @@ def cited_on_panelapp(
     dois: set[str] = set()
     for panel in panel_reviews:
         cited = collect_panelapp_gene_publications(
-            client.get_panel_data(panel.panel_id), hgnc_id, panel.evaluations
+            client.get_panel_data(panel.panel_id), hgnc_id, panel.evaluations or []
         )
         pmids |= cited.pmids
         dois |= cited.dois

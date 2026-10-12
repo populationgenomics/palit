@@ -22,6 +22,7 @@ from palit import (
     llm_usage,
     map_mondo,
     match_panels,
+    panelapp_snapshot,
     reduce_literature,
     scan_mechanisms,
 )
@@ -64,6 +65,7 @@ app.add_typer(extract_evidence.app, name="extract-evidence")
 app.add_typer(assess_genes.app, name="assess-genes")
 app.add_typer(map_mondo.app, name="map-mondo")
 app.add_typer(match_panels.app, name="match-panels")
+app.add_typer(panelapp_snapshot.app, name="panelapp")
 app.add_typer(expand_literature.app, name="expand-literature")
 app.add_typer(reduce_literature.app, name="reduce-literature")
 

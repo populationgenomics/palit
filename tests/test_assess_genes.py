@@ -247,6 +247,7 @@ def _variant(variant_id: str, *dois: str) -> GeneVariant:
 
 VARIANTS = {"V1": _variant("1-100-A-G", "10.1/a"), "V2": _variant("1-200-C-T", "10.1/b")}
 VARIANT_KEYS = {variant_id: v.variant_id for variant_id, v in VARIANTS.items()}
+FETCHED_AT = "2026-09-01T09:00:00+00:00"  # when the snapshot captured the reviews
 
 
 def _item(gencc_index: GenccIndex, evidence: list[dict[str, Any]] | None = None) -> _GeneBatchItem:
@@ -612,7 +613,7 @@ def _existing_without_gencc_row() -> dict[str, Any]:
 
 @pytest.mark.parametrize(
     "panel_reviews",
-    [[], [PanelReviews(MENDELIOME_PANEL_ID, "Mendeliome", [])]],
+    [[], [PanelReviews(MENDELIOME_PANEL_ID, "Mendeliome", FETCHED_AT, [])]],
     ids=["no target panel", "target panel without reviews"],
 )
 def test_existing_is_rejected_for_a_gene_without_any_curation(
@@ -632,7 +633,7 @@ def test_existing_is_rejected_for_a_gene_without_any_curation(
 def test_existing_is_kept_when_a_panel_entry_or_review_curates_the_gene(
     gencc_index: GenccIndex, curated_record: CuratedRecord
 ) -> None:
-    reviewed = [PanelReviews(MENDELIOME_PANEL_ID, "Mendeliome", [{"rating": "AMBER"}])]
+    reviewed = [PanelReviews(MENDELIOME_PANEL_ID, "Mendeliome", FETCHED_AT, [{"rating": "AMBER"}])]
     answer = _stored_form(_answer(_existing_without_gencc_row()))
     for context in (
         dataclasses.replace(UNCURATED, panel_entries=curated_record.genes[GENEA].entries),
@@ -823,26 +824,57 @@ def test_obsolete_gencc_term_is_marked(curated_record: CuratedRecord) -> None:
     ]
 
 
-def test_reviews_from_several_panels_are_labelled(curated_record: CuratedRecord) -> None:
+def test_reviews_panelapp_could_not_serve_are_marked_unavailable(
+    curated_record: CuratedRecord,
+) -> None:
+    reviews = [PanelReviews(INCIDENTALOME_PANEL_ID, "Incidentalome", FETCHED_AT, None)]
+    context = _context(curated_record, GENEA, reviews)
+    assert (
+        f'<previous_reviews panel="Incidentalome" panel_id="{INCIDENTALOME_PANEL_ID}" '
+        'unavailable="PanelApp could not serve this panel\'s reviews of the gene"/>'
+    ) in _render(context, "GENEA")
+    assert context.reviews_json() == [
+        {"panel_id": INCIDENTALOME_PANEL_ID, "fetched_at": FETCHED_AT, "evaluations": None}
+    ]
+
+
+def test_reviews_from_several_panels_are_labelled_with_their_capture(
+    curated_record: CuratedRecord,
+) -> None:
     reviews = [
         PanelReviews(
             MENDELIOME_PANEL_ID,
             "Mendeliome",
+            FETCHED_AT,
             [{"rating": "GREEN", "comments": [{"user_name": "A", "created": "d", "comment": "m"}]}],
         ),
-        PanelReviews(INCIDENTALOME_PANEL_ID, "Incidentalome", [{"rating": "AMBER"}]),
-        PanelReviews(9002, "Silent", []),
+        PanelReviews(INCIDENTALOME_PANEL_ID, "Incidentalome", FETCHED_AT, [{"rating": "AMBER"}]),
+        PanelReviews(9002, "Silent", FETCHED_AT, []),
     ]
     context = _context(curated_record, GENEA, reviews)
     prompt = _render(context, "GENEA")
-    assert f'<previous_reviews panel="Mendeliome" panel_id="{MENDELIOME_PANEL_ID}">' in prompt
-    assert f'<previous_reviews panel="Incidentalome" panel_id="{INCIDENTALOME_PANEL_ID}">' in prompt
+    assert (
+        f'<previous_reviews panel="Mendeliome" panel_id="{MENDELIOME_PANEL_ID}" '
+        f'captured="{FETCHED_AT}">'
+    ) in prompt
+    assert (
+        f'<previous_reviews panel="Incidentalome" panel_id="{INCIDENTALOME_PANEL_ID}" '
+        f'captured="{FETCHED_AT}">'
+    ) in prompt
     assert "    [d] A: m" in prompt
     assert 'panel="Silent"' not in prompt
     assert context.reviews_json() == [
-        {"panel_id": MENDELIOME_PANEL_ID, "evaluations": reviews[0].evaluations},
-        {"panel_id": INCIDENTALOME_PANEL_ID, "evaluations": [{"rating": "AMBER"}]},
-        {"panel_id": 9002, "evaluations": []},
+        {
+            "panel_id": MENDELIOME_PANEL_ID,
+            "fetched_at": FETCHED_AT,
+            "evaluations": reviews[0].evaluations,
+        },
+        {
+            "panel_id": INCIDENTALOME_PANEL_ID,
+            "fetched_at": FETCHED_AT,
+            "evaluations": [{"rating": "AMBER"}],
+        },
+        {"panel_id": 9002, "fetched_at": FETCHED_AT, "evaluations": []},
     ]
     no_reviews = _render(_context(curated_record, GENEA), "GENEA")
     assert "REVIEWS (one block per target panel that holds the gene):\n\nNone." in no_reviews

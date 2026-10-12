@@ -38,7 +38,9 @@ class PanelPublicationSource(Protocol):
 
     def get_panel_data(self, panel_id: int) -> dict[str, Any]: ...
 
-    def get_gene_evaluations(self, panel_id: int, hgnc_id: int) -> list[dict[str, Any]]: ...
+    def holds_gene(self, panel_id: int, hgnc_id: int) -> bool: ...
+
+    def gene_reviews(self, panel_id: int, hgnc_id: int) -> list[dict[str, Any]] | None: ...
 
 
 # PMIDs per efetch request. Keeps the fetch to a handful of round trips rather
@@ -124,9 +126,16 @@ def collect_missing_publications(
                 continue
             genes_on_target_panel += 1
 
-            reviews = panelapp_client.get_gene_evaluations(panel_id, hgnc_id)
+            # A gene held only as a repeat expansion has no reviews in the snapshot, and
+            # those PanelApp could not serve are unknown; the entry's own publications
+            # count either way.
+            reviews = (
+                panelapp_client.gene_reviews(panel_id, hgnc_id)
+                if panelapp_client.holds_gene(panel_id, hgnc_id)
+                else None
+            )
             pubs = collect_panelapp_gene_publications(
-                panelapp_client.get_panel_data(panel_id), hgnc_id, reviews
+                panelapp_client.get_panel_data(panel_id), hgnc_id, reviews or []
             )
             publications_cited += len(pubs.pmids) + len(pubs.dois)
 

@@ -325,14 +325,15 @@ class PanelMatch:
 
 @dataclass(frozen=True)
 class ExistingPanelReviews:
-    """PanelApp evaluations captured at assess time for one target panel that held the gene.
+    """The PanelApp evaluations shown to assess-genes for one target panel that held the gene.
 
     An empty ``evaluations`` list means no expert has reviewed the gene on that
-    panel, the signal that drives the "Unreviewed on Target Panel" section.
+    panel, the signal that drives the "Unreviewed on Target Panel" section. None
+    means PanelApp could not serve them, so whether anyone reviewed it is unknown.
     """
 
     panel_id: int
-    evaluations: list[dict[str, Any]]
+    evaluations: list[dict[str, Any]] | None
 
 
 @dataclass(frozen=True)
@@ -1653,10 +1654,11 @@ def unreviewed_target_panels(gene: GeneAssessment, target_panel_ids: set[int]) -
 
     Only panels in the current target set count (assess and report may run with
     different ``--target-panel-ids``), so a gene whose stored panels are all outside
-    it lands in "Already Reviewed" rather than a false positive.
+    it lands in "Already Reviewed" rather than a false positive. A target panel whose
+    reviews PanelApp could not serve may have some, so it rules the gene out too.
     """
     panels = [r for r in gene.existing_panel_reviews if r.panel_id in target_panel_ids]
-    if any(r.evaluations for r in panels):
+    if any(r.evaluations is None or r.evaluations for r in panels):
         return []
     return [r.panel_id for r in panels]
 

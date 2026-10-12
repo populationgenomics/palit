@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Reusable PanelApp API client for gene-panel operations."""
+"""PanelApp snapshots and the PanelApp API helpers that read them."""
 
 import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -261,109 +260,39 @@ def format_panel_for_prompt(panel_id: int, panel_info: dict[str, Any]) -> str:
     return "\n".join(formatted)
 
 
+DEFAULT_SNAPSHOT_DIR = Path("data/panelapp")
+# Set on each panel of a snapshot: when its genes' reviews were fetched (ISO timestamp).
+EVALUATIONS_FETCHED_AT = "evaluations_fetched_at"
+
+
+def snapshot_path(snapshot_dir: Path, panel_date: str) -> Path:
+    """The snapshot file of *panel_date* in *snapshot_dir*."""
+    return snapshot_dir / f"{panel_date}.json"
+
+
 class PanelAppClient:
-    """Client for interacting with PanelApp API with caching support."""
+    """Reads the PanelApp snapshot of one date, as built by ``palit panelapp snapshot``."""
 
-    def __init__(
-        self,
-        panel_date: str,
-        cache_dir: Path | str = "data/panelapp",
-        timeout: float = 60.0,
-    ):
-        """Initialize the PanelApp client with cached data for a specific date.
-
-        Args:
-            panel_date: Date in YYYY-MM-DD format for which to load/fetch panel data
-            cache_dir: Directory to store cache files (default: data/panelapp)
-            timeout: Request timeout in seconds for API calls
-        """
+    def __init__(self, panel_date: str, snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR):
+        """The client of the snapshot of *panel_date* (YYYY-MM-DD), loaded on first use."""
         self.panel_date = panel_date
-        self.cache_dir = Path(cache_dir)
-        self.timeout = timeout
-        self.base_url = PANELAPP_BASE_URL
-
-        # Cache will be loaded lazily on first access
+        self.snapshot_dir = snapshot_dir
         self._panel_data: dict[int, dict[str, Any]] | None = None
+        self._gene_entries: dict[tuple[int, str], dict[str, Any]] | None = None
 
     def _ensure_cache_loaded(self) -> dict[int, dict[str, Any]]:
-        """Ensure the cache is loaded, loading it if necessary."""
+        """The snapshot's panels keyed by panel ID, loaded on first use."""
         if self._panel_data is None:
-            self._panel_data = self._load_or_fetch_all_panels()
+            path = snapshot_path(self.snapshot_dir, self.panel_date)
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"No PanelApp snapshot {path}; build it with "
+                    f"`palit panelapp snapshot --panel-date {self.panel_date}`"
+                )
+            logger.info(f"Loading PanelApp snapshot {path}")
+            with open(path) as f:
+                self._panel_data = {int(k): v for k, v in json.load(f).items()}
         return self._panel_data
-
-    def _load_or_fetch_all_panels(self) -> dict[int, dict[str, Any]]:
-        """Load cached panel data or fetch from API if cache doesn't exist.
-
-        Returns:
-            Dictionary mapping panel IDs to their complete data
-        """
-        # Create cache directory if needed
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Build cache file path
-        cache_file = self.cache_dir / f"{self.panel_date}.json"
-
-        # Try to load existing cache
-        if cache_file.exists():
-            logger.info(f"Loading cached panel data from {cache_file}")
-            with open(cache_file) as f:
-                # Convert string keys back to integers
-                data = json.load(f)
-                return {int(k): v for k, v in data.items()}
-
-        # Fetch all panels if no cache exists
-        logger.info(f"No cache found for {self.panel_date}, fetching all panels...")
-
-        # Get list of all panel IDs
-        panel_ids = self._get_all_panel_ids()
-        logger.info(f"Found {len(panel_ids)} panels to fetch")
-
-        # Fetch each panel at the correct version for the date
-        all_panels = {}
-        cutoff_date = datetime.fromisoformat(self.panel_date).replace(tzinfo=UTC)
-
-        with httpx2.Client(timeout=self.timeout) as client:
-            for panel_id in panel_ids:
-                # Find the correct version for this date
-                activities_url = f"{self.base_url}/panels/{panel_id}/activities/"
-                response = _request_with_retry(client, activities_url, timeout=self.timeout)
-                activities = response.json()
-
-                # Find latest version at or before cutoff date
-                target_version = None
-                for activity in sorted(activities, key=lambda x: x["created"]):
-                    activity_date = datetime.fromisoformat(
-                        activity["created"].replace("Z", "+00:00")
-                    )
-                    if activity_date <= cutoff_date:
-                        panel_version = activity.get("panel_version")
-                        if panel_version and panel_version != "0.0":
-                            target_version = panel_version
-                    else:
-                        break
-
-                if not target_version:
-                    # Panel didn't exist at this date - skip it
-                    logger.debug(
-                        f"Skipping panel {panel_id}: no version exists at or before {self.panel_date} "
-                        f"(panel has {len(activities)} activities, likely created after cutoff)"
-                    )
-                    continue
-
-                # Fetch the panel at this version
-                panel_url = f"{self.base_url}/panels/{panel_id}/?version={target_version}"
-                response = _request_with_retry(client, panel_url, timeout=self.timeout)
-
-                all_panels[panel_id] = response.json()
-                logger.debug(f"Fetched panel {panel_id} version {target_version}")
-
-        # Save to cache
-        logger.info(f"Saving {len(all_panels)} panels to cache: {cache_file}")
-        with open(cache_file, "w") as f:
-            # Convert integer keys to strings for JSON serialization
-            json.dump({str(k): v for k, v in all_panels.items()}, f, indent=2)
-
-        return all_panels
 
     def get_all_panel_data(self) -> dict[int, dict[str, Any]]:
         """Complete data of every panel in the snapshot, keyed by panel ID."""
@@ -461,36 +390,6 @@ class PanelAppClient:
             panel_names=panel_names,
         )
 
-    def _get_all_panel_ids(self) -> list[int]:
-        """Get list of all active panel IDs from PanelApp.
-
-        Returns:
-            List of panel IDs for all public, non-superpanel panels
-        """
-        panel_ids = []
-        url: str | None = f"{PANELAPP_BASE_URL}/panels/"
-
-        with httpx2.Client(timeout=self.timeout) as client:
-            while url:
-                logger.debug(f"Fetching panel list from: {url}")
-                response = _request_with_retry(client, url, timeout=30.0)
-                data = response.json()
-
-                for panel in data["results"]:
-                    # Skip archived and superpanels
-                    if panel.get("status") != "public":
-                        continue
-                    # Super-panels have child_panel_ids (may be non-empty list or empty list)
-                    # We want to exclude panels with non-empty child_panel_ids
-                    if panel.get("child_panel_ids"):
-                        continue
-
-                    panel_ids.append(panel["id"])
-
-                url = data.get("next")  # Pagination
-
-        return panel_ids
-
     def get_all_panel_descriptions(self) -> dict[int, dict[str, Any]]:
         """Get descriptions of all cached panels, excluding super-panels.
 
@@ -538,35 +437,43 @@ class PanelAppClient:
 
         return panels
 
-    def get_gene_evaluations(self, panel_id: int, hgnc_id: int) -> list[dict[str, Any]]:
-        """Fetch evaluations with comments for a gene in a panel.
+    def _gene_entry(self, panel_id: int, hgnc_id: int) -> dict[str, Any] | None:
+        """The panel's gene entry for the gene; None if it holds the gene as no gene entry."""
+        if self._gene_entries is None:
+            self._gene_entries = {
+                (pid, entry["gene_data"]["hgnc_id"]): entry
+                for pid, panel in self._ensure_cache_loaded().items()
+                for entry in panel["genes"]
+            }
+        return self._gene_entries.get((panel_id, f"HGNC:{hgnc_id}"))
 
-        Makes a live API call (not cached) to get the current evaluations
-        with review comments for a specific gene in a panel.
+    def holds_gene(self, panel_id: int, hgnc_id: int) -> bool:
+        """Whether the panel holds the gene as a gene entry (not only as a repeat expansion)."""
+        return self._gene_entry(panel_id, hgnc_id) is not None
 
-        Args:
-            panel_id: Panel ID
-            hgnc_id: HGNC ID of the gene
+    def gene_reviews(self, panel_id: int, hgnc_id: int) -> list[dict[str, Any]] | None:
+        """The gene's reviews on the panel, with comments, most recent first; None when
+        PanelApp could not serve them (see :mod:`palit.panelapp_snapshot`).
 
-        Returns:
-            List of evaluation dicts with comments, ordered by most recent first.
-            Returns empty list if gene is not in the panel (404).
+        They are the reviews as of the panel's ``reviews_fetched_at``, not of the
+        panel date. Raises ValueError if the panel holds no gene entry for the gene,
+        and KeyError if the snapshot was built without reviews.
         """
-        url = f"{self.base_url}/panels/{panel_id}/genes/HGNC:{hgnc_id}/evaluations/?include_comments=true"
+        entry = self._gene_entry(panel_id, hgnc_id)
+        if entry is None:
+            raise ValueError(f"Panel {panel_id} does not hold HGNC:{hgnc_id}")
+        if "evaluations" not in entry:
+            raise KeyError(
+                f"The {self.panel_date} snapshot has no reviews; add them with "
+                f"`palit panelapp add-reviews --panel-date {self.panel_date}`"
+            )
+        reviews: list[dict[str, Any]] | None = entry["evaluations"]
+        return reviews
 
-        with httpx2.Client(timeout=self.timeout) as client:
-            try:
-                response = _request_with_retry(client, url, timeout=self.timeout)
-                data = response.json()
-                results: list[dict[str, Any]] = data.get("results", [])
-                # Sort by created date descending (most recent first)
-                results.sort(key=lambda x: x.get("created", ""), reverse=True)
-                return results
-            except httpx2.HTTPStatusError as e:
-                if e.response.status_code == 404:
-                    logger.debug(f"HGNC:{hgnc_id} not found in panel {panel_id}")
-                    return []
-                raise
+    def reviews_fetched_at(self, panel_id: int) -> str:
+        """When the panel's reviews were fetched (ISO timestamp)."""
+        fetched_at: str = self.get_panel_data(panel_id)[EVALUATIONS_FETCHED_AT]
+        return fetched_at
 
 
 def get_current_panel_publications(

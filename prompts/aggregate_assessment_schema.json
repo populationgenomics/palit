@@ -224,7 +224,7 @@
                     },
                     "summary": {
                         "type": "string",
-                        "description": "Facts from the contributing papers for this association, about 45 words.",
+                        "description": "Evidence and clinical features from the contributing papers for this association, about 70 words.",
                         "minLength": 1
                     },
                     "quality_concerns": {

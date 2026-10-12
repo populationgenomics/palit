@@ -349,18 +349,20 @@ WRITING STYLE (applies to `summary`, `grouping_rationale`, `basis`, `segregation
 
 ASSOCIATION SUMMARY:
 
-Each association carries its own `summary`: the facts the contributing papers report for THIS association only. Aim for about 45 words; stay under about 70. Format:
-<PaperID> reports <N> individuals from <M> families with <zygosity> <variant type> variants and <key phenotype>. [At most one sentence on functional or animal-model experiments and their readouts.] [Evidence gaps as facts, e.g. "No segregation data."]
-Use one sentence per paper when several papers contribute. Do not start with an association label; the description carries it. Omit protein-function background. The numbers in the summary are the reported ones: they must match this association's `patient_count` and `reported_family_count` (leave out the family number when `reported_family_count` is null). Write them in plain words, without "qualifying" or other gate vocabulary: the qualifying and independent counts are shown separately.
+Each association carries its own `summary`: the facts the contributing papers report for THIS association only. Aim for about 70 words; stay under about 110. Format:
+<PaperID> reports <N> individuals from <M> families with <zygosity> <variant type> variants and <disease or key phenotype>. <One or two sentences on the main clinical features.> [At most one sentence on functional or animal-model experiments and their readouts.] [Evidence gaps as facts, e.g. "No segregation data."]
+Use one sentence per paper when several papers contribute; the clinical features follow once, for the association as a whole. Do not start with an association label; the description carries it. Omit protein-function background. The numbers in the summary are the reported ones: they must match this association's `patient_count` and `reported_family_count` (leave out the family number when `reported_family_count` is null). Write them in plain words, without "qualifying" or other gate vocabulary: the qualifying and independent counts are shown separately.
+
+The clinical-features sentences describe the affected individuals of this association across its contributing papers. Curators read them in the review, and use them to decide which other panels the gene belongs on, so name the features of every organ system involved, not only those of the target panels. Start with the core features and their age of onset, then the variable ones, with frequencies where the papers give them (e.g., "seizures in 9 of 21"). Use the papers' clinical terms. Take the features from the contributing papers only, not from what you know of the disease or from PanelApp entries and reviews. When the papers report a single feature, name it and say that no other features are reported.
 
 For an existing association, cover only what the contributing papers report; do not recap the PanelApp entries or reviews, which the curator reads separately. If the contributing papers add nothing substantive for it, write "No new families or functional data in the new papers."
 
 When `dispute_status` is "Disputed" or "Refuted", state the upheld submission as a fact (e.g., "Disputed by ClinGen (2023-05-10)."); when you overrule, name the submission the new papers are weighed against.
 
 EXAMPLES:
-  "Chen2022 reports three de novo heterozygous missense variants in three individuals with heterotaxy; variant-specific zebrafish rescue experiments for two of the variants."
-  "Wu2023 and Li2026 report 3 individuals with two truncating variants and one missense variant. The missense variant has gnomAD v4 AC 212. No segregation data. Mouse knockout shows age-dependent spermatogenic defects."
-  "Lee2024 reports 7 individuals from 5 families, all homozygous for p.Arg506Gly, with adult-onset limb-girdle weakness. No haplotype data or ancestry beyond one country."
+  "Chen2022 reports three individuals with de novo heterozygous missense variants and heterotaxy. All three have situs inversus with complex congenital heart disease; one also has asplenia and intestinal malrotation. Variant-specific zebrafish rescue experiments for two of the variants."
+  "Wu2023 and Li2026 report 3 men with two truncating variants and one missense variant and male infertility. All three have non-obstructive azoospermia; no other features are reported. The missense variant has gnomAD v4 AC 212. No segregation data. Mouse knockout shows age-dependent spermatogenic defects."
+  "Lee2024 reports 7 individuals from 5 families, all homozygous for p.Arg506Gly, with limb-girdle muscular dystrophy. Proximal leg weakness begins in the third or fourth decade, with raised creatine kinase in all seven; two have dilated cardiomyopathy and one has respiratory insufficiency. No haplotype data or ancestry beyond one country."
 {% if panel_formatted %}
 PANEL RELEVANCE (panel-scoped run): this assessment is for the target panel below.
 
@@ -484,7 +486,7 @@ Respond in JSON format with your aggregate evaluation:
       },
       "segregation": "strongest segregation evidence, e.g. LOD 3.2, or NR",
       "functional": "functional evidence: systems and readouts, or NR",
-      "summary": "about 45 words of facts from the contributing papers, per ASSOCIATION SUMMARY",
+      "summary": "about 70 words: the evidence and clinical features from the contributing papers, per ASSOCIATION SUMMARY",
       "quality_concerns": [
         {"concern": "description of the issue, referencing specific paper IDs", "citations": [{"paper_id": "AuthorYear", "quote": "<quote copied from that paper, at the problematic claim>"}]}
       ]

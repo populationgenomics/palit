@@ -7,11 +7,13 @@ import pronto
 import pytest
 
 from palit.gencc import (
+    NO_GENCC_TERMS,
     DisputeSubmission,
     GenccIndex,
+    GenccTerm,
     GeneGencc,
     MondoRef,
-    PaaAssociation,
+    format_gencc_terms,
     load_gencc,
 )
 
@@ -131,50 +133,30 @@ def _load(tmp_path: Path, mondo: pronto.Ontology, rows: list[dict[str, str]]) ->
     return load_gencc(path, mondo)
 
 
-def test_paa_rows_map_class_and_moi(tmp_path: Path, mondo: pronto.Ontology) -> None:
+def test_terms_of_every_submitter_merge_their_mois(tmp_path: Path, mondo: pronto.Ontology) -> None:
     index = _load(
         tmp_path,
         mondo,
         [
             _row(10, "MONDO:0000001", "disease A", "Strong", "Autosomal recessive"),
-            _row(10, "MONDO:0000002", "disease B", "Moderate", "Semidominant"),
-            _row(10, "MONDO:0000003", "disease C", "Limited", "X-linked"),
+            _row(10, "MONDO:0000001", "disease A", "Definitive", "Autosomal dominant", "ClinGen"),
+            _row(10, "MONDO:0000002", "disease B", "Limited", "Semidominant", "G2P"),
         ],
     )
-    assert index.for_gene(10).paa_associations == (
-        PaaAssociation(
+    assert index.for_gene(10).terms == (
+        GenccTerm(
             mondo_id="MONDO:0000001",
             disease_title="disease A",
-            moi_title="Autosomal recessive",
-            moi="Biallelic",
-            classification="Strong",
-            rating="GREEN",
-            date="2025-01-17",
+            moi_titles=("Autosomal dominant", "Autosomal recessive"),
             definition="A disease of the first kind.",
             obsolete=False,
             replaced_by=(),
         ),
-        PaaAssociation(
+        GenccTerm(
             mondo_id="MONDO:0000002",
             disease_title="disease B",
-            moi_title="Semidominant",
-            moi=None,
-            classification="Moderate",
-            rating="AMBER",
-            date="2025-01-17",
+            moi_titles=("Semidominant",),
             definition="A disease of the second kind.",
-            obsolete=False,
-            replaced_by=(),
-        ),
-        PaaAssociation(
-            mondo_id="MONDO:0000003",
-            disease_title="disease C",
-            moi_title="X-linked",
-            moi="X-linked",
-            classification="Limited",
-            rating="RED",
-            date="2025-01-17",
-            definition="",
             obsolete=False,
             replaced_by=(),
         ),
@@ -192,8 +174,8 @@ def test_genes_are_keyed_by_hgnc_id_not_symbol(tmp_path: Path, mondo: pronto.Ont
         ],
     )
     assert set(index.genes) == {10, 20}
-    assert [a.mondo_id for a in index.for_gene(10).paa_associations] == ["MONDO:0000001"]
-    assert [a.mondo_id for a in index.for_gene(20).paa_associations] == ["MONDO:0000002"]
+    assert [t.mondo_id for t in index.for_gene(10).terms] == ["MONDO:0000001"]
+    assert [t.mondo_id for t in index.for_gene(20).terms] == ["MONDO:0000002"]
 
 
 def test_unknown_gene_has_no_records(tmp_path: Path, mondo: pronto.Ontology) -> None:
@@ -260,56 +242,23 @@ def test_disputes_come_from_every_submitter(tmp_path: Path, mondo: pronto.Ontolo
             rationale="",
         ),
     )
-    # PanelApp Australia's own Refuted row is also one of its GenCC rows, without a rating.
-    [paa_row] = gene.paa_associations
-    assert paa_row.classification == "Refuted Evidence"
-    assert paa_row.rating is None
+    # Disputed and refuted diseases are terms of the gene too.
+    assert [t.mondo_id for t in gene.terms] == ["MONDO:0000001", "MONDO:0000002"]
 
 
-def test_other_submitters_without_dispute_are_ignored(
-    tmp_path: Path, mondo: pronto.Ontology
-) -> None:
-    index = _load(
-        tmp_path,
-        mondo,
-        [_row(10, "MONDO:0000001", "disease A", "Strong", "Autosomal dominant", "ClinGen")],
-    )
-    assert index.genes == {}
-
-
-def test_identical_paa_rows_collapse(tmp_path: Path, mondo: pronto.Ontology) -> None:
-    row = _row(10, "MONDO:0000001", "disease A", "Strong", "Autosomal recessive")
-    index = _load(tmp_path, mondo, [row, row])
-    assert len(index.for_gene(10).paa_associations) == 1
-
-
-def test_records_are_sorted_by_disease(tmp_path: Path, mondo: pronto.Ontology) -> None:
+def test_terms_are_sorted_by_title(tmp_path: Path, mondo: pronto.Ontology) -> None:
     index = _load(
         tmp_path,
         mondo,
         [
             _row(10, "MONDO:0000002", "disease B", "Strong", "Autosomal recessive"),
             _row(10, "MONDO:0000001", "disease A", "Strong", "Autosomal recessive"),
-            _row(10, "MONDO:0000001", "disease A", "Moderate", "Autosomal dominant"),
         ],
     )
-    assert [(a.disease_title, a.moi_title) for a in index.for_gene(10).paa_associations] == [
-        ("disease A", "Autosomal dominant"),
-        ("disease A", "Autosomal recessive"),
-        ("disease B", "Autosomal recessive"),
-    ]
+    assert [t.disease_title for t in index.for_gene(10).terms] == ["disease A", "disease B"]
 
 
-def test_unexpected_paa_class_raises(tmp_path: Path, mondo: pronto.Ontology) -> None:
-    with pytest.raises(ValueError, match="Definitive"):
-        _load(
-            tmp_path,
-            mondo,
-            [_row(10, "MONDO:0000001", "disease A", "Definitive", "Autosomal dominant")],
-        )
-
-
-def test_paa_row_with_unknown_mondo_term_raises(tmp_path: Path, mondo: pronto.Ontology) -> None:
+def test_term_unknown_to_mondo_raises(tmp_path: Path, mondo: pronto.Ontology) -> None:
     with pytest.raises(KeyError):
         _load(
             tmp_path,
@@ -328,11 +277,19 @@ def test_obsolete_mondo_terms_keep_the_submitted_id(tmp_path: Path, mondo: pront
             _row(10, "MONDO:0000005", "disease E", "Limited", "Autosomal dominant"),
         ],
     )
-    rows = {a.mondo_id: a for a in index.for_gene(10).paa_associations}
-    assert (rows["MONDO:0000001"].obsolete, rows["MONDO:0000001"].replaced_by) == (False, ())
-    assert (rows["MONDO:0000004"].obsolete, rows["MONDO:0000004"].replaced_by) == (
+    terms = {t.mondo_id: t for t in index.for_gene(10).terms}
+    assert (terms["MONDO:0000001"].obsolete, terms["MONDO:0000001"].replaced_by) == (False, ())
+    assert (terms["MONDO:0000004"].obsolete, terms["MONDO:0000004"].replaced_by) == (
         True,
         (MondoRef("MONDO:0000003", "disease C"),),
     )
     # A "consider" suggestion is not a replacement.
-    assert (rows["MONDO:0000005"].obsolete, rows["MONDO:0000005"].replaced_by) == (True, ())
+    assert (terms["MONDO:0000005"].obsolete, terms["MONDO:0000005"].replaced_by) == (True, ())
+
+
+def test_format_lists_terms_with_their_mois(gencc_index: GenccIndex) -> None:
+    assert format_gencc_terms(gencc_index.for_gene(1)) == (
+        "- disease A (MONDO:0000001) | Autosomal recessive\n"
+        "- disease B (MONDO:0000002) | Autosomal dominant, Autosomal recessive"
+    )
+    assert format_gencc_terms(gencc_index.for_gene(99)) == NO_GENCC_TERMS

@@ -40,7 +40,7 @@ The system uses multiple databases:
 
 Both main and screening workflows use the same schema for consistency, allowing the same tools (e.g., `assess-relevance`) to work on both databases.
 
-Stages that read PanelApp Australia's GenCC submissions or the MONDO ontology download `gencc_submissions.tsv` and `mondo.obo` into the run database's directory (e.g. `data/`) when the files are missing or older than 7 days.
+Stages that read the GenCC submissions or the MONDO ontology download `gencc_submissions.tsv` and `mondo.obo` into the run database's directory (e.g. `data/`) when the files are missing or older than 7 days.
 
 ### Claude API
 
@@ -121,10 +121,12 @@ uv run palit ingest-pubmed --ledger $LEDGER $START_DATE $END_DATE
 # 2. Assess relevance of papers in two levels, sent as Message Batches. A scope
 #    screen of every title and abstract lists the genes of papers with human
 #    genetic evidence; a PanelApp check then compares those genes with their
-#    entries on the target panels (at PANEL_DATE) and with PanelApp Australia's
-#    GenCC rows, which rate each association separately, and keeps a paper only
-#    if a gene is new, has a new disease or inheritance mode, or the association
-#    is still amber or red. Safe to interrupt and re-run: it re-attaches to
+#    PanelApp entries (at PANEL_DATE) and keeps a paper only if a gene is new to
+#    the target panels, has a new disease or inheritance mode, or the
+#    association is still amber or red. A gene on the target panels is shown
+#    with its entries on every panel, because an entry on a panel that lists
+#    only one of the gene's diseases rates that disease apart from the gene's
+#    lumped rating. Safe to interrupt and re-run: it re-attaches to
 #    batches still in flight. Papers Opus 5.5 refuses go to Sonnet 5.5 (see
 #    "Claude API" above); papers both refuse are settled as not relevant, and
 #    --retry-refused sends them once more.
@@ -178,9 +180,8 @@ uv run palit discover-citations discover
 uv run palit discover-citations add --gene GENE_SYMBOL PMID1 PMID2 ...
 
 # 6. Expand literature beyond citations. Tournament selection over the screened
-#    baseline, bounded by --cutoff-date to the literature preceding the window
-#    and favouring associations that PanelApp Australia's GenCC rows rate below
-#    Strong or do not list, then unconditional seeding of the publications
+#    baseline, bounded by --cutoff-date to the literature preceding the window,
+#    then unconditional seeding of the publications
 #    PanelApp already cites for each gene in the --panel-date snapshot (see
 #    "PanelApp publication seeding" below).
 uv run palit expand-literature --cutoff-date $START_DATE --panel-date $PANEL_DATE
@@ -198,15 +199,18 @@ uv run palit extract-evidence
 # 9. Aggregate each gene's evidence across papers into gene-disease-MoI
 #    associations, one request per gene. The model groups the papers' disease
 #    entities into associations, anchored on what PanelApp Australia already
-#    curates for the gene: its GenCC rows, and its entries and reviews on every
-#    target panel that holds it. Each association records its relation to
-#    PanelApp Australia (existing, new disease or new MoI) and its rating from
-#    the evidence in this run's corpus. A gene is skipped when PanelApp already
-#    cites all of its papers. Safe to interrupt and re-run: it re-attaches to
+#    curates for the gene: its entries and reviews on every panel that holds
+#    it, from the snapshot. Each association records its relation to PanelApp
+#    Australia (existing, new disease or new MoI), the rating PanelApp gives it
+#    as judged from those entries and reviews, and its rating from the evidence
+#    in this run's corpus. GenCC's disease terms for the gene, from every
+#    submitter, are offered as names; GenCC classes are not shown. A gene is
+#    skipped when PanelApp already cites all of its papers on the target
+#    panels. Safe to interrupt and re-run: it re-attaches to
 #    batches still in flight and skips genes that already have an aggregation.
 uv run palit assess-genes --panel-date $PANEL_DATE
 
-# 10. Map each association that reuses no PanelApp Australia GenCC row onto a
+# 10. Map each association that reuses no GenCC disease term onto a
 #     MONDO term. Claude searches the local MONDO release with tools and
 #     answers with a term and a match type: exact when the term is for this
 #     gene's form of the disease (its definition or OMIM cross-reference names
@@ -468,7 +472,7 @@ uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID --scope-panel-id $PANEL_ID
 
-# 6. Map associations without a GenCC row onto MONDO terms, as in the main
+# 6. Map associations without a GenCC term onto MONDO terms, as in the main
 #    workflow. Scoped runs skip match-panels.
 uv run palit map-mondo --db-path data/$PANEL_NAME.sqlite
 

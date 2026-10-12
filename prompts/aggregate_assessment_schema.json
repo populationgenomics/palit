@@ -53,7 +53,7 @@
                             "string",
                             "null"
                         ],
-                        "description": "MONDO id copied from the PanelApp Australia GenCC row this association reuses; null if none."
+                        "description": "MONDO id copied from the GenCC disease term that names this association's disease; null if none."
                     },
                     "proposed_disease_name": {
                         "type": [
@@ -92,7 +92,7 @@
                             },
                             "basis": {
                                 "type": "string",
-                                "description": "The GenCC row, panel entry or review the judgement rests on.",
+                                "description": "The panel entry or review the judgement rests on.",
                                 "minLength": 1
                             }
                         },

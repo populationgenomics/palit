@@ -8,7 +8,6 @@ from pathlib import Path
 
 from anthropic.types import Message
 
-from palit.gencc import NO_PAA_ASSOCIATIONS, PAA_ASSOCIATIONS_CAVEAT, GenccIndex
 from palit.hgnc import HgncResolver
 from palit.llm import FALLBACK_MODEL, MODEL, LlmRequest, LlmResult, ResultStatus
 from palit.papers import Paper, PubmedMetadata
@@ -34,37 +33,15 @@ def _paper(doi: str, title: str) -> Paper:
     )
 
 
-def test_entry_carries_the_genes_gencc_rows(
-    hgnc_resolver: HgncResolver, gencc_index: GenccIndex
-) -> None:
-    entry = TournamentEntry.for_gene(1, [], hgnc_resolver, gencc_index)
-    assert (entry.key, entry.gene_symbol) == ("1", "GENEA")
-    assert entry.gencc_context == (
-        "- disease A (MONDO:0000001) | Autosomal recessive | Strong\n"
-        "- disease B (MONDO:0000002) | Autosomal dominant | Limited"
-    )
-
-
-def test_entry_without_gencc_rows_says_so(
-    hgnc_resolver: HgncResolver, gencc_index: GenccIndex
-) -> None:
-    entry = TournamentEntry.for_gene(4, [], hgnc_resolver, gencc_index)
-    assert entry.gencc_context == NO_PAA_ASSOCIATIONS
-
-
-def test_prompt_shows_gene_curation_and_papers(
-    hgnc_resolver: HgncResolver, gencc_index: GenccIndex
-) -> None:
+def test_prompt_shows_gene_and_papers(hgnc_resolver: HgncResolver) -> None:
     papers = [_paper("10.1/a", "GENEA variants in disease B")]
-    entry = TournamentEntry.for_gene(1, papers, hgnc_resolver, gencc_index)
+    entry = TournamentEntry.for_gene(1, papers, hgnc_resolver)
+    assert (entry.key, entry.gene_symbol) == ("1", "GENEA")
     prompt = tournament_prompt(TEMPLATE, entry, papers, max_papers=5)
     assert "GENE: GENEA\n" in prompt
-    assert (
-        "(GenCC associations: disease | mode of inheritance | class):\n"
-        f"{entry.gencc_context}\n\n{PAA_ASSOCIATIONS_CAVEAT} "
-    ) in prompt
     assert "<paper id=0><date>2024-01-15</date><title>GENEA variants in disease B</title>" in prompt
     assert "UP TO 5 papers" in prompt
+    assert "GenCC" not in prompt
 
 
 class RefusingTransport:
@@ -119,13 +96,13 @@ class RefusingTransport:
 
 
 def test_a_refused_prompt_is_resent_on_the_fallback_model_within_its_round(
-    tmp_path: Path, hgnc_resolver: HgncResolver, gencc_index: GenccIndex
+    tmp_path: Path, hgnc_resolver: HgncResolver
 ) -> None:
     db_path = tmp_path / "run.sqlite"
     with sqlite3.connect(db_path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
     papers = [_paper(f"10.1/{i}", f"paper {i}") for i in range(4)]
-    entry = TournamentEntry.for_gene(1, papers, hgnc_resolver, gencc_index)
+    entry = TournamentEntry.for_gene(1, papers, hgnc_resolver)
     transport = RefusingTransport()
     outcomes = asyncio.run(
         run_tournaments(

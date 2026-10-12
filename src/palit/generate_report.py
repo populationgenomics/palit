@@ -325,7 +325,7 @@ class PanelMatch:
 
 @dataclass(frozen=True)
 class ExistingPanelReviews:
-    """The PanelApp evaluations shown to assess-genes for one target panel that held the gene.
+    """The PanelApp evaluations shown to assess-genes for one panel that held the gene.
 
     An empty ``evaluations`` list means no expert has reviewed the gene on that
     panel, the signal that drives the "Unreviewed on Target Panel" section. None
@@ -385,9 +385,9 @@ class ReportAssociation:
     id: int
     position: int  # order in the model output
     assessment: dict[str, Any]  # the stored association JSON, paper IDs in display form
-    disease_label: str  # the GenCC row's label when reused, else the proposed name
+    disease_label: str  # the GenCC term's title when reused, else the proposed name
     mondo: MondoTerm | None  # None unless mondo_mapping is STORED
-    mondo_mapping: StageState  # STORED for a reused GenCC row too
+    mondo_mapping: StageState  # STORED for a reused GenCC term too
     rating: int  # computed from this association's criteria: 3 GREEN, 2 AMBER, 1 RED
     disputes: list[DisputeRef]
     variants: list[ReportVariant]  # the association's variants, in the gene's order
@@ -482,7 +482,7 @@ class GeneAssessment:
     contributing_papers: list[DetailedPaper]
     unassociated_variants: list[ReportVariant]  # the gene's variants that no association lists
     prefill: PrefillData
-    existing_panel_reviews: list[ExistingPanelReviews]  # per target panel; empty if novel
+    existing_panel_reviews: list[ExistingPanelReviews]  # per panel holding the gene
     refused_papers: list[RefusedPaper]
 
     @property
@@ -1014,21 +1014,21 @@ def load_refused_genes(cursor: sqlite3.Cursor, hgnc_resolver: HgncResolver) -> l
     ]
 
 
-def _mondo_term(row: sqlite3.Row, gencc_rows: list[dict[str, Any]]) -> MondoTerm | None:
+def _mondo_term(row: sqlite3.Row, gencc_terms: list[dict[str, Any]]) -> MondoTerm | None:
     """The association row's MONDO term, or None while it has none."""
     mondo_id: str | None = row["mondo_id"]
     if mondo_id is None:
         return None
     match: MondoMatch = row["mondo_match"]
-    if match == "panelapp_gencc":
-        gencc_row = next(r for r in gencc_rows if r["mondo_id"] == mondo_id)
+    if match == "gencc":
+        term = next(t for t in gencc_terms if t["mondo_id"] == mondo_id)
         return MondoTerm(
             mondo_id=mondo_id,
             label=row["mondo_label"],
             match=match,
             rationale="",
-            obsolete=gencc_row["obsolete"],
-            replaced_by=tuple(MondoRef(**ref) for ref in gencc_row["replaced_by"]),
+            obsolete=term["obsolete"],
+            replaced_by=tuple(MondoRef(**ref) for ref in term["replaced_by"]),
         )
     answer = parse_json_output(Message.model_validate_json(row["mondo_raw"]))
     return MondoTerm(
@@ -1135,7 +1135,7 @@ def load_associations(
     associations = []
     for row in cursor.fetchall():
         assessment = replace_paper_ids_for_display(json.loads(row["assessment_json"]), display_ids)
-        mondo = _mondo_term(row, panelapp_context["gencc_rows"])
+        mondo = _mondo_term(row, panelapp_context["gencc_terms"])
         associations.append(
             ReportAssociation(
                 id=row["id"],
@@ -1143,7 +1143,7 @@ def load_associations(
                 assessment=assessment,
                 disease_label=(
                     mondo.label
-                    if mondo is not None and mondo.match == "panelapp_gencc"
+                    if mondo is not None and mondo.match == "gencc"
                     else assessment["proposed_disease_name"]
                 ),
                 mondo=mondo,

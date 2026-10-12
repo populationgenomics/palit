@@ -196,9 +196,7 @@ def test_the_aggregation_prompt_and_schema_name_the_inheritance_details_vocabula
 
 
 def test_phenotype_per_mondo_match() -> None:
-    gencc = PrefillAssociation(
-        _assessment(), _term("MONDO:0044315", "craniosynostosis 7", "panelapp_gencc")
-    )
+    gencc = PrefillAssociation(_assessment(), _term("MONDO:0044315", "craniosynostosis 7", "gencc"))
     exact = PrefillAssociation(
         _assessment(proposed_disease_name="SMAD6-related PAH"),
         _term("MONDO:0015924", "pulmonary arterial hypertension", "exact"),
@@ -223,20 +221,20 @@ def test_obsolete_gencc_term_uses_its_only_replacement() -> None:
         _term(
             "MONDO:0011380",
             "VWM disease",
-            "panelapp_gencc",
+            "gencc",
             obsolete=True,
             replaced_by=(replacement,),
         ),
     )
     none = PrefillAssociation(
-        _assessment(), _term("MONDO:0000001", "disease A", "panelapp_gencc", obsolete=True)
+        _assessment(), _term("MONDO:0000001", "disease A", "gencc", obsolete=True)
     )
     several = PrefillAssociation(
         _assessment(),
         _term(
             "MONDO:0000002",
             "disease B",
-            "panelapp_gencc",
+            "gencc",
             obsolete=True,
             replaced_by=(MondoRef("MONDO:0000003", "B1"), MondoRef("MONDO:0000004", "B2")),
         ),
@@ -249,7 +247,7 @@ def test_obsolete_gencc_term_uses_its_only_replacement() -> None:
 
 
 def test_phenotypes_and_publications_are_unions_in_association_order() -> None:
-    term = _term("MONDO:0019952", "congenital myopathy", "panelapp_gencc")
+    term = _term("MONDO:0019952", "congenital myopathy", "gencc")
     prefill = _prefill(
         [
             PrefillAssociation(_assessment(dois=["10.1/b", "10.1/preprint"]), term),
@@ -269,7 +267,7 @@ def test_comment_sections_in_association_order_with_headings() -> None:
         [
             PrefillAssociation(
                 _assessment(green=True, summary="PMID 1 reports 18 families."),
-                _term("MONDO:0044315", "craniosynostosis 7", "panelapp_gencc"),
+                _term("MONDO:0044315", "craniosynostosis 7", "gencc"),
             ),
             PrefillAssociation(
                 _assessment(

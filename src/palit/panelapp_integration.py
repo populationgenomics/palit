@@ -151,7 +151,7 @@ def inheritance_details_items(details: str) -> list[str]:
     return details.split("; ") if details else []
 
 
-MondoMatch = Literal["panelapp_gencc", "exact", "broader"]
+MondoMatch = Literal["gencc", "exact", "broader"]
 
 
 @dataclass(frozen=True)

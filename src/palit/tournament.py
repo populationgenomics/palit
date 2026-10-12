@@ -2,11 +2,10 @@
 """Shared tournament selection logic for literature filtering.
 
 Each gene's candidate papers are split into prompts of ``papers_per_round``
-papers. Each prompt also shows the gene's PanelApp Australia GenCC rows, so that
-selection can favour weakly curated or uncurated associations. The model keeps
-up to ``max_papers`` from each prompt, and the survivors go into the next round
-until a single prompt remains. All genes advance in lockstep, one Message Batch
-per round across every gene, because each round depends on the previous one.
+papers; the model keeps up to ``max_papers`` from each, and the survivors go
+into the next round until a single prompt remains. All genes advance in
+lockstep, one Message Batch per round across every gene, because each round
+depends on the previous one.
 
 Tournament state lives only in memory: after an interruption the tournament
 restarts, and results of batches still in flight are recorded for their usage
@@ -25,7 +24,6 @@ import jsonschema
 from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
 
-from palit.gencc import PAA_ASSOCIATIONS_CAVEAT, GenccIndex, format_paa_associations
 from palit.hgnc import HgncResolver
 from palit.llm import (
     FALLBACK_MODEL,
@@ -62,19 +60,13 @@ class TournamentEntry:
 
     key: str  # HGNC ID as text
     gene_symbol: str
-    gencc_context: str  # the gene's PanelApp Australia GenCC rows, as shown in the prompt
     papers: list[Paper]
 
     @classmethod
     def for_gene(
-        cls, hgnc_id: int, papers: list[Paper], resolver: HgncResolver, gencc: GenccIndex
+        cls, hgnc_id: int, papers: list[Paper], resolver: HgncResolver
     ) -> "TournamentEntry":
-        return cls(
-            key=str(hgnc_id),
-            gene_symbol=resolver.get_symbol(hgnc_id),
-            gencc_context=format_paa_associations(gencc.for_gene(hgnc_id)),
-            papers=papers,
-        )
+        return cls(key=str(hgnc_id), gene_symbol=resolver.get_symbol(hgnc_id), papers=papers)
 
 
 @dataclass
@@ -112,8 +104,6 @@ def tournament_prompt(
     """The user message selecting up to *max_papers* of *papers* for *entry*'s gene."""
     return template.format(
         gene_symbol=entry.gene_symbol,
-        gencc_context=entry.gencc_context,
-        gencc_caveat=PAA_ASSOCIATIONS_CAVEAT,
         max_papers=max_papers,
         papers_list=format_papers_for_prompt(papers),
     )

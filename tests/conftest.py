@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from palit.gencc import GenccIndex, GeneGencc, PaaAssociation
+from palit.gencc import GenccIndex, GenccTerm, GeneGencc
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.panelapp_check import CuratedRecord
 from palit.panelapp_integration import INCIDENTALOME_PANEL_ID, MENDELIOME_PANEL_ID
@@ -39,8 +39,8 @@ def _panel(
 
 @pytest.fixture
 def panelapp_snapshot() -> dict[int, dict[str, Any]]:
-    """Mendeliome with a gene and a repeat expansion, an Incidentalome-only gene, and
-    that gene's entry on another panel next to an entity without an HGNC ID."""
+    """Mendeliome with a gene and a repeat expansion, an Incidentalome gene, and that
+    gene's entry on another panel next to an entity without an HGNC ID."""
     return {
         MENDELIOME_PANEL_ID: _panel(
             MENDELIOME_PANEL_ID,
@@ -91,46 +91,31 @@ def hgnc_resolver() -> HgncResolver:
 
 @pytest.fixture
 def gencc_index() -> GenccIndex:
-    """GENEA (HGNC:1) has a Strong and a Limited PanelApp Australia GenCC row; no other gene
-    has any."""
-    strong = PaaAssociation(
+    """GENEA (HGNC:1) has two GenCC disease terms; no other gene has any."""
+    disease_a = GenccTerm(
         mondo_id="MONDO:0000001",
         disease_title="disease A",
-        moi_title="Autosomal recessive",
-        moi="Biallelic",
-        classification="Strong",
-        rating="GREEN",
-        date="2025-01-17",
+        moi_titles=("Autosomal recessive",),
         definition="",
         obsolete=False,
         replaced_by=(),
     )
-    limited = PaaAssociation(
+    disease_b = GenccTerm(
         mondo_id="MONDO:0000002",
         disease_title="disease B",
-        moi_title="Autosomal dominant",
-        moi="Monoallelic",
-        classification="Limited",
-        rating="RED",
-        date="2025-01-17",
+        moi_titles=("Autosomal dominant", "Autosomal recessive"),
         definition="",
         obsolete=False,
         replaced_by=(),
     )
-    return GenccIndex({1: GeneGencc(paa_associations=(strong, limited))})
+    return GenccIndex({1: GeneGencc(terms=(disease_a, disease_b))})
 
 
 @pytest.fixture
-def curated_record(
-    panelapp_snapshot: dict[int, dict[str, Any]], gencc_index: GenccIndex
-) -> CuratedRecord:
-    """Reference panels Mendeliome and Incidentalome, with the Incidentalome fallback."""
+def curated_record(panelapp_snapshot: dict[int, dict[str, Any]]) -> CuratedRecord:
+    """Reference panels Mendeliome and Incidentalome, genes shown with all their panels."""
     return CuratedRecord.build(
-        panelapp_snapshot,
-        "2026-09-01",
-        REFERENCE_PANEL_IDS,
-        gencc_index,
-        incidentalome_fallback=True,
+        panelapp_snapshot, "2026-09-01", REFERENCE_PANEL_IDS, all_panels=True
     )
 
 

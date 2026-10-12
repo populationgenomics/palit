@@ -138,7 +138,7 @@
     {%- endmacro %}
 
     {# The association's MONDO term in muted text. The disease name of a reused GenCC
-       row is the row's title, so only its id is shown. A broader term, an obsolete
+       term is the term's title, so only its id is shown. A broader term, an obsolete
        one and a missing one each carry a quiet note. #}
     {% macro mondo_marker(assoc) %}
     {% set m = assoc.mondo %}
@@ -148,9 +148,9 @@
     <span class="mondo-note" data-title="{{ model_name }} and its fallback {{ fallback_model_name }} both refused map-mondo for this association, so it is skipped from now on">No MONDO term: map-mondo refused</span>
     {% elif assoc.mondo_mapping == 'failed' %}
     <span class="mondo-note" data-title="map-mondo gave no valid MONDO term in any attempt so far; a rerun retries it">No MONDO term: mapping failed</span>
-    {% elif m.match == 'panelapp_gencc' %}
+    {% elif m.match == 'gencc' %}
     <a class="mondo-term" href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>
-    {% if m.obsolete %}<span class="mondo-note" data-title="The GenCC row's MONDO term is obsolete in the loaded MONDO release">obsolete in MONDO{% if m.replaced_by %}, replaced by {{ m.replaced_by | map(attribute='mondo_id') | join(', ') }}{% else %}, no replacement named{% endif %}</span>{% endif %}
+    {% if m.obsolete %}<span class="mondo-note" data-title="The GenCC term is obsolete in the loaded MONDO release">obsolete in MONDO{% if m.replaced_by %}, replaced by {{ m.replaced_by | map(attribute='mondo_id') | join(', ') }}{% else %}, no replacement named{% endif %}</span>{% endif %}
     {% else %}
     <span class="mondo-term"{% if m.match == 'exact' %} data-title="{{ m.rationale }}"{% endif %}>{{ m.label }} (<a href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>)</span>
     {% if m.match == 'broader' %}<span class="mondo-note" data-title="MONDO has no term for this gene's form of the disease; this is the most specific term that includes it. {{ m.rationale }}">broader term</span>{% endif %}
@@ -258,6 +258,10 @@
             {% endif %}
             {{ mondo_marker(assoc) }}
         </header>
+        {# What a finding is measured against: the PanelApp entry or review the relation rests on #}
+        {% if assoc.id in gene.finding_association_ids and not (assoc.relation_status == 'new_disease' and gene.is_novel) %}
+        <p class="relation-basis">PanelApp Australia: {{ e.panelapp_relation.basis }}</p>
+        {% endif %}
         <div class="summary-content">{{ e.summary | markdown_to_html }}</div>
         {{ family_counts(e) }}
         {% if e.segregation != 'NR' %}

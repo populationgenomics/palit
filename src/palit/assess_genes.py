@@ -3,9 +3,10 @@
 
 One request per gene. The model groups the contributing papers' disease entities
 into associations, anchored on what PanelApp Australia already curates for the
-gene (its GenCC rows, its panel entries and its reviews), and assesses each
-association on its own. An association that reuses a GenCC row takes that row's
-MONDO term; the others get theirs from ``map-mondo``. A gene MODEL refused goes
+gene (its entries and reviews on every panel that holds it, from the PanelApp
+snapshot), and assesses each association on its own. GenCC's disease terms for
+the gene are offered as names; an association named by one takes its MONDO term,
+and the others get theirs from ``map-mondo``. A gene MODEL refused goes
 to FALLBACK_MODEL in the next attempt (see :mod:`palit.llm`). A gene whose
 answers failed for good is left out until ``--retry-failed``.
 """
@@ -26,7 +27,7 @@ from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from palit.gencc import GeneGencc, fetch_gencc, fetch_mondo
+from palit.gencc import GenccIndex, GeneGencc, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
     ALL_TIME,
@@ -50,7 +51,7 @@ from palit.llm import (
     stage_history,
 )
 from palit.llm_usage import print_stage_summary
-from palit.panelapp_check import INCIDENTALOME_SCOPE, CuratedRecord, PanelEntry
+from palit.panelapp_check import PanelEntry, entries_by_gene
 from palit.panelapp_client import (
     PanelAppClient,
     PanelGeneData,
@@ -95,7 +96,7 @@ DB_TIMEOUT_SECONDS = 60
 
 @dataclass(frozen=True)
 class PanelReviews:
-    """The reviews of a gene on one target panel that holds it, most recent first."""
+    """The reviews of a gene on one panel that holds it, most recent first."""
 
     panel_id: int
     panel_name: str
@@ -404,8 +405,8 @@ def _review_lines(reviews: list[dict[str, Any]]) -> list[str]:
 
 
 def format_panel_reviews(panel_reviews: list[PanelReviews]) -> str:
-    """Each target panel's reviews of the gene as one XML-tagged block labelled with the
-    panel and the time its reviews were captured.
+    """Each panel's reviews of the gene as one XML-tagged block labelled with the panel and
+    the time its reviews were captured.
 
     Panels that hold the gene without any review are left out, and a panel whose reviews
     PanelApp could not serve says so; empty when no panel has either.
@@ -469,19 +470,19 @@ class PanelAppContext:
     """What PanelApp Australia curates for one gene, as shown to the model."""
 
     gencc: GeneGencc
-    panel_entries: tuple[PanelEntry, ...]
-    all_panels: bool  # Incidentalome-only gene, shown with its entries from every panel
-    panel_reviews: list[PanelReviews]
+    panel_entries: tuple[PanelEntry, ...]  # every panel holding the gene, target panels first
+    panel_reviews: list[PanelReviews]  # every panel holding the gene as a gene entry
 
     def to_json(self) -> dict[str, Any]:
         """The ``panelapp_context_json`` of ``gene_aggregations``."""
         return {
-            "gencc_rows": [asdict(a) for a in self.gencc.paa_associations],
+            "gencc_terms": [asdict(t) for t in self.gencc.terms],
             "disputes": [asdict(d) for d in self.gencc.disputes],
             "panel_entries": [
                 {
                     "panel_id": e.panel_id,
                     "panel_name": e.panel_name,
+                    "target": e.reference,
                     "rating": e.rating,
                     "moi": e.moi,
                     "mode_of_pathogenicity": e.mode_of_pathogenicity,
@@ -490,17 +491,12 @@ class PanelAppContext:
                 }
                 for e in self.panel_entries
             ],
-            "all_panels": self.all_panels,
         }
 
     @property
     def has_curation(self) -> bool:
-        """Whether the model is shown any PanelApp Australia GenCC row, panel entry or review."""
-        return bool(
-            self.gencc.paa_associations
-            or self.panel_entries
-            or any(p.evaluations for p in self.panel_reviews)
-        )
+        """Whether the model is shown any PanelApp Australia panel entry or review."""
+        return bool(self.panel_entries or any(p.evaluations for p in self.panel_reviews))
 
     def reviews_json(self) -> list[dict[str, Any]] | None:
         """The ``existing_panel_reviews_json`` of ``gene_aggregations``."""
@@ -661,10 +657,8 @@ def render_prompt(
         hgnc_symbol=hgnc_symbol,
         evidence_extractions=json.dumps(prompt_evidence, indent=2),
         variant_rows=variant_rows,
-        paa_associations=context.gencc.paa_associations,
+        gencc_terms=context.gencc.terms,
         panel_entries=context.panel_entries,
-        all_panels=context.all_panels,
-        incidentalome_scope=INCIDENTALOME_SCOPE,
         reviews_section=format_panel_reviews(context.panel_reviews),
         dispute_blocks=dispute_blocks(context.gencc, evidence_list, doi_to_paper_id),
         panel_date=panel_date,
@@ -695,7 +689,9 @@ class _GenePreparation:
     hgnc_resolver: HgncResolver
     panelapp_client: PanelAppClient
     panel_data: PanelGeneData
-    record: CuratedRecord
+    panel_date: str
+    entries: dict[int, tuple[PanelEntry, ...]]  # every panel's entries, by gene
+    gencc: GenccIndex
     prompt_path: Path
     panel_formatted: str
 
@@ -706,11 +702,11 @@ def target_panels_holding(hgnc_id: int, panel_data: PanelGeneData) -> list[int]:
     return [panel_id for panel_id in panel_data.panel_ids if panel_id in held]
 
 
-def fetch_panel_reviews(
-    hgnc_id: int, client: PanelAppClient, panel_data: PanelGeneData
+def panel_reviews(
+    hgnc_id: int, client: PanelAppClient, entries: tuple[PanelEntry, ...]
 ) -> list[PanelReviews]:
-    """The gene's reviews, from the snapshot, on every target panel that holds it as a
-    gene entry.
+    """The gene's reviews on every panel of *entries* that holds it as a gene entry, in
+    the order of *entries*.
 
     The snapshot has no reviews of repeat-expansion entries.
     """
@@ -721,20 +717,24 @@ def fetch_panel_reviews(
             fetched_at=client.reviews_fetched_at(panel_id),
             evaluations=client.gene_reviews(panel_id, hgnc_id),
         )
-        for panel_id in target_panels_holding(hgnc_id, panel_data)
+        for panel_id in dict.fromkeys(e.panel_id for e in entries)
         if client.holds_gene(panel_id, hgnc_id)
     ]
 
 
 def cited_on_panelapp(
-    hgnc_id: int, client: PanelAppClient, panel_reviews: list[PanelReviews]
+    hgnc_id: int,
+    client: PanelAppClient,
+    target_panel_ids: list[int],
+    reviews: list[PanelReviews],
 ) -> PanelPublications:
-    """Publications cited for the gene by its entries and reviews on these target panels."""
+    """Publications cited for the gene by its entries and reviews on the target panels."""
+    by_panel = {p.panel_id: p.evaluations for p in reviews if p.evaluations is not None}
     pmids: set[int] = set()
     dois: set[str] = set()
-    for panel in panel_reviews:
+    for panel_id in target_panel_ids:
         cited = collect_panelapp_gene_publications(
-            client.get_panel_data(panel.panel_id), hgnc_id, panel.evaluations or []
+            client.get_panel_data(panel_id), hgnc_id, by_panel.get(panel_id, [])
         )
         pmids |= cited.pmids
         dois |= cited.dois
@@ -759,23 +759,23 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
         logger.info(f"Skipping {hgnc_symbol} — all papers filtered by preprint family gate")
         return None
 
-    panel_reviews = fetch_panel_reviews(hgnc_id, prep.panelapp_client, prep.panel_data)
-    if panel_reviews and evidence_already_in_panelapp(
-        evidence_list, cited_on_panelapp(hgnc_id, prep.panelapp_client, panel_reviews)
+    entries = prep.entries.get(hgnc_id, ())
+    reviews = panel_reviews(hgnc_id, prep.panelapp_client, entries)
+    target_panel_ids = target_panels_holding(hgnc_id, prep.panel_data)
+    if target_panel_ids and evidence_already_in_panelapp(
+        evidence_list,
+        cited_on_panelapp(hgnc_id, prep.panelapp_client, target_panel_ids, reviews),
     ):
         logger.info(
             f"Skipping {hgnc_symbol} — all {len(evidence_list)} paper(s) already cited on "
-            f"target panels {[p.panel_id for p in panel_reviews]}: "
-            f"{[e['doi'] for e in evidence_list]}"
+            f"target panels {target_panel_ids}: {[e['doi'] for e in evidence_list]}"
         )
         return None
 
-    gene_record = prep.record.genes.get(hgnc_id)
     context = PanelAppContext(
-        gencc=prep.record.gencc.for_gene(hgnc_id),
-        panel_entries=gene_record.entries if gene_record is not None else (),
-        all_panels=gene_record is not None and gene_record.all_panels,
-        panel_reviews=panel_reviews,
+        gencc=prep.gencc.for_gene(hgnc_id),
+        panel_entries=entries,
+        panel_reviews=reviews,
     )
     prompt = render_prompt(
         prep.prompt_path,
@@ -783,7 +783,7 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
         evidence_list,
         prep.db_processor.get_variants_for_gene(hgnc_id, [e["doi"] for e in evidence_list]),
         context,
-        prep.record.panel_date,
+        prep.panel_date,
         prep.panel_formatted,
     )
     return _GeneBatchItem(
@@ -866,7 +866,7 @@ def uncovered_dois(assessment: dict[str, Any], required_dois: set[str]) -> list[
 
 def association_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> list[str]:
     """Checks of the association fields that send a gene back for another attempt."""
-    paa_mondo_ids = {a.mondo_id for a in item.context.gencc.paa_associations}
+    gencc_mondo_ids = {t.mondo_id for t in item.context.gencc.terms}
     problems = []
     for entity in assessment["disease_entities"]:
         mondo_id = entity["existing_association_mondo_id"]
@@ -876,17 +876,17 @@ def association_problems(assessment: dict[str, Any], item: _GeneBatchItem) -> li
                 f"{entity['description']!r}: set exactly one of existing_association_mondo_id "
                 f"({mondo_id!r}) and proposed_disease_name ({proposed!r})"
             )
-        if mondo_id is not None and mondo_id not in paa_mondo_ids:
+        if mondo_id is not None and mondo_id not in gencc_mondo_ids:
             problems.append(
-                f"{entity['description']!r}: {mondo_id} is not a PanelApp Australia GenCC row"
+                f"{entity['description']!r}: {mondo_id} is not among the gene's GenCC disease terms"
             )
         independent = entity["independent_family_count"]
         status = entity["panelapp_relation"]["status"]
         if status == "existing" and not item.context.has_curation:
             problems.append(
-                f"{entity['description']!r}: status existing, but PanelApp Australia has no "
-                "GenCC row, panel entry or review for this gene, so it curates no association "
-                "of it; use new_disease, or unassessed_reports without a qualifying family"
+                f"{entity['description']!r}: status existing, but no panel holds this gene and "
+                "it has no review, so PanelApp Australia curates no association of it; use "
+                "new_disease, or unassessed_reports without a qualifying family"
             )
         if status in NEW_RELATION_STATUSES and (independent is None or independent < 1):
             problems.append(
@@ -901,9 +901,6 @@ def log_association_warnings(assessment: dict[str, Any], item: _GeneBatchItem) -
     gencc = item.context.gencc
     variants = {v.variant_id: v for v in item.variants.values()}
     variant_ids = {v.variant_id: variant_id for variant_id, v in item.variants.items()}
-    anchor_mois: dict[str, set[str | None]] = {}
-    for a in gencc.paa_associations:
-        anchor_mois.setdefault(a.mondo_id, set()).add(a.moi)
     for entity in assessment["disease_entities"]:
         relation = entity["panelapp_relation"]
         status = relation["status"]
@@ -923,16 +920,6 @@ def log_association_warnings(assessment: dict[str, Any], item: _GeneBatchItem) -
                 details,
                 unknown_details,
             )
-        mondo_id = entity["existing_association_mondo_id"]
-        if mondo_id is not None and status in NEW_RELATION_STATUSES:
-            if entity["inheritance_mode"] in anchor_mois[mondo_id]:
-                logger.warning(
-                    "%s: reuses GenCC row %s with its MoI but says %s", label, mondo_id, status
-                )
-            elif status == "new_disease":
-                logger.warning(
-                    "%s: reuses the disease of GenCC row %s but says new_disease", label, mondo_id
-                )
         if entity["dispute_status"] != "None" and not gencc.disputes:
             logger.warning(
                 "%s: dispute_status %s without any dispute submission",
@@ -1032,10 +1019,10 @@ def store_gene_aggregation(
     """Replace the gene's aggregation and its associations with this one.
 
     The old association rows go, and with them any MONDO mapping or panel matches
-    made for them. An association that reuses a PanelApp Australia GenCC row gets
-    that row's MONDO term now; the others stay unmapped until ``map-mondo``.
+    made for them. An association named by a GenCC disease term gets that term now;
+    the others stay unmapped until ``map-mondo``.
     """
-    gencc_titles = {a.mondo_id: a.disease_title for a in item.context.gencc.paa_associations}
+    gencc_titles = {t.mondo_id: t.disease_title for t in item.context.gencc.terms}
     # Explicit, because the connection does not enable foreign keys, so the
     # schema's ON DELETE CASCADE does not fire; this also removes rows left
     # behind by a gene_aggregations row deleted by hand.
@@ -1067,7 +1054,7 @@ def store_gene_aggregation(
                 json.dumps(entity),
                 mondo_id,
                 gencc_titles[mondo_id] if mondo_id is not None else None,
-                "panelapp_gencc" if mondo_id is not None else None,
+                "gencc" if mondo_id is not None else None,
             )
         )
     conn.executemany(
@@ -1316,15 +1303,10 @@ def main(
     logger.info(
         f"  Loaded {len(panel_data.gene_panel_confidence)} genes from {len(panel_data.panel_ids)} target panels"
     )
-    # Unscoped runs show an Incidentalome-only gene's entries from all panels, as the
-    # PanelApp relevance check does.
-    record = CuratedRecord.build(
-        panelapp_client.get_all_panel_data(),
-        panel_date,
-        panel_data.panel_ids,
-        fetch_gencc(db_path.parent, fetch_mondo(db_path.parent)),
-        incidentalome_fallback=scope_panel_id is None,
+    entries = entries_by_gene(
+        list(panelapp_client.get_all_panel_data().values()), panel_data.panel_ids
     )
+    gencc = fetch_gencc(db_path.parent, fetch_mondo(db_path.parent))
 
     panel_formatted = ""
     if scope_panel_id is not None:
@@ -1343,7 +1325,9 @@ def main(
         hgnc_resolver=hgnc_resolver,
         panelapp_client=panelapp_client,
         panel_data=panel_data,
-        record=record,
+        panel_date=panel_date,
+        entries=entries,
+        gencc=gencc,
         prompt_path=prompt_path,
         panel_formatted=panel_formatted,
     )

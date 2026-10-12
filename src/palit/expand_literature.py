@@ -10,7 +10,6 @@ from typing import Any
 
 import typer
 
-from palit.gencc import GenccIndex, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import BatchTransport, ImmediateTransport, Transport, make_client
 from palit.llm_usage import print_stage_summary
@@ -183,7 +182,6 @@ async def _process_expansion(
     *,
     transport: Transport,
     hgnc_resolver: HgncResolver,
-    gencc: GenccIndex,
     genes: list[int],
     db_path: Path,
     baseline_db_path: Path,
@@ -209,7 +207,7 @@ async def _process_expansion(
                 db_path, hgnc_id, TournamentOutcome(selected_papers=[], raw_responses_by_round=[])
             )
             continue
-        entries.append(TournamentEntry.for_gene(hgnc_id, papers, hgnc_resolver, gencc))
+        entries.append(TournamentEntry.for_gene(hgnc_id, papers, hgnc_resolver))
 
     outcomes = await run_tournaments(
         entries,
@@ -367,8 +365,6 @@ def main(
         logger.info("No genes require expansion")
         return
 
-    gencc = fetch_gencc(db_path.parent, fetch_mondo(db_path.parent))
-
     async def run() -> None:
         client = make_client()
         transport: Transport = (
@@ -377,7 +373,6 @@ def main(
         await _process_expansion(
             transport=transport,
             hgnc_resolver=hgnc_resolver,
-            gencc=gencc,
             genes=genes,
             db_path=db_path,
             baseline_db_path=baseline_db_path,

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Map associations that reuse no PanelApp Australia GenCC row onto MONDO terms.
+"""Map associations that reuse no GenCC disease term onto MONDO terms.
 
 Each association without a MONDO term goes to the model with its proposed disease
-name, description, MoI and summary, and the gene's PanelApp Australia GenCC rows.
+name, description, MoI and summary, and the gene's GenCC disease terms.
 The model searches the local MONDO release with the tools in
 :mod:`palit.mondo_tools` and answers with one term and a match type: ``exact``
 when the term is for this gene's form of the disease, ``broader`` when MONDO has
@@ -36,12 +36,7 @@ import typer
 from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
 
-from palit.gencc import (
-    GenccIndex,
-    fetch_gencc,
-    fetch_mondo,
-    format_paa_associations,
-)
+from palit.gencc import GenccIndex, fetch_gencc, fetch_mondo, format_gencc_terms
 from palit.hgnc import HgncResolver
 from palit.llm import (
     ALL_TIME,
@@ -69,7 +64,7 @@ from palit.llm_usage import print_stage_summary
 from palit.mondo_tools import TOOLS, MondoIndex, MondoToolRunner
 from palit.progress import LoggingProgress as Progress
 
-app = typer.Typer(help="Map associations without a PanelApp Australia GenCC row onto MONDO")
+app = typer.Typer(help="Map associations without a GenCC disease term onto MONDO")
 logger = logging.getLogger(__name__)
 
 STAGE = "map_mondo"
@@ -210,8 +205,8 @@ def association_text(association: Association, gene_symbol: str, gencc: GenccInd
         f"Mode of inheritance: {association.inheritance_mode}\n"
         f"Description: {association.description}\n"
         f"Summary: {association.summary}\n\n"
-        "PANELAPP AUSTRALIA GENCC ROWS FOR THIS GENE (disease (MONDO id) | MoI | class)\n"
-        f"{format_paa_associations(gencc.for_gene(association.hgnc_id))}"
+        "GENCC DISEASE TERMS FOR THIS GENE (disease (MONDO id) | MoIs submitted)\n"
+        f"{format_gencc_terms(gencc.for_gene(association.hgnc_id))}"
     )
 
 

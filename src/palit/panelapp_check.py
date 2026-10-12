@@ -1,36 +1,37 @@
 """The second relevance level: compare a paper's genes with what PanelApp has curated.
 
 The scope screen finds papers with human genetic evidence for specific genes.
-This check shows the model each gene's PanelApp Australia entries on the
-reference panels, together with its PanelApp Australia GenCC rows, which rate
-each association separately where the entries carry one lumped rating per
-gene and panel. It asks for a verdict per gene-disease association; the paper
-stays relevant only if one of them is not yet curated there.
+This check shows the model each gene's PanelApp Australia entries. A gene on a
+reference panel is shown with its entries on every panel: the reference panels
+rate the gene as a whole, and the panels that list only some of its diseases
+show how PanelApp rates those diseases apart. A panel-scoped check shows the
+scope panel's entry only. The model gives a verdict per gene-disease
+association, and the paper stays relevant only if one of them is not yet
+curated there.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from palit.gencc import PAA_ASSOCIATIONS_CAVEAT, GenccIndex, format_paa_associations
 from palit.hgnc import HgncResolver
 from palit.panelapp_client import clean_panel_publications
-from palit.panelapp_integration import INCIDENTALOME_PANEL_ID
 
 RELEVANT_VERDICTS: frozenset[str] = frozenset(
     {"new_gene", "new_disease", "limited_evidence", "new_inheritance"}
 )
 _RATINGS = {"3": "GREEN", "2": "AMBER", "1": "RED", "0": "RED"}
 
-# Why a gene whose only reference-panel entry is on the Incidentalome is shown with its
-# entries from all panels.
-INCIDENTALOME_SCOPE = (
-    "deliberately carries only a gene's adult-onset incidental-findings associations"
+# Which entries the check shows, in its system prompt, for a check over all panels and
+# for a panel-scoped one.
+ALL_PANELS_SCOPE = (
+    "A gene with an entry on the reference panels ({reference_panels}) is shown with its"
+    " entries on every panel; the reference panels are marked. A gene without an entry on"
+    " the reference panels is new to them, whatever other panels hold it."
 )
-FALLBACK_NOTE = (
-    " The one exception is a gene whose only reference-panel entry is on the Incidentalome:"
-    f" that panel {INCIDENTALOME_SCOPE}, so for such genes the entries from all panels are"
-    " shown and count."
+SCOPE_PANEL_SCOPE = (
+    "The entries come from the reference panel ({reference_panels}); entries on other panels"
+    " are not shown and do not count."
 )
 
 
@@ -40,6 +41,7 @@ class PanelEntry:
 
     panel_id: int
     panel_name: str
+    reference: bool  # the panel is one of the reference (target) panels
     rating: str
     moi: str
     mode_of_pathogenicity: str  # empty when the entry has none
@@ -52,22 +54,34 @@ class PanelEntry:
         return (pmid is not None and pmid in self.pmids) or doi.lower() in self.dois
 
 
-@dataclass(frozen=True)
-class GeneRecord:
-    entries: tuple[PanelEntry, ...]
-    all_panels: bool  # Incidentalome-only gene, shown with its entries from every panel
+def entries_by_gene(
+    panels: list[dict[str, Any]], reference_panel_ids: list[int]
+) -> dict[int, tuple[PanelEntry, ...]]:
+    """Each gene's entries on *panels*, the reference panels first, then by panel name.
+
+    An entity without an HGNC ID raises on a reference panel and is skipped elsewhere.
+    """
+    reference = set(reference_panel_ids)
+    by_gene: dict[int, list[PanelEntry]] = {}
+    for panel in panels:
+        on_reference = panel["id"] in reference
+        for hgnc_id, entry in _panel_entries(panel, on_reference):
+            by_gene.setdefault(hgnc_id, []).append(entry)
+    return {
+        hgnc_id: tuple(sorted(entries, key=lambda e: (not e.reference, e.panel_name)))
+        for hgnc_id, entries in by_gene.items()
+    }
 
 
 @dataclass(frozen=True)
 class CuratedRecord:
-    """The PanelApp entries and GenCC rows the check compares against, keyed by HGNC ID."""
+    """The PanelApp entries the check compares against, for the genes on the reference panels."""
 
     panel_date: str
     reference_panel_ids: tuple[int, ...]
     reference_panel_names: tuple[str, ...]
-    incidentalome_fallback: bool
-    genes: dict[int, GeneRecord]
-    gencc: GenccIndex
+    all_panels: bool  # genes are shown with their entries on every panel
+    genes: dict[int, tuple[PanelEntry, ...]]
 
     @classmethod
     def build(
@@ -75,43 +89,34 @@ class CuratedRecord:
         panel_data: dict[int, dict[str, Any]],
         panel_date: str,
         reference_panel_ids: list[int],
-        gencc: GenccIndex,
         *,
-        incidentalome_fallback: bool,
+        all_panels: bool,
     ) -> "CuratedRecord":
-        reference: dict[int, list[PanelEntry]] = {}
-        on_panels: dict[int, set[int]] = {}
-        for panel_id in reference_panel_ids:
-            for hgnc_id, entry in _panel_entries(panel_data[panel_id], require_hgnc_id=True):
-                reference.setdefault(hgnc_id, []).append(entry)
-                on_panels.setdefault(hgnc_id, set()).add(panel_id)
-        everywhere: dict[int, list[PanelEntry]] = {}
-        if incidentalome_fallback:
-            for panel in panel_data.values():
-                for hgnc_id, entry in _panel_entries(panel, require_hgnc_id=False):
-                    everywhere.setdefault(hgnc_id, []).append(entry)
-        genes = {
-            hgnc_id: GeneRecord(tuple(everywhere[hgnc_id]), all_panels=True)
-            if incidentalome_fallback and on_panels[hgnc_id] == {INCIDENTALOME_PANEL_ID}
-            else GeneRecord(tuple(entries), all_panels=False)
-            for hgnc_id, entries in reference.items()
-        }
+        panels = (
+            list(panel_data.values())
+            if all_panels
+            else [panel_data[pid] for pid in reference_panel_ids]
+        )
+        entries = entries_by_gene(panels, reference_panel_ids)
         return cls(
             panel_date=panel_date,
             reference_panel_ids=tuple(reference_panel_ids),
             reference_panel_names=tuple(panel_data[pid]["name"] for pid in reference_panel_ids),
-            incidentalome_fallback=incidentalome_fallback,
-            genes=genes,
-            gencc=gencc,
+            all_panels=all_panels,
+            genes={
+                hgnc_id: gene_entries
+                for hgnc_id, gene_entries in entries.items()
+                if gene_entries[0].reference
+            },
         )
 
 
-def _panel_entries(panel: dict[str, Any], *, require_hgnc_id: bool) -> list[tuple[int, PanelEntry]]:
+def _panel_entries(panel: dict[str, Any], reference: bool) -> list[tuple[int, PanelEntry]]:
     entries = []
     for entity in panel["genes"] + panel["strs"]:
         hgnc_id = entity["gene_data"].get("hgnc_id")
         if hgnc_id is None:
-            if require_hgnc_id:
+            if reference:
                 raise ValueError(
                     f"Entity '{entity['entity_name']}' in panel {panel['id']} has no hgnc_id"
                 )
@@ -124,6 +129,7 @@ def _panel_entries(panel: dict[str, Any], *, require_hgnc_id: bool) -> list[tupl
                 PanelEntry(
                     panel_id=panel["id"],
                     panel_name=panel["name"],
+                    reference=reference,
                     rating=_RATINGS[entity["confidence_level"]],
                     moi=entity.get("mode_of_inheritance") or "not specified",
                     mode_of_pathogenicity=entity.get("mode_of_pathogenicity") or "",
@@ -138,10 +144,10 @@ def _panel_entries(panel: dict[str, Any], *, require_hgnc_id: bool) -> list[tupl
 
 
 def load_check_system(prompt_path: Path, record: CuratedRecord) -> str:
+    reference_panels = ", ".join(record.reference_panel_names)
+    scope = ALL_PANELS_SCOPE if record.all_panels else SCOPE_PANEL_SCOPE
     return prompt_path.read_text().format(
-        reference_panels=", ".join(record.reference_panel_names),
-        fallback_note=FALLBACK_NOTE if record.incidentalome_fallback else "",
-        gencc_caveat=PAA_ASSOCIATIONS_CAVEAT,
+        entries_scope=scope.format(reference_panels=reference_panels)
     )
 
 
@@ -157,21 +163,17 @@ def gene_context(
     if hgnc is None:
         return f"{symbol}: symbol not recognised by HGNC, so it could not be looked up."
     header = f"{hgnc.symbol} (HGNC:{hgnc.hgnc_id}, {hgnc.name})"
-    gene = record.genes.get(hgnc.hgnc_id)
-    if gene is None:
+    entries = record.genes.get(hgnc.hgnc_id)
+    if entries is None:
         return f"{header}: no entry on the reference panels."
-    scope = (
-        "on all panels (Incidentalome-only gene)" if gene.all_panels else "on the reference panels"
-    )
-    lines = [f"{header}: {len(gene.entries)} entries {scope}"]
-    for entry in sorted(gene.entries, key=lambda e: (e.rating != "GREEN", e.rating != "AMBER")):
+    lines = [f"{header}: {len(entries)} entries"]
+    for entry in entries:
         phenotypes = "; ".join(entry.phenotypes) if entry.phenotypes else "none listed"
+        panel = f"{entry.panel_name} (reference panel)" if entry.reference else entry.panel_name
         lines.append(
-            f"- {entry.panel_name} | {entry.rating} | {entry.moi} | phenotypes: {phenotypes}"
+            f"- {panel} | {entry.rating} | {entry.moi} | phenotypes: {phenotypes}"
             + (" | CITES THIS PAPER" if entry.cites(pmid, doi) else "")
         )
-    lines.append("GenCC associations (disease | mode of inheritance | class):")
-    lines.append(format_paa_associations(record.gencc.for_gene(hgnc.hgnc_id)))
     return "\n".join(lines)
 
 

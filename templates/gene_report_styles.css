@@ -638,6 +638,12 @@ section > h2 {
     color: #6c757d;
 }
 
+.relation-basis {
+    margin: -4px 0 8px 0;
+    font-size: 0.85em;
+    color: #6c757d;
+}
+
 .association-disease {
     font-weight: 600;
     font-size: 1.05em;

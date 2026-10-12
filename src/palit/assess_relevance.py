@@ -6,9 +6,9 @@
    variants, for a specific gene within scope? It lists the genes, and does
    not judge novelty.
 2. PanelApp check (stage ``relevance_panelapp``), on papers the screen passes
-   with at least one gene: compared with the genes' PanelApp entries on the
-   reference panels and their PanelApp Australia GenCC rows, could the
-   evidence change the curation?
+   with at least one gene: compared with the genes' PanelApp entries, on
+   every panel for a gene on the reference panels, could the evidence change
+   the curation?
 
 A paper the screen passes without naming any gene is relevant without the
 check, and with ``--screen-only`` the screen decides alone (for building a
@@ -52,7 +52,6 @@ import jsonschema
 import typer
 from anthropic.types.output_config_param import OutputConfigParam
 
-from palit.gencc import fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
     ALL_TIME,
@@ -822,8 +821,7 @@ def main(
             panel_client.get_all_panel_data(),
             panel_date,
             reference_panel_ids,
-            fetch_gencc(db_path.parent, fetch_mondo(db_path.parent)),
-            incidentalome_fallback=scope_panel_id is None,
+            all_panels=scope_panel_id is None,
         )
         check_schema: dict[str, Any] = json.loads(check_schema_path.read_text())
         check = CheckSettings(

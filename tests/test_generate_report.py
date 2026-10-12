@@ -149,14 +149,10 @@ def _mondo_raw(rationale: str) -> str:
     ).to_json()
 
 
-GENCC_ROW = {
+GENCC_TERM = {
     "mondo_id": "MONDO:0000001",
     "disease_title": "disease A",
-    "moi_title": "Autosomal dominant",
-    "moi": "Monoallelic",
-    "classification": "Strong",
-    "rating": "GREEN",
-    "date": "2025-01-17",
+    "moi_titles": ["Autosomal dominant"],
     "definition": "",
     "obsolete": True,
     "replaced_by": [{"mondo_id": "MONDO:0000009", "label": "disease A, replacement"}],
@@ -196,10 +192,8 @@ DISPUTES = [
 ]
 
 
-def _context(gencc_rows: list[dict[str, Any]], disputes: list[dict[str, Any]]) -> str:
-    return json.dumps(
-        {"gencc_rows": gencc_rows, "disputes": disputes, "panel_entries": [], "all_panels": False}
-    )
+def _context(gencc_terms: list[dict[str, Any]], disputes: list[dict[str, Any]]) -> str:
+    return json.dumps({"gencc_terms": gencc_terms, "disputes": disputes, "panel_entries": []})
 
 
 def _normalization(variant_id: str, hgvs_c: str, hgvs_p: str) -> str:
@@ -307,7 +301,7 @@ def db_path(tmp_path: Path) -> Path:
                 (
                     1,
                     json.dumps({"Smith2024": "10.1/a"}),
-                    _context([GENCC_ROW], DISPUTES),
+                    _context([GENCC_TERM], DISPUTES),
                     json.dumps([{"panel_id": MENDELIOME_PANEL_ID, "evaluations": []}]),
                     json.dumps(
                         [
@@ -344,7 +338,7 @@ def db_path(tmp_path: Path) -> Path:
                     ),
                     "MONDO:0000001",
                     "disease A",
-                    "panelapp_gencc",
+                    "gencc",
                     None,
                     json.dumps(
                         [
@@ -566,7 +560,7 @@ def test_disease_labels_and_mondo_states(results: GeneAssessmentResults) -> None
     assert reused.disease_label == "disease A"
     assert reused.mondo is not None
     assert (reused.mondo.match, reused.mondo.obsolete, reused.mondo.replaced_by) == (
-        "panelapp_gencc",
+        "gencc",
         True,
         (MondoRef("MONDO:0000009", "disease A, replacement"),),
     )
@@ -1834,7 +1828,7 @@ def test_fold_of_curated_associations_names_their_diseases(
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "UPDATE associations SET mondo_id = 'MONDO:0000001', mondo_label = 'disease A', "
-            "mondo_match = 'panelapp_gencc' WHERE id = 16"
+            "mondo_match = 'gencc' WHERE id = 16"
         )
     results = _load(db_path, hgnc_resolver)
     assert results.known_genes[0].other_associations_curated

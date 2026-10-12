@@ -97,16 +97,15 @@ CREATE TABLE gene_aggregations (
     assessment_raw TEXT NOT NULL,          -- Message JSON as returned by the API
     paper_id_mapping JSON NOT NULL,        -- {AuthorYear: DOI} mapping used during assessment
     filtered_papers_json JSON,             -- [{doi, reason}] removed by the preprint gate; NULL when none
-    -- PanelApp Australia's curation shown to the model:
-    --   {"gencc_rows": [PanelApp Australia GenCC rows],
+    -- PanelApp Australia's curation and the GenCC records shown to the model:
+    --   {"gencc_terms": [GenCC disease terms of the gene, all submitters],
     --    "disputes": [Disputed/Refuted GenCC submissions, any submitter],
-    --    "panel_entries": [entries on the target panels, or on all panels when all_panels],
-    --    "all_panels": <bool, true for an Incidentalome-only gene>}
+    --    "panel_entries": [entries on every panel holding the gene, target panels first]}
     panelapp_context_json JSON NOT NULL,
-    -- Reviews on every target panel holding the gene as a gene entry, from the PanelApp
-    -- snapshot: [{"panel_id": <int>, "fetched_at": <ISO time the snapshot captured them>,
-    --   "evaluations": [<raw evaluation dicts>]}, ...] in target-panel order.
-    -- NULL when the gene was on no target panel.
+    -- Reviews on every panel holding the gene as a gene entry, from the PanelApp snapshot:
+    -- [{"panel_id": <int>, "fetched_at": <ISO time the snapshot captured them>,
+    --   "evaluations": [<raw evaluation dicts>]}, ...] in the order of panel_entries.
+    -- NULL when no panel held the gene.
     existing_panel_reviews_json JSON,
     unassessed_reports_json JSON NOT NULL  -- [{phenotype, inheritance_mode, dois, reason}]
 );
@@ -125,10 +124,10 @@ CREATE TABLE associations (
     assessment_json JSON NOT NULL,
     mondo_id TEXT,                         -- NULL until map-mondo has run for this row
     mondo_label TEXT,
-    -- panelapp_gencc: reuses a PanelApp Australia GenCC row's disease (set by assess-genes);
+    -- gencc: reuses a GenCC disease term of the gene (set by assess-genes);
     -- exact / broader: chosen by map-mondo
-    mondo_match TEXT CHECK(mondo_match IN ('panelapp_gencc', 'exact', 'broader')),
-    mondo_raw TEXT,                        -- map-mondo's final message; NULL for panelapp_gencc
+    mondo_match TEXT CHECK(mondo_match IN ('gencc', 'exact', 'broader')),
+    mondo_raw TEXT,                        -- map-mondo's final message; NULL for gencc
     matched_panels_json JSON,              -- [{"panel_id", "rationale"}]
     matched_panels_raw TEXT,
     UNIQUE(hgnc_id, position),

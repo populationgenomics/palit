@@ -12,7 +12,7 @@ import pronto
 import pytest
 from anthropic.types import Message
 
-from palit.gencc import GenccIndex
+from palit.gencc import NO_GENCC_TERMS, GenccIndex
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import (
     ALL_TIME,
@@ -332,7 +332,7 @@ def db_path(tmp_path: Path) -> Path:
             """
             INSERT INTO associations (id, hgnc_id, position, assessment_json, mondo_id,
                 mondo_label, mondo_match)
-            VALUES (1, 6772, 0, ?, 'MONDO:0000101', 'craniosynostosis 7', 'panelapp_gencc')
+            VALUES (1, 6772, 0, ?, 'MONDO:0000101', 'craniosynostosis 7', 'gencc')
             """,
             (_assessment(None),),
         )
@@ -383,12 +383,12 @@ def test_deleting_an_aggregation_cascades_where_foreign_keys_are_on(db_path: Pat
     assert left_behind == 0
 
 
-def test_association_text_lists_the_gene_and_its_gencc_rows(db_path: Path) -> None:
+def test_association_text_lists_the_gene_and_its_gencc_terms(db_path: Path) -> None:
     (association,) = select_associations(db_path, None, _history(db_path))
     text = association_text(association, "SMAD6", GenccIndex({}))
     assert "GENE: SMAD6 (HGNC:6772)" in text
     assert "Proposed disease name: SMAD6-related renovascular hypertension" in text
-    assert "no GenCC submissions" in text
+    assert text.endswith(NO_GENCC_TERMS)
 
 
 def _result(

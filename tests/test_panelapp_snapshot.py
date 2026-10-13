@@ -9,7 +9,12 @@ from typing import Any
 import httpx2
 import pytest
 
-from palit.panelapp_client import EVALUATIONS_FETCHED_AT, PanelAppClient, snapshot_path
+from palit.panelapp_client import (
+    EVALUATIONS_FETCHED_AT,
+    PanelAppClient,
+    format_panel_for_prompt,
+    snapshot_path,
+)
 from palit.panelapp_snapshot import build_snapshot, version_on, write_snapshot
 
 
@@ -186,3 +191,25 @@ def test_written_snapshot_leaves_no_partial_file(tmp_path: Path) -> None:
     write_snapshot(path, {"1": {"id": 1, "genes": []}})
     assert json.loads(path.read_text()) == {"1": {"id": 1, "genes": []}}
     assert [p.name for p in tmp_path.iterdir()] == ["2026-04-01.json"]
+
+
+def test_panel_prompt_restores_relevant_disorders_split_at_commas() -> None:
+    panel = {
+        "name": "Leukodystrophy",
+        "relevant_disorders": [
+            "Leukodystrophy",
+            "HP:0002415; Abnormal CNS myelination",
+            "HP:0011400",
+        ],
+        "disease_group": "Neurology and neurodevelopmental disorders",
+        "disease_sub_group": "",
+        "description": "Genes that cause leukodystrophies.",
+    }
+    assert format_panel_for_prompt(298, panel) == (
+        '<panel id="298">\n'
+        "Name: Leukodystrophy\n"
+        "Relevant disorders: Leukodystrophy, HP:0002415; Abnormal CNS myelination, HP:0011400\n"
+        "Disease group: Neurology and neurodevelopmental disorders\n"
+        "Description: Genes that cause leukodystrophies.\n"
+        "</panel>"
+    )

@@ -237,8 +237,9 @@ def format_panel_for_prompt(panel_id: int, panel_info: dict[str, Any]) -> str:
 
     Args:
         panel_id: Panel ID
-        panel_info: Panel information dictionary with keys like 'name', 'level',
-                    'relevant_disorders', 'description', etc.
+        panel_info: Panel information dictionary with keys 'name',
+                    'relevant_disorders', 'disease_group', 'disease_sub_group'
+                    and 'description'
 
     Returns:
         Formatted panel description string
@@ -246,15 +247,16 @@ def format_panel_for_prompt(panel_id: int, panel_info: dict[str, Any]) -> str:
     formatted = []
     formatted.append(f'<panel id="{panel_id}">')
     formatted.append(f"Name: {panel_info['name']}")
-    if panel_info.get("level"):
-        formatted.append(f"Level: {panel_info['level']}")
-    if panel_info.get("relevant_disorders"):
-        formatted.append(f"Relevant disorders: {panel_info['relevant_disorders']}")
-    if panel_info.get("disease_group"):
+    if panel_info["relevant_disorders"]:
+        # PanelApp splits the curator's text at every comma, which separates a term
+        # from its ID when curators write "Name, ID; Name, ID". Joining as PanelApp's
+        # panel page does restores the text as written.
+        formatted.append(f"Relevant disorders: {', '.join(panel_info['relevant_disorders'])}")
+    if panel_info["disease_group"]:
         formatted.append(f"Disease group: {panel_info['disease_group']}")
-    if panel_info.get("disease_sub_group"):
+    if panel_info["disease_sub_group"]:
         formatted.append(f"Disease subgroup: {panel_info['disease_sub_group']}")
-    if panel_info.get("description"):
+    if panel_info["description"]:
         formatted.append(f"Description: {panel_info['description']}")
     formatted.append("</panel>")
     return "\n".join(formatted)
@@ -402,8 +404,7 @@ class PanelAppClient:
                 137: {
                     "name": "Mendeliome",
                     "description": "Panel description text",
-                    "level": "Level 1: Core panels",
-                    "relevant_disorders": "Rare genetic disorders",
+                    "relevant_disorders": ["Rare genetic disorders"],
                     "disease_group": "Multiple systems",
                     "disease_sub_group": "General genetic disorders"
                 },
@@ -424,12 +425,11 @@ class PanelAppClient:
                 continue
 
             panels[panel_id] = {
-                "name": panel_data.get("name", ""),
-                "description": panel_data.get("description", ""),
-                "level": panel_data.get("level", ""),
-                "relevant_disorders": panel_data.get("relevant_disorders", ""),
-                "disease_group": panel_data.get("disease_group", ""),
-                "disease_sub_group": panel_data.get("disease_sub_group", ""),
+                "name": panel_data["name"],
+                "description": panel_data["description"],
+                "relevant_disorders": panel_data["relevant_disorders"],
+                "disease_group": panel_data["disease_group"],
+                "disease_sub_group": panel_data["disease_sub_group"],
             }
 
         if excluded_count > 0:

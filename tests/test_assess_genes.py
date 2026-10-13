@@ -926,7 +926,7 @@ def test_scoped_run_asks_for_panel_relevance_per_association(
 
     unscoped = _render(context, "GENEA")
     assert "PANEL RELEVANCE" not in unscoped and "Arthrogryposis" not in unscoped
-    assert 'one country."\nIMPORTANT INSTRUCTIONS:' in unscoped
+    assert 'No functional data."\nIMPORTANT INSTRUCTIONS:' in unscoped
 
 
 def test_genes_failed_for_good_stay_out_unless_their_failures_predate_the_cutoff(

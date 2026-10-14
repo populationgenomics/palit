@@ -95,7 +95,7 @@ app = typer.Typer(help="Assess paper relevance from title and abstract")
 logger = logging.getLogger(__name__)
 
 STAGE = "relevance"
-EFFORT: Effort = "low"
+EFFORT: Effort = "medium"
 MAX_TOKENS = 8000
 
 CHECK_STAGE = "relevance_panelapp"

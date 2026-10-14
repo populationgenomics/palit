@@ -117,9 +117,9 @@ Ask: "Does this paper report evidence about a SPECIFIC gene's role in a disease 
 **Assessment Task**
 
 Based on title and abstract, provide:
-1. A relevance assessment for THIS SPECIFIC PANEL based on the criteria above (true/false).
-2. Confidence level for your decision (LOW / MEDIUM / HIGH).
-3. A brief rationale explaining panel scope fit or mismatch.
+1. A brief rationale explaining panel scope fit or mismatch.
+2. A relevance assessment for THIS SPECIFIC PANEL based on the criteria above (true/false).
+3. Confidence level for your decision (LOW / MEDIUM / HIGH).
 4. All gene-disease associations mentioned (only if relevant to this panel, otherwise empty list).
 
 After each assessment, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
@@ -148,9 +148,9 @@ Confidence reflects certainty about panel-relevance assessment, not the strength
 
 ```json
 {{
+  "rationale": "brief explanation focusing on panel scope fit",
   "relevant": boolean,
   "confidence": "LOW|MEDIUM|HIGH",
-  "rationale": "brief explanation focusing on panel scope fit",
   "associations": [
     {{"gene_symbol": "gene symbol only", "disease": "disease/phenotype"}}
   ]

@@ -1,6 +1,9 @@
 {
     "type": "object",
     "properties": {
+        "rationale": {
+            "type": "string"
+        },
         "relevant": {
             "type": "boolean"
         },
@@ -11,9 +14,6 @@
                 "MEDIUM",
                 "HIGH"
             ]
-        },
-        "rationale": {
-            "type": "string"
         },
         "associations": {
             "type": "array",
@@ -36,9 +36,9 @@
         }
     },
     "required": [
+        "rationale",
         "relevant",
         "confidence",
-        "rationale",
         "associations"
     ],
     "additionalProperties": false

@@ -60,8 +60,8 @@ Style: Use UK English spelling, except in verbatim quotes.
 Respond in JSON format:
 {{
   "matched_panels": [
-    {{"panel_name": "Intellectual disability syndromic and non-syndromic", "rationale": "Global developmental delay matches intellectual disability"}},
-    {{"panel_name": "Hydrocephalus_Ventriculomegaly", "rationale": "Hydrocephalus matches hydrocephalus"}}
+    {{"rationale": "Global developmental delay matches intellectual disability", "panel_name": "Intellectual disability syndromic and non-syndromic"}},
+    {{"rationale": "Hydrocephalus matches hydrocephalus", "panel_name": "Hydrocephalus_Ventriculomegaly"}}
   ]
 }}
 

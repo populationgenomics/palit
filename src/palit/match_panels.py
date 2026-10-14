@@ -60,7 +60,7 @@ app = typer.Typer(help="Match gene-disease-MoI associations to diagnostic panels
 logger = logging.getLogger(__name__)
 
 STAGE = "match_panels"
-EFFORT: Effort = "low"
+EFFORT: Effort = "medium"
 MAX_TOKENS = 16000
 ASSOCIATION_HEADING = "ASSOCIATION:"
 

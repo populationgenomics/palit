@@ -1118,7 +1118,7 @@ def _screen(relevant: bool, confidence: str) -> dict[str, Any]:
 
 
 def test_papers_both_models_refused_are_neither_passes_nor_rejections(
-    db_path: Path, results: GeneAssessmentResults, monkeypatch: pytest.MonkeyPatch
+    db_path: Path, results: GeneAssessmentResults
 ) -> None:
     """Panel publications: a screen miss, and one paper refused at each relevance level."""
     assessments = {
@@ -1150,12 +1150,9 @@ def test_papers_both_models_refused_are_neither_passes_nor_rejections(
             doi,
             [("refused", "2026-10-01T00:00:00+00:00", LIGHT_MODEL)],
         )
-    monkeypatch.setattr(
-        "palit.generate_report.get_current_panel_publications",
-        lambda panel_ids: PanelPublications(pmids={900, 901, 902}, dois=set()),
+    validation = load_panel_publications_validation(
+        db_path, PanelPublications(pmids={900, 901, 902}, dois=set())
     )
-
-    validation = load_panel_publications_validation(db_path, [MENDELIOME_PANEL_ID])
     assert [p.doi for p in validation.screen_misses] == ["10.1/miss"]
     assert sorted(p.doi for p in validation.refused) == [
         "10.1/refused-check",

@@ -1,89 +1,15 @@
 #!/usr/bin/env python3
-"""PanelApp snapshots and the PanelApp API helpers that read them."""
+"""Reads the dated PanelApp snapshots that palit panelapp snapshot builds."""
 
 import json
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx2
-
 from palit.panelapp_integration import TARGET_PANEL_IDS
 
 logger = logging.getLogger(__name__)
-
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_BACKOFF_SECONDS = 2.0
-
-
-def _request_with_retry(
-    client: httpx2.Client,
-    url: str,
-    timeout: float = 30.0,
-    max_retries: int = MAX_RETRIES,
-) -> httpx2.Response:
-    """Make an HTTP GET request with retry logic and exponential backoff.
-
-    Only retries on transient errors (5xx server errors and connection issues).
-    Client errors (4xx) are considered permanent and are not retried.
-
-    Args:
-        client: httpx2 Client instance
-        url: URL to fetch
-        timeout: Request timeout in seconds
-        max_retries: Maximum number of retry attempts
-
-    Returns:
-        httpx2.Response on success
-
-    Raises:
-        httpx2.HTTPStatusError: For client errors (4xx) or after all retries exhausted
-        httpx2.RequestError: After all retries exhausted for connection errors
-    """
-    last_exception: Exception | None = None
-
-    for attempt in range(max_retries + 1):
-        try:
-            response = client.get(url, timeout=timeout)
-            response.raise_for_status()
-            return response
-        except httpx2.HTTPStatusError as e:
-            # Only retry on transient errors: 429 (rate limit) and 5xx (server errors)
-            # Other 4xx errors (400, 401, 403, 404, etc.) are permanent
-            if e.response.status_code != 429 and e.response.status_code < 500:
-                raise
-            last_exception = e
-            if attempt < max_retries:
-                sleep_time = RETRY_BACKOFF_SECONDS * (2**attempt)
-                logger.warning(
-                    f"Request to {url} failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
-                    f"Retrying in {sleep_time}s..."
-                )
-                time.sleep(sleep_time)
-            else:
-                logger.error(f"Request to {url} failed after {max_retries + 1} attempts: {e}")
-        except httpx2.RequestError as e:
-            # Retry connection/timeout errors
-            last_exception = e
-            if attempt < max_retries:
-                sleep_time = RETRY_BACKOFF_SECONDS * (2**attempt)
-                logger.warning(
-                    f"Request to {url} failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
-                    f"Retrying in {sleep_time}s..."
-                )
-                time.sleep(sleep_time)
-            else:
-                logger.error(f"Request to {url} failed after {max_retries + 1} attempts: {e}")
-
-    # Should never reach here, but satisfy type checker
-    raise last_exception  # type: ignore[misc]
-
-
-# PanelApp API configuration
-PANELAPP_BASE_URL = "https://panelapp-aus.org/api/v1"
 
 
 @dataclass(frozen=True)
@@ -316,6 +242,16 @@ class PanelAppClient:
             )
         return panel_data_cache[panel_id]
 
+    def panel_publications(self, panel_ids: list[int]) -> PanelPublications:
+        """The PMIDs and DOIs that the entries on *panel_ids* cite."""
+        pmids: set[int] = set()
+        dois: set[str] = set()
+        for panel_id in panel_ids:
+            publications = extract_panel_publications(self.get_panel_data(panel_id))
+            pmids |= publications.pmids
+            dois |= publications.dois
+        return PanelPublications(pmids=pmids, dois=dois)
+
     def get_target_panels_genes(self, panel_ids: list[int] | None = None) -> PanelGeneData:
         """Get gene data from specified panels, keyed by HGNC ID.
 
@@ -474,37 +410,3 @@ class PanelAppClient:
         """When the panel's reviews were fetched (ISO timestamp)."""
         fetched_at: str = self.get_panel_data(panel_id)[EVALUATIONS_FETCHED_AT]
         return fetched_at
-
-
-def get_current_panel_publications(
-    panel_ids: list[int] | None = None, timeout: float = 60.0
-) -> PanelPublications:
-    """Fetch publication identifiers from current/latest panel versions.
-
-    This function always fetches fresh data from the API and is used for
-    validation against the most current panel publications.
-
-    Args:
-        panel_ids: List of panel IDs to extract publications from. If None, uses TARGET_PANEL_IDS.
-        timeout: Request timeout in seconds
-
-    Returns:
-        PanelPublications with unique PMIDs and DOIs from the specified panels.
-    """
-    if panel_ids is None:
-        panel_ids = TARGET_PANEL_IDS
-
-    all_pmids: set[int] = set()
-    all_dois: set[str] = set()
-
-    with httpx2.Client(timeout=timeout) as client:
-        for panel_id in panel_ids:
-            panel_url = f"{PANELAPP_BASE_URL}/panels/{panel_id}/"
-            response = _request_with_retry(client, panel_url, timeout=timeout)
-            panel_data = response.json()
-
-            pubs = extract_panel_publications(panel_data)
-            all_pmids.update(pubs.pmids)
-            all_dois.update(pubs.dois)
-
-    return PanelPublications(pmids=all_pmids, dois=all_dois)

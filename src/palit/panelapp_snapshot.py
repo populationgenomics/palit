@@ -30,18 +30,14 @@ import httpx2
 import tenacity
 import typer
 
-from palit.panelapp_client import (
-    DEFAULT_SNAPSHOT_DIR,
-    EVALUATIONS_FETCHED_AT,
-    PANELAPP_BASE_URL,
-    snapshot_path,
-)
+from palit.panelapp_client import DEFAULT_SNAPSHOT_DIR, EVALUATIONS_FETCHED_AT, snapshot_path
 from palit.progress import LoggingProgress as Progress
 
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Build the dated PanelApp snapshot that a run reads")
 
+PANELAPP_BASE_URL = "https://panelapp-aus.org/api/v1"
 MAX_IN_FLIGHT = 8
 MAX_ATTEMPTS = 5
 REQUEST_TIMEOUT_S = 60.0

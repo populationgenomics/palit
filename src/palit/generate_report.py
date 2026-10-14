@@ -40,7 +40,7 @@ from palit.panelapp_client import (
     AllPanelsData,
     PanelAppClient,
     PanelGeneData,
-    get_current_panel_publications,
+    PanelPublications,
 )
 from palit.panelapp_integration import (
     RATING_CONFIDENCE,
@@ -1362,21 +1362,16 @@ def load_gene_assessments(
 
 
 def load_panel_publications_validation(
-    db_path: Path, target_panel_ids: list[int] | None
+    db_path: Path, panel_pubs: PanelPublications
 ) -> PanelValidationResult:
     """Load panel publication validation using source_type filtering.
 
-    Compares LLM assessments against publications mentioned in PanelApp panels.
-    Uses source_type = 'initial' to avoid date range issues with expansion.
-
-    Args:
-        db_path: Path to the database
-        target_panel_ids: List of panel IDs to use for validation. If None, uses TARGET_PANEL_IDS.
+    Compares LLM assessments against *panel_pubs*, the publications the target panels
+    cite in the run's snapshot. Uses source_type = 'initial' to avoid date range issues
+    with expansion.
     """
     logger.info("Loading panel publications validation...")
 
-    # Get panel publications from PanelApp (using current/latest data)
-    panel_pubs = get_current_panel_publications(target_panel_ids)
     total_panel_refs = len(panel_pubs.pmids) + len(panel_pubs.dois)
     logger.info(
         f"Found {len(panel_pubs.pmids)} PMIDs and {len(panel_pubs.dois)} DOIs in PanelApp panels"
@@ -2219,11 +2214,13 @@ def main(
     # Generate report
     hgnc_resolver = HgncResolver.from_file()
     results = load_gene_assessments(db_path, panel_date, hgnc_resolver, target_panel_ids)
-    panel_validation = load_panel_publications_validation(db_path, target_panel_ids)
-    low_confidence_papers = load_low_confidence_irrelevant_papers(db_path)
-    manual_download_papers = load_manual_download_papers(db_path)
     # Use actual target_panel_ids from results (handles None -> defaults)
     actual_panel_ids = list(results.target_panel_data.panel_ids)
+    panel_validation = load_panel_publications_validation(
+        db_path, PanelAppClient(panel_date).panel_publications(actual_panel_ids)
+    )
+    low_confidence_papers = load_low_confidence_irrelevant_papers(db_path)
+    manual_download_papers = load_manual_download_papers(db_path)
     favorite_journal_papers = load_favorite_journal_papers(
         db_path, results.novel_genes, results.known_genes, set(actual_panel_ids)
     )

@@ -480,10 +480,11 @@ uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_
 #    workflow. Scoped runs skip match-panels.
 uv run palit map-mondo --db-path data/$PANEL_NAME.sqlite
 
-# 7. Generate report package with panel-scoped novelty detection
+# 7. Generate report package against the panel: every association of a gene
+#    not on it is a finding, and an upgrade starts from the gene's rating on it
 uv run palit generate-report \
   --report-id panel_$PANEL_NAME \
   --db-path data/$PANEL_NAME.sqlite \
   --panel-date $PANEL_DATE \
-  --target-panel-ids $PANEL_ID
+  --scope-panel-id $PANEL_ID
 ```

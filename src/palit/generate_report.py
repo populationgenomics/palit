@@ -415,8 +415,9 @@ class ReportAssociation:
 
 
 class FindingKind(StrEnum):
-    """What an association adds to PanelApp Australia's curation of a gene."""
+    """What an association adds to the target panels' curation of a gene."""
 
+    NEW_GENE = "new_gene"  # any association of a gene on none of the target panels
     NEW_DISEASE = "new_disease"
     NEW_MOI = "new_moi"  # highlighted new_moi associations only
     UPGRADE = "upgrade"  # an existing association rated higher in this corpus
@@ -424,13 +425,12 @@ class FindingKind(StrEnum):
 
 @dataclass(frozen=True)
 class Finding:
-    """An association that PanelApp Australia lacks or rates lower than this corpus does."""
+    """An association that the target panels lack or rate lower than this corpus does."""
 
     kind: FindingKind
     rating: int  # the association's corpus rating: 3 GREEN, 2 AMBER, 1 RED
     association_id: int
-    # Upgrades only: PanelApp's rating of the association, or the gene's current rating
-    # when PanelApp's rating of the association is unknown
+    # Upgrades only: the rating the corpus rating is above, see association_finding
     from_rating: int | None
 
     @property
@@ -559,6 +559,7 @@ class GeneAssessmentResults:
     target_panel_data: PanelGeneData
     target_panel_names: dict[int, str]  # panel_id → display name, for current target panels
     panels_matched: bool  # match-panels has run in this database; panel-scoped runs skip it
+    scope_panel_id: int | None  # the one target panel of a panel-scoped run; None otherwise
 
 
 @dataclass
@@ -747,17 +748,22 @@ def association_sort_key(association: ReportAssociation) -> tuple[int, int, int]
 
 
 def association_finding(
-    association: ReportAssociation, current_rating: int | None
+    association: ReportAssociation, current_rating: int | None, scoped: bool
 ) -> Finding | None:
-    """The association's finding, or None when it adds nothing to PanelApp's curation.
+    """The association's finding, or None when it adds nothing to the target panels.
 
     *current_rating* is the gene's highest rating on the target panels, None
-    when it is on none of them. A new disease is a finding, on a known gene and on
-    a new one alike. A new MoI is a finding once highlighted. An existing
-    association is an upgrade when its corpus rating is above PanelApp's rating of
-    it, or above the gene's current rating when PanelApp's rating of it is unknown;
-    a new gene's association of unknown rating has nothing to compare with.
+    when it is on none of them. Every association of a gene on none of them is a
+    finding, whatever PanelApp Australia curates on other panels. On a gene on a
+    target panel, a new disease is a finding, and a new MoI once highlighted. An
+    existing association is an upgrade when its corpus rating is above the rating
+    it starts from. In a panel-scoped run (*scoped*), that is the gene's rating
+    on the scope panel: a panel named after a clinical feature rates how reliably
+    the gene causes the feature, not each disease. Otherwise it is PanelApp's
+    rating of the association, or the gene's current rating when that is unknown.
     """
+    if current_rating is None:
+        return Finding(FindingKind.NEW_GENE, association.rating, association.id, None)
     status = association.relation_status
     if status == "new_disease":
         return Finding(FindingKind.NEW_DISEASE, association.rating, association.id, None)
@@ -766,14 +772,14 @@ def association_finding(
             return None
         return Finding(FindingKind.NEW_MOI, association.rating, association.id, None)
     stated: str | None = association.assessment["panelapp_relation"]["existing_rating"]
-    from_rating = current_rating if stated is None else RATING_CONFIDENCE[stated]
-    if from_rating is None or association.rating <= from_rating:
+    from_rating = current_rating if scoped or stated is None else RATING_CONFIDENCE[stated]
+    if association.rating <= from_rating:
         return None
     return Finding(FindingKind.UPGRADE, association.rating, association.id, from_rating)
 
 
 def gene_findings(
-    associations: list[ReportAssociation], current_rating: int | None
+    associations: list[ReportAssociation], current_rating: int | None, scoped: bool
 ) -> list[Finding]:
     """The findings of a gene's associations in badge order: strongest first, those with
     the same badge together.
@@ -784,7 +790,7 @@ def gene_findings(
     """
     by_badge: dict[tuple[FindingKind, int, int | None], list[Finding]] = {}
     for association in associations:
-        finding = association_finding(association, current_rating)
+        finding = association_finding(association, current_rating, scoped)
         if finding is not None:
             by_badge.setdefault(finding.badge, []).append(finding)
     return [finding for findings in by_badge.values() for finding in findings]
@@ -1192,8 +1198,12 @@ def load_gene(
     hgnc_resolver: HgncResolver,
     target_panel_data: PanelGeneData,
     all_panels_data: AllPanelsData,
+    scoped: bool,
 ) -> GeneAssessment:
-    """One gene's aggregation row with its associations, papers and panel context."""
+    """One gene's aggregation row with its associations, papers and panel context.
+
+    *scoped* is true in a panel-scoped run, whose one target panel is the scope panel.
+    """
     hgnc_id: int = row["hgnc_id"]
     paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
     filtered_doi_reasons: dict[str, str] = {
@@ -1236,7 +1246,7 @@ def load_gene(
         all_panels_data,
         gene_variants,
     )
-    findings = gene_findings(rated_associations, current_rating)
+    findings = gene_findings(rated_associations, current_rating, scoped)
     associations = report_order(rated_associations, findings)
     associated_ids = {v.variant_id for a in associations for v in a.variants}
     unassessed_reports = replace_paper_ids_for_display(
@@ -1273,6 +1283,7 @@ def build_gene_assessment_results(
     hgnc_resolver: HgncResolver,
     target_panel_data: PanelGeneData,
     all_panels_data: AllPanelsData,
+    scope_panel_id: int | None,
 ) -> GeneAssessmentResults:
     """Every aggregated gene with associations, split into novel and known genes.
 
@@ -1303,7 +1314,14 @@ def build_gene_assessment_results(
     novel_genes: list[GeneAssessment] = []
     known_genes: list[GeneAssessment] = []
     for row in cursor.fetchall():
-        gene = load_gene(conn.cursor(), row, hgnc_resolver, target_panel_data, all_panels_data)
+        gene = load_gene(
+            conn.cursor(),
+            row,
+            hgnc_resolver,
+            target_panel_data,
+            all_panels_data,
+            scoped=scope_panel_id is not None,
+        )
         (novel_genes if gene.is_novel else known_genes).append(gene)
 
     logger.info(f"Loaded {len(novel_genes)} novel genes, {len(known_genes)} known genes")
@@ -1320,6 +1338,7 @@ def build_gene_assessment_results(
         target_panel_data=target_panel_data,
         target_panel_names=target_panel_names,
         panels_matched=match_panels_has_run(cursor),
+        scope_panel_id=scope_panel_id,
     )
 
 
@@ -1337,6 +1356,7 @@ def load_gene_assessments(
     panel_date: str,
     hgnc_resolver: HgncResolver,
     target_panel_ids: list[int] | None = None,
+    scope_panel_id: int | None = None,
 ) -> GeneAssessmentResults:
     """Load every gene's aggregation and associations, with PanelApp membership at *panel_date*.
 
@@ -1344,8 +1364,14 @@ def load_gene_assessments(
         db_path: Path to the database
         panel_date: Date (YYYY-MM-DD) to check panel membership at
         target_panel_ids: List of panel IDs to use for novelty detection. If None, uses TARGET_PANEL_IDS.
+        scope_panel_id: The panel of a panel-scoped run, which is then the only target panel;
+            exclusive with *target_panel_ids*.
     """
     logger.info(f"Loading gene aggregations from {db_path}...")
+    if scope_panel_id is not None:
+        if target_panel_ids is not None:
+            raise ValueError("scope_panel_id and target_panel_ids are mutually exclusive")
+        target_panel_ids = [scope_panel_id]
 
     panelapp_client = PanelAppClient(panel_date)
     target_panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
@@ -1357,7 +1383,7 @@ def load_gene_assessments(
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         return build_gene_assessment_results(
-            conn, hgnc_resolver, target_panel_data, all_panels_data
+            conn, hgnc_resolver, target_panel_data, all_panels_data, scope_panel_id
         )
 
 
@@ -2168,6 +2194,12 @@ def main(
         "--target-panel-ids",
         help="Panel IDs for novelty detection. Can be specified multiple times. If not specified, uses default TARGET_PANEL_IDS.",
     ),
+    scope_panel_id: int | None = typer.Option(
+        None,
+        "--scope-panel-id",
+        help="Panel ID of a panel-scoped run: the only target panel, and the panel each "
+        "upgrade starts from. Exclusive with --target-panel-ids.",
+    ),
     output_dir_prefix: Path = typer.Option(
         default=Path("reports"),
         help="Output directory prefix. Final path will be {prefix}/{report_id}/",
@@ -2197,6 +2229,9 @@ def main(
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
+    if scope_panel_id is not None and target_panel_ids:
+        logger.error("--scope-panel-id and --target-panel-ids are mutually exclusive")
+        raise typer.Exit(1)
 
     if not (viewer_dir / "index.html").exists():
         logger.error(
@@ -2213,7 +2248,9 @@ def main(
 
     # Generate report
     hgnc_resolver = HgncResolver.from_file()
-    results = load_gene_assessments(db_path, panel_date, hgnc_resolver, target_panel_ids)
+    results = load_gene_assessments(
+        db_path, panel_date, hgnc_resolver, target_panel_ids or None, scope_panel_id
+    )
     # Use actual target_panel_ids from results (handles None -> defaults)
     actual_panel_ids = list(results.target_panel_data.panel_ids)
     panel_validation = load_panel_publications_validation(

@@ -507,7 +507,7 @@ def _load(
     )
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        return build_gene_assessment_results(conn, hgnc_resolver, target, all_panels)
+        return build_gene_assessment_results(conn, hgnc_resolver, target, all_panels, None)
 
 
 @pytest.fixture
@@ -548,7 +548,7 @@ def test_novel_and_known_split(results: GeneAssessmentResults) -> None:
     ]
     geneb = results.novel_genes[0]
     assert geneb.current_rating is None
-    assert geneb.findings == [Finding(FindingKind.NEW_DISEASE, 3, 20, None)]
+    assert geneb.findings == [Finding(FindingKind.NEW_GENE, 3, 20, None)]
 
 
 def test_associations_by_rating_then_independent_families(results: GeneAssessmentResults) -> None:
@@ -764,15 +764,15 @@ def test_review_prefill_of_a_gene_without_findings_lists_all_its_associations(
 
 
 def test_add_prefill_lists_every_association(db_path: Path, hgnc_resolver: HgncResolver) -> None:
-    """GENEB's curated association of unknown PanelApp rating is no finding of a new gene,
-    yet the add form lists it with the new disease."""
+    """GENEB's association that PanelApp curates elsewhere is a finding of the new gene
+    like its new disease, and the add form lists both."""
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT INTO associations (id, hgnc_id, position, assessment_json) VALUES (21, 3, 1, ?)",
             (_association("curated B", panelapp_rating=None, dois=("10.1/b",)),),
         )
     geneb = _load(db_path, hgnc_resolver).novel_genes[0]
-    assert [f.association_id for f in geneb.findings] == [20]
+    assert [f.association_id for f in geneb.findings] == [20, 21]
     assert (geneb.prefill.form_type, geneb.prefill.panel_id) == ("add", MENDELIOME_PANEL_ID)
     assert geneb.prefill.phenotypes == "GENEA-related B disease;GENEA-related curated B"
     assert geneb.prefill.publications == "222"
@@ -980,37 +980,95 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
 
 
 @pytest.mark.parametrize(
-    ("association", "current_rating", "finding"),
+    ("association", "current_rating", "scoped", "finding"),
     [
+        # Every association of a gene on no target panel, whatever PanelApp curates elsewhere
+        (
+            _association("d", status="new_disease", green=True),
+            None,
+            False,
+            (FindingKind.NEW_GENE, 3),
+        ),
+        (
+            _association("d", status="new_moi", independent=1),
+            None,
+            False,
+            (FindingKind.NEW_GENE, 1),
+        ),
+        (
+            _association("d", panelapp_rating="GREEN", green=True),
+            None,
+            True,
+            (FindingKind.NEW_GENE, 3),
+        ),
+        (
+            _association("d", panelapp_rating="AMBER", independent=1),
+            None,
+            True,
+            (FindingKind.NEW_GENE, 1),
+        ),
         # A new disease of a gene on a target panel, at any corpus rating
-        (_association("d", status="new_disease", independent=1), 3, (FindingKind.NEW_DISEASE, 1)),
-        # A new gene's new disease too
-        (_association("d", status="new_disease", green=True), None, (FindingKind.NEW_DISEASE, 3)),
+        (
+            _association("d", status="new_disease", independent=1),
+            3,
+            False,
+            (FindingKind.NEW_DISEASE, 1),
+        ),
+        (
+            _association("d", status="new_disease", independent=1),
+            3,
+            True,
+            (FindingKind.NEW_DISEASE, 1),
+        ),
         # A new MoI only once highlighted
-        (_association("d", status="new_moi", independent=2), 3, (FindingKind.NEW_MOI, 2)),
-        (_association("d", status="new_moi", independent=1), 1, None),
-        (_association("d", status="new_moi", independent=2), None, (FindingKind.NEW_MOI, 2)),
+        (_association("d", status="new_moi", independent=2), 3, False, (FindingKind.NEW_MOI, 2)),
+        (_association("d", status="new_moi", independent=1), 1, False, None),
         # An upgrade over PanelApp's rating of the association, whatever the gene's rating
-        (_association("d", panelapp_rating="AMBER", green=True), 2, (FindingKind.UPGRADE, 3, 2)),
-        (_association("d", panelapp_rating="RED", independent=2), 3, (FindingKind.UPGRADE, 2, 1)),
-        (_association("d", panelapp_rating="GREEN", green=True), 1, None),
-        (_association("d", panelapp_rating="AMBER", independent=2), 1, None),
+        (
+            _association("d", panelapp_rating="AMBER", green=True),
+            2,
+            False,
+            (FindingKind.UPGRADE, 3, 2),
+        ),
+        (
+            _association("d", panelapp_rating="RED", independent=2),
+            3,
+            False,
+            (FindingKind.UPGRADE, 2, 1),
+        ),
+        (_association("d", panelapp_rating="GREEN", green=True), 1, False, None),
+        (_association("d", panelapp_rating="AMBER", independent=2), 1, False, None),
         # Without PanelApp's rating of the association, over the gene's current rating
-        (_association("d", panelapp_rating=None, independent=2), 1, (FindingKind.UPGRADE, 2, 1)),
-        (_association("d", panelapp_rating=None, green=True), 3, None),
-        (_association("d", panelapp_rating=None, green=True), None, None),
+        (
+            _association("d", panelapp_rating=None, independent=2),
+            1,
+            False,
+            (FindingKind.UPGRADE, 2, 1),
+        ),
+        (_association("d", panelapp_rating=None, green=True), 3, False, None),
+        # In a panel-scoped run, over the gene's rating on the scope panel, whatever
+        # PanelApp rates the association elsewhere
+        (
+            _association("d", panelapp_rating="GREEN", green=True),
+            2,
+            True,
+            (FindingKind.UPGRADE, 3, 2),
+        ),
+        (_association("d", panelapp_rating="RED", independent=2), 3, True, None),
     ],
 )
 def test_association_finding(
     association: str,
     current_rating: int | None,
+    scoped: bool,
     finding: tuple[FindingKind, int] | tuple[FindingKind, int, int] | None,
 ) -> None:
     expected = None
     if finding is not None:
         kind, rating, *from_rating = finding
         expected = Finding(kind, rating, 7, from_rating[0] if from_rating else None)
-    assert association_finding(_report_association(7, association), current_rating) == expected
+    actual = association_finding(_report_association(7, association), current_rating, scoped)
+    assert actual == expected
 
 
 def _gene(
@@ -1025,7 +1083,7 @@ def _gene(
         (_report_association(i, a) for i, a in enumerate(associations)),
         key=association_sort_key,
     )
-    findings = gene_findings(rated, current_rating)
+    findings = gene_findings(rated, current_rating, scoped=False)
     evaluations = [{"rating": "GREEN"}] if reviewed else []
     return GeneAssessment(
         hgnc_id=hgnc_id,
@@ -1097,14 +1155,14 @@ def test_genes_are_placed_once_by_their_strongest_finding() -> None:
         (FindingKind.NEW_DISEASE, 3),
         (FindingKind.NEW_DISEASE, 2),
     ]
-    # A new gene's new diseases are findings, but it is placed by its top association
+    # Each association of a new gene is a finding, and it is placed by its top association
     assert {
         name: [(f.kind, f.rating) for f in genes[name].findings]
         for name in ("new_amber", "new_amber_moi", "new_red")
     } == {
-        "new_amber": [(FindingKind.NEW_DISEASE, 2)],
-        "new_amber_moi": [(FindingKind.NEW_DISEASE, 2), (FindingKind.NEW_MOI, 2)],
-        "new_red": [(FindingKind.NEW_DISEASE, 1)],
+        "new_amber": [(FindingKind.NEW_GENE, 2)],
+        "new_amber_moi": [(FindingKind.NEW_GENE, 2), (FindingKind.NEW_GENE, 2)],
+        "new_red": [(FindingKind.NEW_GENE, 1)],
     }
 
 
@@ -1274,12 +1332,14 @@ def test_association_headings_show_the_relation_then_the_corpus_rating(
     assert known.count(">new disease</span>") == 2
     assert known.count(">\N{HEAVY PLUS SIGN} new MoI</span>") == 1
     assert known.count('class="rating-arrow"') == 3  # the three findings only
-    # The novel gene's header already says "Not in panel", so its new disease's heading
-    # shows the rating alone; the finding is a header badge only.
+    # The novel gene's header already says "Not in panel", so its association's heading
+    # shows the rating, then its relation to PanelApp's curation as a quiet note; the
+    # finding is a header badge only.
     novel = _article(html, "novel-gene-3")
     assert ">new disease</span>" not in novel
     assert 'class="rating-arrow"' not in novel
-    assert novel.count("new disease GREEN</a>") == 1
+    assert ">disease not curated in PanelApp</span>" in novel
+    assert novel.count("add GREEN</a>") == 1
     for removed in ("Basis:", "As described:", "Grouping:", "Matched panels:", "by Sonnet 5.5"):
         assert removed not in html
 
@@ -1368,7 +1428,7 @@ def test_gene_headers_show_the_current_status_without_an_arrow(
     assert '<span class="rating-badge rating-grey">Not in panel</span>' in novel
     assert re.findall(
         r'<a class="finding-badge rating-(\w+)" href="#association-(\d+)"[^>]*>([^<]+)</a>', novel
-    ) == [("green", "20", "new disease GREEN")]
+    ) == [("green", "20", "add GREEN")]
     assert novel.index("Not in panel") < novel.index('class="finding-badge')
     assert "On panel" not in novel
 
@@ -1396,14 +1456,15 @@ def test_green_gene_with_only_an_amber_finding(db_path: Path, hgnc_resolver: Hgn
 def test_statistics_count_genes_and_findings(db_path: Path, results: GeneAssessmentResults) -> None:
     statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
     assert (statistics.new_genes_count, statistics.known_genes_with_findings) == (1, 1)
-    # GENEA's two new diseases and new MoI, and the new gene GENEB's new disease
+    # GENEA's two new diseases and new MoI; the new gene GENEB counts as a new gene
     assert (
         statistics.new_disease_findings,
         statistics.new_moi_findings,
         statistics.upgrade_findings,
-    ) == (3, 1, 0)
-    assert "<strong>Findings:</strong> new diseases: 3, new MoIs: 1, upgrades: 0" in _render(
-        db_path, results
+    ) == (2, 1, 0)
+    assert (
+        "<strong>Findings on known genes:</strong> new diseases: 2, new MoIs: 1, upgrades: 0"
+        in _render(db_path, results)
     )
 
 
@@ -1842,7 +1903,7 @@ def test_findings_with_the_same_badge_merge_and_come_first(
     assert ">new MoI, fewer than 2 independent families</span>" in rare_moi
     assert rare_moi.index('class="rating-badge rating-red"') < rare_moi.index("relation-note")
     statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
-    assert statistics.new_disease_findings == 4
+    assert statistics.new_disease_findings == 3
 
 
 def test_fold_of_curated_associations_names_their_diseases(

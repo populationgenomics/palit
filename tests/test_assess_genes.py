@@ -521,7 +521,6 @@ def test_prompt_lists_the_genes_variants_with_their_gnomad_figures(
         variants,
         _context(curated_record, gencc_index, GENEA),
         "2026-09-01",
-        "",
     )
 
     assert {vid: v.variant_id for vid, v in prompt.variants.items()} == {
@@ -802,11 +801,9 @@ def _context(
     )
 
 
-def _render(context: PanelAppContext, symbol: str, panel_formatted: str = "") -> str:
+def _render(context: PanelAppContext, symbol: str) -> str:
     evidence = [_evidence("10.1/a", "Smith", "2024")]
-    prompt = render_prompt(
-        PROMPT_PATH, symbol, evidence, [], context, "2026-09-01", panel_formatted
-    )
+    prompt = render_prompt(PROMPT_PATH, symbol, evidence, [], context, "2026-09-01")
     assert prompt.paper_id_to_doi == {"Smith2024": "10.1/a"}
     assert prompt.variants == {}
     return prompt.text
@@ -913,21 +910,6 @@ def test_target_panels_holding_keeps_target_panel_order() -> None:
     )
     assert target_panels_holding(GENEA, panel_data) == [MENDELIOME_PANEL_ID, 203]
     assert target_panels_holding(GENEB, panel_data) == []
-
-
-def test_scoped_run_asks_for_panel_relevance_per_association(
-    curated_record: CuratedRecord, gencc_index: GenccIndex
-) -> None:
-    context = _context(curated_record, gencc_index, GENEA)
-    panel = '<panel id="47">\nName: Arthrogryposis\n</panel>'
-    scoped = _render(context, "GENEA", panel)
-    assert "PANEL RELEVANCE (panel-scoped run)" in scoped
-    assert panel in scoped
-    assert "End each association's `summary` with one sentence" in scoped
-
-    unscoped = _render(context, "GENEA")
-    assert "PANEL RELEVANCE" not in unscoped and "Arthrogryposis" not in unscoped
-    assert 'No functional data."\nIMPORTANT INSTRUCTIONS:' in unscoped
 
 
 def test_genes_failed_for_good_stay_out_unless_their_failures_predate_the_cutoff(

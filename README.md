@@ -471,10 +471,11 @@ uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite
 # ... manually download PDFs ...
 uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 
-# 5. Extract evidence and assess genes (panel-scoped). Each association's
-#    summary explains how it relates to the panel's scope.
+# 5. Extract evidence (panel-scoped: genes for unrelated conditions are
+#    skipped) and assess genes against the panel. Step 6's match-panels judges
+#    each association's fit to the panel.
 uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
-uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID --scope-panel-id $PANEL_ID
+uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID
 
 # 6. Map associations without a GenCC term onto MONDO terms, and match them to
 #    panels, as in the main workflow. With --scope-panel-id, each answer also

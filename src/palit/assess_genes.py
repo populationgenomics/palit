@@ -57,7 +57,6 @@ from palit.panelapp_client import (
     PanelGeneData,
     PanelPublications,
     collect_panelapp_gene_publications,
-    format_panel_for_prompt,
 )
 from palit.panelapp_integration import (
     INHERITANCE_DETAILS_VOCABULARY,
@@ -617,15 +616,12 @@ def render_prompt(
     variants: list[GeneVariant],
     context: PanelAppContext,
     panel_date: str,
-    panel_formatted: str,
 ) -> RenderedPrompt:
     """The aggregation prompt for one gene, with its paper and variant ID mappings.
 
     Generates {LastName}{Year} paper IDs for LLM-friendly citation, and V1, V2, ...
     IDs for the variant table. The LLM refers to papers and variants by these IDs;
     the caller maps them back to DOIs and variant keys after receiving the response.
-    ``panel_formatted`` is the scope panel's description in panel-scoped runs and
-    empty otherwise.
     """
     paper_id_to_doi, doi_to_paper_id = generate_paper_ids(evidence_list)
     variant_rows, variants_by_id = variant_table(variants, doi_to_paper_id)
@@ -662,7 +658,6 @@ def render_prompt(
         reviews_section=format_panel_reviews(context.panel_reviews),
         dispute_blocks=dispute_blocks(context.gencc, evidence_list, doi_to_paper_id),
         panel_date=panel_date,
-        panel_formatted=panel_formatted,
     )
     return RenderedPrompt(text=rendered, paper_id_to_doi=paper_id_to_doi, variants=variants_by_id)
 
@@ -693,7 +688,6 @@ class _GenePreparation:
     entries: dict[int, tuple[PanelEntry, ...]]  # every panel's entries, by gene
     gencc: GenccIndex
     prompt_path: Path
-    panel_formatted: str
 
 
 def target_panels_holding(hgnc_id: int, panel_data: PanelGeneData) -> list[int]:
@@ -784,7 +778,6 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
         prep.db_processor.get_variants_for_gene(hgnc_id, [e["doi"] for e in evidence_list]),
         context,
         prep.panel_date,
-        prep.panel_formatted,
     )
     return _GeneBatchItem(
         hgnc_id=hgnc_id,
@@ -1266,11 +1259,6 @@ def main(
         "--target-panel-ids",
         help="Panel IDs to check for existing genes. Can be specified multiple times. Defaults to TARGET_PANEL_IDS.",
     ),
-    scope_panel_id: int | None = typer.Option(
-        None,
-        "--scope-panel-id",
-        help="Panel ID for panel-scoped assessment. When set, each association's summary must explain how it relates to this panel's scope.",
-    ),
     immediate: bool = typer.Option(
         False,
         "--immediate",
@@ -1308,16 +1296,6 @@ def main(
     )
     gencc = fetch_gencc(db_path.parent, fetch_mondo(db_path.parent))
 
-    panel_formatted = ""
-    if scope_panel_id is not None:
-        try:
-            panel_info = panelapp_client.get_panel_data(scope_panel_id)
-        except ValueError as e:
-            logger.error(f"Panel {scope_panel_id} not found in PanelApp data for {panel_date}")
-            raise typer.Exit(1) from e
-        panel_formatted = format_panel_for_prompt(scope_panel_id, panel_info)
-        logger.info(f"  Panel-scoped mode: {panel_info.get('name', 'Unknown')}")
-
     db_processor = PaperBatchProcessor(db_path)
     logger.info(f"{db_processor.count_remaining():,} genes of this run without an assessment")
     prep = _GenePreparation(
@@ -1329,7 +1307,6 @@ def main(
         entries=entries,
         gencc=gencc,
         prompt_path=prompt_path,
-        panel_formatted=panel_formatted,
     )
 
     async def run() -> None:

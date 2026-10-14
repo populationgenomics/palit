@@ -1,6 +1,6 @@
 PANEL UNDER REVIEW:
 This run reviews the panel below for genes and associations that it lacks or rates too low. Whether or not the association belongs on it, judge the association against this panel by the principles above, and give the verdict in "scope_panel":
-- rationale: one or two sentences for the curators of this panel, who decide from it whether the association belongs on the panel. Name the panel's defining features that the affected individuals have, with how many have them, and those the papers do not report. When the panel's description refers such disorders to another panel, say so.
+- rationale: one or two sentences for the curators of this panel, who decide from it whether the association belongs on the panel. Name the reported features that bear on the panel, with how many individuals have them, and the panel's features that the papers do not report.
 - fits: true when the association belongs on this panel, and the panel is then among "matched_panels" too; false otherwise, and the panel is then not among them.
 
 {panel}

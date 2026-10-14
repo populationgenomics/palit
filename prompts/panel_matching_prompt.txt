@@ -6,15 +6,15 @@ AVAILABLE PANELS:
 {panel_list}
 
 TASK:
-Match the gene-disease association at the end, given by its disease, its mode of inheritance and its summary, to every panel it belongs on. The summary describes the affected individuals that the association's papers report: their clinical features, how many have each, and the evidence.
+Match the gene-disease association at the end to every panel it belongs on. Its disease and its summary both come from the association's papers: the disease names the disorder and lists its reported features, and the summary describes the affected individuals, how many have each feature, and the evidence.
+
+A clinician orders a panel when a patient's features raise the suspicion of a disorder the panel covers, often before the full picture is clear. A gene missing from a panel can mean a missed diagnosis, while a gene on a panel it does not belong on costs curators' review and dilutes the panel. An association belongs on a panel when a clinician seeing patients like these would order it.
 
 MATCHING PRINCIPLES:
-1. An association belongs on a panel when the phenotype of its affected individuals falls within the panel's scope, as the panel's relevant disorders, disease group and description define it. A description can narrow the scope, exclude disorders or refer them to another panel; follow it.
-2. Judge by the phenotype that the summary reports, not by what is known about the disease from elsewhere. A feature the papers do not report does not count, even when the disease is known to cause it. Read clinical terms for their meaning: different words for the same finding match (e.g., "seizures" and "epilepsy"), and so does a disorder that is a form of the panel's (e.g., a developmental and epileptic encephalopathy and an epilepsy panel).
-3. A panel named after a clinical feature (e.g., hearing loss, cataract, intellectual disability) fits when the feature is part of the reported disorder, in all or a substantial share of the affected individuals. A feature found in one individual among many does not make the association belong on that panel.
-4. A panel defined by a combination of features (e.g., a triad) fits when the individuals have that combination, or when the papers diagnose the panel's disorder itself. Individuals with only some of the features do not fit it.
-5. The mode of inheritance, age of onset and other qualifiers in a panel's name or description (e.g., "Autosomal Recessive", "_Adult", "_Paediatric") must agree with the association's.
-6. Match every panel the association belongs on, not only the closest one, and none when none fits. Each rationale names the reported features that place the association on the panel.
+1. The panel's relevant disorders, disease group and description define its scope, including any exclusions the description makes.
+2. Judge by the features the papers report, not by what is known about the disease from elsewhere, and read clinical terms for their meaning.
+3. The mode of inheritance, age of onset and other qualifiers in a panel's name or description must agree with the association's.
+4. Each rationale names the reported features that place the association on the panel, with how many individuals have them.
 
 Style: Use UK English spelling, except in verbatim quotes.
 

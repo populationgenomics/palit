@@ -37,6 +37,7 @@ from palit.llm import (
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.match_panels import ScopeVerdict
+from palit.panelapp_check import CuratedRecord, PanelEntry
 from palit.panelapp_client import (
     AllPanelsData,
     PanelAppClient,
@@ -550,6 +551,18 @@ class GeneAssessment:
 
 
 @dataclass(frozen=True)
+class UnreviewedEntry:
+    """A target panel's entry that nobody has reviewed, for a gene with no association
+    in this report."""
+
+    hgnc_id: int
+    hgnc_symbol: str
+    panel_id: int
+    panel_name: str
+    rating: str  # GREEN, AMBER or RED
+
+
+@dataclass(frozen=True)
 class RefusedGene:
     """A gene that both models refused in assess-genes and that has no aggregation."""
 
@@ -569,6 +582,8 @@ class GeneAssessmentResults:
     target_panel_names: dict[int, str]  # panel_id → display name, for current target panels
     panels_matched: bool  # match-panels has run in this database; panel-scoped runs skip it
     scope_panel_id: int | None  # the one target panel of a panel-scoped run; None otherwise
+    # by HGNC symbol, then panel name
+    unreviewed_without_evidence: list[UnreviewedEntry]
 
 
 @dataclass
@@ -654,7 +669,8 @@ class GeneGroups:
 
     new_genes: list[GeneGroup]  # by best finding rating: GREEN, AMBER, RED
     with_findings: list[GeneGroup]  # known genes by best finding rating: GREEN, AMBER, RED
-    without_findings: list[GeneGroup]  # known genes unreviewed on the target panels, reviewed
+    without_findings: list[GeneGroup]  # known genes unreviewed on the target panels
+    already_reviewed: list[GeneGroup]  # known genes reviewed on the target panels
     # new genes without findings: a panel-scoped run judged all their associations outside
     # the scope panel
     outside_scope: list[GeneGroup]
@@ -831,7 +847,7 @@ def group_genes(
 
     Genes with findings go by the rating of their strongest finding, new and
     known genes apart. Known genes without findings go by whether any target
-    panel holding them has an expert review. New genes without findings, whose
+    panel holding them lacks an expert review. New genes without findings, whose
     associations a panel-scoped run all judged outside the scope panel, go
     together. The reviewed genes and those outside the scope start collapsed in
     the ToC; the groups of genes without findings are not preselected for bulk
@@ -865,24 +881,14 @@ def group_genes(
         if not gene.findings:
             on_unreviewed = unreviewed_target_panels(gene, target_panel_ids)
             (unreviewed if on_unreviewed else reviewed).append(gene)
-    no_finding_groups = [
-        GeneGroup(
-            key="unreviewed",
-            title="Unreviewed on target panel",
-            rating=None,
-            genes=unreviewed,
-            collapsed=False,
-            preselected=False,
-        ),
-        GeneGroup(
-            key="reviewed",
-            title="Already reviewed",
-            rating=None,
-            genes=reviewed,
-            collapsed=True,
-            preselected=False,
-        ),
-    ]
+
+    def single(
+        key: str, title: str, genes: list[GeneAssessment], collapsed: bool
+    ) -> list[GeneGroup]:
+        if not genes:
+            return []
+        return [GeneGroup(key, title, None, genes, collapsed=collapsed, preselected=False)]
+
     outside_scope = [g for g in novel if not g.findings]
     return GeneGroups(
         new_genes=by_rating(
@@ -894,19 +900,11 @@ def group_genes(
             [g for g in known if g.findings],
             lambda g: g.findings[0].rating,
         ),
-        without_findings=[group for group in no_finding_groups if group.genes],
-        outside_scope=[
-            GeneGroup(
-                key="outside-scope",
-                title="Possibly outside the panel's scope",
-                rating=None,
-                genes=outside_scope,
-                collapsed=True,
-                preselected=False,
-            )
-        ]
-        if outside_scope
-        else [],
+        without_findings=single("unreviewed", "Unreviewed on target panel", unreviewed, False),
+        already_reviewed=single("reviewed", "Already reviewed", reviewed, True),
+        outside_scope=single(
+            "outside-scope", "Possibly outside the panel's scope", outside_scope, True
+        ),
     )
 
 
@@ -1323,11 +1321,14 @@ def build_gene_assessment_results(
     target_panel_data: PanelGeneData,
     all_panels_data: AllPanelsData,
     scope_panel_id: int | None,
+    unreviewed_entries: dict[int, list[PanelEntry]],
 ) -> GeneAssessmentResults:
     """Every aggregated gene with associations, split into novel and known genes.
 
     A gene whose reports all went to ``unassessed_reports`` has an aggregation but no
     associations. It has nothing to rate or submit, so the report leaves it out.
+    *unreviewed_entries* are the target panels' entries that nobody has reviewed, by
+    gene; those of genes the report leaves out are listed on their own.
 
     *conn* must use ``sqlite3.Row`` as its row factory.
     """
@@ -1378,7 +1379,38 @@ def build_gene_assessment_results(
         target_panel_names=target_panel_names,
         panels_matched=match_panels_has_run(cursor),
         scope_panel_id=scope_panel_id,
+        unreviewed_without_evidence=unreviewed_without_evidence(
+            unreviewed_entries,
+            {gene.hgnc_id for gene in novel_genes + known_genes},
+            hgnc_resolver,
+        ),
     )
+
+
+def unreviewed_target_entries(record: CuratedRecord) -> dict[int, list[PanelEntry]]:
+    """The entries of *record*'s reference panels that nobody has reviewed, by gene."""
+    by_gene = {
+        hgnc_id: [e for e in entries if e.reference and e.unreviewed]
+        for hgnc_id, entries in record.genes.items()
+    }
+    return {hgnc_id: entries for hgnc_id, entries in by_gene.items() if entries}
+
+
+def unreviewed_without_evidence(
+    unreviewed_entries: dict[int, list[PanelEntry]],
+    reported: set[int],
+    hgnc_resolver: HgncResolver,
+) -> list[UnreviewedEntry]:
+    """The unreviewed entries of genes not in *reported*, by symbol and then panel name."""
+    entries = [
+        UnreviewedEntry(
+            hgnc_id, hgnc_resolver.get_symbol(hgnc_id), e.panel_id, e.panel_name, e.rating
+        )
+        for hgnc_id, gene_entries in unreviewed_entries.items()
+        if hgnc_id not in reported
+        for e in gene_entries
+    ]
+    return sorted(entries, key=lambda e: (e.hgnc_symbol, e.panel_name))
 
 
 def match_panels_has_run(cursor: sqlite3.Cursor) -> bool:
@@ -1419,10 +1451,22 @@ def load_gene_assessments(
         f"Loaded {len(target_panel_data.gene_panel_confidence)} genes from target panels, {len(all_panels_data.gene_to_panels)} genes from all panels"
     )
 
+    record = CuratedRecord.build(
+        panelapp_client.get_all_panel_data(),
+        panel_date,
+        target_panel_data.panel_ids,
+        all_panels=False,
+    )
+
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         return build_gene_assessment_results(
-            conn, hgnc_resolver, target_panel_data, all_panels_data, scope_panel_id
+            conn,
+            hgnc_resolver,
+            target_panel_data,
+            all_panels_data,
+            scope_panel_id,
+            unreviewed_target_entries(record),
         )
 
 
@@ -2130,6 +2174,7 @@ def generate_html_report(
     panels_matched: bool,
     panelapp_integration: bool,
     scope_panel_id: int | None,
+    unreviewed_without_evidence: list[UnreviewedEntry],
 ) -> str:
     """Generate HTML report directly using Jinja2 templates.
 
@@ -2213,6 +2258,7 @@ def generate_html_report(
         refused_genes=refused_genes,
         panels_matched=panels_matched,
         scope_panel_name=None if scope_panel_id is None else target_panel_names[scope_panel_id],
+        unreviewed_without_evidence=unreviewed_without_evidence,
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
         model_name=MODEL_NAMES[MODEL],
         relevance_refusers=relevance_refusers,
@@ -2326,6 +2372,7 @@ def main(
         panels_matched=results.panels_matched,
         panelapp_integration=panelapp_integration,
         scope_panel_id=results.scope_panel_id,
+        unreviewed_without_evidence=results.unreviewed_without_evidence,
     )
 
     # Save HTML as index.html

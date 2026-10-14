@@ -27,6 +27,7 @@ from palit.generate_report import (
     QuoteRef,
     ReportAssociation,
     StageState,
+    UnreviewedEntry,
     association_finding,
     association_sort_key,
     build_gene_assessment_results,
@@ -42,6 +43,7 @@ from palit.generate_report import (
     load_quote_refs,
     load_relevance_refusers,
     report_order,
+    unreviewed_target_entries,
     unreviewed_target_panels,
     write_viewer_package,
 )
@@ -49,6 +51,7 @@ from palit.hgnc import HgncResolver
 from palit.llm import FALLBACK_MODEL, LIGHT_MODEL, MODEL
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
+from palit.panelapp_check import CuratedRecord
 from palit.panelapp_client import AllPanelsData, PanelGeneData, PanelPublications
 from palit.panelapp_integration import (
     ENUM_TO_PANELAPP_MOI,
@@ -507,7 +510,7 @@ def _load(
     )
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        return build_gene_assessment_results(conn, hgnc_resolver, target, all_panels, None)
+        return build_gene_assessment_results(conn, hgnc_resolver, target, all_panels, None, {})
 
 
 @pytest.fixture
@@ -527,7 +530,7 @@ def _load_scoped(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentRe
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         return build_gene_assessment_results(
-            conn, hgnc_resolver, target, all_panels, ATAXIA_PANEL_ID
+            conn, hgnc_resolver, target, all_panels, ATAXIA_PANEL_ID, {}
         )
 
 
@@ -831,6 +834,7 @@ def _render(
         panels_matched=results.panels_matched,
         panelapp_integration=False,
         scope_panel_id=results.scope_panel_id,
+        unreviewed_without_evidence=results.unreviewed_without_evidence,
     )
 
 
@@ -1177,9 +1181,9 @@ def test_genes_are_placed_once_by_their_strongest_finding() -> None:
         ("finding-red", "Best finding RED", [23], False, True),
     ]
     assert layout(groups.without_findings) == [
-        ("unreviewed", "Unreviewed on target panel", [30], False, False),
-        ("reviewed", "Already reviewed", [31], True, False),
+        ("unreviewed", "Unreviewed on target panel", [30], False, False)
     ]
+    assert layout(groups.already_reviewed) == [("reviewed", "Already reviewed", [31], True, False)]
     assert [(f.kind, f.rating) for f in genes["green_gene"].findings] == [
         (FindingKind.NEW_DISEASE, 3),
         (FindingKind.NEW_DISEASE, 2),
@@ -2079,3 +2083,69 @@ def test_a_link_into_a_fold_opens_it(db_path: Path, results: GeneAssessmentResul
     html = _render(db_path, results)
     assert "window.addEventListener('hashchange'" in html
     assert "fold.open = true" in html
+
+
+def test_unreviewed_target_entries_of_genes_without_associations_are_listed(
+    db_path: Path, hgnc_resolver: HgncResolver, panelapp_snapshot: dict[int, dict[str, Any]]
+) -> None:
+    """On the Mendeliome, GENEA (in the report) and GENEC (not in it) are unreviewed; GENEB
+    is unreviewed on the Ataxia panel, which is no target panel. Only GENEC is listed."""
+    mendeliome = panelapp_snapshot[MENDELIOME_PANEL_ID]
+    genea = mendeliome["genes"][0]
+    genea["evaluations"] = []
+    genec = {**genea, "gene_data": {"hgnc_id": "HGNC:4", "gene_symbol": "GENEC"}}
+    genec["confidence_level"] = "2"
+    mendeliome["genes"].append(genec)
+    panelapp_snapshot[ATAXIA_PANEL_ID]["genes"][0]["evaluations"] = []
+    record = CuratedRecord.build(
+        panelapp_snapshot, "2026-09-01", [MENDELIOME_PANEL_ID], all_panels=False
+    )
+    unreviewed = unreviewed_target_entries(record)
+    assert sorted(unreviewed) == [1, 4]
+
+    target = PanelGeneData(
+        panel_ids=[MENDELIOME_PANEL_ID], gene_panel_confidence={1: {MENDELIOME_PANEL_ID: 2}}
+    )
+    all_panels = AllPanelsData(
+        gene_to_panels={1: {MENDELIOME_PANEL_ID}}, panel_names={MENDELIOME_PANEL_ID: "Mendeliome"}
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        results = build_gene_assessment_results(
+            conn, hgnc_resolver, target, all_panels, None, unreviewed
+        )
+    assert results.unreviewed_without_evidence == [
+        UnreviewedEntry(4, "GENEC", MENDELIOME_PANEL_ID, "Mendeliome", "AMBER")
+    ]
+    html = _render(db_path, results)
+    section = html[html.index('<section id="unreviewed-without-evidence">') :]
+    assert f'href="https://panelapp-aus.org/panels/{MENDELIOME_PANEL_ID}/gene/GENEC/"' in section
+    assert (
+        'href="#unreviewed-without-evidence">Unreviewed panel genes without new evidence (1)'
+        in (_toc(html))
+    )
+
+
+def test_already_reviewed_genes_come_last_in_a_folded_section(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """GENEA, reviewed on the Mendeliome and without findings once its new associations
+    are gone, comes after every other section, folded."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM associations WHERE id IN (11, 12, 13)")
+        conn.execute(
+            "UPDATE gene_aggregations SET existing_panel_reviews_json = ? WHERE hgnc_id = 1",
+            (
+                json.dumps(
+                    [{"panel_id": MENDELIOME_PANEL_ID, "evaluations": [{"rating": "GREEN"}]}]
+                ),
+            ),
+        )
+    results = _load(db_path, hgnc_resolver)
+    html = _render(db_path, results)
+    section = html[html.index('<section id="already-reviewed">') :]
+    assert section.index('<details class="folded-section">') < section.index('id="known-gene-1"')
+    assert "<summary>Show 1 gene</summary>" in section
+    body = html[html.index("</nav>") :]
+    assert body.index('<section id="new-genes">') < body.index('<section id="already-reviewed">')
+    assert 'data-section-key="reviewed"' in _toc(html)

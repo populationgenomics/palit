@@ -653,6 +653,18 @@ section > h2 {
     border-left-color: #dd6b20;
 }
 
+.unreviewed-entries {
+    border-collapse: collapse;
+    margin: 8px 0 16px 0;
+}
+
+.unreviewed-entries th,
+.unreviewed-entries td {
+    padding: 4px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    text-align: left;
+}
+
 .folded-section > summary {
     cursor: pointer;
     padding: 6px 10px;

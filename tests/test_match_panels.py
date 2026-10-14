@@ -26,21 +26,26 @@ from palit.match_panels import (
     EFFORT,
     PROMPT_PATH,
     SCHEMA_PATH,
+    SCOPE_PROMPT_PATH,
     STAGE,
     Association,
     build_request,
     count_unmatched,
     handle_result,
     match_associations,
+    matching_schema,
     select_associations,
     send_primed,
     split_prompt,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA: dict[str, Any] = json.loads((ROOT / SCHEMA_PATH).read_text())
+BASE_SCHEMA: dict[str, Any] = json.loads((ROOT / SCHEMA_PATH).read_text())
+SCHEMA = matching_schema(BASE_SCHEMA, scoped=False)
+SCOPED_SCHEMA = matching_schema(BASE_SCHEMA, scoped=True)
 PANEL_LIST = '<panel id="250">\nName: Hereditary Spastic Paraplegia\n</panel>'
 NAME_TO_ID = {"hereditary spastic paraplegia": 250, "mendeliome": 137}
+HSP_PANEL_ID = 250
 
 
 def _assessment(description: str, **fields: str) -> str:
@@ -106,11 +111,11 @@ def db_path(tmp_path: Path) -> Path:
 
 
 def _prompt() -> tuple[str, str]:
-    return split_prompt((ROOT / PROMPT_PATH).read_text(), PANEL_LIST)
+    return split_prompt((ROOT / PROMPT_PATH).read_text(), PANEL_LIST, None)
 
 
 def test_select_associations_skips_matched_and_refused_rows(db_path: Path) -> None:
-    assert select_associations(db_path, _history(db_path)) == [
+    assert select_associations(db_path, _history(db_path), scoped=False) == [
         Association(
             id=2,
             description="adult-onset hereditary spastic paraplegia",
@@ -133,7 +138,7 @@ def test_select_associations_skips_matched_and_refused_rows(db_path: Path) -> No
             summary="Five families with spastic paraplegia.",
         ),
     ]
-    assert count_unmatched(db_path) == 4
+    assert count_unmatched(db_path, scoped=False) == 4
     history = _history(db_path)
     assert (history.model_for("2"), history.model_for("4")) == (MODEL, FALLBACK_MODEL)
 
@@ -143,8 +148,8 @@ def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path:
         conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = 11273")
         (left_behind,) = conn.execute("SELECT COUNT(*) FROM associations").fetchone()
     assert left_behind == 5
-    assert select_associations(db_path, _history(db_path)) == []
-    assert count_unmatched(db_path) == 0
+    assert select_associations(db_path, _history(db_path), scoped=False) == []
+    assert count_unmatched(db_path, scoped=False) == 0
 
 
 def test_split_prompt_keeps_the_panel_list_in_the_system_part() -> None:
@@ -152,7 +157,37 @@ def test_split_prompt_keeps_the_panel_list_in_the_system_part() -> None:
     assert PANEL_LIST in system
     assert "{panel_list}" not in system
     assert "ASSOCIATION:" not in system
+    assert "PANEL UNDER REVIEW" not in system
     assert user_template.startswith("ASSOCIATION:")
+
+
+def test_a_scoped_system_prompt_ends_with_the_panel_under_review() -> None:
+    panel = '<panel id="160">\nName: Pierre Robin Sequence\n</panel>'
+    scope_section = (ROOT / SCOPE_PROMPT_PATH).read_text().format(panel=panel)
+    system, user_template = split_prompt(
+        (ROOT / PROMPT_PATH).read_text(), PANEL_LIST, scope_section
+    )
+    assert system.index(PANEL_LIST) < system.index("PANEL UNDER REVIEW:") < system.index(panel)
+    assert system.endswith("}")
+    assert user_template.startswith("ASSOCIATION:")
+
+
+def test_only_a_scoped_run_requires_the_scope_panel_verdict() -> None:
+    assert "scope_panel" not in SCHEMA["properties"]
+    assert SCOPED_SCHEMA["required"] == ["matched_panels", "scope_panel"]
+    verdict = {"rationale": "r", "fits": False}
+    jsonschema.validate({"matched_panels": [], "scope_panel": verdict}, SCOPED_SCHEMA)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"matched_panels": []}, SCOPED_SCHEMA)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"matched_panels": [], "scope_panel": {"fits": True}}, SCOPED_SCHEMA)
+
+
+def test_a_scoped_run_selects_matched_associations_without_a_verdict(db_path: Path) -> None:
+    """Association 1 was matched in a run without a scope panel."""
+    selected = select_associations(db_path, _history(db_path), scoped=True)
+    assert [a.id for a in selected] == [1, 2, 4, 5]
+    assert count_unmatched(db_path, scoped=True) == 5
 
 
 def _history(db_path: Path) -> StageHistory:
@@ -171,7 +206,7 @@ def test_build_request_describes_one_association(db_path: Path) -> None:
     output_config = json_output_config(SCHEMA, EFFORT)
     first, second, _ = (
         build_request(association, system, user_template, output_config, MODEL)
-        for association in select_associations(db_path, _history(db_path))
+        for association in select_associations(db_path, _history(db_path), scoped=False)
     )
     assert first.subject == "2"
     assert first.params["system"] == second.params["system"]
@@ -265,7 +300,7 @@ def test_handle_result_stores_valid_matches_on_the_association(db_path: Path) ->
         _result("99", _answer({"matched_panels": []}), "match_panels-1-gone"),
     ]
     validator = jsonschema.Draft202012Validator(SCHEMA)
-    assert [handle_result(result, db_path, validator, NAME_TO_ID) for result in results] == [
+    assert [handle_result(result, db_path, validator, NAME_TO_ID, None) for result in results] == [
         True,
         False,
         False,
@@ -288,13 +323,57 @@ def test_handle_result_stores_valid_matches_on_the_association(db_path: Path) ->
     assert recorded["match_panels-1-unknown"] == ("4", "succeeded")
     assert recorded["match_panels-1-gone"] == ("99", "succeeded")
     assert json.loads(raw)["id"] == "msg_ok"
+    with sqlite3.connect(db_path) as conn:
+        (verdict,) = conn.execute(
+            "SELECT scope_panel_json FROM associations WHERE id = 2"
+        ).fetchone()
+    assert verdict is None
+
+
+def _verdicts(db_path: Path) -> dict[int, dict[str, Any] | None]:
+    with sqlite3.connect(db_path) as conn:
+        return {
+            association_id: None if verdict is None else json.loads(verdict)
+            for association_id, verdict in conn.execute(
+                "SELECT id, scope_panel_json FROM associations"
+            )
+        }
+
+
+def test_a_scoped_run_stores_the_verdict_with_the_matches(db_path: Path) -> None:
+    """The verdict must agree with the matches: fits exactly when the scope panel matches.
+    Association 1, matched before without a verdict, gets both anew."""
+    fits = {"rationale": "Spastic paraplegia in all five.", "fits": True}
+    misfit = {"rationale": "No spasticity is reported.", "fits": False}
+    results = [
+        _result("2", _answer({"matched_panels": [HSP], "scope_panel": fits}), "s-fits"),
+        _result("5", _answer({"matched_panels": [], "scope_panel": misfit}), "s-misfit"),
+        _result("1", _answer({"matched_panels": [], "scope_panel": misfit}), "s-again"),
+        _result("4", _answer({"matched_panels": [HSP], "scope_panel": misfit}), "s-disagree"),
+    ]
+    validator = jsonschema.Draft202012Validator(SCOPED_SCHEMA)
+    stored = [
+        handle_result(result, db_path, validator, NAME_TO_ID, HSP_PANEL_ID) for result in results
+    ]
+    assert stored == [True, True, True, False]
+    verdicts = _verdicts(db_path)
+    assert verdicts[2] == {"panel_id": HSP_PANEL_ID, **fits}
+    assert verdicts[5] == {"panel_id": HSP_PANEL_ID, **misfit}
+    assert verdicts[1] == {"panel_id": HSP_PANEL_ID, **misfit}
+    assert verdicts[4] is None
+    assert _matched(db_path)[4] is None
+    with sqlite3.connect(db_path) as conn:
+        (rejection,) = conn.execute(
+            "SELECT rejection FROM llm_requests WHERE custom_id = 's-disagree'"
+        ).fetchone()
+    assert "disagrees with the matched panels" in rejection
 
 
 def test_handle_result_records_an_invalid_request_before_raising(db_path: Path) -> None:
     validator = jsonschema.Draft202012Validator(SCHEMA)
     result = _result("2", None, "match_panels-1-invalid", error_type="invalid_request_error")
     with pytest.raises(RuntimeError, match="association 2"):
-        handle_result(result, db_path, validator, NAME_TO_ID)
+        handle_result(result, db_path, validator, NAME_TO_ID, None)
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
             "SELECT subject, status, error_type FROM llm_requests WHERE custom_id = ?",
@@ -391,6 +470,7 @@ def test_a_refusal_by_the_model_goes_to_the_fallback_model_in_the_next_attempt(
             system=system,
             user_template=user_template,
             name_to_id=NAME_TO_ID,
+            scope_panel_id=None,
             max_retries=3,
             failures_since=datetime.min.replace(tzinfo=UTC),
         )

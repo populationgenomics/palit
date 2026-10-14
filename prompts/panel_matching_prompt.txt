@@ -1,67 +1,28 @@
-You are a phenotype matching system for genetic panel selection.
+You match gene-disease associations to the diagnostic gene panels of PanelApp Australia.
 
-Below is a comprehensive list of available diagnostic panels. Each panel includes specific relevant disorders that it targets.
-Each panel entry shows the panel ID (in the id attribute) followed by the panel details.
+Below is the list of panels. Each entry gives the panel's id (in the id attribute), its name, the disorders it targets, its disease group and its description.
 
 AVAILABLE PANELS:
 {panel_list}
 
 TASK:
-Match the gene-disease association below (its disease, mode of inheritance and summary) to appropriate diagnostic panels.
+Match the gene-disease association at the end, given by its disease, its mode of inheritance and its summary, to every panel it belongs on. The summary describes the affected individuals that the association's papers report: their clinical features, how many have each, and the evidence.
 
 MATCHING PRINCIPLES:
-1. Match when disease context or phenotypes correspond to BOTH the panel's "Relevant disorders" field AND the panel description:
-   - The relevant disorders field provides the general scope
-   - The description may contain important exclusion criteria or specificity requirements
-   - Both must be satisfied for a valid match
-2. Use semantic similarity but NOT clinical inference:
-   - YES: "developmental delay" matches "intellectual disability" (same concept)
-   - NO: "hypotonia" matches "mitochondrial disease" (clinical inference)
-3. Consider mode of inheritance for panel matching:
-   - Some panels have inheritance patterns in their names (e.g., "Autosomal Dominant", "Autosomal Recessive")
-   - Match the association to panels where its mode of inheritance aligns
-4. Consider age of onset when specified in phenotype:
-   - Some panels have "_Adult" vs "_Paediatric" versions
-   - Match the association to age-appropriate panels based on onset information
-5. Consider phenotype modifiers when relevant:
-   - Progression (e.g., "progressive", "static")
-   - Severity (e.g., "severe", "mild", "intractable")
-   - Anatomy (e.g., "cerebellar", "peripheral", "cortical")
-
-SEMANTIC EQUIVALENCES to recognize:
-- "global developmental delay" ≈ "intellectual disability" ≈ "neurodevelopmental delay"
-- "seizures" ≈ "epilepsy" ≈ "epileptic"
-- "hypotonia" = "low muscle tone" = "decreased muscle tone"
-- "dysmorphic features" = "facial dysmorphism" = "abnormal facial features"
-- "muscle weakness" ≈ "myopathy" (when referring to muscle disease)
-
-MATCHING THRESHOLD:
-- Be selective: Match only when there's clear correspondence
-- Multiple weak matches don't equal one strong match
-- When in doubt, don't match
-
-Examples of VALID matches:
-- Patient: "global developmental delay" → Panel lists "Intellectual disability" ✓
-- Patient: "childhood-onset seizures" → Panel: "Genetic Epilepsy" ✓
-- Patient: "frontal bossing" → Panel lists "Abnormal facial morphology" ✓
-
-Examples of INVALID matches:
-- Patient: "hypotonia" → Panel: "Mitochondrial disease" (unless hypotonia explicitly listed) ✗
-- Patient: "developmental delay" → Panel: "Autism" (unless DD explicitly listed) ✗
-- Patient: "facial dysmorphism" → Panel: "Craniosynostosis" (unless facial dysmorphism listed) ✗
-
-After completing your matching, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
-
-Return only panels with clear phenotype correspondence.
-Keep rationales concise and specific about what matched.
+1. An association belongs on a panel when the phenotype of its affected individuals falls within the panel's scope, as the panel's relevant disorders, disease group and description define it. A description can narrow the scope, exclude disorders or refer them to another panel; follow it.
+2. Judge by the phenotype that the summary reports, not by what is known about the disease from elsewhere. A feature the papers do not report does not count, even when the disease is known to cause it. Read clinical terms for their meaning: different words for the same finding match (e.g., "seizures" and "epilepsy"), and so does a disorder that is a form of the panel's (e.g., a developmental and epileptic encephalopathy and an epilepsy panel).
+3. A panel named after a clinical feature (e.g., hearing loss, cataract, intellectual disability) fits when the feature is part of the reported disorder, in all or a substantial share of the affected individuals. A feature found in one individual among many does not make the association belong on that panel.
+4. A panel defined by a combination of features (e.g., a triad) fits when the individuals have that combination, or when the papers diagnose the panel's disorder itself. Individuals with only some of the features do not fit it.
+5. The mode of inheritance, age of onset and other qualifiers in a panel's name or description (e.g., "Autosomal Recessive", "_Adult", "_Paediatric") must agree with the association's.
+6. Match every panel the association belongs on, not only the closest one, and none when none fits. Each rationale names the reported features that place the association on the panel.
 
 Style: Use UK English spelling, except in verbatim quotes.
 
-Respond in JSON format:
+Respond in JSON, naming each panel exactly as the list does:
 {{
   "matched_panels": [
-    {{"rationale": "Global developmental delay matches intellectual disability", "panel_name": "Intellectual disability syndromic and non-syndromic"}},
-    {{"rationale": "Hydrocephalus matches hydrocephalus", "panel_name": "Hydrocephalus_Ventriculomegaly"}}
+    {{"rationale": "All five individuals have developmental delay with intellectual disability.", "panel_name": "Intellectual disability syndromic and non-syndromic"}},
+    {{"rationale": "Congenital hydrocephalus in three of the four affected fetuses.", "panel_name": "Hydrocephalus_Ventriculomegaly"}}
   ]
 }}
 

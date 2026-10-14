@@ -476,9 +476,11 @@ uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID --scope-panel-id $PANEL_ID
 
-# 6. Map associations without a GenCC term onto MONDO terms, as in the main
-#    workflow. Scoped runs skip match-panels.
+# 6. Map associations without a GenCC term onto MONDO terms, and match them to
+#    panels, as in the main workflow. With --scope-panel-id, each answer also
+#    gives a verdict on this panel, with a rationale, whether or not it matches.
 uv run palit map-mondo --db-path data/$PANEL_NAME.sqlite
+uv run palit match-panels --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 
 # 7. Generate report package against the panel: every association of a gene
 #    not on it is a finding, and an upgrade starts from the gene's rating on it

@@ -22,6 +22,7 @@ from anthropic.types import ToolParam
 
 from palit.llm import FALLBACK_MODEL, LIGHT_MODEL, MODEL, json_output_config, make_client
 from palit.lookup_tools import TOOLS as EXTRACTION_TOOLS
+from palit.match_panels import matching_schema
 from palit.mondo_tools import TOOLS as MONDO_TOOLS
 from palit.scan_mechanisms import MechanismScanResult
 
@@ -39,7 +40,8 @@ CONFIGURATIONS: list[tuple[str, dict[str, Any], list[ToolParam]]] = [
     ("extraction", _schema("evidence_extraction_schema.json"), EXTRACTION_TOOLS),
     ("assess_genes", _schema("aggregate_assessment_schema.json"), []),
     ("map_mondo", _schema("map_mondo_schema.json"), MONDO_TOOLS),
-    ("match_panels", _schema("panel_matching_schema.json"), []),
+    ("match_panels", matching_schema(_schema("panel_matching_schema.json"), False), []),
+    ("match_panels_scoped", matching_schema(_schema("panel_matching_schema.json"), True), []),
     ("tournament", _schema("tournament_selection_schema.json"), []),
     ("scan_mechanisms", MechanismScanResult.model_json_schema(), []),
 ]

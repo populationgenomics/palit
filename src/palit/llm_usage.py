@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from palit.hgnc import HgncResolver
-from palit.llm import FAILED_ANSWER, FALLBACK_MODEL, request_cost, stage_failures
+from palit.llm import FAILED_ANSWER, FALLBACKS, request_cost, stage_failures
 
 app = typer.Typer(help="Claude API usage recorded in a run database")
 
@@ -132,14 +132,15 @@ class SubjectOutcome(StrEnum):
     """Where a refused subject stands in its stage, from the stage's latest request about it."""
 
     RECOVERED = "recovered"  # answered after the refusal, by either model
-    REFUSED_FOR_GOOD = "refused for good"  # FALLBACK_MODEL refused it last
-    UNANSWERED = "not answered yet"  # MODEL refused it last, or it failed; a rerun retries it
+    REFUSED_FOR_GOOD = "refused for good"  # a model without a fallback refused it last
+    # A model with a fallback refused it last, or it failed; a rerun retries it
+    UNANSWERED = "not answered yet"
 
 
 def subject_outcome(latest_status: str, latest_model: str) -> SubjectOutcome:
     if latest_status == "succeeded":
         return SubjectOutcome.RECOVERED
-    if latest_status == "refused" and latest_model == FALLBACK_MODEL:
+    if latest_status == "refused" and latest_model not in FALLBACKS:
         return SubjectOutcome.REFUSED_FOR_GOOD
     return SubjectOutcome.UNANSWERED
 

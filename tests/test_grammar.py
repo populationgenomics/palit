@@ -4,7 +4,8 @@ The binding limit is an undocumented cap on compiled grammar size, which counts
 the output schema plus every declared tool (strict or not). Measured headroom for
 the extraction schema is small, so each configuration a stage sends is checked
 here with a 16-token request (a fraction of a cent each), on MODEL and on
-FALLBACK_MODEL, which gets the same requests after a refusal.
+FALLBACK_MODEL, which gets the same requests after a refusal, and on LIGHT_MODEL
+for the stages that can run on it.
 
 Needs Claude credentials (the ``PALIT_ANTHROPIC_PROFILE`` profile), so it is opt-in:
 ``uv run pytest -m api``.
@@ -19,7 +20,7 @@ import anthropic
 import pytest
 from anthropic.types import ToolParam
 
-from palit.llm import FALLBACK_MODEL, MODEL, json_output_config, make_client
+from palit.llm import FALLBACK_MODEL, LIGHT_MODEL, MODEL, json_output_config, make_client
 from palit.lookup_tools import TOOLS as EXTRACTION_TOOLS
 from palit.mondo_tools import TOOLS as MONDO_TOOLS
 from palit.scan_mechanisms import MechanismScanResult
@@ -42,6 +43,13 @@ CONFIGURATIONS: list[tuple[str, dict[str, Any], list[ToolParam]]] = [
     ("tournament", _schema("tournament_selection_schema.json"), []),
     ("scan_mechanisms", MechanismScanResult.model_json_schema(), []),
 ]
+# assess-relevance --model
+LIGHT_MODEL_STAGES = {"relevance", "relevance_panelapp"}
+CASES = [
+    pytest.param(stage, schema, tools, model, id=f"{stage}-{model}")
+    for stage, schema, tools in CONFIGURATIONS
+    for model in (MODEL, FALLBACK_MODEL, *([LIGHT_MODEL] if stage in LIGHT_MODEL_STAGES else []))
+]
 
 
 async def _compile(schema: dict[str, Any], tools: list[ToolParam], model: str) -> None:
@@ -56,10 +64,7 @@ async def _compile(schema: dict[str, Any], tools: list[ToolParam], model: str) -
 
 
 @pytest.mark.api
-@pytest.mark.parametrize("model", [MODEL, FALLBACK_MODEL])
-@pytest.mark.parametrize(
-    ("stage", "schema", "tools"), CONFIGURATIONS, ids=[c[0] for c in CONFIGURATIONS]
-)
+@pytest.mark.parametrize(("stage", "schema", "tools", "model"), CASES)
 def test_configuration_compiles(
     stage: str, schema: dict[str, Any], tools: list[ToolParam], model: str
 ) -> None:

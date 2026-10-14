@@ -11,6 +11,8 @@ import pytest
 from anthropic.types import Message
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
+from palit.assess_relevance import CHECK_STAGE as RELEVANCE_CHECK_STAGE
+from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.assess_relevance import Refusal, refused_assessment
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
@@ -38,12 +40,13 @@ from palit.generate_report import (
     load_low_confidence_irrelevant_papers,
     load_panel_publications_validation,
     load_quote_refs,
+    load_relevance_refusers,
     report_order,
     unreviewed_target_panels,
     write_viewer_package,
 )
 from palit.hgnc import HgncResolver
-from palit.llm import FALLBACK_MODEL, MODEL
+from palit.llm import FALLBACK_MODEL, LIGHT_MODEL, MODEL
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.panelapp_client import AllPanelsData, PanelGeneData, PanelPublications
@@ -797,6 +800,7 @@ def _render(
         target_panel_ids=[MENDELIOME_PANEL_ID],
         target_panel_names=results.target_panel_names,
         refused_genes=results.refused_genes,
+        relevance_refusers=load_relevance_refusers(db_path),
         panels_matched=results.panels_matched,
         panelapp_integration=False,
     )
@@ -1119,9 +1123,9 @@ def test_papers_both_models_refused_are_neither_passes_nor_rejections(
     """Panel publications: a screen miss, and one paper refused at each relevance level."""
     assessments = {
         "10.1/miss": {"relevant": False, "screen": _screen(False, "LOW"), "panelapp_check": None},
-        "10.1/refused-screen": refused_assessment(Refusal("screen", FALLBACK_MODEL, "bio"), None),
+        "10.1/refused-screen": refused_assessment(Refusal("screen", LIGHT_MODEL, "bio"), None),
         "10.1/refused-check": refused_assessment(
-            Refusal("panelapp_check", FALLBACK_MODEL, None), _screen(True, "HIGH")
+            Refusal("panelapp_check", LIGHT_MODEL, None), _screen(True, "HIGH")
         ),
     }
     with sqlite3.connect(db_path) as conn:
@@ -1134,6 +1138,17 @@ def test_papers_both_models_refused_are_neither_passes_nor_rejections(
                 (doi, 900 + i, f"Title {doi}", json.dumps(assessment))
                 for i, (doi, assessment) in enumerate(assessments.items())
             ],
+        )
+    # The relevance stage ran on LIGHT_MODEL, whose refusals are final.
+    for stage, doi in (
+        (RELEVANCE_STAGE, "10.1/refused-screen"),
+        (RELEVANCE_CHECK_STAGE, "10.1/refused-check"),
+    ):
+        _add_requests(
+            db_path,
+            stage,
+            doi,
+            [("refused", "2026-10-01T00:00:00+00:00", LIGHT_MODEL)],
         )
     monkeypatch.setattr(
         "palit.generate_report.get_current_panel_publications",
@@ -1153,16 +1168,33 @@ def test_papers_both_models_refused_are_neither_passes_nor_rejections(
     assert [p.doi for p in low_confidence] == ["10.1/miss"]
 
     html = _render(db_path, results, validation)
-    assert "Refused by Both Models (2)" in html
-    assert "Refused by both models (left out of the sensitivity): 2" in html
+    assert "Refused (2)</strong>" in html
+    assert "Refused to assess (left out of the sensitivity): 2" in html
     assert (
-        "Opus 5.5 and its fallback Sonnet 5.5 both refused the scope screen of this paper "
-        f"({FALLBACK_MODEL}, category: bio)"
+        f"Haiku 5.5 refused the scope screen of this paper ({LIGHT_MODEL}, category: bio)"
     ) in html
-    assert "both refused the PanelApp check of this paper" in html
+    assert "Haiku 5.5 refused the PanelApp check of this paper" in html
     assert "category: none given" in html
     # The paper refused at the PanelApp check shows the screen it passed.
     assert "Screen rationale HIGH." in html
+
+
+def test_relevance_refusers_name_the_stage_model_and_its_fallback(db_path: Path) -> None:
+    _add_requests(
+        db_path,
+        RELEVANCE_STAGE,
+        "10.1/a",
+        [("refused", "2026-10-01T00:00:00+00:00", FALLBACK_MODEL)],
+    )
+    # A run on FALLBACK_MODEL: its refusals are final.
+    assert load_relevance_refusers(db_path) == "Sonnet 5.5"
+    _add_requests(
+        db_path,
+        RELEVANCE_CHECK_STAGE,
+        "10.1/b",
+        [("refused", "2026-10-01T00:00:00+00:00", MODEL)],
+    )
+    assert load_relevance_refusers(db_path) == "Opus 5.5 and its fallback Sonnet 5.5 both"
 
 
 def test_quotes_an_aggregation_adds_follow_the_extraction_quotes_unlocated(

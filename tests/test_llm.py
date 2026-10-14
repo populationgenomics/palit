@@ -29,6 +29,7 @@ from palit import (
 from palit.hgnc import HgncResolver
 from palit.llm import (
     FALLBACK_MODEL,
+    LIGHT_MODEL,
     MAX_FAILED_ANSWERS,
     MAX_TOKENS_REJECTION,
     MID_STREAM_ATTEMPTS,
@@ -439,8 +440,8 @@ def test_stage_refusals_route_by_the_model_that_refused(db_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         refusals = stage_refusals(conn, "relevance")
         since_september = stage_refusals(conn, "relevance", datetime(2026, 9, 1, tzinfo=UTC))
-    assert refusals.by_model == {"by-model", "for-good"}
-    assert refusals.by_fallback == {"for-good", "earlier"}
+    assert refusals.to_fallback == {"by-model", "for-good"}
+    assert refusals.final == {"for-good", "earlier"}
     assert refusals.model_for("by-model") == FALLBACK_MODEL
     for subject in ("old-model", "answered", "other-stage", "new"):
         assert refusals.model_for(subject) == MODEL
@@ -451,12 +452,32 @@ def test_stage_refusals_route_by_the_model_that_refused(db_path: Path) -> None:
     assert since_september.model_for("earlier") == MODEL
 
 
-def test_result_goes_to_fallback_only_after_a_refusal_by_model() -> None:
+def test_stage_refusals_of_a_model_without_a_fallback_are_final(db_path: Path) -> None:
+    _add_requests(
+        db_path,
+        [
+            ("relevance", "light", LIGHT_MODEL, "refused", "2026-09-02T00:00:00+00:00"),
+            ("relevance", "sonnet", FALLBACK_MODEL, "refused", "2026-09-02T00:00:00+00:00"),
+        ],
+    )
+    with sqlite3.connect(db_path) as conn:
+        light = stage_refusals(conn, "relevance", model=LIGHT_MODEL)
+        sonnet = stage_refusals(conn, "relevance", model=FALLBACK_MODEL)
+    assert (light.to_fallback, light.final) == (frozenset(), frozenset({"light"}))
+    assert light.model_for("sonnet") == LIGHT_MODEL
+    assert (sonnet.to_fallback, sonnet.final) == (frozenset(), frozenset({"sonnet"}))
+    assert sonnet.model_for("light") == FALLBACK_MODEL
+
+
+def test_result_goes_to_fallback_only_after_a_refusal_by_a_model_with_one() -> None:
     def result(model: str, status: ResultStatus) -> LlmResult:
         return LlmResult("c", None, "relevance", "s", 1, model, status, None, None, None)
 
     assert result(MODEL, ResultStatus.REFUSED).goes_to_fallback
-    assert not result(FALLBACK_MODEL, ResultStatus.REFUSED).goes_to_fallback
+    assert not result(MODEL, ResultStatus.REFUSED).refused_for_good
+    for final in (FALLBACK_MODEL, LIGHT_MODEL):
+        assert not result(final, ResultStatus.REFUSED).goes_to_fallback
+        assert result(final, ResultStatus.REFUSED).refused_for_good
     assert not result(MODEL, ResultStatus.ERRORED).goes_to_fallback
 
 

@@ -21,13 +21,16 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
+from palit.assess_relevance import CHECK_STAGE as RELEVANCE_CHECK_STAGE
+from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.hgnc import HgncResolver
 from palit.llm import (
     FALLBACK_MODEL,
-    FALLBACK_MODEL_NAME,
-    MODEL_NAME,
+    FALLBACKS,
+    MODEL,
+    MODEL_NAMES,
     ResultStatus,
     parse_json_output,
 )
@@ -294,7 +297,7 @@ class FavoriteJournalSections:
     already_reviewed: list[FavoriteJournalPaper]
     filtered: list[FavoriteJournalPaper]
     manual_download: list[FavoriteJournalPaper]
-    refused: list[FavoriteJournalPaper]  # both models refused its relevance assessment
+    refused: list[FavoriteJournalPaper]  # its relevance assessment was refused for good
     not_relevant: list[FavoriteJournalPaper]
     off_panel: list[FavoriteJournalPaper]
 
@@ -359,21 +362,22 @@ class StageState(StrEnum):
 
     STORED = "stored"  # the association holds the stage's result
     NOT_RUN = "not_run"  # no request of the stage for this association
-    REFUSED = "refused"  # FALLBACK_MODEL refused the latest request; the stage skips it from now on
+    # A model without a fallback refused the latest request; the stage skips it from now on
+    REFUSED = "refused"
     FAILED = "failed"  # requests ran but none gave a valid result; a rerun retries it
 
 
 def stage_state(stored: bool, latest_status: str | None, latest_model: str | None) -> StageState:
     """The state of a stage for one association, from its stored result and latest request.
 
-    A latest refusal by MODEL counts as failed: the next attempt sends the
-    association to FALLBACK_MODEL.
+    A latest refusal by a model with a fallback counts as failed: the next
+    attempt sends the association to the fallback.
     """
     if stored:
         return StageState.STORED
     if latest_status is None:
         return StageState.NOT_RUN
-    if latest_status == ResultStatus.REFUSED and latest_model == FALLBACK_MODEL:
+    if latest_status == ResultStatus.REFUSED and latest_model not in FALLBACKS:
         return StageState.REFUSED
     return StageState.FAILED
 
@@ -566,7 +570,7 @@ class PanelValidationResult:
     true_positives: list[DetailedPaper]
     screen_misses: list[DetailedPaper]  # rejected by the scope screen
     check_rejections: list[DetailedPaper]  # passed the screen, judged curated by the PanelApp check
-    refused: list[DetailedPaper]  # both models refused a level; left out of the sensitivity
+    refused: list[DetailedPaper]  # refused for good at a level; left out of the sensitivity
     sensitivity_pct: float  # share of the assessed (not refused) ones assessed relevant
     screen_sensitivity_pct: float  # share of the assessed (not refused) ones that passed the screen
 
@@ -589,7 +593,7 @@ class ComprehensiveStats:
     screen_misses_count: int
     check_rejections_count: int
     true_positives_count: int
-    panel_refused_count: int  # relevance refused by both models, not in the sensitivity
+    panel_refused_count: int  # relevance refused for good, not in the sensitivity
 
     # Source breakdown
     initial_papers: int
@@ -1502,7 +1506,7 @@ def load_panel_publications_validation(
         logger.info(
             f"Panel validation: {len(true_positives)} relevant, {len(screen_misses)} missed by "
             f"the screen, {len(check_rejections)} judged curated by the PanelApp check, "
-            f"{len(refused)} refused by both models"
+            f"{len(refused)} refused for good"
         )
         logger.info(f"Sensitivity: {sensitivity_pct:.1f}% (screen: {screen_sensitivity_pct:.1f}%)")
 
@@ -1554,8 +1558,8 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                 logger.warning(f"Failed to parse relevance assessment for DOI {row['doi']}")
                 continue
 
-            # Screen rejections the screen itself was unsure about. A paper both models
-            # refused has no rejection to review.
+            # Screen rejections the screen itself was unsure about. A paper refused for
+            # good has no rejection to review.
             if relevance_assessment.get("refused") is not None:
                 continue
             screen = relevance_assessment["screen"]
@@ -1586,6 +1590,33 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
 
         logger.info(f"Found {len(low_confidence_papers)} low-confidence irrelevant papers")
         return low_confidence_papers
+
+
+def load_relevance_refusers(db_path: Path) -> str:
+    """Who refused the relevance assessment of the papers settled as refused, as the subject
+    of "refused": "Opus 5.5 and its fallback Sonnet 5.5 both" after a run on a model with a
+    fallback, the model alone (e.g. "Haiku 5.5") after a run on one without."""
+    with sqlite3.connect(db_path) as conn:
+        models = {
+            model
+            for (model,) in conn.execute(
+                """
+                SELECT DISTINCT model FROM llm_requests
+                WHERE stage IN (?, ?) AND status = 'refused'
+                """,
+                (RELEVANCE_STAGE, RELEVANCE_CHECK_STAGE),
+            )
+        }
+    phrases = []
+    for final in sorted(models - FALLBACKS.keys()):
+        refused_first = sorted(m for m in models if FALLBACKS.get(m) == final)
+        phrases.append(
+            f"{' and '.join(MODEL_NAMES[m] for m in refused_first)} and its fallback "
+            f"{MODEL_NAMES[final]} both"
+            if refused_first
+            else MODEL_NAMES[final]
+        )
+    return " or ".join(phrases)
 
 
 def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
@@ -1690,7 +1721,7 @@ def load_favorite_journal_papers(
     kind of contribution it made, mirroring the report's gene groups
     (new genes / known genes with findings / unreviewed / already reviewed)
     and the reasons a paper did not contribute (filtered out of aggregate /
-    requiring manual download / relevance refused by both models / screened
+    requiring manual download / relevance refused for good / screened
     out by relevance / off-panel evidence). Expansion papers are excluded
     entirely."""
     gene_anchors: dict[int, FavoriteJournalGeneLink] = {}
@@ -2034,6 +2065,7 @@ def generate_html_report(
     target_panel_ids: list[int],
     target_panel_names: dict[int, str],
     refused_genes: list[RefusedGene],
+    relevance_refusers: str,
     *,
     panels_matched: bool,
     panelapp_integration: bool,
@@ -2116,8 +2148,9 @@ def generate_html_report(
         refused_genes=refused_genes,
         panels_matched=panels_matched,
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
-        model_name=MODEL_NAME,
-        fallback_model_name=FALLBACK_MODEL_NAME,
+        model_name=MODEL_NAMES[MODEL],
+        relevance_refusers=relevance_refusers,
+        fallback_model_name=MODEL_NAMES[FALLBACK_MODEL],
     )
 
     return html
@@ -2210,6 +2243,7 @@ def main(
         target_panel_ids=actual_panel_ids,
         target_panel_names=results.target_panel_names,
         refused_genes=results.refused_genes,
+        relevance_refusers=load_relevance_refusers(db_path),
         panels_matched=results.panels_matched,
         panelapp_integration=panelapp_integration,
     )

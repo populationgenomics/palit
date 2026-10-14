@@ -34,6 +34,7 @@ from palit.hgnc import HgncResolver
 from palit.llm import (
     ALL_TIME,
     FALLBACK_MODEL,
+    LIGHT_MODEL,
     MODEL,
     LlmRequest,
     LlmResult,
@@ -276,7 +277,7 @@ def _refused(stage: str, subject: str, model: str) -> LlmResult:
 
 
 def _history(db_path: Path, stage: str) -> StageHistory:
-    return load_history(db_path, stage, ALL_TIME, ALL_TIME)
+    return load_history(db_path, stage, ALL_TIME, ALL_TIME, MODEL)
 
 
 def test_selection_routes_refused_papers_to_the_fallback_model(
@@ -305,7 +306,7 @@ def test_selection_routes_refused_papers_to_the_fallback_model(
     assert [p["doi"] for p in select_papers(db_path, 1, refusals)] == ["10.1/gene"]
     # With --retry-refused, refusals before this invocation no longer count, and the
     # paper settled as refused comes back once reopened.
-    later = load_history(db_path, STAGE, datetime.now(UTC) + timedelta(seconds=1), ALL_TIME)
+    later = load_history(db_path, STAGE, datetime.now(UTC) + timedelta(seconds=1), ALL_TIME, MODEL)
     assert len(select_papers(db_path, None, later)) == 2
     assert reopen_refused(db_path) == 1
     assert len(select_papers(db_path, None, later)) == 3
@@ -332,7 +333,7 @@ def test_check_level_falls_back_on_its_own(
 
 
 class RefusingTransport:
-    """MODEL refuses every screen; FALLBACK_MODEL answers with a rejection."""
+    """The stage's model refuses every screen; FALLBACK_MODEL answers with a rejection."""
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []  # (subject, model)
@@ -344,7 +345,7 @@ class RefusingTransport:
         for request in requests:
             model = request.params["model"]
             self.sent.append((request.subject, model))
-            if model == MODEL:
+            if model != FALLBACK_MODEL:
                 results.append(_refused(stage, request.subject, model))
             else:
                 answer = _result(stage, request.subject, _screen(False, []))
@@ -355,9 +356,7 @@ class RefusingTransport:
         return []
 
 
-def test_a_round_of_refusals_is_followed_by_the_fallback_attempt(
-    db_path: Path, hgnc_resolver: HgncResolver
-) -> None:
+def _run_refused(db_path: Path, resolver: HgncResolver, model: str) -> RefusingTransport:
     transport = RefusingTransport()
     asyncio.run(
         _process_relevance(
@@ -365,25 +364,88 @@ def test_a_round_of_refusals_is_followed_by_the_fallback_attempt(
             db_path=db_path,
             prompt=RelevancePrompt(system="s", user_template="{title} {abstract}"),
             schema=SCREEN_SCHEMA,
-            resolver=hgnc_resolver,
+            resolver=resolver,
             check=None,
+            model=model,
             limit=None,
             max_retries=5,
             retry_refused=False,
             retry_failed=False,
         )
     )
-    dois = ["10.1/gene", "10.1/nogene", "10.1/out"]
-    assert transport.sent == [(doi, MODEL) for doi in dois] + [
-        (doi, FALLBACK_MODEL) for doi in dois
-    ]
-    for doi in dois:
-        assert json.loads(_row(db_path, doi)["relevance_assessment_json"])["relevant"] is False
+    return transport
+
+
+def _recorded(db_path: Path) -> list[tuple[str, str, int]]:
     with sqlite3.connect(db_path) as conn:
-        recorded = conn.execute(
+        return conn.execute(
             "SELECT model, status, COUNT(*) FROM llm_requests GROUP BY model, status ORDER BY model"
         ).fetchall()
-    assert recorded == [(MODEL, "refused", 3), (FALLBACK_MODEL, "succeeded", 3)]
+
+
+DOIS = ["10.1/gene", "10.1/nogene", "10.1/out"]
+
+
+def test_a_round_of_refusals_is_followed_by_the_fallback_attempt(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    transport = _run_refused(db_path, hgnc_resolver, MODEL)
+    assert transport.sent == [(doi, MODEL) for doi in DOIS] + [
+        (doi, FALLBACK_MODEL) for doi in DOIS
+    ]
+    for doi in DOIS:
+        assert json.loads(_row(db_path, doi)["relevance_assessment_json"])["relevant"] is False
+    assert _recorded(db_path) == [(MODEL, "refused", 3), (FALLBACK_MODEL, "succeeded", 3)]
+
+
+def test_refusals_by_a_model_without_a_fallback_are_final(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """LIGHT_MODEL never falls back to a higher tier: its refusals settle the papers."""
+    transport = _run_refused(db_path, hgnc_resolver, LIGHT_MODEL)
+    assert transport.sent == [(doi, LIGHT_MODEL) for doi in DOIS]
+    for doi in DOIS:
+        assessment = json.loads(_row(db_path, doi)["relevance_assessment_json"])
+        assert assessment["refused"]["model"] == LIGHT_MODEL
+    assert _recorded(db_path) == [(LIGHT_MODEL, "refused", 3)]
+
+
+def test_refusals_count_only_for_the_model_the_stage_runs_on(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """A paper MODEL refused in an earlier run goes to LIGHT_MODEL first in a run on it."""
+    store_screens(
+        db_path,
+        [_refused(STAGE, "10.1/out", MODEL)],
+        jsonschema.Draft202012Validator(SCREEN_SCHEMA),
+        hgnc_resolver,
+        screen_only=False,
+    )
+    assert _history(db_path, STAGE).model_for("10.1/out") == FALLBACK_MODEL
+    light = load_history(db_path, STAGE, ALL_TIME, ALL_TIME, LIGHT_MODEL)
+    assert light.model_for("10.1/out") == LIGHT_MODEL
+
+
+def test_a_run_on_the_fallback_model_has_no_fallback(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """FALLBACK_MODEL's refusals are final when the stage runs on it."""
+    outcome = store_screens(
+        db_path,
+        [_refused(STAGE, "10.1/out", FALLBACK_MODEL)],
+        jsonschema.Draft202012Validator(SCREEN_SCHEMA),
+        hgnc_resolver,
+        screen_only=False,
+    )
+    assert (outcome.refused, outcome.to_fallback, outcome.settled) == (1, 0, 1)
+    history = load_history(db_path, STAGE, ALL_TIME, ALL_TIME, FALLBACK_MODEL)
+    assert history.skipped("10.1/out")
+    assert {
+        p["doi"]: history.model_for(p["doi"]) for p in select_papers(db_path, None, history)
+    } == {
+        "10.1/gene": FALLBACK_MODEL,
+        "10.1/nogene": FALLBACK_MODEL,
+    }
 
 
 # --- papers both models refused -------------------------------------------------
@@ -436,7 +498,7 @@ def test_a_screen_both_models_refused_is_settled_as_not_relevant(
     assert json.loads(row["relevance_assessment_raw"]) == {"screen": None, "panelapp_check": None}
     assert row["download_status"] is None
     # Not selected again, even when earlier refusals no longer count (--retry-refused).
-    later = load_history(db_path, STAGE, datetime.now(UTC) + timedelta(seconds=1), ALL_TIME)
+    later = load_history(db_path, STAGE, datetime.now(UTC) + timedelta(seconds=1), ALL_TIME, MODEL)
     assert "10.1/out" not in [p["doi"] for p in select_papers(db_path, None, later)]
 
 
@@ -461,7 +523,9 @@ def test_a_check_both_models_refused_keeps_the_screen(
     with sqlite3.connect(db_path) as conn:
         # the screen passed it, so its genes are recorded as for any paper it passes
         assert conn.execute("SELECT hgnc_id FROM gene_mentions").fetchall() == [(1,)]
-    later = load_history(db_path, CHECK_STAGE, datetime.now(UTC) + timedelta(seconds=1), ALL_TIME)
+    later = load_history(
+        db_path, CHECK_STAGE, datetime.now(UTC) + timedelta(seconds=1), ALL_TIME, MODEL
+    )
     assert select_screened(db_path, None, later) == []
 
 
@@ -568,6 +632,7 @@ def _run(
             schema=SCREEN_SCHEMA,
             resolver=resolver,
             check=check,
+            model=MODEL,
             limit=limit,
             max_retries=5,
             retry_refused=retry_refused,

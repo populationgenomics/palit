@@ -16,10 +16,12 @@ comprehensive repository, such as the retrospective baseline). The screen
 result is stored as soon as it arrives, so an interrupted run resumes with
 the check. Gene mentions record the screen's genes for every paper it passes.
 
-Each level falls back on its own: a paper MODEL refused at a level goes to
-FALLBACK_MODEL at that level in the next attempt (see :mod:`palit.llm`).
+Both levels run on the model ``--model`` picks (:data:`DEFAULT_MODEL` by default).
+Each level falls back on its own: a paper refused at a level by a model with a
+fallback goes to that fallback at that level in the next attempt (see
+:data:`palit.llm.FALLBACKS`). A refusal by a model without a fallback is final.
 
-A paper FALLBACK_MODEL refuses too is settled as not relevant, so that the
+A paper refused for good is settled as not relevant, so that the
 ledger does not ingest it again. Its result keeps the two-level shape and
 records the refusal (see :func:`refused_assessment`)::
 
@@ -29,8 +31,8 @@ records the refusal (see :func:`refused_assessment`)::
 ``screen`` holds the scope screen when the refusal came at the PanelApp check.
 Each invocation first settles the papers refused for good that still have no
 result, as a run database's recorded refusals may lack one. ``--retry-refused``
-instead reopens every settled refusal, and the papers both models refuse
-again are settled again.
+instead reopens every settled refusal, and the papers refused for good again
+are settled again.
 
 A paper whose answers failed for good at a level (see :mod:`palit.llm`) is left
 out at that level and stays without a result; ``--retry-failed`` sends it again.
@@ -45,6 +47,7 @@ from collections.abc import Callable
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
@@ -56,6 +59,9 @@ from palit.hgnc import HgncResolver
 from palit.llm import (
     ALL_TIME,
     FALLBACK_MODEL,
+    FALLBACKS,
+    LIGHT_MODEL,
+    MODEL,
     BatchTransport,
     Effort,
     ImmediateTransport,
@@ -107,13 +113,25 @@ MAX_ABSTRACT_CHARS = 10000
 _INPUT_HEADING = re.compile(r"^\*\*\s*Input Paper\s*\*\*\s*$", re.MULTILINE)
 
 
+class RelevanceModel(StrEnum):
+    """The models both levels can run on. Only MODEL has a fallback (FALLBACK_MODEL); the
+    others' refusals are final."""
+
+    OPUS = MODEL
+    SONNET = FALLBACK_MODEL
+    HAIKU = LIGHT_MODEL
+
+
+DEFAULT_MODEL = RelevanceModel.OPUS
+
+
 RefusalLevel = Literal["screen", "panelapp_check"]
 _LEVEL_STAGES: dict[RefusalLevel, str] = {"screen": STAGE, "panelapp_check": CHECK_STAGE}
 
 
 @dataclass(frozen=True)
 class Refusal:
-    """The refusal by FALLBACK_MODEL that settled a paper at one relevance level."""
+    """The final refusal that settled a paper at one relevance level."""
 
     level: RefusalLevel
     model: str
@@ -121,7 +139,7 @@ class Refusal:
 
 
 def refused_assessment(refusal: Refusal, screen: dict[str, Any] | None) -> dict[str, Any]:
-    """The settled result of a paper both models refused: not relevant, without a verdict.
+    """The settled result of a paper refused for good: not relevant, without a verdict.
 
     *screen* is the paper's scope screen for a refusal at the PanelApp check,
     None for a refusal at the screen itself.
@@ -222,10 +240,10 @@ def _due(rows: list[sqlite3.Row], history: StageHistory, limit: int | None) -> l
 
 
 def load_history(
-    db_path: Path, stage: str, refusals_since: datetime, failures_since: datetime
+    db_path: Path, stage: str, refusals_since: datetime, failures_since: datetime, model: str
 ) -> StageHistory:
     with closing(sqlite3.connect(db_path)) as conn:
-        return stage_history(conn, stage, refusals_since, failures_since)
+        return stage_history(conn, stage, refusals_since, failures_since, model)
 
 
 def select_papers(db_path: Path, limit: int | None, history: StageHistory) -> list[dict[str, Any]]:
@@ -278,8 +296,8 @@ def select_screened(
 class StoreOutcome:
     stored: int = 0
     refused: int = 0
-    to_fallback: int = 0  # the refusals by MODEL: these papers go to FALLBACK_MODEL next
-    settled: int = 0  # the refusals by FALLBACK_MODEL: these papers are settled as not relevant
+    to_fallback: int = 0  # refusals by a model with a fallback: these papers go to it next
+    settled: int = 0  # final refusals: these papers are settled as not relevant
     failed: int = 0
 
 
@@ -293,7 +311,7 @@ def _parsed_outputs(
 ) -> list[tuple[LlmResult, dict[str, Any]]]:
     """Record every result; return the valid outputs and count the rest in *outcome*.
 
-    A refusal by FALLBACK_MODEL settles its paper at *level*. A request that
+    A final refusal settles its paper at *level*. A request that
     failed or produced invalid output leaves its paper unchanged, so the next
     attempt selects it again; so does a PanelApp check without associations.
     Invalid requests are a bug and raise.
@@ -423,7 +441,7 @@ def _stored_screen(conn: sqlite3.Connection, doi: str) -> tuple[dict[str, Any], 
 def _store_refused(
     conn: sqlite3.Connection, doi: str, refusal: Refusal, resolver: HgncResolver
 ) -> None:
-    """Settle a paper both models refused at *refusal*'s level."""
+    """Settle a paper refused for good at *refusal*'s level."""
     screen: dict[str, Any] | None = None
     screen_raw: dict[str, Any] | None = None
     if refusal.level == "panelapp_check":
@@ -491,10 +509,10 @@ class SettledRefusals:
 def settle_refused(db_path: Path, resolver: HgncResolver) -> SettledRefusals:
     """Settle the papers refused for good that have no result yet, without API calls.
 
-    These are the papers that selection skips at a level because FALLBACK_MODEL
-    refused them there (see :func:`palit.llm.stage_refusals`), and that are not
-    in flight. Each settled result carries the category of FALLBACK_MODEL's
-    latest refusal of the paper at that level.
+    These are the papers that selection skips at a level because a model
+    without a fallback refused them there (see :func:`palit.llm.stage_refusals`),
+    and that are not in flight. Each settled result carries the model and category
+    of the latest such refusal of the paper at that level.
     """
     with sqlite3.connect(db_path) as conn:
         settled = SettledRefusals(
@@ -502,7 +520,7 @@ def settle_refused(db_path: Path, resolver: HgncResolver) -> SettledRefusals:
             panelapp_check=_settle_level(conn, "panelapp_check", resolver),
         )
     logger.info(
-        "Settled %d papers both models refused as not relevant: %d at the scope screen, "
+        "Settled %d papers refused for good as not relevant: %d at the scope screen, "
         "%d at the PanelApp check",
         settled.screen + settled.panelapp_check,
         settled.screen,
@@ -518,7 +536,8 @@ def _settle_level(conn: sqlite3.Connection, level: RefusalLevel, resolver: HgncR
         SELECT r.subject, r.model, r.refusal_category
         FROM llm_requests r
         JOIN papers p ON p.doi = r.subject
-        WHERE r.stage = ? AND r.status = 'refused' AND r.model = ?
+        WHERE r.stage = ? AND r.status = 'refused'
+          AND r.model NOT IN ({", ".join("?" * len(FALLBACKS))})
           AND p.relevance_assessment_json IS NULL
           AND p.relevance_screen_json {awaiting}
           AND NOT EXISTS (
@@ -527,7 +546,7 @@ def _settle_level(conn: sqlite3.Connection, level: RefusalLevel, resolver: HgncR
           )
         ORDER BY r.completed_at
         """,
-        (_LEVEL_STAGES[level], FALLBACK_MODEL),
+        (_LEVEL_STAGES[level], *FALLBACKS),
     ).fetchall()
     # Later rows overwrite earlier ones, so each paper keeps its latest refusal.
     latest = {doi: Refusal(level, model, category) for doi, model, category in rows}
@@ -566,7 +585,7 @@ def reopen_refused(db_path: Path) -> int:
                 """,
                 (screen_json, screen_raw, doi),
             )
-    logger.info("Reopened %d papers both models refused, to send them again", len(rows))
+    logger.info("Reopened %d papers refused for good, to send them again", len(rows))
     return len(rows)
 
 
@@ -589,17 +608,18 @@ async def _process_relevance(
     schema: dict[str, Any],
     resolver: HgncResolver,
     check: CheckSettings | None,
+    model: str,
     limit: int | None,
     max_retries: int,
     retry_refused: bool,
     retry_failed: bool,
 ) -> None:
-    """Screen and check papers; *check* None means the screen decides alone.
+    """Screen and check papers on *model*; *check* None means the screen decides alone.
 
     Each attempt selects the papers still without a result at each level. An
-    attempt makes progress when it stores a result or sends a paper on to
-    FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
-    that sends those papers to FALLBACK_MODEL.
+    attempt makes progress when it stores or settles a result or sends a paper
+    on to a fallback, so a round of refusals by a model with a fallback is
+    followed by the attempt that sends those papers to the fallback.
 
     With *retry_refused*, only refusals during this invocation count, and the
     settled refusals are reopened first. The settle step at the end settles
@@ -641,6 +661,7 @@ async def _process_relevance(
         output_config=output_config,
         store=store,
         check=check,
+        model=model,
         limit=limit,
         max_retries=max_retries,
         refusals_since=refusals_since,
@@ -657,6 +678,7 @@ async def _attempts(
     output_config: OutputConfigParam,
     store: Callable[[list[LlmResult]], StoreOutcome],
     check: CheckSettings | None,
+    model: str,
     limit: int | None,
     max_retries: int,
     refusals_since: datetime,
@@ -665,11 +687,11 @@ async def _attempts(
     """Up to *max_retries* attempts at both levels; see :func:`_process_relevance`."""
     for stage in (STAGE, CHECK_STAGE) if check is not None else (STAGE,):
         log_failed_for_good(
-            load_history(db_path, stage, refusals_since, failures_since).failures, stage
+            load_history(db_path, stage, refusals_since, failures_since, model).failures, stage
         )
     for attempt in range(1, max_retries + 1):
         progress = 0
-        history = load_history(db_path, STAGE, refusals_since, failures_since)
+        history = load_history(db_path, STAGE, refusals_since, failures_since, model)
         papers = select_papers(db_path, limit, history)
         if papers:
             logger.info("Attempt %d: screening %d papers", attempt, len(papers))
@@ -682,7 +704,7 @@ async def _attempts(
             progress += outcome.stored + outcome.to_fallback + outcome.settled
         screened: list[dict[str, Any]] = []
         if check is not None:
-            history = load_history(db_path, CHECK_STAGE, refusals_since, failures_since)
+            history = load_history(db_path, CHECK_STAGE, refusals_since, failures_since, model)
             screened = select_screened(db_path, limit, history)
         if check is not None and screened:
             logger.info("Attempt %d: checking %d papers against PanelApp", attempt, len(screened))
@@ -754,6 +776,12 @@ def main(
         "--check-schema-path",
         help="Path to the PanelApp-check response schema",
     ),
+    model: RelevanceModel = typer.Option(
+        DEFAULT_MODEL,
+        "--model",
+        help="Model of both levels; only MODEL falls back (to FALLBACK_MODEL) on refusals, "
+        "the others' refusals are final",
+    ),
     immediate: bool = typer.Option(
         False,
         "--immediate",
@@ -773,9 +801,9 @@ def main(
     retry_refused: bool = typer.Option(
         False,
         "--retry-refused",
-        help="Send papers that both models refused in earlier invocations again, once each, "
-        "starting with the primary model (refusals vary between calls); papers both refuse "
-        "again stay settled as not relevant",
+        help="Send papers refused for good in earlier invocations again, once each, starting "
+        "with --model and then its fallback, if it has one (refusals vary between calls); papers "
+        "refused for good again stay settled as not relevant",
     ),
     retry_failed: bool = typer.Option(
         False,
@@ -833,6 +861,7 @@ def main(
         )
 
     logger.info(f"{count_remaining(db_path):,} papers without a relevance assessment")
+    logger.info(f"Assessing relevance with {model.value}")
 
     async def run() -> None:
         client = make_client()
@@ -846,6 +875,7 @@ def main(
             schema=schema,
             resolver=resolver,
             check=check,
+            model=model.value,
             limit=limit,
             max_retries=max_retries,
             retry_refused=retry_refused,

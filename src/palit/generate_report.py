@@ -36,6 +36,7 @@ from palit.llm import (
 )
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
+from palit.match_panels import ScopeVerdict
 from palit.panelapp_client import (
     AllPanelsData,
     PanelAppClient,
@@ -398,6 +399,14 @@ class ReportAssociation:
     # None unless panel_matching is STORED; panels the gene is not on first, each group by name
     matched_panels: list[PanelMatch] | None
     panel_matching: StageState
+    # match-panels' verdict on the scope panel of a panel-scoped run; None outside one, and
+    # in one until match-panels has answered for this association
+    scope_verdict: ScopeVerdict | None
+
+    @property
+    def judged_outside_scope(self) -> bool:
+        """match-panels judged that the association does not belong on the scope panel."""
+        return self.scope_verdict is not None and not self.scope_verdict.fits
 
     @property
     def relation_status(self) -> RelationStatus:
@@ -643,9 +652,12 @@ class GeneGroup:
 class GeneGroups:
     """The report's genes, each in exactly one group; groups without genes are left out."""
 
-    new_genes: list[GeneGroup]  # by top association rating: GREEN, AMBER, RED
+    new_genes: list[GeneGroup]  # by best finding rating: GREEN, AMBER, RED
     with_findings: list[GeneGroup]  # known genes by best finding rating: GREEN, AMBER, RED
     without_findings: list[GeneGroup]  # known genes unreviewed on the target panels, reviewed
+    # new genes without findings: a panel-scoped run judged all their associations outside
+    # the scope panel
+    outside_scope: list[GeneGroup]
 
 
 app = typer.Typer(help="Generate gene-centric HTML reports from aggregate assessments")
@@ -753,8 +765,10 @@ def association_finding(
     """The association's finding, or None when it adds nothing to the target panels.
 
     *current_rating* is the gene's highest rating on the target panels, None
-    when it is on none of them. Every association of a gene on none of them is a
-    finding, whatever PanelApp Australia curates on other panels. On a gene on a
+    when it is on none of them. An association judged outside the scope panel of
+    a panel-scoped run is no finding. Otherwise, every association of a gene on
+    none of the target panels is a finding, whatever PanelApp Australia curates
+    on other panels. On a gene on a
     target panel, a new disease is a finding, and a new MoI once highlighted. An
     existing association is an upgrade when its corpus rating is above the rating
     it starts from. In a panel-scoped run (*scoped*), that is the gene's rating
@@ -762,6 +776,8 @@ def association_finding(
     the gene causes the feature, not each disease. Otherwise it is PanelApp's
     rating of the association, or the gene's current rating when that is unknown.
     """
+    if association.judged_outside_scope:
+        return None
     if current_rating is None:
         return Finding(FindingKind.NEW_GENE, association.rating, association.id, None)
     status = association.relation_status
@@ -813,11 +829,13 @@ def group_genes(
 ) -> GeneGroups:
     """Place each gene in one group, each group's genes by HGNC symbol.
 
-    New genes go by their top association rating, known genes with findings by
-    the rating of their strongest finding, and known genes without findings by
-    whether any target panel holding them has an expert review. The reviewed
-    genes start collapsed in the ToC; the groups of known genes without findings
-    are not preselected for bulk assignment.
+    Genes with findings go by the rating of their strongest finding, new and
+    known genes apart. Known genes without findings go by whether any target
+    panel holding them has an expert review. New genes without findings, whose
+    associations a panel-scoped run all judged outside the scope panel, go
+    together. The reviewed genes and those outside the scope start collapsed in
+    the ToC; the groups of genes without findings are not preselected for bulk
+    assignment.
     """
     novel = sorted(novel_genes, key=lambda g: g.hgnc_symbol)
     known = sorted(known_genes, key=lambda g: g.hgnc_symbol)
@@ -865,8 +883,11 @@ def group_genes(
             preselected=False,
         ),
     ]
+    outside_scope = [g for g in novel if not g.findings]
     return GeneGroups(
-        new_genes=by_rating("new", "New gene", novel, lambda g: g.top_rating),
+        new_genes=by_rating(
+            "new", "New gene", [g for g in novel if g.findings], lambda g: g.findings[0].rating
+        ),
         with_findings=by_rating(
             "finding",
             "Best finding",
@@ -874,6 +895,18 @@ def group_genes(
             lambda g: g.findings[0].rating,
         ),
         without_findings=[group for group in no_finding_groups if group.genes],
+        outside_scope=[
+            GeneGroup(
+                key="outside-scope",
+                title="Possibly outside the panel's scope",
+                rating=None,
+                genes=outside_scope,
+                collapsed=True,
+                preselected=False,
+            )
+        ]
+        if outside_scope
+        else [],
     )
 
 
@@ -1131,7 +1164,7 @@ def load_associations(
     cursor.execute(
         f"""
         SELECT a.id, a.position, a.assessment_json, a.mondo_id, a.mondo_label, a.mondo_match,
-               a.mondo_raw, a.matched_panels_json,
+               a.mondo_raw, a.matched_panels_json, a.scope_panel_json,
                {latest("status")} AS mondo_status,
                {latest("model")} AS mondo_model,
                {latest("status")} AS matching_status,
@@ -1171,22 +1204,28 @@ def load_associations(
                     row["matching_status"],
                     row["matching_model"],
                 ),
+                scope_verdict=(
+                    None
+                    if row["scope_panel_json"] is None
+                    else ScopeVerdict(**json.loads(row["scope_panel_json"]))
+                ),
             )
         )
     return sorted(associations, key=association_sort_key)
 
 
 def prefill_associations(
-    associations: list[ReportAssociation], findings: list[Finding], on_panel: bool
+    associations: list[ReportAssociation], findings: list[Finding]
 ) -> list[ReportAssociation]:
     """The associations a gene's prefill describes, in report order.
 
-    An add form (a gene on no target panel, *on_panel* False) describes all of
-    them. A review form describes what the report adds to PanelApp Australia's
-    curation: the associations with findings. A gene without findings keeps all
-    of them, so its review (often the first for an unreviewed gene) isn't empty.
+    The prefill describes what the report adds to the target panels: the
+    associations with findings. For a gene on no target panel, that is all of
+    them, except those a panel-scoped run judged outside the scope panel. A gene
+    without findings keeps all of them, so its form isn't empty: a review is often
+    the first for an unreviewed gene.
     """
-    if not on_panel or not findings:
+    if not findings:
         return associations
     finding_ids = {f.association_id for f in findings}
     return [a for a in associations if a.id in finding_ids]
@@ -1253,7 +1292,7 @@ def load_gene(
         {"unassessed_reports": json.loads(row["unassessed_reports_json"])}, display_ids
     )["unassessed_reports"]
 
-    described = prefill_associations(associations, findings, on_panel=bool(holding))
+    described = prefill_associations(associations, findings)
     prefill = prepare_prefill_data(
         hgnc_id=hgnc_id,
         associations=[PrefillAssociation(a.assessment, a.mondo) for a in described],
@@ -2090,8 +2129,13 @@ def generate_html_report(
     *,
     panels_matched: bool,
     panelapp_integration: bool,
+    scope_panel_id: int | None,
 ) -> str:
-    """Generate HTML report directly using Jinja2 templates."""
+    """Generate HTML report directly using Jinja2 templates.
+
+    *scope_panel_id* is the panel of a panel-scoped run, one of *target_panel_ids*;
+    None otherwise.
+    """
 
     # Build report config JSON for PanelApp integration
     report_config_json = (
@@ -2168,6 +2212,7 @@ def generate_html_report(
         target_panel_names=target_panel_names,
         refused_genes=refused_genes,
         panels_matched=panels_matched,
+        scope_panel_name=None if scope_panel_id is None else target_panel_names[scope_panel_id],
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
         model_name=MODEL_NAMES[MODEL],
         relevance_refusers=relevance_refusers,
@@ -2280,6 +2325,7 @@ def main(
         relevance_refusers=load_relevance_refusers(db_path),
         panels_matched=results.panels_matched,
         panelapp_integration=panelapp_integration,
+        scope_panel_id=results.scope_panel_id,
     )
 
     # Save HTML as index.html

@@ -483,7 +483,11 @@ uv run palit map-mondo --db-path data/$PANEL_NAME.sqlite
 uv run palit match-panels --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 
 # 7. Generate report package against the panel: every association of a gene
-#    not on it is a finding, and an upgrade starts from the gene's rating on it
+#    not on it is a finding, and an upgrade starts from the gene's rating on it.
+#    Each association shows match-panels' verdict on the panel with its
+#    rationale; an association judged outside the panel's scope is no finding,
+#    and genes not on the panel with only such associations go into a folded
+#    section of their own
 uv run palit generate-report \
   --report-id panel_$PANEL_NAME \
   --db-path data/$PANEL_NAME.sqlite \

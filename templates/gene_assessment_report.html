@@ -242,6 +242,19 @@
     {% endif %}
     {% endmacro %}
 
+    {# A panel-scoped run's verdict on its panel, with the rationale for the panel's curators,
+       or why there is none yet #}
+    {% macro scope_verdict(assoc) %}
+    {% set v = assoc.scope_verdict %}
+    {% set state_notes = {
+        'stored': 'not judged: match-panels ran for this association without the panel',
+        'not_run': 'not judged yet: match-panels has not run for this association',
+        'refused': 'not judged: ' ~ model_name ~ ' and its fallback ' ~ fallback_model_name ~ ' both refused match-panels for this association',
+        'failed': 'not judged: match-panels gave no valid answer in any attempt so far; a rerun retries it'
+    } %}
+    <p class="scope-verdict scope-{% if v is none %}unjudged{% elif v.fits %}fits{% else %}outside{% endif %}"><strong>{{ scope_panel_name }} panel:</strong> {% if v is none %}<span class="muted">{{ state_notes[assoc.panel_matching.value] }}</span>{% elif v.fits %}fits. {{ v.rationale }}{% else %}possibly outside its scope. {{ v.rationale }}{% endif %}</p>
+    {% endmacro %}
+
     {# Linked list of papers #}
     {% macro paper_links(papers) -%}
     {% for paper in papers %}{% if paper.preprint %}⚠️ {% endif %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}
@@ -266,6 +279,9 @@
         <p class="relation-basis">PanelApp Australia: {{ e.panelapp_relation.basis }}</p>
         {% endif %}
         <div class="summary-content">{{ e.summary | markdown_to_html }}</div>
+        {% if scope_panel_name %}
+        {{ scope_verdict(assoc) }}
+        {% endif %}
         {{ family_counts(e) }}
         {% if e.segregation != 'NR' %}
         <p><strong>Segregation:</strong> {{ e.segregation }}</p>
@@ -673,11 +689,13 @@
         <p>Generated on {{ generated_at }} | Panel state as of {{ panel_date }}</p>
     </header>
 
-    {# The report's gene sections, each a list of groups: (anchor, title, note, groups) #}
+    {# The report's gene sections, each a list of groups: (anchor, title, note, groups,
+       folded); a folded section's body starts closed #}
     {% set gene_sections = [
-        ('new-genes', 'New genes', "Genes on none of the target panels, grouped by their top association's rating.", groups.new_genes),
-        ('known-genes-with-findings', 'Known genes with findings', 'Genes on a target panel with at least one finding, grouped by the rating of their strongest finding.', groups.with_findings),
-        ('known-genes-without-findings', 'Known genes without findings', 'Genes on a target panel without findings: PanelApp Australia curates each association at the same or a higher rating, or it adds a mode of inheritance with fewer than ' ~ min_families_for_moi_expansion ~ ' independent families.', groups.without_findings)
+        ('new-genes', 'New genes', "Genes on none of the target panels, grouped by their best finding's rating.", groups.new_genes, false),
+        ('known-genes-with-findings', 'Known genes with findings', 'Genes on a target panel with at least one finding, grouped by the rating of their strongest finding.', groups.with_findings, false),
+        ('known-genes-without-findings', 'Known genes without findings', 'Genes on a target panel without findings: PanelApp Australia curates each association at the same or a higher rating, or it adds a mode of inheritance with fewer than ' ~ min_families_for_moi_expansion ~ ' independent families.', groups.without_findings, false),
+        ('outside-scope', "Possibly outside the panel's scope", 'Genes on none of the target panels whose associations match-panels all judged outside the ' ~ scope_panel_name ~ " panel's scope, by the phenotype their papers report. Each association gives the reason.", groups.outside_scope, true)
     ] | selectattr(3) | list %}
 
     <nav class="toc">
@@ -690,7 +708,7 @@
             {% if groups.new_genes or groups.with_findings %}
             <li class="toc-legend">Finding badges: {{ finding_chip('new_gene', 3) }} an association of a gene on none of the target panels, {{ finding_chip('new_disease', 3) }} new disease, {{ finding_chip('new_moi', 2) }} new mode of inheritance, {{ finding_chip('upgrade', 1) }} an association PanelApp already curates, now rated higher. Each badge's colour is its association's rating from this report's papers.</li>
             {% endif %}
-            {% for anchor, title, _, gene_groups in gene_sections %}
+            {% for anchor, title, _, gene_groups, _ in gene_sections %}
             <li>
                 <a href="#{{ anchor }}">{{ title }} ({{ gene_groups | map(attribute='genes') | map('length') | sum }})</a>
                 {% for group in gene_groups %}
@@ -850,13 +868,20 @@
         </section>
         {% endif %}
 
-        {% for anchor, title, note, gene_groups in gene_sections %}
+        {% for anchor, title, note, gene_groups, folded in gene_sections %}
         <section id="{{ anchor }}">
             <h2>{{ title }}</h2>
-            <p class="section-intro">{{ note }} {{ rating_caveat(anchor == 'new-genes') }}</p>
+            <p class="section-intro">{{ note }} {{ rating_caveat(anchor in ('new-genes', 'outside-scope')) }}</p>
+            {% if folded %}
+            <details class="folded-section">
+            <summary>Show {{ gene_groups | map(attribute='genes') | map('length') | sum }} genes</summary>
+            {% endif %}
             {% for group in gene_groups %}
             {{ body_group(group) }}
             {% endfor %}
+            {% if folded %}
+            </details>
+            {% endif %}
         </section>
         {% endfor %}
 
@@ -937,5 +962,20 @@
         {% endif %}
     </main>
 
+    {# A link into a folded section or association opens the folds around its target #}
+    <script>
+    function openFoldsAround(id) {
+        const target = document.getElementById(id);
+        if (!target) return;
+        for (let fold = target.closest('details'); fold; fold = fold.parentElement.closest('details')) {
+            fold.open = true;
+        }
+        target.scrollIntoView();
+    }
+    window.addEventListener('hashchange', () => openFoldsAround(decodeURIComponent(location.hash.slice(1))));
+    document.addEventListener('DOMContentLoaded', () => {
+        if (location.hash) openFoldsAround(decodeURIComponent(location.hash.slice(1)));
+    });
+    </script>
 </body>
 </html>

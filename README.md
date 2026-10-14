@@ -123,7 +123,9 @@ uv run palit ingest-pubmed --ledger $LEDGER $START_DATE $END_DATE
 #    genetic evidence; a PanelApp check then compares those genes with their
 #    PanelApp entries (at PANEL_DATE) and keeps a paper only if a gene is new to
 #    the target panels, has a new disease or inheritance mode, or the
-#    association is still amber or red. A gene on the target panels is shown
+#    association is still amber or red. A paper on a curated gene stays relevant
+#    too while nobody has reviewed the gene's entry on a target panel, so its
+#    evidence gets written up. A gene on the target panels is shown
 #    with its entries on every panel, because an entry on a panel that lists
 #    only one of the gene's diseases rates that disease apart from the gene's
 #    lumped rating. Safe to interrupt and re-run: it re-attaches to
@@ -447,7 +449,9 @@ sqlite3 data/$PANEL_NAME.sqlite < schema.sql
 sqlite3 data/$PANEL_NAME.sqlite "ATTACH 'data/pubmed_baseline_screening.sqlite' AS source; INSERT INTO papers (doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, source_type, source_details) SELECT doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, 'initial', source_details FROM source.papers"
 
 # 2. Assess relevance scoped to the panel: the screen gets the panel description,
-#    and the PanelApp check compares against this panel only
+#    and the PanelApp check compares against this panel only. As in the main
+#    workflow, papers on genes the panel lists without any review stay
+#    relevant, so the run gathers the evidence those genes lack
 uv run palit assess-relevance \
   --db-path data/$PANEL_NAME.sqlite \
   --panel-date $PANEL_DATE \

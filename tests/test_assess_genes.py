@@ -260,6 +260,7 @@ MENDELIOME_ENTRY = PanelEntry(
     publications=(),
     pmids=frozenset(),
     dois=frozenset(),
+    unreviewed=False,
 )
 
 

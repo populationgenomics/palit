@@ -7,7 +7,9 @@ rate the gene as a whole, and the panels that list only some of its diseases
 show how PanelApp rates those diseases apart. A panel-scoped check shows the
 scope panel's entry only. The model gives a verdict per gene-disease
 association, and the paper stays relevant only if one of them is not yet
-curated there.
+curated there, or if it names a gene whose entry on a reference panel nobody
+has reviewed: such an entry's rating comes from a source list, and its evidence
+is still to be written up.
 """
 
 from dataclasses import dataclass
@@ -15,11 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from palit.hgnc import HgncResolver
-from palit.panelapp_client import clean_panel_publications
+from palit.panelapp_client import EVALUATIONS_FETCHED_AT, clean_panel_publications
 
 RELEVANT_VERDICTS: frozenset[str] = frozenset(
     {"new_gene", "new_disease", "limited_evidence", "new_inheritance"}
 )
+# Verdicts that keep a paper relevant when its gene has an unreviewed reference entry.
+UNREVIEWED_VERDICTS: frozenset[str] = frozenset({"already_curated", "already_cited"})
 _RATINGS = {"3": "GREEN", "2": "AMBER", "1": "RED", "0": "RED"}
 
 # Which entries the check shows, in its system prompt, for a check over all panels and
@@ -49,6 +53,9 @@ class PanelEntry:
     publications: tuple[str, ...]  # as PanelApp lists them
     pmids: frozenset[int]
     dois: frozenset[str]  # lowercased
+    # PanelApp lists no reviews of the entry. False for a repeat expansion, whose reviews
+    # the snapshot does not hold, and for a gene whose reviews PanelApp could not serve.
+    unreviewed: bool
 
     def cites(self, pmid: int | None, doi: str) -> bool:
         return (pmid is not None and pmid in self.pmids) or doi.lower() in self.dois
@@ -83,6 +90,10 @@ class CuratedRecord:
     all_panels: bool  # genes are shown with their entries on every panel
     genes: dict[int, tuple[PanelEntry, ...]]
 
+    def unreviewed(self, hgnc_id: int) -> bool:
+        """Whether the gene has an entry on a reference panel that nobody has reviewed."""
+        return any(e.reference and e.unreviewed for e in self.genes.get(hgnc_id, ()))
+
     @classmethod
     def build(
         cls,
@@ -112,8 +123,15 @@ class CuratedRecord:
 
 
 def _panel_entries(panel: dict[str, Any], reference: bool) -> list[tuple[int, PanelEntry]]:
+    if EVALUATIONS_FETCHED_AT not in panel:
+        raise KeyError(
+            f"Panel {panel['id']} has no reviews in the snapshot; add them with "
+            "`palit panelapp add-reviews`"
+        )
+    entities = [(gene, gene["evaluations"] == []) for gene in panel["genes"]]
+    entities += [(str_entity, False) for str_entity in panel["strs"]]
     entries = []
-    for entity in panel["genes"] + panel["strs"]:
+    for entity, unreviewed in entities:
         hgnc_id = entity["gene_data"].get("hgnc_id")
         if hgnc_id is None:
             if reference:
@@ -137,6 +155,7 @@ def _panel_entries(panel: dict[str, Any], reference: bool) -> list[tuple[int, Pa
                     publications=tuple(listed),
                     pmids=frozenset(publications.pmids),
                     dois=frozenset(doi.lower() for doi in publications.dois),
+                    unreviewed=unreviewed,
                 ),
             )
         )
@@ -209,5 +228,22 @@ def with_hgnc_ids(
     return resolved
 
 
+def with_review_state(
+    associations: list[dict[str, Any]], record: CuratedRecord
+) -> list[dict[str, Any]]:
+    """The associations, each with "unreviewed": whether its gene (by HGNC ID) has an
+    entry on a reference panel that nobody has reviewed."""
+    return [
+        {**a, "unreviewed": a["hgnc_id"] is not None and record.unreviewed(a["hgnc_id"])}
+        for a in associations
+    ]
+
+
 def is_relevant(associations: list[dict[str, Any]]) -> bool:
-    return any(a["verdict"] in RELEVANT_VERDICTS for a in associations)
+    """Whether one of the associations, as :func:`with_review_state` returns them, is new to
+    the reference panels or still needs its evidence written up there."""
+    return any(
+        a["verdict"] in RELEVANT_VERDICTS
+        or (a["verdict"] in UNREVIEWED_VERDICTS and a["unreviewed"])
+        for a in associations
+    )

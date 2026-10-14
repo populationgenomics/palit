@@ -87,6 +87,7 @@ from palit.panelapp_check import (
     is_relevant,
     load_check_system,
     with_hgnc_ids,
+    with_review_state,
 )
 from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
 from palit.panelapp_integration import TARGET_PANEL_IDS
@@ -405,7 +406,9 @@ def store_checks(db_path: Path, results: list[LlmResult], check: CheckSettings) 
             assert result.message is not None
             doi = result.subject
             screen, screen_raw = _stored_screen(conn, doi)
-            associations = with_hgnc_ids(parsed["associations"], check.resolver)
+            associations = with_review_state(
+                with_hgnc_ids(parsed["associations"], check.resolver), check.record
+            )
             panelapp_check = {
                 "panel_date": check.record.panel_date,
                 "reference_panel_ids": list(check.record.reference_panel_ids),

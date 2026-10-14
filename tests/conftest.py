@@ -28,13 +28,20 @@ def _entity(hgnc_id: int | None, symbol: str, **fields: Any) -> dict[str, Any]:
         "mode_of_inheritance": fields.get("moi", "BIALLELIC, autosomal or pseudoautosomal"),
         "phenotypes": fields.get("phenotypes", ["Some disease MIM#100000"]),
         "publications": fields.get("publications", []),
+        "evaluations": fields.get("evaluations", [{"rating": "GREEN", "comments": []}]),
     }
 
 
 def _panel(
     panel_id: int, name: str, genes: list[dict[str, Any]], strs: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
-    return {"id": panel_id, "name": name, "genes": genes, "strs": strs or []}
+    return {
+        "id": panel_id,
+        "name": name,
+        "genes": genes,
+        "strs": strs or [],
+        "evaluations_fetched_at": "2026-09-01T09:00:00+00:00",
+    }
 
 
 @pytest.fixture

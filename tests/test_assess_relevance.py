@@ -174,7 +174,12 @@ def test_check_finalises_with_verdicts_and_mentions(
     assessment = json.loads(row["relevance_assessment_json"])
     assert assessment["relevant"] is True
     assert assessment["panelapp_check"]["reference_panel_ids"] == [137, 126]
-    assert [a["hgnc_id"] for a in assessment["panelapp_check"]["associations"]] == [1, 4]
+    assert [
+        (a["hgnc_id"], a["unreviewed"]) for a in assessment["panelapp_check"]["associations"]
+    ] == [
+        (1, False),
+        (4, False),
+    ]
     assert row["relevance_screen_json"] is None
     assert row["download_status"] == "scheduled"
     assert set(json.loads(row["relevance_assessment_raw"])) == {"screen", "panelapp_check"}

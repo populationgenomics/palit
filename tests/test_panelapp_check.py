@@ -14,6 +14,7 @@ from palit.panelapp_check import (
     is_relevant,
     load_check_system,
     with_hgnc_ids,
+    with_review_state,
 )
 from palit.panelapp_integration import INCIDENTALOME_PANEL_ID, MENDELIOME_PANEL_ID
 
@@ -99,14 +100,64 @@ def test_check_system_names_the_entries_shown(
     )
 
 
-def test_relevance_follows_verdicts(hgnc_resolver: HgncResolver) -> None:
-    associations = with_hgnc_ids(
-        [
-            {"gene_symbol": "GENEA", "disease": "d", "verdict": "already_curated", "reason": "r"},
-            {"gene_symbol": "NOTAGENE", "disease": "d", "verdict": "new_gene", "reason": "r"},
-        ],
-        hgnc_resolver,
+def _checked(
+    verdicts: list[tuple[str, str]], resolver: HgncResolver, record: CuratedRecord
+) -> list[dict[str, Any]]:
+    """The check's associations of (gene symbol, verdict) pairs, as store_checks stores them."""
+    associations = [
+        {"gene_symbol": symbol, "disease": "d", "verdict": verdict, "reason": "r"}
+        for symbol, verdict in verdicts
+    ]
+    return with_review_state(with_hgnc_ids(associations, resolver), record)
+
+
+def test_relevance_follows_verdicts(
+    curated_record: CuratedRecord, hgnc_resolver: HgncResolver
+) -> None:
+    associations = _checked(
+        [("GENEA", "already_curated"), ("NOTAGENE", "new_gene")], hgnc_resolver, curated_record
     )
-    assert [a["hgnc_id"] for a in associations] == [1, None]
+    assert [(a["hgnc_id"], a["unreviewed"]) for a in associations] == [(1, False), (None, False)]
     assert is_relevant(associations)
     assert not is_relevant(associations[:1])
+
+
+@pytest.mark.parametrize(
+    ("verdict", "relevant"),
+    [("already_curated", True), ("already_cited", True), ("out_of_scope", False)],
+)
+def test_an_unreviewed_reference_entry_keeps_curated_genes(
+    panelapp_snapshot: Snapshot, hgnc_resolver: HgncResolver, verdict: str, relevant: bool
+) -> None:
+    panelapp_snapshot[MENDELIOME_PANEL_ID]["genes"][0]["evaluations"] = []
+    record = CuratedRecord.build(
+        panelapp_snapshot, "2026-09-01", [MENDELIOME_PANEL_ID], all_panels=True
+    )
+    associations = _checked([("GENEA", verdict)], hgnc_resolver, record)
+    assert associations[0]["unreviewed"]
+    assert is_relevant(associations) == relevant
+
+
+def test_only_reference_entries_count_as_unreviewed(
+    panelapp_snapshot: Snapshot, hgnc_resolver: HgncResolver
+) -> None:
+    ataxia = next(p for p in panelapp_snapshot.values() if p["name"] == "Ataxia")
+    ataxia["genes"][0]["evaluations"] = []  # GENEB, reviewed on the Incidentalome
+    panelapp_snapshot[MENDELIOME_PANEL_ID]["genes"][0]["evaluations"] = None  # not served
+    record = CuratedRecord.build(
+        panelapp_snapshot,
+        "2026-09-01",
+        [MENDELIOME_PANEL_ID, INCIDENTALOME_PANEL_ID],
+        all_panels=True,
+    )
+    assert not record.unreviewed(3)
+    assert not record.unreviewed(1)
+    assert not record.unreviewed(2)  # a repeat expansion, whose reviews the snapshot lacks
+
+
+def test_a_snapshot_without_reviews_raises(panelapp_snapshot: Snapshot) -> None:
+    del panelapp_snapshot[MENDELIOME_PANEL_ID]["evaluations_fetched_at"]
+    with pytest.raises(KeyError, match="add-reviews"):
+        CuratedRecord.build(
+            panelapp_snapshot, "2026-09-01", [MENDELIOME_PANEL_ID], all_panels=False
+        )

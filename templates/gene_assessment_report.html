@@ -608,7 +608,7 @@
             <p><strong>PanelApp check</strong> (snapshot {{ check.panel_date }}): {{ check.rationale }}</p>
             <ul>
                 {% for assoc in check.associations %}
-                <li>{{ assoc.gene_symbol }} → {{ assoc.disease }}: <strong>{{ assoc.verdict | replace('_', ' ') }}</strong>. {{ assoc.reason }}</li>
+                <li>{{ assoc.gene_symbol }} → {{ assoc.disease }}: <strong>{{ assoc.verdict | replace('_', ' ') }}</strong>. {{ assoc.reason }}{% if assoc.unreviewed and assoc.verdict in ('already_curated', 'already_cited') %} Counts as relevant: nobody has reviewed the gene's entry on the reference panels yet.{% endif %}</li>
                 {% endfor %}
             </ul>
             {% elif screen and screen.associations %}

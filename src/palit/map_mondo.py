@@ -13,9 +13,13 @@ mapping takes several tool rounds. Each association's conversation runs on its o
 from round 1 until it ends, and the conversations share DEFAULT_IMMEDIATE_WORKERS
 request slots, so an association's mapping is stored as soon as its conversation
 ends. Conversations are kept in memory, append-only, because Opus 5.5 rejects
-replayed thinking after an edited history. An answer is stored only when it passes
-the schema and names an eligible MONDO term; otherwise the association stays
-unmapped and the next attempt starts a fresh conversation.
+replayed thinking after an edited history. When a conversation ends, the input
+of its last round, which holds every earlier round's turns and their thinking,
+is stored in ``llm_conversations`` in place of the association's earlier
+conversation; the last answer is in ``mondo_raw`` or ``llm_requests``. An answer
+is stored only when it passes the schema and names an eligible MONDO term;
+otherwise the association stays unmapped and the next attempt starts a fresh
+conversation.
 A conversation stays on the model it started on: when MODEL refuses an
 association in any round, the next attempt starts its conversation afresh on
 FALLBACK_MODEL, because thinking blocks cannot be replayed to another model.
@@ -191,6 +195,16 @@ def store_mapping(
         )
 
 
+def save_conversation(conn: sqlite3.Connection, conversation: Conversation) -> None:
+    """Store an ended conversation's last-round input in place of the association's earlier one."""
+    subject = str(conversation.association_id)
+    conn.execute("DELETE FROM llm_conversations WHERE stage = ? AND subject = ?", (STAGE, subject))
+    conn.execute(
+        "INSERT INTO llm_conversations (stage, subject, round, messages_json) VALUES (?, ?, ?, ?)",
+        (STAGE, subject, conversation.round, json.dumps(conversation.messages)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Requests and answers
 # ---------------------------------------------------------------------------
@@ -320,10 +334,10 @@ class MappingRunner:
             outcome.refused += 1
             outcome.to_fallback += result.goes_to_fallback
             log_refusal(result, f"association {result.subject} in round {result.round}")
-            self._record(result)
+            self._record(result, conversation)
         elif result.status != ResultStatus.SUCCEEDED:
             outcome.failed += 1
-            self._record(result)
+            self._record(result, conversation)
             if result.error_type == "invalid_request_error":
                 raise RuntimeError(
                     f"map-mondo request for association {result.subject} in round "
@@ -335,7 +349,7 @@ class MappingRunner:
             self._record(result)
             return self._next_round(conversation, message)
         elif message.stop_reason == "end_turn":
-            if self._store(result, message):
+            if self._store(result, conversation, message):
                 outcome.stored += 1
             else:
                 outcome.failed += 1
@@ -345,12 +359,17 @@ class MappingRunner:
                 "Rejected association %s round %d: %s", result.subject, result.round, rejection
             )
             outcome.failed += 1
-            self._record(result, rejection=rejection)
+            self._record(result, conversation, rejection=rejection)
         return None
 
-    def _record(self, result: LlmResult, *, rejection: str | None = None) -> None:
+    def _record(
+        self, result: LlmResult, ended: Conversation | None = None, *, rejection: str | None = None
+    ) -> None:
+        """Record *result*, and with *ended*, store that ended conversation."""
         with sqlite3.connect(self._db_path) as conn:
             record_result(conn, result, rejection=rejection)
+            if ended is not None:
+                save_conversation(conn, ended)
 
     def _next_round(self, conversation: Conversation, message: Message) -> Conversation:
         tool_results: list[dict[str, Any]] = []
@@ -381,13 +400,13 @@ class MappingRunner:
             model=conversation.model,
         )
 
-    def _store(self, result: LlmResult, message: Message) -> bool:
+    def _store(self, result: LlmResult, conversation: Conversation, message: Message) -> bool:
         try:
             mapping = parse_mapping(message, self._validator, self._index)
         except (ValueError, jsonschema.ValidationError) as e:
             rejection = invalid_answer_reason(e)
             logger.warning("Rejected mapping for association %s: %s", result.subject, rejection)
-            self._record(result, rejection=rejection)
+            self._record(result, conversation, rejection=rejection)
             return False
         logger.info(
             "Association %s -> %s %s (%s): %s",
@@ -400,6 +419,7 @@ class MappingRunner:
         with sqlite3.connect(self._db_path) as conn:
             record_result(conn, result)
             store_mapping(conn, int(result.subject), mapping, message.to_json())
+            save_conversation(conn, conversation)
         return True
 
 

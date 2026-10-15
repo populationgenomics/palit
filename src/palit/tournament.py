@@ -13,7 +13,6 @@ but not used. A prompt MODEL refuses is sent again on FALLBACK_MODEL within the
 same round, before the round's selections are used.
 """
 
-import json
 import logging
 import sqlite3
 from dataclasses import dataclass, field
@@ -51,7 +50,8 @@ class TournamentOutcome:
     """Final outcome of one gene's tournament across all rounds."""
 
     selected_papers: list[Paper]
-    raw_responses_by_round: list[list[str]]
+    # Each round's answering messages, as the API returned them, thinking included
+    raw_responses_by_round: list[list[dict[str, Any]]]
 
 
 @dataclass
@@ -73,7 +73,7 @@ class TournamentEntry:
 class _GeneState:
     entry: TournamentEntry
     current: list[Paper]
-    responses_by_round: list[list[str]] = field(default_factory=list)
+    responses_by_round: list[list[dict[str, Any]]] = field(default_factory=list)
 
 
 def format_papers_for_prompt(papers: list[Paper]) -> str:
@@ -209,14 +209,14 @@ async def _run_prompts(
     validator: jsonschema.protocols.Validator,
     max_papers: int,
     max_retries: int,
-) -> dict[tuple[str, int], tuple[list[Paper], str]]:
+) -> dict[tuple[str, int], tuple[list[Paper], dict[str, Any]]]:
     """Selected papers and raw response per prompt, retrying failed prompts.
 
     Each try sends every prompt without a valid answer yet. A prompt MODEL refused
     goes to FALLBACK_MODEL from the next try on; that try counts toward
     *max_retries* like any other.
     """
-    selections: dict[tuple[str, int], tuple[list[Paper], str]] = {}
+    selections: dict[tuple[str, int], tuple[list[Paper], dict[str, Any]]] = {}
     pending = list(prompts)
     failures: dict[tuple[str, int], str] = {}
     models = dict.fromkeys(prompts, MODEL)
@@ -286,7 +286,7 @@ async def _run_prompts(
                 continue
             parsed = answers[result.subject]
             selected = parsed["papers"][:max_papers]
-            selections[job] = ([papers[i] for i in selected], json.dumps(parsed))
+            selections[job] = ([papers[i] for i in selected], result.message.to_dict(mode="json"))
     if pending:
         summary = "; ".join(
             f"{key} prompt {index}: {failures[(key, index)]}" for key, index in pending

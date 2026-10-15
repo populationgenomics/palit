@@ -67,7 +67,7 @@ CREATE INDEX idx_gene_mentions_source_gene ON gene_mentions(source, hgnc_id);
 CREATE TABLE tournament_results (
     hgnc_id INTEGER PRIMARY KEY,
     selected_dois_json JSON,
-    tournament_raw_responses_json JSON  -- Includes LLM reasoning content
+    tournament_raw_responses_json JSON  -- Each round's answering messages as the API returned them, thinking included
 );
 
 CREATE INDEX idx_papers_pmid ON papers(pmid) WHERE pmid IS NOT NULL;
@@ -218,6 +218,8 @@ CREATE INDEX idx_llm_requests_stage_subject ON llm_requests(stage, subject);
 
 -- Input messages of a multi-round conversation, stored byte-for-byte: Opus 5.5
 -- rejects a replayed thinking block whose preceding history was edited.
+-- extract-evidence stores every round, to resume from; map-mondo stores the last
+-- round of each ended conversation, which holds every earlier round's thinking.
 CREATE TABLE llm_conversations (
     stage TEXT NOT NULL,
     subject TEXT NOT NULL,

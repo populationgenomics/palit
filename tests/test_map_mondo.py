@@ -491,6 +491,16 @@ def _subjects(db_path: Path) -> list[tuple[str, int, str]]:
         ).fetchall()
 
 
+def _stored_conversation(db_path: Path, association_id: int) -> tuple[int, list[dict[str, Any]]]:
+    """The round and input messages stored for the association's ended conversation."""
+    with sqlite3.connect(db_path) as conn:
+        ((round_no, messages_json),) = conn.execute(
+            "SELECT round, messages_json FROM llm_conversations WHERE stage = ? AND subject = ?",
+            (STAGE, str(association_id)),
+        ).fetchall()
+    return round_no, json.loads(messages_json)
+
+
 def test_runner_stores_a_valid_mapping_after_a_tool_round(db_path: Path, index: MondoIndex) -> None:
     transport = ScriptedTransport(_search_then_answer("MONDO:0000201"))
     runner = MappingRunner(
@@ -508,6 +518,8 @@ def test_runner_stores_a_valid_mapping_after_a_tool_round(db_path: Path, index: 
     assert json.loads(tool_result["content"])["results"][0]["candidates"][0]["id"] == (
         "MONDO:0000201"
     )
+    # The ended conversation is stored: its last round's input, with the first answer.
+    assert _stored_conversation(db_path, 2) == (2, second)
 
 
 def test_runner_records_but_does_not_store_an_obsolete_answer(
@@ -525,6 +537,7 @@ def test_runner_records_but_does_not_store_an_obsolete_answer(
     assert (outcome.stored, outcome.failed) == (0, 1)
     assert _row(db_path, 2) == (None, None, None, 0)
     assert len(_subjects(db_path)) == 2
+    assert _stored_conversation(db_path, 2)[0] == 2
     assert [a.id for a in select_associations(db_path, None, _history(db_path))] == [2]
 
 

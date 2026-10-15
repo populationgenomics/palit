@@ -127,5 +127,10 @@ def test_a_refused_prompt_is_resent_on_the_fallback_model_within_its_round(
         (2, "1:2:0", FALLBACK_MODEL),
     ]
     assert [p.doi for p in outcomes["1"].selected_papers] == ["10.1/0"]
+    # The answering messages are kept whole, one list per round.
+    assert [
+        [(message["model"], message["content"][0]["text"]) for message in responses]
+        for responses in outcomes["1"].raw_responses_by_round
+    ] == [[(FALLBACK_MODEL, '{"papers": [0]}')] * 2, [(FALLBACK_MODEL, '{"papers": [0]}')]]
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM llm_requests").fetchone() == (6,)

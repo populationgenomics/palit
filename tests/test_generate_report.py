@@ -542,10 +542,13 @@ def results(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentResults
     return _load(db_path, hgnc_resolver)
 
 
-def _load_scoped(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentResults:
-    """The fixture's genes in a run scoped to the Ataxia panel, with GENEA on it at AMBER."""
+def _load_scoped(
+    db_path: Path, hgnc_resolver: HgncResolver, genea_rating: int
+) -> GeneAssessmentResults:
+    """The fixture's genes in a run scoped to the Ataxia panel, with GENEA on it at
+    *genea_rating*, reviewed there."""
     target = PanelGeneData(
-        panel_ids=[ATAXIA_PANEL_ID], gene_panel_confidence={1: {ATAXIA_PANEL_ID: 2}}
+        panel_ids=[ATAXIA_PANEL_ID], gene_panel_confidence={1: {ATAXIA_PANEL_ID: genea_rating}}
     )
     all_panels = AllPanelsData(
         gene_to_panels={1: {MENDELIOME_PANEL_ID, ATAXIA_PANEL_ID}},
@@ -559,19 +562,8 @@ def _load_scoped(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentRe
             target,
             all_panels,
             ATAXIA_PANEL_ID,
-            {1: (_target_entry(ATAXIA_PANEL_ID, 2, ReviewState.REVIEWED),)},
+            {1: (_target_entry(ATAXIA_PANEL_ID, genea_rating, ReviewState.REVIEWED),)},
         )
-
-
-def _judge(db_path: Path, verdicts: dict[int, bool]) -> None:
-    """Store match-panels' verdicts on the Ataxia panel for these associations."""
-    with sqlite3.connect(db_path) as conn:
-        for association_id, fits in verdicts.items():
-            verdict = {"panel_id": ATAXIA_PANEL_ID, "fits": fits, "rationale": f"Why {fits}."}
-            conn.execute(
-                "UPDATE associations SET scope_panel_json = ? WHERE id = ?",
-                (json.dumps(verdict), association_id),
-            )
 
 
 @pytest.mark.parametrize(
@@ -862,7 +854,6 @@ def _render(
         relevance_refusers=load_relevance_refusers(db_path),
         panels_matched=results.panels_matched,
         panelapp_integration=False,
-        scope_panel_id=results.scope_panel_id,
         unreviewed_without_evidence=results.unreviewed_without_evidence,
     )
 
@@ -1037,7 +1028,6 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
         variants=[],
         matched_panels=None,
         panel_matching=StageState.NOT_RUN,
-        scope_verdict=None,
         reviewed_on=(),
     )
 
@@ -2142,6 +2132,50 @@ def test_only_upgrades_of_curated_associations_show_an_arrow(
     assert "curated, own rating unknown" not in unknown
 
 
+def test_a_scoped_run_measures_upgrades_from_the_scope_panel_rating(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """16 is AMBER here and GREEN in PanelApp. GENEA is RED on the scope panel, so the
+    scoped run reports 16 as an upgrade from RED; the unscoped run, which starts from
+    PanelApp's GREEN, reports nothing. A panel-scoped run has no match-panels."""
+    _add_genea_associations(
+        db_path, [(16, 4, _association("upgraded", panelapp_rating="GREEN", independent=2))]
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM llm_requests WHERE stage = ?", (MATCH_PANELS_STAGE,))
+        conn.execute("UPDATE associations SET matched_panels_json = NULL")
+
+    unscoped = _load(db_path, hgnc_resolver, genea_rating=1)
+    assert 16 not in unscoped.known_genes[0].finding_association_ids
+    unscoped_statistics = calculate_comprehensive_statistics(db_path, unscoped, NO_PANEL_VALIDATION)
+    assert unscoped_statistics.upgrade_findings == 0
+
+    results = _load_scoped(db_path, hgnc_resolver, genea_rating=1)
+    genea = results.known_genes[0]
+    assert genea.current_rating == 1
+    assert Finding(FindingKind.UPGRADE, 2, 16, 1) in genea.findings
+    statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
+    assert statistics.upgrade_findings == 1
+
+    geneb = results.novel_genes[0]
+    assert geneb.findings == [Finding(FindingKind.NEW_GENE, 3, 20, None)]
+    assert (geneb.prefill.form_type, geneb.prefill.panel_id, geneb.prefill.rating) == (
+        "add",
+        ATAXIA_PANEL_ID,
+        "GREEN",
+    )
+    groups = group_genes(results.novel_genes, results.known_genes)
+    assert [(g.key, [gene.hgnc_id for gene in g.genes]) for g in groups.new_genes] == [
+        ("new-green", [3])
+    ]
+
+    assert not results.panels_matched
+    html = _render(db_path, results)
+    assert 'id="outside-scope"' not in html
+    for text in ('class="association-panels"', "Panels:</strong>", "Panel Suggestions:"):
+        assert text not in html
+
+
 def test_a_gene_with_any_unreviewed_target_entry_is_unreviewed() -> None:
     """Reviews the snapshot does not hold may exist, so only an entry without reviews
     makes the gene unreviewed, on whichever target panel it is."""
@@ -2164,55 +2198,6 @@ def test_a_gene_with_any_unreviewed_target_entry_is_unreviewed() -> None:
     groups = group_genes([], [mixed, unknown])
     assert [[g.hgnc_id for g in group.genes] for group in groups.without_findings] == [[30]]
     assert [[g.hgnc_id for g in group.genes] for group in groups.already_reviewed] == [[31]]
-
-
-def test_associations_judged_outside_the_scope_panel_are_no_findings(
-    db_path: Path, hgnc_resolver: HgncResolver
-) -> None:
-    """GENEA's GREEN new disease 12 is judged outside the Ataxia panel, its AMBER one 13
-    inside; GENEB's only association 20 is judged outside, so GENEB has no finding and
-    goes to the folded section of genes possibly outside the panel's scope."""
-    _judge(db_path, {12: False, 13: True, 20: False})
-    results = _load_scoped(db_path, hgnc_resolver)
-    genea = results.known_genes[0]
-    assert [(f.kind, f.association_id) for f in genea.findings] == [
-        (FindingKind.NEW_DISEASE, 13),
-        (FindingKind.NEW_MOI, 11),
-    ]
-    geneb = results.novel_genes[0]
-    assert geneb.findings == []
-    groups = group_genes(results.novel_genes, results.known_genes)
-    assert groups.new_genes == []
-    assert [
-        (g.key, [gene.hgnc_id for gene in g.genes], g.collapsed) for g in groups.outside_scope
-    ] == [("outside-scope", [3], True)]
-
-    html = _render(db_path, results)
-    section = html[html.index('<section id="outside-scope">') :]
-    section = section[: section.index("</section>")]
-    assert "Possibly outside the panel&#39;s scope" in section
-    assert "outside the Ataxia panel&#39;s scope" in section
-    assert section.index('<details class="folded-section">') < section.index('id="novel-gene-3"')
-    assert (
-        '<p class="scope-verdict scope-outside"><strong>Ataxia panel:</strong> '
-        "possibly outside its scope. Why False.</p>"
-    ) in _association_section(html, 20)
-    assert (
-        '<p class="scope-verdict scope-fits"><strong>Ataxia panel:</strong> fits. Why True.</p>'
-    ) in _association_section(html, 13)
-    # Association 10 has no verdict: match-panels ran for it without the panel
-    assert "not judged: match-panels ran for this association without the panel" in (
-        _association_section(html, 10)
-    )
-
-
-def test_reports_without_a_scope_panel_show_no_verdicts(
-    db_path: Path, results: GeneAssessmentResults
-) -> None:
-    html = _render(db_path, results)
-    assert 'class="scope-verdict' not in html
-    assert 'id="outside-scope"' not in html
-    assert group_genes(results.novel_genes, results.known_genes).outside_scope == []
 
 
 def test_a_link_into_a_fold_opens_it(db_path: Path, results: GeneAssessmentResults) -> None:

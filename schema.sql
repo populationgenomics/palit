@@ -136,9 +136,6 @@ CREATE TABLE associations (
     mondo_match TEXT CHECK(mondo_match IN ('gencc', 'exact', 'broader')),
     mondo_raw TEXT,                        -- map-mondo's final message; NULL for gencc
     matched_panels_json JSON,              -- [{"panel_id", "rationale"}]
-    -- match-panels' verdict on the scope panel of a panel-scoped run, whether or not it
-    -- matched: {"panel_id", "fits", "rationale"}; NULL when the run has no scope panel
-    scope_panel_json JSON,
     matched_panels_raw TEXT,
     UNIQUE(hgnc_id, position),
     CHECK((mondo_id IS NULL) = (mondo_match IS NULL))

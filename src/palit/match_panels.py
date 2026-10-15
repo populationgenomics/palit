@@ -3,11 +3,8 @@
 
 One request per association without panel matches: the system part lists every
 panel and is the same for all requests, so it is cached; the user part carries
-the association's disease, mode of inheritance and summary. In a panel-scoped
-run, the system part also names the scope panel, and every answer gives a
-verdict on it with a rationale, whether or not it matches. Matches and verdict
-are stored on the association row, in the transaction that records the
-request. An
+the association's disease, mode of inheritance and summary. Matches are stored
+on the association row, in the transaction that records the request. An
 association MODEL refused goes to FALLBACK_MODEL in the next attempt (see
 :mod:`palit.llm`).
 
@@ -68,7 +65,6 @@ MAX_TOKENS = 16000
 ASSOCIATION_HEADING = "ASSOCIATION:"
 
 PROMPT_PATH = Path("prompts/panel_matching_prompt.txt")
-SCOPE_PROMPT_PATH = Path("prompts/panel_matching_scope_prompt.txt")
 SCHEMA_PATH = Path("prompts/panel_matching_schema.json")
 
 
@@ -86,15 +82,6 @@ class Association:
 @dataclass(frozen=True)
 class PanelMatch:
     panel_id: int
-    rationale: str
-
-
-@dataclass(frozen=True)
-class ScopeVerdict:
-    """Whether an association belongs on the scope panel of a panel-scoped run, and why."""
-
-    panel_id: int
-    fits: bool
     rationale: str
 
 
@@ -116,29 +103,21 @@ def format_all_panels_for_prompt(panels: dict[int, dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-# Associations due an answer: without matches, or in a panel-scoped run (the
-# parameter is true) without a verdict on the scope panel
-DUE = "(a.matched_panels_json IS NULL OR (? AND a.scope_panel_json IS NULL))"
+def select_associations(db_path: Path, history: StageHistory) -> list[Association]:
+    """Associations without panel matches, except the ones skipped for good.
 
-
-def select_associations(db_path: Path, history: StageHistory, scoped: bool) -> list[Association]:
-    """Associations due an answer, except the ones skipped for good.
-
-    An association is due one without panel matches, and in a panel-scoped run
-    (*scoped*) also without a verdict on the scope panel. Only rows of a stored
-    aggregation count: rows left behind by deleting a ``gene_aggregations`` row
-    are skipped.
+    Only rows of a stored aggregation count: rows left behind by deleting a
+    ``gene_aggregations`` row are skipped.
     """
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
-            f"""
+            """
             SELECT a.id, a.assessment_json
             FROM associations a
             JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
-            WHERE {DUE}
+            WHERE a.matched_panels_json IS NULL
             ORDER BY a.id
-            """,
-            (scoped,),
+            """
         ).fetchall()
     associations = []
     for association_id, assessment_json in rows:
@@ -157,42 +136,28 @@ def select_associations(db_path: Path, history: StageHistory, scoped: bool) -> l
     return associations
 
 
-def count_unmatched(db_path: Path, scoped: bool) -> int:
-    """The associations due an answer, as select_associations counts them."""
+def count_unmatched(db_path: Path) -> int:
     with sqlite3.connect(db_path) as conn:
         (count,) = conn.execute(
-            f"""
+            """
             SELECT COUNT(*) FROM associations a
             JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
-            WHERE {DUE}
-            """,
-            (scoped,),
+            WHERE a.matched_panels_json IS NULL
+            """
         ).fetchone()
     return int(count)
 
 
 def store_matched_panels(
-    conn: sqlite3.Connection,
-    association_id: int,
-    matches: list[PanelMatch],
-    verdict: ScopeVerdict | None,
-    raw: str,
+    conn: sqlite3.Connection, association_id: int, matches: list[PanelMatch], raw: str
 ) -> bool:
-    """Store *matches* and the scope panel *verdict* (None outside a panel-scoped run)
-    on the association; False when the row is gone or no longer due an answer."""
+    """Store *matches* on the association; False when the row is gone or already matched."""
     cursor = conn.execute(
         """
-        UPDATE associations
-        SET matched_panels_json = ?, scope_panel_json = ?, matched_panels_raw = ?
-        WHERE id = ? AND (matched_panels_json IS NULL OR (? AND scope_panel_json IS NULL))
+        UPDATE associations SET matched_panels_json = ?, matched_panels_raw = ?
+        WHERE id = ? AND matched_panels_json IS NULL
         """,
-        (
-            json.dumps([asdict(match) for match in matches]),
-            None if verdict is None else json.dumps(asdict(verdict)),
-            raw,
-            association_id,
-            verdict is not None,
-        ),
+        (json.dumps([asdict(match) for match in matches]), raw, association_id),
     )
     if cursor.rowcount == 0:
         logger.warning(
@@ -208,28 +173,11 @@ def store_matched_panels(
 # ---------------------------------------------------------------------------
 
 
-def split_prompt(template: str, panel_list: str, scope_section: str | None) -> tuple[str, str]:
-    """(system prompt with the panel list, per-association template).
-
-    *scope_section* names the scope panel of a panel-scoped run and asks for the
-    verdict on it; it ends the system prompt. None outside a panel-scoped run.
-    """
+def split_prompt(template: str, panel_list: str) -> tuple[str, str]:
+    """(system prompt with the panel list, per-association template)."""
     index = template.index(ASSOCIATION_HEADING)
     system = template[:index].format(panel_list=panel_list).rstrip()
-    if scope_section is not None:
-        system = f"{system}\n\n{scope_section.rstrip()}"
     return system, template[index:]
-
-
-def matching_schema(schema: dict[str, Any], scoped: bool) -> dict[str, Any]:
-    """*schema*, requiring the scope panel verdict from its $defs in a panel-scoped run."""
-    if not scoped:
-        return schema
-    return {
-        **schema,
-        "properties": {**schema["properties"], "scope_panel": {"$ref": "#/$defs/scope_panel"}},
-        "required": [*schema["required"], "scope_panel"],
-    }
 
 
 def format_inheritance(association: Association) -> str:
@@ -263,15 +211,11 @@ def build_request(
     )
 
 
-def parse_matches(
-    answer: dict[str, Any], name_to_id: dict[str, int], scope_panel_id: int | None
-) -> tuple[list[PanelMatch], ScopeVerdict | None]:
-    """The answer's matches by panel id, and its verdict on the scope panel of a
-    panel-scoped run (*scope_panel_id*; None otherwise).
+def parse_matches(answer: dict[str, Any], name_to_id: dict[str, int]) -> list[PanelMatch]:
+    """The answer's matches by panel id.
 
-    Raises ValueError when the answer names a panel that is not in the list, names
-    one panel twice, or says the association fits the scope panel without matching
-    it, or the other way round.
+    Raises ValueError when the answer names a panel that is not in the list, or
+    names one panel twice.
     """
     matches: list[PanelMatch] = []
     unknown: list[str] = []
@@ -286,14 +230,7 @@ def parse_matches(
     panel_ids = [match.panel_id for match in matches]
     if len(set(panel_ids)) != len(panel_ids):
         raise ValueError(f"repeated panels {panel_ids}")
-    if scope_panel_id is None:
-        return matches, None
-    scope = answer["scope_panel"]
-    if scope["fits"] != (scope_panel_id in panel_ids):
-        raise ValueError(
-            f"scope panel verdict fits={scope['fits']} disagrees with the matched panels"
-        )
-    return matches, ScopeVerdict(scope_panel_id, scope["fits"], scope["rationale"])
+    return matches
 
 
 def handle_result(
@@ -301,7 +238,6 @@ def handle_result(
     db_path: Path,
     validator: jsonschema.protocols.Validator,
     name_to_id: dict[str, int],
-    scope_panel_id: int | None,
 ) -> bool:
     """Record *result* and store its matches if they are valid; True when they were stored.
 
@@ -320,7 +256,7 @@ def handle_result(
     try:
         answer = parse_json_output(message)
         validator.validate(answer)
-        matches, verdict = parse_matches(answer, name_to_id, scope_panel_id)
+        matches = parse_matches(answer, name_to_id)
     except (ValueError, jsonschema.ValidationError) as e:
         rejection = invalid_answer_reason(e)
         logger.warning("Invalid panel matching for association %d: %s", association_id, rejection)
@@ -329,7 +265,7 @@ def handle_result(
         return False
     with sqlite3.connect(db_path) as conn:
         record_result(conn, result)
-        return store_matched_panels(conn, association_id, matches, verdict, message.to_json())
+        return store_matched_panels(conn, association_id, matches, message.to_json())
 
 
 async def send_primed(
@@ -374,7 +310,6 @@ async def run_attempt(
     db_path: Path,
     validator: jsonschema.protocols.Validator,
     name_to_id: dict[str, int],
-    scope_panel_id: int | None,
 ) -> MatchOutcome:
     """Send *requests* with :func:`send_primed`, store each result as it arrives, count outcomes."""
     outcome = MatchOutcome()
@@ -382,7 +317,7 @@ async def run_attempt(
         task = progress.add_task("Matching associations", total=len(requests))
 
         def on_result(result: LlmResult) -> None:
-            outcome.stored += handle_result(result, db_path, validator, name_to_id, scope_panel_id)
+            outcome.stored += handle_result(result, db_path, validator, name_to_id)
             outcome.to_fallback += result.goes_to_fallback
             progress.advance(task)
 
@@ -398,14 +333,10 @@ async def match_associations(
     system: str,
     user_template: str,
     name_to_id: dict[str, int],
-    scope_panel_id: int | None,
     max_retries: int,
     failures_since: datetime,
 ) -> None:
-    """Match every association due an answer, in attempts.
-
-    *schema* is the answer schema of a run with the scope panel *scope_panel_id*
-    (None outside a panel-scoped run), see matching_schema.
+    """Match every association due matches, in attempts.
 
     An attempt makes progress when it stores matches or sends an association on
     to FALLBACK_MODEL, so a round of refusals by MODEL is followed by the attempt
@@ -422,7 +353,7 @@ async def match_associations(
     log_failed_for_good(load_history().failures, STAGE)
     for attempt in range(1, max_retries + 1):
         history = load_history()
-        associations = select_associations(db_path, history, scope_panel_id is not None)
+        associations = select_associations(db_path, history)
         if not associations:
             logger.info("No associations left to match")
             return
@@ -437,9 +368,7 @@ async def match_associations(
             )
             for association in associations
         ]
-        outcome = await run_attempt(
-            transport, requests, db_path, validator, name_to_id, scope_panel_id
-        )
+        outcome = await run_attempt(transport, requests, db_path, validator, name_to_id)
         logger.info(
             "Attempt %d: stored %d of %d; %d go to the fallback model",
             attempt,
@@ -476,12 +405,6 @@ def main(
         "or cut off at max_tokens, MAX_FAILED_ANSWERS times) again, until they fail that often "
         "in this invocation",
     ),
-    scope_panel_id: int | None = typer.Option(
-        None,
-        "--scope-panel-id",
-        help="Panel ID of a panel-scoped run: every answer also gives a verdict on this "
-        "panel, with a rationale, whether or not it matches",
-    ),
 ) -> None:
     """Match gene-disease-MoI associations to diagnostic panels."""
     if not db_path.exists():
@@ -491,28 +414,15 @@ def main(
     failures_since = datetime.now(UTC) if retry_failed else ALL_TIME
 
     template = PROMPT_PATH.read_text()
-    scoped = scope_panel_id is not None
-    schema = matching_schema(json.loads(SCHEMA_PATH.read_text()), scoped)
+    schema: dict[str, Any] = json.loads(SCHEMA_PATH.read_text())
 
     logger.info("Fetching panel descriptions from PanelApp...")
     panels = PanelAppClient(panel_date).get_all_panel_descriptions()
     logger.info("Fetched %d panels", len(panels))
     name_to_id = {info["name"].lower(): panel_id for panel_id, info in panels.items()}
-    scope_section = None
-    if scope_panel_id is not None:
-        scope_info = panels.get(scope_panel_id)
-        if scope_info is None:
-            logger.error("Panel %d not found in PanelApp data for %s", scope_panel_id, panel_date)
-            raise typer.Exit(1)
-        scope_section = SCOPE_PROMPT_PATH.read_text().format(
-            panel=format_panel_for_prompt(scope_panel_id, scope_info)
-        )
-        logger.info("Panel-scoped matching for %s", scope_info["name"])
-    system, user_template = split_prompt(
-        template, format_all_panels_for_prompt(panels), scope_section
-    )
+    system, user_template = split_prompt(template, format_all_panels_for_prompt(panels))
 
-    logger.info("%s associations due an answer", f"{count_unmatched(db_path, scoped):,}")
+    logger.info("%s associations without panel matches", f"{count_unmatched(db_path):,}")
 
     async def run() -> None:
         await match_associations(
@@ -522,13 +432,12 @@ def main(
             system=system,
             user_template=user_template,
             name_to_id=name_to_id,
-            scope_panel_id=scope_panel_id,
             max_retries=max_retries,
             failures_since=failures_since,
         )
 
     asyncio.run(run())
-    logger.info("%s associations still due an answer", f"{count_unmatched(db_path, scoped):,}")
+    logger.info("%s associations still without panel matches", f"{count_unmatched(db_path):,}")
     print_stage_summary(db_path, STAGE)
 
 

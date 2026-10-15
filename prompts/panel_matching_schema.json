@@ -26,26 +26,5 @@
     "required": [
         "matched_panels"
     ],
-    "additionalProperties": false,
-    "$defs": {
-        "scope_panel": {
-            "type": "object",
-            "description": "The verdict on the panel under review, whether or not it is matched",
-            "properties": {
-                "rationale": {
-                    "type": "string",
-                    "description": "The panel's defining features the affected individuals have and those not reported"
-                },
-                "fits": {
-                    "type": "boolean",
-                    "description": "Whether the association belongs on the panel under review"
-                }
-            },
-            "required": [
-                "rationale",
-                "fits"
-            ],
-            "additionalProperties": false
-        }
-    }
+    "additionalProperties": false
 }

@@ -514,22 +514,15 @@ uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PA
 #    if it reports more run genes than before, repeat step 7 as well, until the
 #    count stays the same.
 
-# 8. Assess genes against the panel. Step 9's match-panels judges each
-#    association's fit to the panel.
+# 8. Assess genes against the panel
 uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID
 
-# 9. Map associations without a GenCC term onto MONDO terms, and match them to
-#    panels, as in the main workflow. With --scope-panel-id, each answer also
-#    gives a verdict on this panel, with a rationale, whether or not it matches.
+# 9. Map associations without a GenCC term onto MONDO terms, as in the main
+#    workflow. Panel-scoped runs do not run match-panels.
 uv run palit map-mondo --db-path data/$PANEL_NAME.sqlite
-uv run palit match-panels --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 
 # 10. Generate report package against the panel: every association of a gene
-#     not on it is a finding, and an upgrade starts from the gene's rating on it.
-#     Each association shows match-panels' verdict on the panel with its
-#     rationale; an association judged outside the panel's scope is no finding,
-#     and genes not on the panel with only such associations go into a folded
-#     section of their own
+#     not on it is a finding, and an upgrade starts from the gene's rating on it
 uv run palit generate-report \
   --report-id panel_$PANEL_NAME \
   --db-path data/$PANEL_NAME.sqlite \

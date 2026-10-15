@@ -638,21 +638,6 @@ section > h2 {
     color: #6c757d;
 }
 
-.scope-verdict {
-    margin: 4px 0 10px 0;
-    padding: 6px 10px;
-    border-left: 3px solid #a0aec0;
-    background: #f7fafc;
-}
-
-.scope-verdict.scope-fits {
-    border-left-color: #38a169;
-}
-
-.scope-verdict.scope-outside {
-    border-left-color: #dd6b20;
-}
-
 .unreviewed-entries {
     border-collapse: collapse;
     margin: 8px 0 16px 0;

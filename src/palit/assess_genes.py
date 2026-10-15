@@ -51,7 +51,7 @@ from palit.llm import (
     stage_history,
 )
 from palit.llm_usage import print_stage_summary
-from palit.panelapp_check import PanelEntry, entries_by_gene
+from palit.panel_entries import PanelEntry, entries_by_gene
 from palit.panelapp_client import (
     PanelAppClient,
     PanelGeneData,

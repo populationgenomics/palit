@@ -50,7 +50,7 @@ from palit.hgnc import HgncResolver
 from palit.llm import FALLBACK_MODEL, LIGHT_MODEL, MODEL
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
-from palit.panelapp_check import entries_by_gene
+from palit.panel_entries import entries_by_gene
 from palit.panelapp_client import AllPanelsData, PanelGeneData, PanelPublications
 from palit.panelapp_integration import (
     ENUM_TO_PANELAPP_MOI,

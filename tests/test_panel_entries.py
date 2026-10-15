@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from palit.panelapp_check import PanelEntry, entries_by_gene
+from palit.panel_entries import PanelEntry, entries_by_gene
 from palit.panelapp_integration import INCIDENTALOME_PANEL_ID, MENDELIOME_PANEL_ID
 
 Snapshot = dict[int, dict[str, Any]]

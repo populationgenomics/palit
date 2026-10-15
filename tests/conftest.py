@@ -8,7 +8,7 @@ import pytest
 
 from palit.gencc import GenccIndex, GenccTerm, GeneGencc
 from palit.hgnc import HgncEntry, HgncResolver
-from palit.panelapp_check import PanelEntry, entries_by_gene
+from palit.panel_entries import PanelEntry, entries_by_gene
 from palit.panelapp_integration import INCIDENTALOME_PANEL_ID, MENDELIOME_PANEL_ID
 
 OTHER_PANEL_ID = 9001

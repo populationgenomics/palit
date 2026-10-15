@@ -43,7 +43,7 @@ from palit.llm import (
     ResultStatus,
     stage_history,
 )
-from palit.panelapp_check import PanelEntry
+from palit.panel_entries import PanelEntry
 from palit.panelapp_client import PanelGeneData
 from palit.panelapp_integration import (
     INCIDENTALOME_PANEL_ID,

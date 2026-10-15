@@ -36,7 +36,7 @@ from palit.llm import (
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.match_panels import ScopeVerdict
-from palit.panelapp_check import PanelEntry, entries_by_gene
+from palit.panel_entries import PanelEntry, entries_by_gene
 from palit.panelapp_client import (
     AllPanelsData,
     PanelAppClient,

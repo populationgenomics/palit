@@ -429,6 +429,14 @@ SQL
 
 The heredoc is quoted so the shell leaves the JSON paths alone; `-cmd` attaches the run database first, with the shell variable expanded. `$.screen.relevant` is the screen's decision in databases of either relevance shape.
 
+The baseline also takes in every publication PanelApp Australia cites, on any panel, so that a panel-scoped run starts from PanelApp's citations as well as the screened literature. Once the run's snapshot holds reviews (built by `palit panelapp snapshot`, or completed with `add-reviews` for an older one), run:
+
+```bash
+uv run palit panelapp ingest-citations --panel-date $PANEL_DATE
+```
+
+It reads the PMIDs and DOIs from the publication lists of every gene and repeat-expansion entry and of each gene review, skips those the baseline already holds (by PMID, or by DOI in any letter case), fetches the rest from PubMed in batches of 200 or from CrossRef, and stores their metadata with `source_type = 'panelapp_citation'` and `source_details = 'panelapp-snapshot:{panel_date}'`. A DOI is stored as PanelApp spells it, and a held paper that lacks a PMID gets the one PanelApp cites it by. It writes no gene mentions: which genes a paper concerns is decided by the run that reads it. A PMID PubMed gives no usable record for, or a DOI CrossRef cannot resolve, is counted and skipped. If PubMed stays unreachable after retries, the command stops with an error; the papers stored until then are kept, and a rerun carries on from there.
+
 ### Panel-Specific Curation
 
 For curating literature for a specific panel (e.g., Arthrogryposis):
@@ -442,9 +450,10 @@ PANEL_NAME=arthrogryposis
 # 0. Build the PanelApp snapshot, as in the main workflow
 uv run palit panelapp snapshot --panel-date $PANEL_DATE
 
-# 1. Copy pre-filtered baseline DB papers to new database. Only the paper
-#    metadata is copied: step 2 assesses relevance afresh and schedules the
-#    relevant papers for download.
+# 1. Copy the baseline's papers to a new database: the screened literature and
+#    every publication PanelApp cites (see "Updating the Baseline"). Only the
+#    paper metadata is copied: step 2 assesses relevance afresh and schedules
+#    the relevant papers for download.
 sqlite3 data/$PANEL_NAME.sqlite < schema.sql
 sqlite3 data/$PANEL_NAME.sqlite "ATTACH 'data/pubmed_baseline_screening.sqlite' AS source; INSERT INTO papers (doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, source_type, source_details) SELECT doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, 'initial', source_details FROM source.papers"
 

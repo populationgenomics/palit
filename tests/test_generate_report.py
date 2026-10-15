@@ -1258,6 +1258,21 @@ def test_papers_both_models_refused_are_neither_passes_nor_misses(
     assert "<strong>Relevant:</strong> Yes (HIGH confidence). Screen rationale HIGH." in html
 
 
+def test_panel_publications_match_a_doi_in_any_letter_case(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO papers (doi, title, source, source_type, relevance_assessment_json)
+            VALUES ('10.1000/Mixed.Case', 'Title', 'pubmed', 'initial', ?)
+            """,
+            (json.dumps({"relevant": True, "screen": _screen(True, "HIGH")}),),
+        )
+    validation = load_panel_publications_validation(
+        db_path, PanelPublications(pmids=set(), dois={"10.1000/mixed.CASE"})
+    )
+    assert [p.doi for p in validation.true_positives] == ["10.1000/Mixed.Case"]
+
+
 def test_relevance_refusers_name_the_stage_model_and_its_fallback(db_path: Path) -> None:
     _add_requests(
         db_path,

@@ -1532,15 +1532,15 @@ def load_panel_publications_validation(
             )
             _collect(cursor.fetchall())
 
-        # Match DOIs
-        dois_list = list(panel_pubs.dois)
+        # Match DOIs in any letter case: PanelApp's spelling can differ from the stored one
+        dois_list = sorted({doi.lower() for doi in panel_pubs.dois})
         for i in range(0, len(dois_list), chunk_size):
             doi_chunk = dois_list[i : i + chunk_size]
             placeholders = ",".join("?" * len(doi_chunk))
             cursor.execute(
                 f"""
                 SELECT {_panel_cols} FROM papers p
-                WHERE p.doi IN ({placeholders})
+                WHERE lower(p.doi) IN ({placeholders})
                 AND p.source_type = 'initial'
                 AND p.relevance_assessment_json IS NOT NULL
             """,

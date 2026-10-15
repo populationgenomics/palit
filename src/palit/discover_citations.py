@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx2
+import tenacity
 import typer
 from rich.console import Console
 from rich.progress import track
@@ -39,6 +40,11 @@ BOOLEAN_OPERATORS = re.compile(r"\b(?:AND|OR|NOT)\b", re.IGNORECASE)
 
 # Generous enough for a full batch of PMIDs, which takes far longer than a single record.
 EFETCH_TIMEOUT_SECONDS = 300
+
+# Attempts at an efetch call before giving up, and the wait between them. Tests
+# replace the wait to retry without sleeping.
+EFETCH_ATTEMPTS = 5
+EFETCH_RETRY_WAIT: tenacity.wait.wait_base = tenacity.wait_exponential_jitter(initial=2, max=60)
 
 console = Console()
 app = typer.Typer(help="Discover papers referenced in evidence extractions")
@@ -194,12 +200,55 @@ def search_pubmed_by_title(title: str) -> int | None:
         return None
 
 
+class PubmedFetchError(Exception):
+    """efetch did not return PubMed records: it timed out or exited with an error."""
+
+
+def _log_efetch_retry(state: tenacity.RetryCallState) -> None:
+    # before_sleep runs after a failed attempt, so it has an outcome.
+    assert state.outcome is not None
+    logger.warning(
+        "%s; attempt %d/%d in %.1f s",
+        state.outcome.exception(),
+        state.attempt_number + 1,
+        EFETCH_ATTEMPTS,
+        state.upcoming_sleep,
+    )
+
+
+def _run_efetch(pmids: Sequence[int]) -> bytes:
+    """One efetch call for *pmids*, returning PubMed's XML."""
+    efetch_cmd = [
+        "efetch",
+        "-db",
+        "pubmed",
+        "-id",
+        ",".join(str(p) for p in pmids),
+        "-format",
+        "xml",
+    ]
+    try:
+        result = subprocess.run(efetch_cmd, capture_output=True, timeout=EFETCH_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as e:
+        raise PubmedFetchError(
+            f"efetch timed out after {EFETCH_TIMEOUT_SECONDS} s for {len(pmids)} PMID(s)"
+        ) from e
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace").strip()
+        raise PubmedFetchError(
+            f"efetch exited with status {result.returncode} for {len(pmids)} PMID(s): {stderr}"
+        )
+    return result.stdout
+
+
 def fetch_papers_by_pmids(pmids: Sequence[int], source_details: str) -> list[Paper]:
     """Fetch paper metadata for a batch of PMIDs in a single efetch call.
 
     Papers without a DOI are dropped by the extractor, so the result can be
     shorter than `pmids`; callers that need to know which PMIDs resolved should
-    compare against the returned papers.
+    compare against the returned papers. A failed efetch call is retried, and
+    raises `PubmedFetchError` once EFETCH_ATTEMPTS attempts have failed, so a
+    PMID missing from the result is one PubMed has no record with a DOI for.
 
     Args:
         pmids: PubMed IDs to fetch in one request
@@ -211,38 +260,24 @@ def fetch_papers_by_pmids(pmids: Sequence[int], source_details: str) -> list[Pap
     if not pmids:
         return []
 
-    efetch_cmd = [
-        "efetch",
-        "-db",
-        "pubmed",
-        "-id",
-        ",".join(str(p) for p in pmids),
-        "-format",
-        "xml",
-    ]
-
-    try:
-        result = subprocess.run(
-            efetch_cmd,
-            capture_output=True,
-            timeout=EFETCH_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.warning(f"Failed to fetch metadata for {len(pmids)} PMID(s): {e}")
-        return []
-
-    if result.returncode != 0:
-        logger.warning(f"efetch failed for {len(pmids)} PMID(s)")
-        return []
-
-    # Allow papers without abstracts for cited papers (case reports, etc.)
-    papers, _stats = extract_papers_from_xml(
-        result.stdout,
-        source_type="expansion",
-        source_details=source_details,
-        require_abstract=False,
-    )
-    return papers
+    for attempt in tenacity.Retrying(
+        stop=tenacity.stop_after_attempt(EFETCH_ATTEMPTS),
+        wait=EFETCH_RETRY_WAIT,
+        retry=tenacity.retry_if_exception_type(PubmedFetchError),
+        before_sleep=_log_efetch_retry,
+        reraise=True,
+    ):
+        with attempt:
+            xml = _run_efetch(pmids)
+            # Allow papers without abstracts for cited papers (case reports, etc.)
+            papers, _stats = extract_papers_from_xml(
+                xml,
+                source_type="expansion",
+                source_details=source_details,
+                require_abstract=False,
+            )
+            return papers
+    raise AssertionError("tenacity returns or re-raises")
 
 
 def fetch_paper_metadata(pmid: int, source_details: str) -> Paper | None:
@@ -253,11 +288,13 @@ def fetch_paper_metadata(pmid: int, source_details: str) -> Paper | None:
         source_details: Provenance string for the paper
 
     Returns:
-        Paper object if successful (and has a DOI), None otherwise
+        Paper object, or None if PubMed has no record with a DOI for the PMID
+
+    Raises:
+        PubmedFetchError: efetch kept failing
     """
     papers = fetch_papers_by_pmids([pmid], source_details)
     if not papers:
-        logger.warning(f"No paper data extracted for PMID {pmid} (may lack DOI)")
         return None
     return papers[0]
 
@@ -433,10 +470,10 @@ def discover(
         # Fetch metadata (efetch returns XML from which we extract DOI)
         paper = fetch_paper_metadata(pmid, f"referenced:{source.hgnc_id}:{source.citing_doi}")
         if paper is None:
-            logger.warning(f"Failed to fetch metadata for PMID {pmid}")
+            logger.warning(f"PMID {pmid} has no PubMed record with a DOI")
             not_found += 1
             failures_by_gene.setdefault(source.hgnc_id, []).append(
-                f"{source.title} (PMID {pmid} found but metadata fetch failed)"
+                f"{source.title} (PMID {pmid} found but PubMed gives no DOI)"
             )
             continue
 

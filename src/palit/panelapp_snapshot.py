@@ -15,7 +15,8 @@ panel has dropped since the snapshot's version.
 
 ``snapshot`` builds a new snapshot. ``add-reviews`` adds the reviews to a
 snapshot written before they were captured; its reviews are those of the day it
-runs.
+runs. ``ingest-citations`` adds every publication a snapshot cites to a database,
+normally the baseline (see :mod:`palit.panelapp_publications`).
 """
 
 import asyncio
@@ -30,12 +31,20 @@ import httpx2
 import tenacity
 import typer
 
-from palit.panelapp_client import DEFAULT_SNAPSHOT_DIR, EVALUATIONS_FETCHED_AT, snapshot_path
+from palit.panelapp_client import (
+    DEFAULT_SNAPSHOT_DIR,
+    EVALUATIONS_FETCHED_AT,
+    PanelAppClient,
+    snapshot_path,
+)
+from palit.panelapp_publications import ingest_snapshot_citations
 from palit.progress import LoggingProgress as Progress
 
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(help="Build the dated PanelApp snapshot that a run reads")
+app = typer.Typer(
+    help="Build the dated PanelApp snapshot that a run reads, and take in the publications it cites"
+)
 
 PANELAPP_BASE_URL = "https://panelapp-aus.org/api/v1"
 MAX_IN_FLIGHT = 8
@@ -285,3 +294,38 @@ def add_reviews_command(
 
     asyncio.run(run())
     write_snapshot(path, panels)
+
+
+@app.command("ingest-citations")
+def ingest_citations_command(
+    panel_date: str = PANEL_DATE_OPTION,
+    snapshot_dir: Path = SNAPSHOT_DIR_OPTION,
+    db_path: Path = typer.Option(
+        Path("data/pubmed_baseline_screening.sqlite"),
+        "--db-path",
+        help="Database to add the papers to, normally the baseline",
+    ),
+) -> None:
+    """Add every publication PanelApp cites in the snapshot, on any panel, to a database.
+
+    Takes the publications of gene and repeat-expansion entries and of the gene
+    entries' reviews, fetches those the database does not hold from PubMed or
+    CrossRef, and stores their metadata. Safe to rerun.
+    """
+    if not db_path.exists():
+        logger.error("Database not found: %s", db_path)
+        raise typer.Exit(1)
+    panels = PanelAppClient(panel_date, snapshot_dir).get_all_panel_data()
+    without_reviews = [
+        panel_id for panel_id, panel in panels.items() if EVALUATIONS_FETCHED_AT not in panel
+    ]
+    if without_reviews:
+        logger.error(
+            "The %s snapshot has no reviews on %d panels; add them with "
+            "`palit panelapp add-reviews --panel-date %s`",
+            panel_date,
+            len(without_reviews),
+            panel_date,
+        )
+        raise typer.Exit(1)
+    ingest_snapshot_citations(db_path, panels, panel_date)

@@ -2,20 +2,24 @@
 
 import asyncio
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx2
 import pytest
+from click.testing import Result
+from typer.testing import CliRunner
 
+from palit import panelapp_snapshot
 from palit.panelapp_client import (
     EVALUATIONS_FETCHED_AT,
     PanelAppClient,
     format_panel_for_prompt,
     snapshot_path,
 )
-from palit.panelapp_snapshot import build_snapshot, version_on, write_snapshot
+from palit.panelapp_snapshot import app, build_snapshot, version_on, write_snapshot
 
 
 def _gene(hgnc_id: str) -> dict[str, Any]:
@@ -213,3 +217,57 @@ def test_panel_prompt_restores_relevant_disorders_split_at_commas() -> None:
         "Description: Genes that cause leukodystrophies.\n"
         "</panel>"
     )
+
+
+def _refuse_ingest(db_path: Path, panels: dict[int, dict[str, Any]], panel_date: str) -> None:
+    raise AssertionError("ingest-citations should have stopped before the intake")
+
+
+def _ingest_citations(tmp_path: Path, db_path: Path) -> Result:
+    return CliRunner().invoke(
+        app,
+        [
+            "ingest-citations",
+            "--panel-date",
+            "2026-04-01",
+            "--snapshot-dir",
+            str(tmp_path),
+            "--db-path",
+            str(db_path),
+        ],
+    )
+
+
+def test_ingest_citations_needs_the_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(panelapp_snapshot, "ingest_snapshot_citations", _refuse_ingest)
+    write_snapshot(
+        snapshot_path(tmp_path, "2026-04-01"),
+        {"1": {"id": 1, "genes": [], "strs": [], EVALUATIONS_FETCHED_AT: "2026-04-01T09:00:00"}},
+    )
+
+    result = _ingest_citations(tmp_path, tmp_path / "missing.sqlite")
+
+    assert result.exit_code == 1
+    assert "Database not found" in caplog.text
+
+
+def test_ingest_citations_needs_a_snapshot_with_reviews(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(panelapp_snapshot, "ingest_snapshot_citations", _refuse_ingest)
+    db_path = tmp_path / "baseline.sqlite"
+    sqlite3.connect(db_path).close()
+    write_snapshot(
+        snapshot_path(tmp_path, "2026-04-01"),
+        {
+            "1": {"id": 1, "genes": [], "strs": [], EVALUATIONS_FETCHED_AT: "2026-04-01T09:00:00"},
+            "2": {"id": 2, "genes": [_gene("HGNC:10")], "strs": []},
+        },
+    )
+
+    result = _ingest_citations(tmp_path, db_path)
+
+    assert result.exit_code == 1
+    assert "no reviews on 1 panels" in caplog.text

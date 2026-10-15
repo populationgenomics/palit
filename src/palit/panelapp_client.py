@@ -3,6 +3,7 @@
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -75,32 +76,89 @@ class PanelPublications:
     dois: set[str]
 
 
-def _is_doi(token: str) -> bool:
-    """Check if a token looks like a DOI (e.g. '10.1002/ajmg.a.63982')."""
-    return token.startswith("10.") and "/" in token
+# A DOI anywhere in a publication string: bare, after a "doi:" label, or inside a
+# doi.org or publisher URL. Whitespace or a comma ends it.
+_DOI = re.compile(r"(?<!\d)10\.\d{4,9}/[^\s,]+")
+
+# The whole token holding a DOI, such as "https://doi.org/10.1016/j.jaci.2022.10.022",
+# blanked before PMIDs are read so that neither the DOI's digits nor its URL's words
+# ("org") are taken for a PMID or for the word before one.
+_DOI_TOKEN = re.compile(r"[^\s,]*" + _DOI.pattern)
+
+# A PubMed URL ("https://pubmed.ncbi.nlm.nih.gov/16794080/"), rewritten to
+# "PMID 16794080" before PMIDs are read.
+_PUBMED_URL_TOKEN = re.compile(r"[^\s,]*pubmed\.ncbi\.nlm\.nih\.gov/(\d+)[^\s,]*")
+
+# A preprint server's URL appends a version, and possibly a file suffix, to a DOI
+# whose suffix is digits and dots: ".../10.1101/2021.04.27.441137v1.full.pdf".
+_PREPRINT_VERSION = re.compile(r"(10\.\d{4,9}/[\d.]*\d)v\d+(?:\.[\w-]+)*")
+
+_NUMBER = re.compile(r"\d+")
+_WORD = re.compile(r"[A-Za-z]+")
+
+# Words that label the number after them as a PMID, lowercased. "pubmed" also covers
+# the path of an older PubMed URL (".../pubmed/16794080").
+_PUBMED_LABELS = frozenset({"pmid", "pmids", "pubmed"})
+
+# PMIDs read from PanelApp's publication fields have 5 to 8 digits and no leading
+# zero. The highest PMID is around 43 million in 2026. PMIDs of 1 to 4 digits exist
+# (papers from 1975), but in these fields shorter numbers are list markers, section
+# and volume numbers, years, or PMIDs cut short: every number of 1 to 4 digits that
+# is labelled as a PMID in the 2026-10-13 snapshot is a truncated one.
+_PMID_DIGITS = range(5, 9)
+
+
+def _clean_doi(match: str) -> str:
+    """A DOI as matched in free text, without a URL's query or fragment, trailing
+    punctuation, or a preprint URL's version suffix."""
+    doi = re.split(r"[?#]", match, maxsplit=1)[0]
+    while doi and (
+        doi[-1] in ".;:'\""
+        or (doi[-1] == ")" and doi.count(")") > doi.count("("))
+        or (doi[-1] == "]" and doi.count("]") > doi.count("["))
+    ):
+        doi = doi[:-1]
+    preprint = _PREPRINT_VERSION.fullmatch(doi)
+    return preprint.group(1) if preprint is not None else doi
+
+
+def _is_pmid(number: str, preceding_text: str) -> bool:
+    """Whether a number in a publication string is a PMID.
+
+    It is when it has a PMID's length and the nearest word before it labels it as one
+    ("PMID: 12345678", "PubMed 12345678", "PubMed ID: 12345678",
+    "PMID: 12345678, 23456789") or there is no word before it, as in a bare list of
+    PMIDs. A number after any other word is a different identifier or part of prose:
+    "OMIM 120130", "MIM# 601492", "bioRxiv 773028", "Corpus ID: 245670502",
+    "NBK131811", "Ehlers-Danlos syndrome, ..., type, 1, 130070".
+    """
+    if number.startswith("0") or len(number) not in _PMID_DIGITS:
+        return False
+    words = [word.lower() for word in _WORD.findall(preceding_text)]
+    if not words:
+        return True
+    if words[-1] == "id":
+        return words[-2:-1] == ["pubmed"]
+    return words[-1] in _PUBMED_LABELS
 
 
 def clean_panel_publications(publications: list[str]) -> PanelPublications:
-    """Clean and extract PMIDs and DOIs from panel publication strings.
+    """Extract the PMIDs and DOIs from PanelApp publication strings.
 
-    PanelApp publication fields are free-text. Entries may be PMIDs (all digits),
-    DOIs (starting with '10.' and containing '/'), or other text (ignored).
+    PanelApp's publication fields are free text: mostly PMIDs, bare or labelled and
+    often several to a string, but also DOIs, URLs, OMIM numbers, phenotype names
+    and references in prose. DOIs are taken from anywhere in a string, then the
+    tokens holding them are removed so their digits are not read as PMIDs; see
+    `_is_pmid` for which numbers are PMIDs.
     """
     pmids: set[int] = set()
     dois: set[str] = set()
     for entry in publications:
-        # If the whole entry looks like a DOI, take it as-is
-        stripped = entry.strip()
-        if _is_doi(stripped):
-            dois.add(stripped)
-            continue
-        # Otherwise split on commas/spaces and classify each token
-        tokens = stripped.replace(",", " ").split()
-        for token in tokens:
-            if token.isdigit():
-                pmids.add(int(token))
-            elif _is_doi(token):
-                dois.add(token)
+        dois.update(_clean_doi(match) for match in _DOI.findall(entry))
+        text = _PUBMED_URL_TOKEN.sub(r" PMID \1 ", _DOI_TOKEN.sub(" ", entry))
+        for number in _NUMBER.finditer(text):
+            if _is_pmid(number.group(), text[: number.start()]):
+                pmids.add(int(number.group()))
     return PanelPublications(pmids=pmids, dois=dois)
 
 

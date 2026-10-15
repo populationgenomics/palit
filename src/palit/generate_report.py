@@ -983,8 +983,9 @@ def load_refused_papers(cursor: sqlite3.Cursor, hgnc_id: int) -> list[RefusedPap
     MODEL refused is still due its fallback request.
 
     A paper belongs to the gene when the relevance screen named the gene for it,
-    when the gene's tournament selected it, or when it was added for the gene as a
-    PanelApp-cited or referenced paper (``source_details``).
+    when the gene's tournament selected it, when PanelApp cites it for the gene
+    (``panelapp_citations``), or when it was added for the gene as a referenced
+    paper (``source_details``).
     """
     cursor.execute(
         """
@@ -1009,7 +1010,11 @@ def load_refused_papers(cursor: sqlite3.Cursor, hgnc_id: int) -> list[RefusedPap
                   SELECT 1 FROM tournament_results t, json_each(t.selected_dois_json) j
                   WHERE t.hgnc_id = ? AND j.value = p.doi
               )
-              OR p.source_details IN (CAST(? AS TEXT), 'panelapp:' || ?)
+              OR EXISTS (
+                  SELECT 1 FROM panelapp_citations pc
+                  WHERE pc.paper_doi = p.doi AND pc.hgnc_id = ?
+              )
+              OR p.source_details = CAST(? AS TEXT)
               OR p.source_details LIKE 'referenced:' || ? || ':%'
           )
         ORDER BY p.source_date DESC, p.doi

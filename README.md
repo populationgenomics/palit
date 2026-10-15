@@ -172,10 +172,12 @@ uv run palit download-papers register
 #    origin; criteria A to C use it. For registries and case series without
 #    family structure, the qualifying and independent counts are derived from
 #    the patients who carry a qualifying genotype.
-#    An initial paper is extracted only when assess-relevance found it relevant,
-#    even if a PDF is on file; expansion papers are always extracted. The genes
-#    with evidence from a relevant paper are this run's genes: steps 5, 6 and 9
-#    work on them alone.
+#    An initial paper is extracted only when assess-relevance found it relevant
+#    or PanelApp cites it for one of the run's genes (step 6), even if a PDF is
+#    on file; expansion papers are always extracted. The genes with evidence
+#    from a relevant paper are this run's genes: steps 5, 6 and 9 work on them
+#    alone. Only relevant papers add run genes, however they entered the
+#    corpus, so a cited paper the screen rejected adds none.
 uv run palit extract-evidence
 
 # 5. Discover papers referenced in evidence (citation-based expansion)
@@ -186,19 +188,20 @@ uv run palit discover-citations add --gene GENE_SYMBOL PMID1 PMID2 ...
 
 # 6. Expand literature beyond citations. Tournament selection over the screened
 #    baseline, bounded by --cutoff-date to the literature preceding the window,
-#    then unconditional seeding of the publications
-#    PanelApp already cites for each gene in the --panel-date snapshot (see
-#    "PanelApp publication seeding" below).
+#    then unconditional seeding of the publications PanelApp already cites for
+#    each gene, on any panel of the --panel-date snapshot, copied from the
+#    baseline where it holds them (see "PanelApp Publication Seeding" below).
 uv run palit expand-literature --cutoff-date $START_DATE --panel-date $PANEL_DATE
 
-# 7. Download expansion papers (same workflow as step 3)
+# 7. Download expansion papers and the papers PanelApp cites for the run's
+#    genes (same workflow as step 3)
 uv run palit download-papers attempt-pmc
 uv run palit download-papers download-preprints
 uv run palit download-papers open-browser --expansion-only
 # ... manually download PDFs to data/papers/ ...
 uv run palit download-papers register
 
-# 8. Extract evidence from expansion papers (same as step 4)
+# 8. Extract evidence from the papers steps 5 to 7 added (same as step 4)
 uv run palit extract-evidence
 
 # 9. Aggregate each gene's evidence across papers into gene-disease-MoI
@@ -255,26 +258,18 @@ uv run palit ledger writeback --db-path data/db.sqlite --run-id report_mendeliom
 
 ## PanelApp Publication Seeding
 
-Tournament selection keeps a minimal, non-redundant evidence set, so it routinely
-discards papers a PanelApp curator has already cited — a single-family report loses
-to a comprehensive cohort by design. Others were never candidates at all, because the
-screened baseline does not reach back far enough to contain them. Either way the
-report's "new evidence" framing ends up resting on papers we never read.
+A gene in the run is assessed on all its evidence, including every paper PanelApp Australia cites for it on any panel. Tournament selection keeps a minimal, non-redundant evidence set, so it routinely discards papers a curator has already cited (a single-family report loses to a comprehensive cohort by design), the relevance screen may reject a cited paper, and many older cited papers were never in the screened literature. If the run never read them, the report's "new evidence" would rest on papers it cannot compare with.
 
-`expand-literature` therefore finishes with an unconditional seeding pass: for every
-gene this run assesses, the publications PanelApp cites for it — the gene entity's
-list plus those cited in individual reviews, the same union `assess-genes` compares
-evidence against — are fetched from PubMed (batched efetch) or CrossRef and stored as
-expansion papers with `source_details = 'panelapp:{hgnc_id}'`. They then flow through
-the normal download and extraction steps.
+Seeding takes, for each of the run's genes, the publications PanelApp cites for it in the run's snapshot: the publication lists of its gene and repeat-expansion entries on every panel, and those of its gene entries' reviews. It needs a snapshot with reviews. Then:
 
-Seeding runs after `--force-all`'s expansion wipe, so seeded papers survive it, and
-before the tournament's early return, so a rerun still picks up publications added to
-a panel since. It is idempotent: papers already held are counted and skipped.
+- A cited paper the run database does not hold is copied from the baseline (`data/pubmed_baseline_screening.sqlite`, or `--baseline-db-path`) if the baseline holds it, matched by PMID or by DOI in any letter case, and fetched from PubMed (batched efetch) or CrossRef otherwise. It is stored as an expansion paper with `source_details = 'panelapp:{hgnc_id}'`, the lowest HGNC ID citing it, and scheduled for download. Since the baseline takes in every PanelApp citation (see "Updating the Baseline"), fetching is the exception.
+- Table `panelapp_citations` gets one row per run gene and held paper PanelApp cites for it, whether the run held the paper before seeding or seeding added it. A linked paper without a download status, such as an initial paper the relevance screen rejected, is scheduled for download.
 
-Publications that never resolve to a DOI, and those whose PDF cannot be obtained, are
-logged and simply stay out of the corpus — seeding widens coverage but does not
-guarantee it.
+A paper linked to one of the run's genes is in the corpus whatever its relevance, so it is downloaded and extracted with the expansion papers; `download-papers open-browser --expansion-only` lists it too. The run's genes come from relevant papers only, so the extraction of a cited paper the screen rejected adds no genes. A cited paper the screen passed adds its genes like any relevant paper, and it may be extracted only after seeding (for example when `reduce-literature` had unscheduled it and seeding scheduled it again). Seeding logs how many run genes it covered; when the run's genes have grown since, run it again for the new genes.
+
+In the monthly workflow `expand-literature` seeds. It does so after `--force-all`'s expansion wipe, so seeded papers survive it, and before the tournament's early return, so a rerun still picks up publications added to a panel since. Panel-scoped runs have no `expand-literature` and seed with `palit panelapp seed-citations` (see "Panel-Specific Curation"), which runs the same seeding.
+
+Seeding can be rerun: papers already held are counted and skipped, and the table is rebuilt from the snapshot each time. Publications that never resolve to a DOI, and those whose PDF cannot be obtained, are logged and stay out of the corpus, so seeding widens coverage without guaranteeing it.
 
 ## PubMed Ingestion Ledger
 
@@ -480,23 +475,45 @@ uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite
 uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 
 # 5. Extract evidence (panel-scoped: genes for unrelated conditions are
-#    skipped) and assess genes against the panel. Step 6's match-panels judges
-#    each association's fit to the panel.
+#    skipped). The genes with evidence from a relevant paper are the run's genes.
 uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
+
+# 6. Seed the publications PanelApp cites for the run's genes, on any panel
+#    (see "PanelApp Publication Seeding"). Most are already in the database,
+#    copied from the baseline in step 1; those the screen rejected are scheduled
+#    for download all the same. The rest are copied from the baseline or
+#    fetched.
+uv run palit panelapp seed-citations --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE
+
+# 7. Download and extract the seeded papers, as in steps 4 and 5
+uv run palit download-papers attempt-pmc --db-path data/$PANEL_NAME.sqlite
+uv run palit download-papers download-preprints --db-path data/$PANEL_NAME.sqlite
+uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite --expansion-only
+# ... manually download PDFs ...
+uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
+uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
+#    A relevant paper extracted in this round (one reduce-literature had left
+#    out, then seeded because PanelApp cites it) can add run genes, which step 6
+#    did not seed for. Run step 6 again, which fetches nothing it holds already;
+#    if it reports more run genes than before, repeat step 7 as well, until the
+#    count stays the same.
+
+# 8. Assess genes against the panel. Step 9's match-panels judges each
+#    association's fit to the panel.
 uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID
 
-# 6. Map associations without a GenCC term onto MONDO terms, and match them to
+# 9. Map associations without a GenCC term onto MONDO terms, and match them to
 #    panels, as in the main workflow. With --scope-panel-id, each answer also
 #    gives a verdict on this panel, with a rationale, whether or not it matches.
 uv run palit map-mondo --db-path data/$PANEL_NAME.sqlite
 uv run palit match-panels --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 
-# 7. Generate report package against the panel: every association of a gene
-#    not on it is a finding, and an upgrade starts from the gene's rating on it.
-#    Each association shows match-panels' verdict on the panel with its
-#    rationale; an association judged outside the panel's scope is no finding,
-#    and genes not on the panel with only such associations go into a folded
-#    section of their own
+# 10. Generate report package against the panel: every association of a gene
+#     not on it is a finding, and an upgrade starts from the gene's rating on it.
+#     Each association shows match-panels' verdict on the panel with its
+#     rationale; an association judged outside the panel's scope is no finding,
+#     and genes not on the panel with only such associations go into a folded
+#     section of their own
 uv run palit generate-report \
   --report-id panel_$PANEL_NAME \
   --db-path data/$PANEL_NAME.sqlite \

@@ -295,6 +295,9 @@ def db_path(tmp_path: Path) -> Path:
                 (3, "GENEB", "10.1/other", "relevance_assessment"),
             ],
         )
+        conn.execute(
+            "INSERT INTO panelapp_citations (hgnc_id, paper_doi) VALUES (1, '10.1/seeded')"
+        )
         conn.executemany(
             """
             INSERT INTO gene_aggregations (hgnc_id, assessment_raw, paper_id_mapping,

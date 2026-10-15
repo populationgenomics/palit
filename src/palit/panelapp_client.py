@@ -35,31 +35,6 @@ class PanelGeneData:
         return max(self.gene_panel_confidence[hgnc_id].values())
 
 
-def find_gene_panel(
-    hgnc_id: int,
-    target_panel_ids: list[int],
-    panel_data: PanelGeneData,
-) -> int | None:
-    """Find first target panel containing this gene.
-
-    Iterates through target panels in the given order and returns the first
-    panel that contains the gene.
-
-    Args:
-        hgnc_id: HGNC ID of the gene to look up
-        target_panel_ids: Ordered list of panel IDs to check
-        panel_data: PanelApp gene data with panel mappings
-
-    Returns:
-        Panel ID if found, None if gene is novel (not in any target panel).
-    """
-    gene_panels = panel_data.gene_panel_confidence.get(hgnc_id, {})
-    for panel_id in target_panel_ids:
-        if panel_id in gene_panels:
-            return panel_id
-    return None
-
-
 @dataclass
 class AllPanelsData:
     """Gene data from ALL panels with panel information."""
@@ -183,8 +158,8 @@ def extract_gene_publications(panel_data: dict[str, Any], hgnc_id: int) -> Panel
 
     Searches the panel's genes, strs, and regions for an entity whose
     gene_data.hgnc_id matches HGNC:<hgnc_id>. Raises ValueError if not found —
-    callers should only invoke this after confirming panel membership (e.g. via
-    find_gene_panel), so missing-entity is an invariant violation.
+    callers should only invoke this after confirming panel membership, so
+    missing-entity is an invariant violation.
     """
     target_id = f"HGNC:{hgnc_id}"
     for entity_key in ("genes", "strs", "regions"):

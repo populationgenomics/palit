@@ -13,8 +13,9 @@ import typer
 from palit.hgnc import HgncResolver
 from palit.llm import BatchTransport, ImmediateTransport, Transport, make_client
 from palit.llm_usage import print_stage_summary
-from palit.panelapp_client import PanelAppClient
-from palit.panelapp_publications import seed_panelapp_publications
+from palit.panelapp_client import DEFAULT_SNAPSHOT_DIR
+from palit.panelapp_publications import BASELINE_DB_PATH, seed_panelapp_publications
+from palit.panelapp_snapshot import load_panels_with_reviews
 from palit.papers import Paper, deserialize_source_metadata, serialize_source_metadata
 from palit.run_corpus import RUN_GENES
 from palit.tournament import TournamentEntry, TournamentOutcome, record_abandoned, run_tournaments
@@ -246,20 +247,16 @@ def main(
         "--panel-date",
         help="Panel state date (YYYY-MM-DD) whose snapshot supplies PanelApp's cited publications",
     ),
-    target_panel_ids: list[int] | None = typer.Option(
-        None,
-        "--target-panel-ids",
-        help="Panel IDs to source PanelApp publications from. Can be specified multiple times. Defaults to TARGET_PANEL_IDS.",
-    ),
     db_path: Path = typer.Option(
         Path("data/db.sqlite"),
         "--db-path",
         help="Path to main SQLite database",
     ),
     baseline_db_path: Path = typer.Option(
-        Path("data/pubmed_baseline_screening.sqlite"),
+        BASELINE_DB_PATH,
         "--baseline-db-path",
-        help="Path to baseline screening database",
+        help="Path to baseline screening database: the tournament's candidates, and the "
+        "source of PanelApp-cited papers before PubMed and CrossRef",
     ),
     max_papers: int = typer.Option(
         20,
@@ -300,9 +297,11 @@ def main(
     """Expand literature for the run's genes, from two sources.
 
     Tournament selection picks a minimal, non-redundant set from the screened
-    baseline. Seeding then adds, unconditionally, every publication PanelApp
-    already cites for those genes — papers the tournament would discard as
-    redundant, or that the baseline never contained.
+    baseline. Seeding first adds, unconditionally, every publication PanelApp
+    already cites for those genes on any panel, including papers the tournament
+    would discard as redundant and papers the baseline never contained, and
+    records which genes cite each held paper (see
+    :mod:`palit.panelapp_publications`).
     """
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
@@ -335,6 +334,7 @@ def main(
         if force_all:
             logger.info("force-all enabled: clearing expansion data")
             cursor.execute("DELETE FROM gene_mentions WHERE source = 'expansion_evidence'")
+            cursor.execute("DELETE FROM panelapp_citations")
             cursor.execute("DELETE FROM papers WHERE source_type = 'expansion'")
             cursor.execute("DELETE FROM tournament_results")
             conn.commit()
@@ -355,9 +355,8 @@ def main(
     # Seed the publications PanelApp already cites. Runs after --force-all's
     # expansion wipe so seeded papers survive it, and before the tournament's
     # early return so a rerun still picks up publications added to a panel.
-    panelapp_client = PanelAppClient(panel_date)
-    panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
-    seed_panelapp_publications(db_path, panelapp_client, panel_data, hgnc_resolver)
+    panels = load_panels_with_reviews(panel_date, DEFAULT_SNAPSHOT_DIR)
+    seed_panelapp_publications(db_path, panels, baseline_db_path, hgnc_resolver)
 
     logger.info(f"Found {len(genes)} gene(s) to expand")
 

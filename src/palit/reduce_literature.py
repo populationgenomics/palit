@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Tournament-based literature reduction to minimize manual download burden.
 
-Only papers assessed relevant take part: they are the ones scheduled for
-download (see :mod:`palit.run_corpus`).
+Only papers assessed relevant take part: they are the ones the relevance stage
+scheduled for download (see :mod:`palit.run_corpus`). Papers PanelApp cites for
+a run gene are scheduled later, by seeding, whatever the reduction kept.
 """
 
 import asyncio

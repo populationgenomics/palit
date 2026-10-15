@@ -1,6 +1,7 @@
 """Tests for seeding PanelApp's cited publications into the run corpus, and for
 taking a snapshot's citations into the baseline."""
 
+import json
 import logging
 import sqlite3
 from collections.abc import Sequence
@@ -10,145 +11,73 @@ from typing import Any
 import pytest
 
 from palit import panelapp_publications
-from palit.panelapp_client import PanelGeneData
+from palit.discover_citations import PubmedFetchError
+from palit.hgnc import HgncResolver
+from palit.panelapp_client import PanelPublications
 from palit.panelapp_publications import (
     CITATION_SOURCE_DETAILS_PREFIX,
     CITATION_SOURCE_TYPE,
     SEED_SOURCE_TYPE,
+    HeldIdentifiers,
+    PaperWriter,
+    SeedStats,
     collect_missing_publications,
+    fetch_publications,
+    gene_citations,
     held_identifiers,
     ingest_snapshot_citations,
+    seed_panelapp_publications,
     snapshot_publications,
-    store_publications,
 )
 from palit.papers import CrossrefMetadata, Paper, PubmedMetadata
 
+ROOT = Path(__file__).resolve().parents[1]
+
 MENDELIOME = 137
 SKELETAL = 258
+OTHER_PANEL = 9001
 
 
-def _make_db(tmp_path: Path, papers: list[tuple[str, int | None]], genes: list[int]) -> Path:
-    """Build a minimal run database with the columns the seeder reads."""
-    db_path = tmp_path / "run.sqlite"
-    with sqlite3.connect(db_path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE papers (doi TEXT PRIMARY KEY, pmid INTEGER);
-            CREATE TABLE gene_mentions (hgnc_id INTEGER, paper_doi TEXT, source TEXT);
-            """
-        )
-        conn.executemany("INSERT INTO papers (doi, pmid) VALUES (?, ?)", papers)
-        conn.executemany(
-            "INSERT INTO gene_mentions (hgnc_id, paper_doi, source) VALUES (?, ?, 'recent_evidence')",
-            [(hgnc_id, "10.1000/seed") for hgnc_id in genes],
-        )
-    return db_path
+def _held(pmids: set[int], dois: list[str]) -> HeldIdentifiers:
+    return HeldIdentifiers(pmids=pmids, dois={doi.lower(): doi for doi in dois})
 
 
-class _FakeClient:
-    """PanelApp client stub returning fixed entity and review publications."""
-
-    def __init__(
-        self,
-        entity_publications: dict[int, list[str]],
-        review_publications: dict[int, list[str]] | None = None,
-    ) -> None:
-        self._entity_publications = entity_publications
-        self._review_publications = review_publications or {}
-
-    def get_panel_data(self, panel_id: int) -> dict[str, Any]:
-        return {
-            "genes": [
-                {
-                    "gene_data": {"hgnc_id": f"HGNC:{hgnc_id}"},
-                    "publications": publications,
-                }
-                for hgnc_id, publications in self._entity_publications.items()
-            ]
-        }
-
-    def holds_gene(self, panel_id: int, hgnc_id: int) -> bool:
-        return hgnc_id in self._entity_publications
-
-    def gene_reviews(self, panel_id: int, hgnc_id: int) -> list[dict[str, Any]]:
-        publications = self._review_publications.get(hgnc_id)
-        return [{"publications": publications}] if publications else []
+def _cited(pmids: set[int] | None = None, dois: set[str] | None = None) -> PanelPublications:
+    return PanelPublications(pmids=pmids or set(), dois=dois or set())
 
 
-def _panel_data(gene_panels: dict[int, set[int]], panel_ids: list[int]) -> PanelGeneData:
-    return PanelGeneData(
-        panel_ids=panel_ids,
-        gene_panel_confidence={
-            hgnc_id: dict.fromkeys(panels, 3) for hgnc_id, panels in gene_panels.items()
-        },
+def test_collects_publications_absent_from_the_database() -> None:
+    missing = collect_missing_publications(
+        _held({11111111}, []), {3604: _cited({11111111, 22222222})}
     )
-
-
-def test_collects_publications_absent_from_the_corpus(tmp_path: Path) -> None:
-    db_path = _make_db(tmp_path, [("10.1000/held", 11111111)], [3604])
-    client = _FakeClient({3604: ["11111111", "22222222"]})
-    panel_data = _panel_data({3604: {MENDELIOME}}, [MENDELIOME])
-
-    missing = collect_missing_publications(held_identifiers(db_path), client, panel_data, [3604])
 
     assert missing.pmid_owner == {22222222: 3604}
     assert missing.publications_cited == 2
     assert missing.already_present == 1
-    assert missing.genes_on_target_panel == 1
 
 
-def test_unions_entity_and_review_publications(tmp_path: Path) -> None:
-    db_path = _make_db(tmp_path, [], [3604])
-    client = _FakeClient({3604: ["11111111"]}, review_publications={3604: ["22222222"]})
-    panel_data = _panel_data({3604: {MENDELIOME}}, [MENDELIOME])
-
-    missing = collect_missing_publications(held_identifiers(db_path), client, panel_data, [3604])
-
-    assert missing.pmid_owner == {11111111: 3604, 22222222: 3604}
-
-
-def test_attributes_a_shared_publication_to_the_lowest_hgnc_id(tmp_path: Path) -> None:
-    db_path = _make_db(tmp_path, [], [3604, 10260])
-    client = _FakeClient({3604: ["19999999"], 10260: ["19999999"]})
-    panel_data = _panel_data({3604: {MENDELIOME}, 10260: {MENDELIOME}}, [MENDELIOME])
-
+def test_attributes_a_shared_publication_to_the_lowest_hgnc_id() -> None:
     missing = collect_missing_publications(
-        held_identifiers(db_path), client, panel_data, [3604, 10260]
+        _held(set(), []), {10260: _cited({19999999}), 3604: _cited({19999999})}
     )
 
     assert missing.pmid_owner == {19999999: 3604}
 
 
-def test_skips_genes_absent_from_every_target_panel(tmp_path: Path) -> None:
-    db_path = _make_db(tmp_path, [], [3604])
-    client = _FakeClient({3604: ["11111111"]})
-    # Gene sits only on a panel outside the target set.
-    panel_data = _panel_data({3604: {SKELETAL}}, [MENDELIOME])
-
-    missing = collect_missing_publications(held_identifiers(db_path), client, panel_data, [3604])
-
-    assert missing.pmid_owner == {}
-    assert missing.genes_on_target_panel == 0
-
-
-def test_matches_held_dois_case_insensitively(tmp_path: Path) -> None:
-    db_path = _make_db(tmp_path, [("10.1000/mixedcase", None)], [3604])
-    client = _FakeClient({3604: ["10.1000/MixedCase", "10.1000/other"]})
-    panel_data = _panel_data({3604: {MENDELIOME}}, [MENDELIOME])
-
-    missing = collect_missing_publications(held_identifiers(db_path), client, panel_data, [3604])
+def test_matches_held_dois_case_insensitively() -> None:
+    missing = collect_missing_publications(
+        _held(set(), ["10.1000/mixedcase"]),
+        {3604: _cited(dois={"10.1000/MixedCase", "10.1000/other"})},
+    )
 
     assert missing.doi_owner == {"10.1000/other": 3604}
     assert missing.already_present == 1
 
 
-def test_keeps_the_first_cited_spelling_of_a_doi(tmp_path: Path) -> None:
-    db_path = _make_db(tmp_path, [], [3604, 10260])
-    client = _FakeClient({3604: ["10.1000/abc"], 10260: ["10.1000/AbC"]})
-    panel_data = _panel_data({3604: {MENDELIOME}, 10260: {MENDELIOME}}, [MENDELIOME])
-
+def test_keeps_the_first_cited_spelling_of_a_doi() -> None:
     missing = collect_missing_publications(
-        held_identifiers(db_path), client, panel_data, [3604, 10260]
+        _held(set(), []),
+        {3604: _cited(dois={"10.1000/abc"}), 10260: _cited(dois={"10.1000/AbC"})},
     )
 
     assert missing.doi_owner == {"10.1000/abc": 3604}
@@ -402,20 +331,17 @@ def test_ingest_leaves_the_pmid_of_a_held_paper_alone(
         assert conn.execute("SELECT pmid FROM papers").fetchall() == [(12345678,)]
 
 
-def test_store_publications_stamps_seeding_provenance(
+def test_fetch_publications_stamps_seeding_provenance(
     tmp_path: Path, sources: _FakeSources
 ) -> None:
     db_path = _make_baseline(tmp_path, [])
+    writer = PaperWriter(db_path, held_identifiers(db_path).dois, SEED_SOURCE_TYPE)
 
-    outcome = store_publications(
-        db_path,
-        held_identifiers(db_path).dois,
-        {22222222: "panelapp:3604"},
-        {"10.1000/new": "panelapp:10260"},
-        SEED_SOURCE_TYPE,
+    unresolved = fetch_publications(
+        writer, {22222222: "panelapp:3604"}, {"10.1000/new": "panelapp:10260"}
     )
 
-    assert (outcome.added, outcome.already_held, outcome.unresolved) == (2, 0, 0)
+    assert (writer.added, writer.already_held, unresolved) == (2, 0, 0)
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
             "SELECT doi, source_type, source_details FROM papers ORDER BY doi"
@@ -424,3 +350,274 @@ def test_store_publications_stamps_seeding_provenance(
         ("10.1000/new", "expansion", "panelapp:10260"),
         ("10.1000/pmid222", "expansion", "panelapp:3604"),
     ]
+
+
+def _gene_entry(
+    hgnc_id: int, publications: list[str], reviews: Sequence[list[str] | None] = ()
+) -> dict[str, Any]:
+    return {
+        "gene_data": {"hgnc_id": f"HGNC:{hgnc_id}"},
+        "publications": publications,
+        "evaluations": [{"publications": review} for review in reviews],
+    }
+
+
+def _str_entry(hgnc_id: int, publications: list[str]) -> dict[str, Any]:
+    return {"gene_data": {"hgnc_id": f"HGNC:{hgnc_id}"}, "publications": publications}
+
+
+def test_gene_citations_unite_entries_and_reviews_on_every_panel() -> None:
+    panels = {
+        MENDELIOME: _snapshot_panel([_gene_entry(1, ["11111111"])]),
+        # Cited for gene 1 only in a review on another panel.
+        SKELETAL: _snapshot_panel([_gene_entry(1, [], reviews=[["10.1000/Review"], None])]),
+        OTHER_PANEL: _snapshot_panel(
+            [_gene_entry(2, ["44444444"]), _gene_entry(5, [])],
+            strs=[_str_entry(1, ["33333333"])],
+        ),
+    }
+
+    cited = gene_citations(panels, [1, 5, 6])
+
+    assert cited == {
+        1: PanelPublications(pmids={11111111, 33333333}, dois={"10.1000/Review"}),
+        5: PanelPublications(pmids=set(), dois=set()),
+    }
+
+
+def _relevance(relevant: bool) -> str:
+    return json.dumps({"relevant": relevant, "screen": {"relevant": relevant}})
+
+
+def _make_run_db(tmp_path: Path) -> Path:
+    """Run genes 1 and 3, from relevant initial papers. Two initial papers the screen
+    rejected: one PanelApp cites for gene 1 (by PMID), one for gene 4, which is not a
+    run gene."""
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, pmid, title, source, source_type, download_status, "
+            "relevance_assessment_json) VALUES (?, ?, 'Held', 'pubmed', 'initial', ?, ?)",
+            [
+                ("10.1/relevant-a", None, "downloaded", _relevance(True)),
+                ("10.1/relevant-b", None, "downloaded", _relevance(True)),
+                ("10.1/rejected", 30000001, None, _relevance(False)),
+                ("10.1/rejected-other", None, None, _relevance(False)),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (?, 'G', ?, 'recent_evidence')",
+            [(1, "10.1/relevant-a"), (3, "10.1/relevant-b")],
+        )
+    return db_path
+
+
+def _make_seed_baseline(tmp_path: Path) -> Path:
+    """A baseline holding one cited paper by DOI (in another letter case) and one by PMID."""
+    db_path = tmp_path / "baseline.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+        conn.executemany(
+            "INSERT INTO papers (doi, pmid, title, abstract, authors, journal, source, "
+            "source_date, source_metadata, source_type, source_details) "
+            "VALUES (?, ?, ?, 'Abstract', 'Doe, Jane', 'J Genet', ?, '2009-05-01', ?, ?, ?)",
+            [
+                (
+                    "10.1000/in-baseline",
+                    None,
+                    "Baseline paper by DOI",
+                    "crossref",
+                    "{}",
+                    CITATION_SOURCE_TYPE,
+                    "panelapp-snapshot:2026-10-13",
+                ),
+                (
+                    "10.1000/by-pmid",
+                    40000001,
+                    "Baseline paper by PMID",
+                    "pubmed",
+                    '{"pmcid": "PMC1"}',
+                    "baseline_screening",
+                    "pubmed25n0001.xml.gz",
+                ),
+            ],
+        )
+    return db_path
+
+
+def _seed_panels(gene_1_cites_rejected: bool = True) -> dict[int, dict[str, Any]]:
+    """Gene 1 cites the rejected paper on the Mendeliome, a baseline DOI in a review on
+    another panel, and PMID 22222222 (in neither database) in a third panel's review;
+    gene 3 cites PMID 22222222 and, as a repeat expansion, a baseline PMID; gene 4
+    cites the other rejected paper."""
+    return {
+        MENDELIOME: _snapshot_panel(
+            [_gene_entry(1, ["PMID: 30000001"] if gene_1_cites_rejected else [])]
+        ),
+        SKELETAL: _snapshot_panel([_gene_entry(1, [], reviews=[["10.1000/In-Baseline"]])]),
+        OTHER_PANEL: _snapshot_panel(
+            [
+                _gene_entry(1, [], reviews=[["22222222"]]),
+                _gene_entry(3, ["22222222"]),
+                _gene_entry(4, ["10.1/rejected-other"]),
+            ],
+            strs=[_str_entry(3, ["40000001"])],
+        ),
+    }
+
+
+def _seed(
+    db_path: Path,
+    baseline_path: Path,
+    hgnc_resolver: HgncResolver,
+    gene_1_cites_rejected: bool = True,
+) -> SeedStats:
+    return seed_panelapp_publications(
+        db_path, _seed_panels(gene_1_cites_rejected), baseline_path, hgnc_resolver
+    )
+
+
+def _links(db_path: Path) -> list[tuple[int, str]]:
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute(
+            "SELECT hgnc_id, paper_doi FROM panelapp_citations ORDER BY hgnc_id, paper_doi"
+        ).fetchall()
+
+
+EXPECTED_LINKS = [
+    (1, "10.1/rejected"),
+    (1, "10.1000/in-baseline"),
+    (1, "10.1000/pmid222"),
+    (3, "10.1000/by-pmid"),
+    (3, "10.1000/pmid222"),
+]
+
+
+def test_seeding_copies_from_the_baseline_and_fetches_the_rest(
+    tmp_path: Path, sources: _FakeSources, hgnc_resolver: HgncResolver
+) -> None:
+    db_path = _make_run_db(tmp_path)
+
+    stats = _seed(db_path, _make_seed_baseline(tmp_path), hgnc_resolver)
+
+    # Only the publication the baseline lacks is fetched; gene 4 is not a run gene.
+    assert sources.pmid_requests == [22222222]
+    assert sources.doi_requests == []
+    assert (stats.genes_considered, stats.genes_on_panelapp) == (2, 2)
+    assert (stats.copied_from_baseline, stats.fetched, stats.unresolved) == (2, 1, 0)
+    with sqlite3.connect(db_path) as conn:
+        added = conn.execute(
+            "SELECT doi, pmid, title, abstract, source, source_metadata, source_type, "
+            "source_details, download_status FROM papers WHERE source_type = 'expansion' "
+            "ORDER BY doi"
+        ).fetchall()
+    # Baseline papers keep the baseline's DOI spelling and metadata; a paper cited for
+    # several genes is attributed to the lowest HGNC ID.
+    assert added == [
+        (
+            "10.1000/by-pmid",
+            40000001,
+            "Baseline paper by PMID",
+            "Abstract",
+            "pubmed",
+            '{"pmcid": "PMC1"}',
+            SEED_SOURCE_TYPE,
+            "panelapp:3",
+            "scheduled",
+        ),
+        (
+            "10.1000/in-baseline",
+            None,
+            "Baseline paper by DOI",
+            "Abstract",
+            "crossref",
+            "{}",
+            SEED_SOURCE_TYPE,
+            "panelapp:1",
+            "scheduled",
+        ),
+        (
+            "10.1000/pmid222",
+            22222222,
+            "Paper 10.1000/pmid222",
+            "",
+            "pubmed",
+            "{}",
+            SEED_SOURCE_TYPE,
+            "panelapp:1",
+            "scheduled",
+        ),
+    ]
+
+
+def test_seeding_links_every_run_gene_to_the_held_papers_it_cites(
+    tmp_path: Path, sources: _FakeSources, hgnc_resolver: HgncResolver
+) -> None:
+    db_path = _make_run_db(tmp_path)
+
+    stats = _seed(db_path, _make_seed_baseline(tmp_path), hgnc_resolver)
+
+    assert _links(db_path) == EXPECTED_LINKS
+    assert (stats.links.links, stats.links.papers) == (5, 4)
+    # The cited paper the screen rejected is scheduled for download, as are the papers
+    # seeding added; the paper only a non-run gene cites is left alone.
+    assert stats.links.scheduled == 1
+    with sqlite3.connect(db_path) as conn:
+        statuses = dict(
+            conn.execute(
+                "SELECT doi, download_status FROM papers WHERE source_type = 'initial'"
+            ).fetchall()
+        )
+    assert statuses == {
+        "10.1/relevant-a": "downloaded",
+        "10.1/relevant-b": "downloaded",
+        "10.1/rejected": "scheduled",
+        "10.1/rejected-other": None,
+    }
+
+
+def test_seeding_is_idempotent_and_replaces_the_links(
+    tmp_path: Path, sources: _FakeSources, hgnc_resolver: HgncResolver
+) -> None:
+    db_path = _make_run_db(tmp_path)
+    baseline_path = _make_seed_baseline(tmp_path)
+    _seed(db_path, baseline_path, hgnc_resolver)
+    sources.pmid_requests.clear()
+
+    rerun = _seed(db_path, baseline_path, hgnc_resolver)
+
+    assert sources.pmid_requests == []
+    assert (rerun.copied_from_baseline, rerun.fetched, rerun.already_present) == (0, 0, 5)
+    assert rerun.links.scheduled == 0
+    assert _links(db_path) == EXPECTED_LINKS
+
+    # A snapshot that no longer cites the rejected paper for gene 1 drops its link.
+    _seed(db_path, baseline_path, hgnc_resolver, gene_1_cites_rejected=False)
+    assert _links(db_path) == [link for link in EXPECTED_LINKS if link != (1, "10.1/rejected")]
+
+
+def test_held_papers_are_linked_and_scheduled_when_a_fetch_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hgnc_resolver: HgncResolver
+) -> None:
+    def unreachable(pmids: Sequence[int], source_details: str) -> list[Paper]:
+        raise PubmedFetchError("efetch failed")
+
+    monkeypatch.setattr(panelapp_publications, "fetch_papers_by_pmids", unreachable)
+    db_path = _make_run_db(tmp_path)
+
+    with pytest.raises(PubmedFetchError):
+        _seed(db_path, _make_seed_baseline(tmp_path), hgnc_resolver)
+
+    # The papers held before fetching, the baseline's copies among them, are linked.
+    assert _links(db_path) == [
+        (1, "10.1/rejected"),
+        (1, "10.1000/in-baseline"),
+        (3, "10.1000/by-pmid"),
+    ]
+    with sqlite3.connect(db_path) as conn:
+        (status,) = conn.execute(
+            "SELECT download_status FROM papers WHERE doi = '10.1/rejected'"
+        ).fetchone()
+    assert status == "scheduled"

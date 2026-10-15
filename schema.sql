@@ -66,6 +66,17 @@ CREATE TABLE tournament_results (
     tournament_raw_responses_json JSON  -- Each round's answering messages as the API returned them, thinking included
 );
 
+-- The papers PanelApp Australia cites for each of the run's genes, on any panel, in
+-- gene and repeat-expansion entries and in gene reviews, from the run's snapshot.
+-- One row per gene and held paper; a citation the run holds no paper for has none.
+-- Seeding (see panelapp_publications.py) replaces the table each time it runs. A
+-- cited paper of a run gene is in the corpus whatever its relevance (run_corpus.py).
+CREATE TABLE panelapp_citations (
+    hgnc_id INTEGER NOT NULL,
+    paper_doi TEXT NOT NULL REFERENCES papers(doi),
+    PRIMARY KEY (hgnc_id, paper_doi)
+);
+
 CREATE INDEX idx_papers_pmid ON papers(pmid) WHERE pmid IS NOT NULL;
 
 -- Indexes for source tracking

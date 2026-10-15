@@ -578,8 +578,9 @@ def _due_papers(
 
     Skipped for good are the papers both models refused and the papers whose
     answers failed MAX_FAILED_ANSWERS times (see :mod:`palit.llm`). An initial
-    paper is in the corpus only when assessed relevant (see
-    :mod:`palit.run_corpus`). ``only`` restricts the result to these DOIs.
+    paper is in the corpus only when assessed relevant or cited by PanelApp for a
+    run gene (see :mod:`palit.run_corpus`). ``only`` restricts the result to these
+    DOIs.
     """
     cursor = conn.cursor()
     cursor.row_factory = sqlite3.Row
@@ -696,7 +697,7 @@ def unselected_reasons(
         elif extracted:
             reasons[doi] = "already extracted"
         elif not in_corpus:
-            reasons[doi] = "an initial paper not assessed relevant"
+            reasons[doi] = "an initial paper neither assessed relevant nor cited for a run gene"
         elif pending:
             reasons[doi] = "a request for it is still pending"
         elif history.refusals.refused_for_good(doi):
@@ -1532,7 +1533,8 @@ class Remaining:
     """Downloaded papers without an extraction."""
 
     due: int  # corpus papers, which extract-evidence extracts
-    outside_corpus: int  # initial papers not assessed relevant, which it leaves out
+    # initial papers neither assessed relevant nor cited for a run gene, which it leaves out
+    outside_corpus: int
 
 
 def count_remaining(db_path: Path) -> Remaining:
@@ -1551,7 +1553,7 @@ def log_remaining(db_path: Path) -> None:
     remaining = count_remaining(db_path)
     logger.info(
         "%s downloaded papers without an extraction; %s more are initial papers "
-        "not assessed relevant, which are not extracted",
+        "neither assessed relevant nor cited for a run gene, which are not extracted",
         f"{remaining.due:,}",
         f"{remaining.outside_corpus:,}",
     )

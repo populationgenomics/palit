@@ -622,7 +622,7 @@ def test_select_papers_restricts_to_requested_dois_and_explains_the_rest(
         "10.1/missing": "not in the database",
         "10.1/scheduled": "not downloaded (download status scheduled)",
         "10.1/extracted": "already extracted",
-        "10.1/not-relevant": "an initial paper not assessed relevant",
+        "10.1/not-relevant": "an initial paper neither assessed relevant nor cited for a run gene",
         "10.1/pending": "a request for it is still pending",
         "10.1/refused": "refused by both models (see --retry-refused)",
         "10.1/failed": "failed for good after 2 failed answers, the last 'invalid JSON: x' "

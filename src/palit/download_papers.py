@@ -36,6 +36,7 @@ from tenacity import (
 from palit.panelapp_client import PanelAppClient
 from palit.papers import doi_to_path
 from palit.progress import LoggingProgress as Progress
+from palit.run_corpus import EXPANSION_OR_CITED_PAPER
 
 console = Console()
 app = typer.Typer(help="Download papers workflow: Automated PMC/preprint download and PDF matching")
@@ -51,7 +52,8 @@ def read_dois_from_db(
     Args:
         db_path: Path to database
         skip_hgnc_ids: Optional list of HGNC IDs to skip papers for
-        expansion_only: Only include papers with source_type='expansion'
+        expansion_only: Only include the papers the run takes in beyond its relevance
+            screen (see :mod:`palit.run_corpus`)
     """
     if not db_path.exists():
         raise FileNotFoundError(f"Database not found: {db_path}")
@@ -62,7 +64,7 @@ def read_dois_from_db(
         # Build base WHERE clause
         where_clauses = ["p.download_status = 'manual_required'"]
         if expansion_only:
-            where_clauses.append("p.source_type = 'expansion'")
+            where_clauses.append(EXPANSION_OR_CITED_PAPER)
 
         base_where = " AND ".join(where_clauses)
 
@@ -150,7 +152,8 @@ def open_browser(
     expansion_only: bool = typer.Option(
         False,
         "--expansion-only",
-        help="Only include papers from literature expansion (source_type='expansion')",
+        help="Only include papers the run takes in beyond its relevance screen: expansion "
+        "papers and papers PanelApp cites for a run gene",
     ),
     dry_run: bool = typer.Option(
         False,
@@ -180,7 +183,7 @@ def open_browser(
     if not dry_run:
         console.print(f"[bold]Found {len(dois)} papers marked for download in database[/bold]")
     if expansion_only:
-        console.print("[cyan]Filtering to expansion papers only (source_type='expansion')[/cyan]")
+        console.print("[cyan]Filtering to expansion and PanelApp-cited papers only[/cyan]")
 
     # Filter out papers that already have PDFs
     dois_needing_download = []

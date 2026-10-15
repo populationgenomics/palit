@@ -269,6 +269,9 @@
         {% elif assoc.already_reviewed %}
         <p class="relation-basis">No finding: every paper of this association is already cited for {{ gene.hgnc_symbol }} on {{ assoc.reviewed_on | join(', ') }}, where the gene is reviewed.</p>
         {% endif %}
+        {% if assoc.scope_rationale is not none %}
+        <p class="scope-rationale"><strong>Panel fit:</strong> {{ assoc.scope_rationale }}</p>
+        {% endif %}
         <div class="summary-content">{{ e.summary | markdown_to_html }}</div>
         {{ family_counts(e) }}
         {% if e.segregation != 'NR' %}
@@ -721,7 +724,7 @@
             {{ toc_section(anchor, title, gene_groups) }}
             {% endfor %}
             {% if unreviewed_without_evidence %}
-            <li><a href="#unreviewed-without-evidence">Unreviewed panel genes without new evidence ({{ unreviewed_without_evidence | length }})</a></li>
+            <li><a href="#unreviewed-without-evidence">Unreviewed panel genes without associations ({{ unreviewed_without_evidence | length }})</a></li>
             {% endif %}
             {% for anchor, title, _, gene_groups in folded_sections %}
             {{ toc_section(anchor, title, gene_groups) }}
@@ -883,17 +886,32 @@
         {% endfor %}
 
         {% if unreviewed_without_evidence %}
+        {# Grouped by what the run read for the gene: a paper with a full-text extraction
+           was read for it when the relevance screen named the gene, PanelApp cites it for
+           the gene, or its extraction holds a disease of the gene #}
+        {% set unreviewed_groups = [
+            ('none', 'No new papers', 'The run read no paper for these genes. Their review rests on the evidence already published.'),
+            ('no_disease', 'Papers read, none fit the panel' if scoped else 'Papers read, no disease entity', ("Extraction found no disease of the gene in these papers whose patients fit the panel, or recorded none, for example because they report only large CNVs, gene fusions or mechanistic context. The judgement covers these papers' patients only; the entry is for the curator to decide." if scoped else "Extraction recorded no disease of the gene from these papers, for example because they report only large CNVs, gene fusions or mechanistic context.")),
+            ('no_association', 'Papers read, no association', 'Extraction found a disease of the gene in the papers marked "disease extracted", but the gene has no association in this report: for example, no family qualified for a new disease, or the gene was not aggregated.')
+        ] %}
         <section id="unreviewed-without-evidence">
-            <h2>Unreviewed panel genes without new evidence</h2>
-            <p class="section-intro">Genes on a target panel that nobody has reviewed there, and that no paper read for this report gave an association. Their review rests on the evidence already published.</p>
+            <h2>Unreviewed panel genes without associations</h2>
+            <p class="section-intro">Genes on a target panel that nobody has reviewed there, and that no paper read for this report gave an association. A paper was read for a gene when it has a full-text extraction and the relevance screen named the gene in it, PanelApp cites it for the gene, or its extraction holds a disease of the gene.</p>
+            {% for state, title, intro in unreviewed_groups %}
+            {% set entries = unreviewed_without_evidence | selectattr('papers_read', 'equalto', state) | list %}
+            {% if entries %}
+            <h3 id="unreviewed-{{ state | replace('_', '-') }}">{{ title }} ({{ entries | length }})</h3>
+            <p class="section-intro">{{ intro }}</p>
             <table class="unreviewed-entries">
-                <thead><tr><th>Gene</th><th>Panel</th><th>Rating</th></tr></thead>
+                <thead><tr><th>Gene</th><th>Panel</th><th>Rating</th>{% if state != 'none' %}<th>Papers read</th>{% endif %}</tr></thead>
                 <tbody>
-                    {% for entry in unreviewed_without_evidence %}
-                    <tr><td><a href="https://panelapp-aus.org/panels/{{ entry.panel_id }}/gene/{{ entry.hgnc_symbol }}/" target="_blank">{{ entry.hgnc_symbol }}</a></td><td>{{ entry.panel_name }}</td><td><span class="rating-badge rating-{{ entry.rating | lower }}">{{ entry.rating }}</span></td></tr>
+                    {% for entry in entries %}
+                    <tr><td><a href="https://panelapp-aus.org/panels/{{ entry.panel_id }}/gene/{{ entry.hgnc_symbol }}/" target="_blank">{{ entry.hgnc_symbol }}</a></td><td>{{ entry.panel_name }}</td><td><span class="rating-badge rating-{{ entry.rating | lower }}">{{ entry.rating }}</span></td>{% if state != 'none' %}<td><ul class="read-papers">{% for paper in entry.papers %}<li>{{ paper_link(paper) }}: {{ paper.title }}{% if paper.disease_extracted %} <span class="muted">(disease extracted)</span>{% endif %}</li>{% endfor %}</ul></td>{% endif %}</tr>
                     {% endfor %}
                 </tbody>
             </table>
+            {% endif %}
+            {% endfor %}
         </section>
         {% endif %}
 

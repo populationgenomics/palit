@@ -22,7 +22,9 @@ from palit.generate_report import (
     GeneAssessment,
     GeneAssessmentResults,
     PanelValidationResult,
+    PapersRead,
     QuoteRef,
+    ReadPaper,
     ReportAssociation,
     StageState,
     UnreviewedEntry,
@@ -546,7 +548,13 @@ def _load_scoped(
     db_path: Path, hgnc_resolver: HgncResolver, genea_rating: int
 ) -> GeneAssessmentResults:
     """The fixture's genes in a run scoped to the Ataxia panel, with GENEA on it at
-    *genea_rating*, reviewed there."""
+    *genea_rating*, reviewed there. Each association gets the scope_rationale a
+    panel-scoped aggregation gives it."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE associations SET assessment_json = json_set(assessment_json, "
+            "'$.scope_rationale', 'Smith2024: ataxia in 3 of 4 (association ' || id || ')')"
+        )
     target = PanelGeneData(
         panel_ids=[ATAXIA_PANEL_ID], gene_panel_confidence={1: {ATAXIA_PANEL_ID: genea_rating}}
     )
@@ -857,6 +865,7 @@ def _render(
         panels_matched=results.panels_matched,
         panelapp_integration=False,
         unreviewed_without_evidence=results.unreviewed_without_evidence,
+        scoped=results.scope_panel_id is not None,
     )
 
 
@@ -1031,6 +1040,7 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
         matched_panels=None,
         panel_matching=StageState.NOT_RUN,
         reviewed_on=(),
+        scope_rationale=None,
     )
 
 
@@ -2177,6 +2187,44 @@ def test_a_scoped_run_measures_upgrades_from_the_scope_panel_rating(
     for text in ('class="association-panels"', "Panels:</strong>", "Panel Suggestions:"):
         assert text not in html
 
+    # Each association says why it fits the panel, with paper IDs in display form.
+    assert {a.id: a.scope_rationale for a in genea.associations}[16] == (
+        "PMID 111: ataxia in 3 of 4 (association 16)"
+    )
+    assert (
+        '<p class="scope-rationale"><strong>Panel fit:</strong> PMID 111: ataxia in 3 of 4 '
+        "(association 16)</p>"
+    ) in _association_section(html, 16)
+    assert "Panel fit" not in _render(db_path, unscoped)
+    assert all(a.scope_rationale is None for a in unscoped.known_genes[0].associations)
+
+
+def test_a_scoped_report_stops_at_an_association_aggregated_without_the_scope_panel(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    target = PanelGeneData(panel_ids=[ATAXIA_PANEL_ID], gene_panel_confidence={})
+    all_panels = AllPanelsData(gene_to_panels={}, panel_names={ATAXIA_PANEL_ID: "Ataxia"})
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        with pytest.raises(ValueError, match=r"HGNC:1 association 10 has no scope_rationale"):
+            build_gene_assessment_results(
+                conn, hgnc_resolver, target, all_panels, ATAXIA_PANEL_ID, {}
+            )
+
+
+def test_a_report_without_a_scope_panel_stops_at_a_panel_scoped_association(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE associations SET assessment_json = "
+            "json_set(assessment_json, '$.scope_rationale', 'r') WHERE id = 12"
+        )
+    with pytest.raises(
+        ValueError, match=r"HGNC:1 association 12 was aggregated with a scope panel"
+    ):
+        _load(db_path, hgnc_resolver)
+
 
 def test_a_gene_with_any_unreviewed_target_entry_is_unreviewed() -> None:
     """Reviews the snapshot does not hold may exist, so only an entry without reviews
@@ -2208,20 +2256,59 @@ def test_a_link_into_a_fold_opens_it(db_path: Path, results: GeneAssessmentResul
     assert "fold.open = true" in html
 
 
+def _add_read_papers(db_path: Path) -> None:
+    """Papers with extractions read for GENEC (HGNC:4), screened in or cited, without a
+    disease of it, and for GENEE (HGNC:6), with one: a screened initial paper, and an
+    expansion paper linked by its extraction alone; and a GENEC paper not extracted."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO papers (doi, pmid, title, source, source_type, source_date,
+                                evidence_extraction_json)
+            VALUES (?, ?, ?, 'pubmed', 'initial', ?, ?)
+            """,
+            [
+                ("10.1/c-screened", 701, "Screened C paper", "2020-01-01", _extraction(4)),
+                ("10.1/c-cited", None, "Cited C paper", "2024-01-01", _extraction(4)),
+                ("10.1/c-unread", 703, "Unread C paper", "2025-01-01", None),
+                ("10.1/e", 705, "E paper", "2023-01-01", _extraction(6)),
+                ("10.1/e-cited", None, "Cited E paper", "2022-01-01", _extraction(6)),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                (4, "GENEC", "10.1/c-screened", "relevance_assessment"),
+                (4, "GENEC", "10.1/c-unread", "relevance_assessment"),
+                (6, "GENEE", "10.1/e", "relevance_assessment"),
+                (6, "GENEE", "10.1/e", "recent_evidence"),
+                (6, "GENEE", "10.1/e-cited", "expansion_evidence"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO panelapp_citations (hgnc_id, paper_doi) VALUES (4, '10.1/c-cited')"
+        )
+
+
 def test_unreviewed_target_entries_of_genes_without_associations_are_listed(
     db_path: Path, hgnc_resolver: HgncResolver, panelapp_snapshot: dict[int, dict[str, Any]]
 ) -> None:
-    """On the Mendeliome, GENEA (in the report) and GENEC (not in it) are unreviewed; GENEB
-    is unreviewed on the Ataxia panel, which is no target panel. Only GENEC is listed."""
+    """On the Mendeliome, GENEA (in the report) and GENEC to GENEE (not in it) are
+    unreviewed; GENEB is unreviewed on the Ataxia panel, which is no target panel. GENEC to
+    GENEE are listed with the papers read for them: GENEC's without a disease of it, none for
+    GENED, and GENEE's with a disease of it that gave no association."""
     mendeliome = panelapp_snapshot[MENDELIOME_PANEL_ID]
     genea = mendeliome["genes"][0]
     genea["evaluations"] = []
-    genec = {**genea, "gene_data": {"hgnc_id": "HGNC:4", "gene_symbol": "GENEC"}}
-    genec["confidence_level"] = "2"
-    mendeliome["genes"].append(genec)
+    for hgnc_id, symbol in ((4, "GENEC"), (5, "GENED"), (6, "GENEE")):
+        gene = {**genea, "gene_data": {"hgnc_id": f"HGNC:{hgnc_id}", "gene_symbol": symbol}}
+        gene["confidence_level"] = "2"
+        mendeliome["genes"].append(gene)
     panelapp_snapshot[ATAXIA_PANEL_ID]["genes"][0]["evaluations"] = []
     entries = entries_by_gene([panelapp_snapshot[MENDELIOME_PANEL_ID]], [MENDELIOME_PANEL_ID])
-    assert sorted(unreviewed_target_entries(entries)) == [1, 4]
+    assert sorted(unreviewed_target_entries(entries)) == [1, 4, 5, 6]
+    _add_read_papers(db_path)
 
     target = PanelGeneData(
         panel_ids=[MENDELIOME_PANEL_ID], gene_panel_confidence={1: {MENDELIOME_PANEL_ID: 2}}
@@ -2234,15 +2321,55 @@ def test_unreviewed_target_entries_of_genes_without_associations_are_listed(
         results = build_gene_assessment_results(
             conn, hgnc_resolver, target, all_panels, None, entries
         )
+    genec_papers = (
+        ReadPaper("10.1/c-cited", None, "Cited C paper", disease_extracted=False),
+        ReadPaper("10.1/c-screened", 701, "Screened C paper", disease_extracted=False),
+    )
+    genee_papers = (
+        ReadPaper("10.1/e", 705, "E paper", disease_extracted=True),
+        ReadPaper("10.1/e-cited", None, "Cited E paper", disease_extracted=True),
+    )
+    entry = ("Mendeliome", "AMBER")
     assert results.unreviewed_without_evidence == [
-        UnreviewedEntry(4, "GENEC", MENDELIOME_PANEL_ID, "Mendeliome", "AMBER")
+        UnreviewedEntry(4, "GENEC", MENDELIOME_PANEL_ID, *entry, genec_papers),
+        UnreviewedEntry(5, "GENED", MENDELIOME_PANEL_ID, *entry, ()),
+        UnreviewedEntry(6, "GENEE", MENDELIOME_PANEL_ID, *entry, genee_papers),
     ]
-    html = _render(db_path, results)
-    section = html[html.index('<section id="unreviewed-without-evidence">') :]
-    assert f'href="https://panelapp-aus.org/panels/{MENDELIOME_PANEL_ID}/gene/GENEC/"' in section
+    assert [e.papers_read for e in results.unreviewed_without_evidence] == [
+        PapersRead.NO_DISEASE,
+        PapersRead.NONE,
+        PapersRead.NO_ASSOCIATION,
+    ]
+
+    def groups(html: str) -> dict[str, str]:
+        """Each group's heading and the rows below it, by its id."""
+        section = html[html.index('<section id="unreviewed-without-evidence">') :]
+        section = section[: section.index("</section>")]
+        parts = re.split(r'<h3 id="unreviewed-([a-z-]+)">', section)[1:]
+        return dict(zip(parts[::2], parts[1::2], strict=True))
+
+    monthly = groups(_render(db_path, results))
+    assert list(monthly) == ["none", "no-disease", "no-association"]
+    assert monthly["none"].startswith("No new papers (1)</h3>")
+    assert "/gene/GENED/" in monthly["none"]
+    assert "Papers read" not in monthly["none"]
+    assert monthly["no-disease"].startswith("Papers read, no disease entity (1)</h3>")
     assert (
-        'href="#unreviewed-without-evidence">Unreviewed panel genes without new evidence (1)'
-        in (_toc(html))
+        '<li><a href="https://doi.org/10.1/c-cited" target="_blank">10.1/c-cited</a>: '
+        "Cited C paper</li>"
+    ) in monthly["no-disease"]
+    assert "701</a>: Screened C paper</li>" in monthly["no-disease"]
+    assert "Unread C paper" not in monthly["no-disease"]
+    assert monthly["no-association"].startswith("Papers read, no association (1)</h3>")
+    assert (
+        '705</a>: E paper <span class="muted">(disease extracted)</span></li>'
+        in monthly["no-association"]
+    )
+    scoped = groups(_render(db_path, dataclasses.replace(results, scope_panel_id=1)))
+    assert scoped["no-disease"].startswith("Papers read, none fit the panel (1)</h3>")
+    assert (
+        'href="#unreviewed-without-evidence">Unreviewed panel genes without associations (3)'
+        in (_toc(_render(db_path, results)))
     )
 
 

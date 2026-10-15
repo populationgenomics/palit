@@ -35,6 +35,7 @@ from palit.assess_genes import (
     render_prompt,
     replace_paper_ids_with_dois,
     replace_variant_ids,
+    scoped_aggregation_schema,
     store_gene_aggregation,
     uncopied_citations,
 )
@@ -67,9 +68,13 @@ def _relevance(relevant: bool) -> str:
     return json.dumps({"relevant": relevant, "screen": screen})
 
 
-def _extraction(hgnc_id: int, paper_gene_symbol: str, variants: tuple[str, ...] = ()) -> str:
+def _extraction(
+    hgnc_id: int, paper_gene_symbol: str, variants: tuple[str, ...] = (), scoped: bool = False
+) -> str:
+    """A stored extraction with one disease entity; a panel-scoped one if *scoped*."""
     entity = {
         "description": "d",
+        **({"scope_rationale": "cleft palate in 2 of 2"} if scoped else {}),
         "variants": [{"variant": v, "quote": f"{v} in family 1"} for v in variants],
         "summary": "s",
         "quality_concerns": [],
@@ -568,6 +573,7 @@ def test_prompt_lists_the_genes_variants_with_their_gnomad_figures(
         variants,
         _context(panel_entries, gencc_index, GENEA),
         "2026-09-01",
+        None,
     )
 
     assert {vid: v.variant_id for vid, v in prompt.variants.items()} == {
@@ -848,9 +854,9 @@ def _context(
     )
 
 
-def _render(context: PanelAppContext, symbol: str) -> str:
+def _render(context: PanelAppContext, symbol: str, scope_panel: str | None = None) -> str:
     evidence = [_evidence("10.1/a", "Smith", "2024")]
-    prompt = render_prompt(PROMPT_PATH, symbol, evidence, [], context, "2026-09-01")
+    prompt = render_prompt(PROMPT_PATH, symbol, evidence, [], context, "2026-09-01", scope_panel)
     assert prompt.paper_id_to_doi == {"Smith2024": "10.1/a"}
     assert prompt.variants == {}
     return prompt.text
@@ -956,10 +962,14 @@ def _prepare(
     hgnc_resolver: HgncResolver,
     gencc_index: GenccIndex,
     papers: dict[str, int],
+    scoped_extraction: bool = False,
+    scope_panel: str | None = None,
 ) -> _GeneBatchItem | SkipReason:
     """Prepare GENEA, with evidence from *papers* (DOI to PMID), against the Mendeliome.
 
-    GENEA's Mendeliome entry cites PMID 12345 and DOI 10.1000/Cited.
+    GENEA's Mendeliome entry cites PMID 12345 and DOI 10.1000/Cited. The papers'
+    extractions are panel-scoped when *scoped_extraction*, and the aggregation is
+    when it has a *scope_panel*.
     """
     db_path = tmp_path / "run.sqlite"
     with sqlite3.connect(db_path) as conn:
@@ -968,7 +978,7 @@ def _prepare(
             conn.execute(
                 "INSERT INTO papers (doi, pmid, title, journal, source, source_type, "
                 "evidence_extraction_json) VALUES (?, ?, 't', 'J', 'pubmed', 'initial', ?)",
-                (doi, pmid, _extraction(GENEA, "GENEA")),
+                (doi, pmid, _extraction(GENEA, "GENEA", scoped=scoped_extraction)),
             )
             conn.execute(
                 "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
@@ -987,6 +997,7 @@ def _prepare(
         entries=entries_by_gene(list(snapshot.values()), [MENDELIOME_PANEL_ID]),
         gencc=gencc_index,
         prompt_path=PROMPT_PATH,
+        scope_panel=scope_panel,
     )
     return prepare_gene(GENEA, prep)
 
@@ -1039,6 +1050,94 @@ def test_a_gene_whose_target_reviews_are_unknown_is_aggregated_though_its_papers
     panelapp_snapshot[MENDELIOME_PANEL_ID]["genes"][0]["evaluations"] = None
     item = _prepare(tmp_path, panelapp_snapshot, hgnc_resolver, gencc_index, CITED_PAPERS)
     assert isinstance(item, _GeneBatchItem)
+
+
+SCOPE_PANEL = '<panel id="160">\nName: Pierre Robin sequence\n</panel>'
+UNCITED_PAPERS = {"10.1/p3": 99999}
+
+
+def test_a_scoped_aggregation_gives_the_model_the_scope_panel(
+    tmp_path: Path,
+    panelapp_snapshot: dict[int, dict[str, Any]],
+    hgnc_resolver: HgncResolver,
+    gencc_index: GenccIndex,
+) -> None:
+    item = _prepare(
+        tmp_path,
+        panelapp_snapshot,
+        hgnc_resolver,
+        gencc_index,
+        UNCITED_PAPERS,
+        scoped_extraction=True,
+        scope_panel=SCOPE_PANEL,
+    )
+    assert isinstance(item, _GeneBatchItem)
+    heading = "PANEL SCOPE:\nThis run reviews the gene for the following diagnostic panel:"
+    assert f"{heading}\n\n{SCOPE_PANEL}" in item.prompt
+    assert '"scope_rationale": "reported features that place this association' in item.prompt
+    assert '"scope_rationale": "cleft palate in 2 of 2"' in item.prompt  # the extraction's
+
+
+def test_only_a_scoped_prompt_has_the_scope_panel_and_field(
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
+) -> None:
+    prompt = _render(_context(panel_entries, gencc_index, GENEA), "GENEA")
+    assert "PANEL SCOPE" not in prompt
+    assert "scope_rationale" not in prompt
+    assert "PAPER-LEVEL ENTITIES WITHOUT PATIENTS" in prompt
+    scoped = _render(_context(panel_entries, gencc_index, GENEA), "GENEA", SCOPE_PANEL)
+    assert "  * scope_rationale: the reported features" in scoped
+    assert "  * inheritance_details: " in scoped
+
+
+@pytest.mark.parametrize(
+    ("scoped_extraction", "scope_panel", "message"),
+    [
+        (False, SCOPE_PANEL, "extraction without scope_rationale in a panel-scoped aggregation"),
+        (True, None, "panel-scoped extraction in an aggregation without a scope panel"),
+    ],
+)
+def test_an_extraction_made_for_another_scope_stops_the_aggregation(
+    tmp_path: Path,
+    panelapp_snapshot: dict[int, dict[str, Any]],
+    hgnc_resolver: HgncResolver,
+    gencc_index: GenccIndex,
+    scoped_extraction: bool,
+    scope_panel: str | None,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=rf"^10\.1/p3: {message}"):
+        _prepare(
+            tmp_path,
+            panelapp_snapshot,
+            hgnc_resolver,
+            gencc_index,
+            UNCITED_PAPERS,
+            scoped_extraction=scoped_extraction,
+            scope_panel=scope_panel,
+        )
+
+
+def test_a_scoped_aggregation_schema_requires_a_scope_rationale() -> None:
+    scoped = scoped_aggregation_schema(SCHEMA)
+
+    association = scoped["properties"]["disease_entities"]["items"]
+    position = list(association["properties"]).index("scope_rationale")
+    assert list(association["properties"])[position - 1 : position + 2] == [
+        "inheritance_details",
+        "scope_rationale",
+        "grouping_rationale",
+    ]
+    assert "scope_rationale" in association["required"]
+    assert "scope_rationale" not in SCHEMA["properties"]["disease_entities"]["items"]["properties"]
+    validator = jsonschema.Draft202012Validator(scoped)
+    with pytest.raises(jsonschema.ValidationError, match="'scope_rationale' is a required"):
+        validator.validate(_answer(_association()))
+    with pytest.raises(jsonschema.ValidationError, match="should be non-empty"):
+        validator.validate(_answer(_association(scope_rationale="")))
+    validator.validate(_answer(_association(scope_rationale="Smith2024: cleft palate in 4 of 6")))
+    with pytest.raises(jsonschema.ValidationError, match="Additional properties"):
+        jsonschema.Draft202012Validator(SCHEMA).validate(_answer(_association(scope_rationale="r")))
 
 
 def test_skipped_genes_are_counted_by_reason(caplog: pytest.LogCaptureFixture) -> None:

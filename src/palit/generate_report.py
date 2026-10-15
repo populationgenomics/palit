@@ -391,6 +391,8 @@ class ReportAssociation:
     # The names of the target panels holding the gene when they have reviewed the
     # association's papers in full (see reviewed_in_full); empty otherwise
     reviewed_on: tuple[str, ...]
+    # Why the association fits the scope panel of a panel-scoped run; None otherwise
+    scope_rationale: str | None
 
     @property
     def already_reviewed(self) -> bool:
@@ -544,6 +546,25 @@ class GeneAssessment:
 
 
 @dataclass(frozen=True)
+class ReadPaper:
+    """A paper with an extraction that the run read for a gene."""
+
+    doi: str
+    pmid: int | None
+    title: str
+    # Whether its extraction holds a disease entity of the gene
+    disease_extracted: bool
+
+
+class PapersRead(StrEnum):
+    """What the run read for a gene that has no association in the report."""
+
+    NONE = "none"  # no paper
+    NO_DISEASE = "no_disease"  # papers, none with a disease entity of the gene
+    NO_ASSOCIATION = "no_association"  # papers with a disease entity, but no association
+
+
+@dataclass(frozen=True)
 class UnreviewedEntry:
     """A target panel's entry that nobody has reviewed, for a gene with no association
     in this report."""
@@ -553,6 +574,15 @@ class UnreviewedEntry:
     panel_id: int
     panel_name: str
     rating: str  # GREEN, AMBER or RED
+    papers: tuple[ReadPaper, ...]  # the papers the run read for the gene, newest first
+
+    @property
+    def papers_read(self) -> PapersRead:
+        if not self.papers:
+            return PapersRead.NONE
+        if any(paper.disease_extracted for paper in self.papers):
+            return PapersRead.NO_ASSOCIATION
+        return PapersRead.NO_DISEASE
 
 
 @dataclass(frozen=True)
@@ -1138,6 +1168,7 @@ def load_associations(
     gene_variants: list[ReportVariant],
     target_entries: tuple[PanelEntry, ...],
     pmid_by_doi: dict[str, int | None],
+    scoped: bool,
 ) -> list[ReportAssociation]:
     """The gene's associations, by corpus rating and then independent family count.
 
@@ -1146,7 +1177,9 @@ def load_associations(
     stages send immediate requests only, which are recorded once they have completed.
     *target_entries* are the gene's entries on the target panels, against which each
     association's papers, with their PMIDs from *pmid_by_doi*, are checked for having
-    been reviewed already.
+    been reviewed already. In a panel-scoped run (*scoped*), each association carries
+    its ``scope_rationale``. Raises ValueError for an association aggregated without the
+    scope panel in a panel-scoped run, or with one in a run without it.
     """
     target_panel_names = tuple(dict.fromkeys(e.panel_name for e in target_entries))
 
@@ -1179,6 +1212,15 @@ def load_associations(
         reviewed = reviewed_in_full(
             target_entries, {doi: pmid_by_doi[doi] for doi in assessment["dois"]}
         )
+        scope_rationale: str | None = assessment.get("scope_rationale")
+        if (scope_rationale is None) == scoped:
+            raise ValueError(
+                f"HGNC:{hgnc_id} association {row['id']} has no scope_rationale; aggregate the "
+                "gene again with assess-genes --scope-panel-id"
+                if scoped
+                else f"HGNC:{hgnc_id} association {row['id']} was aggregated with a scope "
+                "panel; generate the report with the run's --scope-panel-id"
+            )
         associations.append(
             ReportAssociation(
                 id=row["id"],
@@ -1207,6 +1249,7 @@ def load_associations(
                     row["matching_model"],
                 ),
                 reviewed_on=target_panel_names if reviewed else (),
+                scope_rationale=scope_rationale,
             )
         )
     return sorted(associations, key=association_sort_key)
@@ -1296,6 +1339,7 @@ def load_gene(
         gene_variants,
         target_entries,
         pmid_by_doi,
+        scoped,
     )
     findings = gene_findings(rated_associations, current_rating, scoped)
     associations = report_order(rated_associations, findings)
@@ -1387,6 +1431,12 @@ def build_gene_assessment_results(
         for pid in target_panel_data.panel_ids
         if pid in all_panels_data.panel_names
     }
+    reported = {gene.hgnc_id for gene in novel_genes + known_genes}
+    unreviewed = {
+        hgnc_id: entries
+        for hgnc_id, entries in unreviewed_target_entries(target_entries).items()
+        if hgnc_id not in reported
+    }
     return GeneAssessmentResults(
         novel_genes=novel_genes,
         known_genes=known_genes,
@@ -1396,9 +1446,7 @@ def build_gene_assessment_results(
         panels_matched=match_panels_has_run(cursor),
         scope_panel_id=scope_panel_id,
         unreviewed_without_evidence=unreviewed_without_evidence(
-            unreviewed_target_entries(target_entries),
-            {gene.hgnc_id for gene in novel_genes + known_genes},
-            hgnc_resolver,
+            unreviewed, load_read_papers(cursor, list(unreviewed)), hgnc_resolver
         ),
     )
 
@@ -1414,18 +1462,65 @@ def unreviewed_target_entries(
     return {hgnc_id: entries for hgnc_id, entries in by_gene.items() if entries}
 
 
+def load_read_papers(cursor: sqlite3.Cursor, hgnc_ids: list[int]) -> dict[int, list[ReadPaper]]:
+    """The papers with an extraction that the run read for each of *hgnc_ids*, newest first.
+
+    A paper was read for a gene when it has an extraction and the relevance screen
+    named the gene for it, PanelApp cites it for the gene (``panelapp_citations``),
+    or its extraction holds a disease entity of the gene. A gene without such papers
+    is left out.
+    """
+    cursor.execute(
+        """
+        WITH read (hgnc_id, paper_doi) AS (
+            SELECT hgnc_id, paper_doi FROM gene_mentions
+            UNION
+            SELECT hgnc_id, paper_doi FROM panelapp_citations
+        )
+        SELECT r.hgnc_id, p.doi, p.pmid, p.title,
+               EXISTS (
+                   SELECT 1 FROM gene_mentions gm
+                   WHERE gm.paper_doi = p.doi AND gm.hgnc_id = r.hgnc_id
+                     AND gm.source IN ('recent_evidence', 'expansion_evidence')
+               ) AS disease_extracted
+        FROM read r
+        JOIN papers p ON p.doi = r.paper_doi
+        WHERE p.evidence_extraction_json IS NOT NULL
+          AND r.hgnc_id IN (SELECT value FROM json_each(?))
+        ORDER BY r.hgnc_id, p.source_date DESC, p.doi
+        """,
+        (json.dumps(hgnc_ids),),
+    )
+    papers: dict[int, list[ReadPaper]] = {}
+    for row in cursor.fetchall():
+        papers.setdefault(row["hgnc_id"], []).append(
+            ReadPaper(
+                doi=row["doi"],
+                pmid=row["pmid"],
+                title=row["title"],
+                disease_extracted=bool(row["disease_extracted"]),
+            )
+        )
+    return papers
+
+
 def unreviewed_without_evidence(
     unreviewed_entries: dict[int, list[PanelEntry]],
-    reported: set[int],
+    read_papers: dict[int, list[ReadPaper]],
     hgnc_resolver: HgncResolver,
 ) -> list[UnreviewedEntry]:
-    """The unreviewed entries of genes not in *reported*, by symbol and then panel name."""
+    """The unreviewed entries with the papers read for their gene, by symbol and then panel
+    name."""
     entries = [
         UnreviewedEntry(
-            hgnc_id, hgnc_resolver.get_symbol(hgnc_id), e.panel_id, e.panel_name, e.rating
+            hgnc_id,
+            hgnc_resolver.get_symbol(hgnc_id),
+            e.panel_id,
+            e.panel_name,
+            e.rating,
+            tuple(read_papers.get(hgnc_id, ())),
         )
         for hgnc_id, gene_entries in unreviewed_entries.items()
-        if hgnc_id not in reported
         for e in gene_entries
     ]
     return sorted(entries, key=lambda e: (e.hgnc_symbol, e.panel_name))
@@ -2150,6 +2245,7 @@ def generate_html_report(
     panels_matched: bool,
     panelapp_integration: bool,
     unreviewed_without_evidence: list[UnreviewedEntry],
+    scoped: bool,
 ) -> str:
     """Generate HTML report directly using Jinja2 templates."""
 
@@ -2225,6 +2321,7 @@ def generate_html_report(
         refused_genes=refused_genes,
         panels_matched=panels_matched,
         unreviewed_without_evidence=unreviewed_without_evidence,
+        scoped=scoped,
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
         model_name=MODEL_NAMES[MODEL],
         relevance_refusers=relevance_refusers,
@@ -2338,6 +2435,7 @@ def main(
         panels_matched=results.panels_matched,
         panelapp_integration=panelapp_integration,
         unreviewed_without_evidence=results.unreviewed_without_evidence,
+        scoped=scope_panel_id is not None,
     )
 
     # Save HTML as index.html

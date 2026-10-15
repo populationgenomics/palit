@@ -49,6 +49,7 @@ from palit.llm import (
     stage_failures,
     stage_history,
     stage_refusals,
+    with_required_property,
 )
 from palit.llm_usage import (
     STAGE_SUBJECT_KINDS,
@@ -169,6 +170,34 @@ def test_request_cost_batch_opus_55() -> None:
     # 1M uncached input at $2 + 1M 5m writes at $2.50 + 1M reads at $0.10 + 1M output at $10.
     cost = request_cost("claude-opus-5-5", "batch", 1_000_000, 1_000_000, 0, 1_000_000, 1_000_000)
     assert cost == pytest.approx(14.6)
+
+
+OBJECT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+    "required": ["a", "b"],
+}
+
+
+def test_a_required_property_is_placed_after_the_given_one() -> None:
+    added = with_required_property(OBJECT_SCHEMA, "c", {"type": "string"}, after="a")
+    assert list(added["properties"]) == ["a", "c", "b"]
+    assert added["required"] == ["a", "c", "b"]
+    assert list(OBJECT_SCHEMA["properties"]) == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("name", "after", "message"),
+    [
+        ("c", "z", "'z' is not a required property"),
+        ("b", "a", "'b' is already a property"),
+    ],
+)
+def test_a_required_property_needs_a_known_anchor_and_a_new_name(
+    name: str, after: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        with_required_property(OBJECT_SCHEMA, name, {"type": "string"}, after=after)
 
 
 def test_json_output_config_expands_nullable_types() -> None:

@@ -50,8 +50,10 @@ from palit.extract_evidence import (
     load_conversation,
     normalize_extraction_genes,
     page_copy,
+    render_system_prompt,
     request_room,
     save_conversation,
+    scoped_extraction_schema,
     select_papers,
     select_unsent_conversations,
     sent_pdf,
@@ -98,6 +100,11 @@ WEAKENING_FACTORS = [
     "functional_below_criterion_c_threshold",
 ]
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
+PROMPT_PATH = SCHEMA_SQL.parent / "prompts/evidence_extraction_prompt.j2"
+SCHEMA = json.loads((SCHEMA_SQL.parent / "prompts/evidence_extraction_schema.json").read_text())
+# Any answer passes, so that a test can send a partial extraction through the runner.
+ANY_ANSWER: dict[str, Any] = {"type": "object"}
+PANEL = '<panel id="160">\nName: Pierre Robin sequence\n</panel>'
 
 
 def _citation(quote: str) -> dict[str, str]:
@@ -191,8 +198,7 @@ def _complete_answer() -> dict[str, Any]:
 
 
 def test_schema_holds_summary_variants_and_concerns_in_each_entity() -> None:
-    schema = json.loads((SCHEMA_SQL.parent / "prompts/evidence_extraction_schema.json").read_text())
-    validator = jsonschema.Draft202012Validator(schema)
+    validator = jsonschema.Draft202012Validator(SCHEMA)
     answer = _complete_answer()
     validator.validate(answer)
 
@@ -205,6 +211,53 @@ def test_schema_holds_summary_variants_and_concerns_in_each_entity() -> None:
     gene["summary"] = "gene-level summary"
     with pytest.raises(jsonschema.ValidationError, match="Additional properties"):
         validator.validate(answer)
+
+
+def _entity_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    entity: dict[str, Any] = schema["properties"]["gene_evaluations"]["items"]["properties"][
+        "disease_entities"
+    ]["items"]
+    return entity
+
+
+def test_a_scoped_schema_requires_a_scope_rationale_after_the_description() -> None:
+    scoped = scoped_extraction_schema(SCHEMA)
+
+    entity = _entity_schema(scoped)
+    assert list(entity["properties"])[:3] == ["description", "scope_rationale", "variants"]
+    assert entity["required"][:3] == ["description", "scope_rationale", "variants"]
+    assert entity["properties"]["scope_rationale"]["type"] == "string"
+    assert "scope_rationale" not in _entity_schema(SCHEMA)["properties"]
+    answer = _complete_answer()
+    with pytest.raises(jsonschema.ValidationError, match="'scope_rationale' is a required"):
+        jsonschema.Draft202012Validator(scoped).validate(answer)
+    answer["gene_evaluations"][0]["disease_entities"][0]["scope_rationale"] = "PRS in 2 of 2"
+    jsonschema.Draft202012Validator(scoped).validate(answer)
+    with pytest.raises(jsonschema.ValidationError, match="Additional properties"):
+        jsonschema.Draft202012Validator(SCHEMA).validate(answer)
+
+
+def test_the_panel_gate_and_scope_rationale_are_in_the_scoped_prompt_only() -> None:
+    monthly = render_system_prompt(PROMPT_PATH, None)
+    scoped = render_system_prompt(PROMPT_PATH, PANEL)
+
+    assert PANEL in scoped
+    gate = (
+        "PANEL SCOPE (decided for each disease entity): Create a disease entity only when the "
+        "affected individuals this paper reports for that disease have features that would "
+        "lead a clinician to order the panel above."
+    )
+    assert gate in scoped
+    assert "and the PANEL SCOPE above" in scoped
+    assert '"scope_rationale": "reported features' in scoped
+    for text in ("PANEL SCOPE", "scope_rationale", "panel above", "Target Panel Context"):
+        assert text not in monthly
+    for prompt in (monthly, scoped):
+        assert "EVIDENCE FOR A DISEASE ENTITY (CRITICAL)" in prompt
+        assert "{%" not in prompt and "{{" not in prompt
+    # The conditional field leaves no blank line in the monthly field list.
+    assert "mentioned in the paper.\n  * variants: " in monthly
+    assert "mentioned in the paper.\n  * scope_rationale: " in scoped
 
 
 def test_evaluations_of_gene_picks_the_genes_evaluations() -> None:
@@ -1403,9 +1456,12 @@ def _round_one_db(tmp_path: Path, dois: list[str]) -> Path:
 
 
 def _runner(
-    tmp_path: Path, db_path: Path, hgnc_resolver: HgncResolver, variants: VariantLookupClient
+    tmp_path: Path,
+    db_path: Path,
+    hgnc_resolver: HgncResolver,
+    variants: VariantLookupClient,
+    schema: dict[str, Any] = ANY_ANSWER,
 ) -> ExtractionRunner:
-    schema = {"type": "object"}
     return ExtractionRunner(
         transport=RoundTwoRefuser(),
         db_path=db_path,
@@ -1582,6 +1638,45 @@ def test_unlocated_quotes_are_stored_and_only_placeholders_dropped(
         "10.1/e: 8 quotes; 2 placeholder citations dropped; not located in the PDF: "
         "1 variant quotes, 7 citation quotes"
     ) in caplog.messages
+
+
+def test_a_scoped_extraction_is_stored_with_its_scope_rationale(
+    tmp_path: Path, hgnc_resolver: HgncResolver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A panel-scoped run validates against the scoped schema: an answer without the
+    rationale is rejected, and one with it is stored with it."""
+    monkeypatch.setattr("palit.extract_evidence.PaperQuotes", GroundedQuotes)
+    with_rationale = _complete_answer()
+    with_rationale["gene_evaluations"][0]["disease_entities"][0]["scope_rationale"] = "PRS in 2"
+    results = [
+        _round_one_result(
+            doi,
+            ResultStatus.SUCCEEDED,
+            _message("end_turn", [{"type": "text", "text": json.dumps(answer)}], MODEL),
+        )
+        for doi, answer in (("10.1/a", _complete_answer()), ("10.1/b", with_rationale))
+    ]
+    db_path = _round_one_db(tmp_path, ["10.1/a", "10.1/b"])
+    runner = _runner(
+        tmp_path,
+        db_path,
+        hgnc_resolver,
+        RecordingVariantClient(set()),
+        scoped_extraction_schema(SCHEMA),
+    )
+
+    outcome = asyncio.run(runner.handle(results))
+
+    assert (outcome.stored, outcome.failed) == (1, 1)
+    with sqlite3.connect(db_path) as conn:
+        rejections = dict(conn.execute("SELECT subject, rejection FROM llm_requests"))
+        (stored,) = conn.execute(
+            "SELECT evidence_extraction_json FROM papers WHERE doi = '10.1/b'"
+        ).fetchone()
+    assert "'scope_rationale' is a required property" in rejections["10.1/a"]
+    assert rejections["10.1/b"] is None
+    entity = json.loads(stored)["gene_evaluations"][0]["disease_entities"][0]
+    assert entity["scope_rationale"] == "PRS in 2"
 
 
 def test_a_rejected_extraction_records_its_reason(

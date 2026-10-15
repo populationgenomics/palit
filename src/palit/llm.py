@@ -183,6 +183,28 @@ def json_output_config(schema: dict[str, Any], effort: Effort) -> OutputConfigPa
     return {"effort": effort, "format": {"type": "json_schema", "schema": grammar}}
 
 
+def with_required_property(
+    object_schema: dict[str, Any], name: str, property_schema: dict[str, Any], after: str
+) -> dict[str, Any]:
+    """A copy of *object_schema* that requires property *name*, listed after *after*.
+
+    The other properties and their order are kept; the input is not changed. Raises
+    ValueError when *after* is not a required property or *name* is already one.
+    """
+    if after not in object_schema["properties"] or after not in object_schema["required"]:
+        raise ValueError(f"{after!r} is not a required property")
+    if name in object_schema["properties"]:
+        raise ValueError(f"{name!r} is already a property")
+    properties: dict[str, Any] = {}
+    for key, value in object_schema["properties"].items():
+        properties[key] = value
+        if key == after:
+            properties[name] = property_schema
+    required = list(object_schema["required"])
+    required.insert(required.index(after) + 1, name)
+    return {**object_schema, "properties": properties, "required": required}
+
+
 def cached_system(text: str) -> list[TextBlockParam]:
     """A system prompt marked as the end of the shared, cacheable prefix."""
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]

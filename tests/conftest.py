@@ -86,7 +86,14 @@ def hgnc_resolver() -> HgncResolver:
             location="1p1",
             chromosome="1",
         )
-        for symbol, hgnc_id in (("GENEA", 1), ("REPEAT1", 2), ("GENEB", 3), ("GENEC", 4))
+        for symbol, hgnc_id in (
+            ("GENEA", 1),
+            ("REPEAT1", 2),
+            ("GENEB", 3),
+            ("GENEC", 4),
+            ("GENED", 5),
+            ("GENEE", 6),
+        )
     }
     return HgncResolver(
         _by_symbol=entries,

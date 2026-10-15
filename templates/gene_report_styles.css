@@ -662,6 +662,15 @@ section > h2 {
     color: #6c757d;
 }
 
+.scope-rationale {
+    margin: 0 0 8px 0;
+}
+
+.read-papers {
+    margin: 0;
+    padding-left: 16px;
+}
+
 .association-disease {
     font-weight: 600;
     font-size: 1.05em;

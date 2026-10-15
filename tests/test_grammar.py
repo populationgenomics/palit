@@ -20,6 +20,8 @@ import anthropic
 import pytest
 from anthropic.types import ToolParam
 
+from palit.assess_genes import scoped_aggregation_schema
+from palit.extract_evidence import scoped_extraction_schema
 from palit.llm import (
     FALLBACK_MODEL,
     LIGHT_MODEL,
@@ -43,7 +45,19 @@ def _schema(name: str) -> dict[str, Any]:
 CONFIGURATIONS: list[tuple[str, dict[str, Any], list[ToolParam]]] = [
     ("relevance", _schema("relevance_assessment_schema.json"), []),
     ("extraction", _schema("evidence_extraction_schema.json"), EXTRACTION_TOOLS),
+    # extract-evidence --scope-panel-id
+    (
+        "extraction_scoped",
+        scoped_extraction_schema(_schema("evidence_extraction_schema.json")),
+        EXTRACTION_TOOLS,
+    ),
     ("assess_genes", _schema("aggregate_assessment_schema.json"), []),
+    # assess-genes --scope-panel-id
+    (
+        "assess_genes_scoped",
+        scoped_aggregation_schema(_schema("aggregate_assessment_schema.json")),
+        [],
+    ),
     ("map_mondo", _schema("map_mondo_schema.json"), MONDO_TOOLS),
     ("match_panels", _schema("panel_matching_schema.json"), []),
     ("tournament", _schema("tournament_selection_schema.json"), []),

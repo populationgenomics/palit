@@ -6,12 +6,15 @@ into associations, anchored on what PanelApp Australia already curates for the
 gene (its entries and reviews on every panel that holds it, from the PanelApp
 snapshot), and assesses each association on its own. GenCC's disease terms for
 the gene are offered as names; an association named by one takes its MONDO term,
-and the others get theirs from ``map-mondo``. A gene MODEL refused goes
-to FALLBACK_MODEL in the next attempt (see :mod:`palit.llm`). A gene whose
-answers failed for good is left out until ``--retry-failed``.
+and the others get theirs from ``map-mondo``. In a panel-scoped run, each
+association also says why it fits the scope panel, condensed from the
+``scope_rationale`` its papers' disease entities got in extraction. A gene MODEL
+refused goes to FALLBACK_MODEL in the next attempt (see :mod:`palit.llm`). A
+gene whose answers failed for good is left out until ``--retry-failed``.
 """
 
 import asyncio
+import copy
 import json
 import logging
 import sqlite3
@@ -52,10 +55,11 @@ from palit.llm import (
     parse_json_output,
     record_result,
     stage_history,
+    with_required_property,
 )
 from palit.llm_usage import print_stage_summary
 from palit.panel_entries import PanelEntry, entries_by_gene, reviewed_in_full
-from palit.panelapp_client import PanelAppClient
+from palit.panelapp_client import PanelAppClient, format_panel_for_prompt
 from palit.panelapp_integration import (
     INHERITANCE_DETAILS_VOCABULARY,
     NEW_RELATION_STATUSES,
@@ -202,6 +206,31 @@ def filter_preprint_evidence(
                 }
             )
     return kept, filtered
+
+
+def check_extraction_scope(evidence_list: list[dict[str, Any]], scoped: bool) -> None:
+    """Raise ValueError unless every disease entity of the evidence was extracted for this run.
+
+    A panel-scoped extraction gives each entity a ``scope_rationale``, which a
+    panel-scoped aggregation (*scoped*) condenses for each association, so every
+    entity needs one. An aggregation without a scope panel must not read a
+    panel-scoped extraction, whose entities are only the diseases that fit that
+    panel.
+    """
+    for evidence in evidence_list:
+        for gene_eval in evidence["gene_evaluations"]:
+            for entity in gene_eval["disease_entities"]:
+                if ("scope_rationale" in entity) == scoped:
+                    continue
+                if scoped:
+                    raise ValueError(
+                        f"{evidence['doi']}: extraction without scope_rationale in a panel-scoped "
+                        "aggregation; extract the paper again with --scope-panel-id"
+                    )
+                raise ValueError(
+                    f"{evidence['doi']}: panel-scoped extraction in an aggregation without a "
+                    "scope panel; run assess-genes with the run's --scope-panel-id"
+                )
 
 
 def _citation_lists(parsed_json: dict[str, Any]) -> list[list[dict[str, Any]]]:
@@ -590,12 +619,14 @@ def render_prompt(
     variants: list[GeneVariant],
     context: PanelAppContext,
     panel_date: str,
+    scope_panel: str | None,
 ) -> RenderedPrompt:
     """The aggregation prompt for one gene, with its paper and variant ID mappings.
 
     Generates {LastName}{Year} paper IDs for LLM-friendly citation, and V1, V2, ...
     IDs for the variant table. The LLM refers to papers and variants by these IDs;
     the caller maps them back to DOIs and variant keys after receiving the response.
+    *scope_panel* is the scope panel's description in a panel-scoped run, None otherwise.
     """
     paper_id_to_doi, doi_to_paper_id = generate_paper_ids(evidence_list)
     variant_rows, variants_by_id = variant_table(variants, doi_to_paper_id)
@@ -632,6 +663,7 @@ def render_prompt(
         reviews_section=format_panel_reviews(context.panel_reviews),
         dispute_blocks=dispute_blocks(context.gencc, evidence_list, doi_to_paper_id),
         panel_date=panel_date,
+        scope_panel=scope_panel,
     )
     return RenderedPrompt(text=rendered, paper_id_to_doi=paper_id_to_doi, variants=variants_by_id)
 
@@ -661,6 +693,8 @@ class _GenePreparation:
     entries: dict[int, tuple[PanelEntry, ...]]  # every panel's entries, by gene
     gencc: GenccIndex
     prompt_path: Path
+    # The scope panel's description in a panel-scoped run, for the prompt; None otherwise
+    scope_panel: str | None
 
 
 def panel_reviews(
@@ -698,6 +732,7 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | SkipR
     if not evidence_list:
         logger.warning(f"No evidence found for {hgnc_symbol}")
         return SkipReason.NO_EVIDENCE
+    check_extraction_scope(evidence_list, scoped=prep.scope_panel is not None)
 
     evidence_list, filtered_papers = filter_preprint_evidence(evidence_list)
     if filtered_papers:
@@ -731,6 +766,7 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | SkipR
         prep.db_processor.get_variants_for_gene(hgnc_id, [e["doi"] for e in evidence_list]),
         context,
         prep.panel_date,
+        prep.scope_panel,
     )
     return _GeneBatchItem(
         hgnc_id=hgnc_id,
@@ -769,6 +805,28 @@ def genes_to_assess(db_path: Path, only: list[int] | None, history: StageHistory
         return hgnc_ids
     wanted = set(only)
     return [h for h in hgnc_ids if h in wanted]
+
+
+def scoped_aggregation_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """*schema* for a panel-scoped run: each association requires ``scope_rationale``.
+
+    The field follows the association's inheritance details, so each association
+    states why it fits the panel right after naming its disease and MoI.
+    """
+    scoped = copy.deepcopy(schema)
+    associations = scoped["properties"]["disease_entities"]
+    associations["items"] = with_required_property(
+        associations["items"],
+        "scope_rationale",
+        {
+            "type": "string",
+            "description": "Reported features placing this association on the scope panel, "
+            "condensed from its paper-level entities.",
+            "minLength": 1,
+        },
+        after="inheritance_details",
+    )
+    return scoped
 
 
 def output_configs(schema: dict[str, Any]) -> dict[str, OutputConfigParam]:
@@ -1228,6 +1286,13 @@ def main(
         "--target-panel-ids",
         help="Panel IDs to check for existing genes. Can be specified multiple times. Defaults to TARGET_PANEL_IDS.",
     ),
+    scope_panel_id: int | None = typer.Option(
+        None,
+        "--scope-panel-id",
+        help="Panel ID of a panel-scoped run, whose extraction had the same --scope-panel-id: "
+        "the only target panel, and each association says why it fits it. Exclusive with "
+        "--target-panel-ids.",
+    ),
     immediate: bool = typer.Option(
         False,
         "--immediate",
@@ -1248,6 +1313,9 @@ def main(
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
+    if scope_panel_id is not None and target_panel_ids:
+        logger.error("--scope-panel-id and --target-panel-ids are mutually exclusive")
+        raise typer.Exit(1)
     # With --retry-failed, only failed answers during this invocation count.
     failures_since = datetime.now(UTC) if retry_failed else ALL_TIME
 
@@ -1256,6 +1324,14 @@ def main(
 
     logger.info(f"Fetching PanelApp gene data for {panel_date}...")
     panelapp_client = PanelAppClient(panel_date)
+    scope_panel: str | None = None
+    if scope_panel_id is not None:
+        target_panel_ids = [scope_panel_id]
+        scope_panel = format_panel_for_prompt(
+            scope_panel_id, panelapp_client.get_panel_data(scope_panel_id)
+        )
+        schema = scoped_aggregation_schema(schema)
+        logger.info(f"Panel-scoped aggregation for panel {scope_panel_id}")
     panel_data = panelapp_client.get_target_panels_genes(target_panel_ids)
     logger.info(
         f"  Loaded {len(panel_data.gene_panel_confidence)} genes from {len(panel_data.panel_ids)} target panels"
@@ -1275,6 +1351,7 @@ def main(
         entries=entries,
         gencc=gencc,
         prompt_path=prompt_path,
+        scope_panel=scope_panel,
     )
 
     async def run() -> None:

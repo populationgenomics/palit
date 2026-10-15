@@ -32,6 +32,7 @@ on FALLBACK_MODEL: thinking blocks cannot be replayed to another model.
 
 import asyncio
 import base64
+import copy
 import hashlib
 import io
 import json
@@ -80,6 +81,7 @@ from palit.llm import (
     record_result,
     stage_history,
     unfinished_answer_reason,
+    with_required_property,
 )
 from palit.llm_usage import print_stage_summary
 from palit.lookup_tools import (
@@ -339,6 +341,41 @@ def structural_problems(extraction: dict[str, Any]) -> list[str]:
         if not validate_independent_family_counts(gene["disease_entities"]):
             problems.append(f"{symbol}: inconsistent independent_family_count")
     return problems
+
+
+# ---------------------------------------------------------------------------
+# Prompt and schema
+# ---------------------------------------------------------------------------
+
+
+def render_system_prompt(prompt_path: Path, panel_formatted: str | None) -> str:
+    """The extraction system prompt; with the scope panel's description in a panel-scoped run.
+
+    The scope panel adds the per-disease panel gate and asks for each entity's
+    ``scope_rationale``.
+    """
+    env = Environment(loader=FileSystemLoader(prompt_path.parent), autoescape=False)
+    return env.get_template(prompt_path.name).render(panel_formatted=panel_formatted).strip()
+
+
+def scoped_extraction_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """*schema* for a panel-scoped run: each disease entity requires ``scope_rationale``.
+
+    The field follows the entity's description, so each entity states why its
+    disease fits the panel right after naming it.
+    """
+    scoped = copy.deepcopy(schema)
+    entities = scoped["properties"]["gene_evaluations"]["items"]["properties"]["disease_entities"]
+    entities["items"] = with_required_property(
+        entities["items"],
+        "scope_rationale",
+        {
+            "type": "string",
+            "description": "Reported features placing this entity on the scope panel, with counts.",
+        },
+        after="description",
+    )
+    return scoped
 
 
 # ---------------------------------------------------------------------------
@@ -1706,7 +1743,8 @@ def main(
     scope_panel_id: int | None = typer.Option(
         None,
         "--scope-panel-id",
-        help="Panel ID for panel-scoped evidence extraction (only extracts genes relevant to this panel)",
+        help="Panel ID of a panel-scoped run: a disease gets an entity only when the patients "
+        "the paper reports for it fit this panel, and each entity says why",
     ),
     prompt_path: Path = typer.Option(
         Path("prompts/evidence_extraction_prompt.j2"),
@@ -1767,18 +1805,18 @@ def main(
     refusals_since = started if retry_refused else ALL_TIME
     failures_since = started if retry_failed else ALL_TIME
 
-    panel_formatted = ""
+    schema: dict[str, Any] = json.loads(schema_path.read_text())
+    panel_formatted: str | None = None
     if scope_panel_id is not None:
         if panel_date is None:
             logger.error("--scope-panel-id needs --panel-date")
             raise typer.Exit(1)
         panel_info = PanelAppClient(panel_date).get_panel_data(scope_panel_id)
         panel_formatted = format_panel_for_prompt(scope_panel_id, panel_info)
+        schema = scoped_extraction_schema(schema)
         logger.info(f"Panel-scoped extraction for panel {scope_panel_id}")
 
-    env = Environment(loader=FileSystemLoader(prompt_path.parent), autoescape=False)
-    system = env.get_template(prompt_path.name).render(panel_formatted=panel_formatted).strip()
-    schema: dict[str, Any] = json.loads(schema_path.read_text())
+    system = render_system_prompt(prompt_path, panel_formatted)
     hgnc_resolver = HgncResolver.from_file()
     settings = RequestSettings(
         system=system, output_config=json_output_config(schema, EFFORT), cache_pdf=immediate

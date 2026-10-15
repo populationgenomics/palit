@@ -163,8 +163,13 @@ uv run palit download-papers register
 #    evidence in the paper is out of scope (large CNVs, gene fusions, digenic
 #    inheritance, somatic tumour variants, mechanistic context) gets no entity,
 #    even when another disease of the same gene gets one; a gene without an
-#    entity is left out. The gene's variants are looked up in gnomAD once each,
-#    however many of its entities list them.
+#    entity is left out. A disease for which the paper reports no new patients
+#    but functional or animal-model tests of specific disease variants (patient
+#    cells, variant knock-in models, measured structure or activity of the
+#    variant proteins; in-silico modelling alone does not count) gets an entity with 0 patients, no family counts and the tested
+#    variants; aggregation counts its experiments toward the association of that
+#    disease. The gene's variants are looked up in gnomAD once each, however
+#    many of its entities list them.
 #    Each disease entity carries three family counts. The reported count is
 #    every family the paper reports. The qualifying count (`family_count`) is
 #    the families whose genotype passes the qualifying variant gate. The
@@ -262,8 +267,14 @@ uv run palit match-panels --panel-date $PANEL_DATE
 #     of them. A gene on a target panel without findings goes under "Unreviewed
 #     on target panel" when any of its entries on the target panels has no
 #     review, and under "Already reviewed" when they all have reviews, or
-#     reviews the snapshot does not hold. `aws s3 sync` uploads the
-#     symlink targets.
+#     reviews the snapshot does not hold. A gene unreviewed on a target panel
+#     that has no association in the report is listed with the papers the run
+#     read for it: papers with a full-text extraction that the relevance screen
+#     named it in, that PanelApp cites for it, or whose extraction holds a
+#     disease of it. The list
+#     separates genes without such papers, genes whose papers gave no disease
+#     entity, and genes whose papers did but which have no association.
+#     `aws s3 sync` uploads the symlink targets.
 uv run palit generate-report --report-id report_mendeliome --panel-date $PANEL_DATE
 #     To view a report locally, serve its folder and open http://localhost:8000/.
 #     Opening index.html as a file does not work: the viewer page fetches
@@ -495,8 +506,19 @@ uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite
 # ... manually download PDFs ...
 uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 
-# 5. Extract evidence (panel-scoped: genes for unrelated conditions are
-#    skipped). The genes with evidence from a relevant paper are the run's genes.
+# 5. Extract evidence, scoped to the panel. Scope is decided for each disease
+#    entity (one disease with one MoI), on the patients the paper reports for
+#    it: the disease gets an entity only when those individuals have features
+#    that would lead a clinician to order the panel, judged from what the paper
+#    reports about them, with any exclusions the panel's description makes. A
+#    paper saying they have the panel's disorder is enough, and a feature it
+#    does not mention is unknown, not absent. Another disease of the same gene
+#    can be left out. An entity without patients is judged on what the paper
+#    says about the patients who carry its tested variants (their diagnosis or
+#    features, also when cited from earlier reports). Each entity records why it fits in
+#    `scope_rationale`: the reported features with how many of its individuals
+#    have them. The genes with evidence from a relevant paper are the run's
+#    genes.
 uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 
 # 6. Seed the publications PanelApp cites for the run's genes, on any panel
@@ -519,15 +541,25 @@ uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PA
 #    if it reports more run genes than before, repeat step 7 as well, until the
 #    count stays the same.
 
-# 8. Assess genes against the panel
-uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --target-panel-ids $PANEL_ID
+# 8. Assess genes against the panel, which is the only target panel. Each
+#    association gets a `scope_rationale` condensed from those of the
+#    paper-level entities it groups, with the paper each count comes from.
+#    assess-genes stops when a paper's extraction was not made with the same
+#    scoping: one without `scope_rationale` here, or one with it in an
+#    aggregation without --scope-panel-id.
+uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 
 # 9. Map associations without a GenCC term onto MONDO terms, as in the main
 #    workflow. Panel-scoped runs do not run match-panels.
 uv run palit map-mondo --db-path data/$PANEL_NAME.sqlite
 
 # 10. Generate report package against the panel: every association of a gene
-#     not on it is a finding, and an upgrade starts from the gene's rating on it
+#     not on it is a finding, and an upgrade starts from the gene's rating on it.
+#     Each association shows its `scope_rationale` as "Panel fit". A gene
+#     unreviewed on the panel without an association is listed as in the main
+#     workflow; the group whose papers gave no disease entity reads "Papers
+#     read, none fit the panel". That judgement covers those papers' patients
+#     only; whether the entry belongs on the panel is the curator's call.
 uv run palit generate-report \
   --report-id panel_$PANEL_NAME \
   --db-path data/$PANEL_NAME.sqlite \

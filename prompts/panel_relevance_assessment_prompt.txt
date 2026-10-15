@@ -93,6 +93,7 @@ When assessing disease/phenotype fit to panel scope:
 - Consider phenotypic overlap (e.g., "developmental delay" matches "intellectual disability")
 - Consider anatomical overlap (e.g., "cerebellar ataxia" matches "ataxia" panel)
 - Consider disease mechanism overlap when explicitly described in panel description
+- This assessment only decides whether the full text is read; whether the reported patients fit the panel is judged later, on the full text. Include a disease when the panel's phenotype is a recognised feature of it, typical or variable, even when the abstract does not describe that feature for these patients: a feature the abstract does not mention is unknown, not absent. A disease in which the panel's phenotype has been reported only in isolated cases, or which shares only non-specific features with the panel, does not qualify on that basis.
 - EXCLUDE if phenotypes are entirely distinct from panel scope, even with strong genetics
 
 **Specific Clarifications**

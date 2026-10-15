@@ -392,13 +392,11 @@ After each fortnightly processing run completes, feed the papers its scope scree
 ```bash
 FORTNIGHTLY_DB=data/db_2026_february_h1.sqlite
 
-sqlite3 data/pubmed_baseline_screening.sqlite <<'SQL'
-ATTACH '$FORTNIGHTLY_DB' AS source;
-
+sqlite3 -cmd "ATTACH '$FORTNIGHTLY_DB' AS source" data/pubmed_baseline_screening.sqlite <<'SQL'
 CREATE TEMP TABLE relevant_dois AS
 SELECT doi FROM source.papers
 WHERE relevance_assessment_json IS NOT NULL
-  AND json_extract(relevance_assessment_json, '$.relevant') = 1;
+  AND json_extract(relevance_assessment_json, '$.screen.relevant') = 1;
 
 INSERT OR IGNORE INTO papers
   (doi, pmid, title, abstract, authors, journal, source_date,
@@ -421,7 +419,7 @@ DETACH source;
 SQL
 ```
 
-This step is tracked as `UPDATE_BASELINE` in the pipeline tracker and also syncs the updated baseline to the cluster.
+The heredoc is quoted so the shell leaves the JSON paths alone; `-cmd` attaches the run database first, with the shell variable expanded. `$.screen.relevant` is the screen's decision in databases of either relevance shape.
 
 ### Panel-Specific Curation
 

@@ -12,6 +12,11 @@ Stages build their own ``MessageCreateParamsNonStreaming`` and hand a list of
   of workers: for prompt development, and in the stages whose requests are
   cheaper or faster outside a batch (see their module docstrings).
 
+Both send each request with :data:`THINKING` added (see :func:`sent_params`), so
+a returned message's thinking comes as a readable summary, and stages that store
+a message store its thinking with it. A message has no thinking when the model
+did not think for it.
+
 Both return :class:`LlmResult` objects. The stage writes its own output and calls
 :func:`record_result` for every result in the same SQLite transaction, so a crash
 never leaves a stage output without its request bookkeeping, or the reverse.
@@ -48,7 +53,7 @@ import anthropic
 import jsonschema
 import tenacity
 from anthropic import AsyncAnthropic, transform_schema
-from anthropic.types import Message, TextBlockParam
+from anthropic.types import Message, TextBlockParam, ThinkingConfigAdaptiveParam
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 from anthropic.types.messages import MessageBatchIndividualResponse
 from anthropic.types.messages.batch_create_params import Request
@@ -72,6 +77,10 @@ MODEL_NAMES: dict[str, str] = {
     FALLBACK_MODEL: "Sonnet 5.5",
     LIGHT_MODEL: "Haiku 5.5",
 }
+# The transports send every request with this. The models think adaptively with or
+# without it, but return the thinking as text only with display "summarized" (their
+# default is "omitted", a signature alone); billing is the same either way.
+THINKING: ThinkingConfigAdaptiveParam = {"type": "adaptive", "display": "summarized"}
 # Input tokens plus max_tokens of a request must fit this window, per model.
 CONTEXT_WINDOW: dict[str, int] = {
     MODEL: 1_000_000,
@@ -219,6 +228,13 @@ def invalid_answer_reason(error: ValueError | jsonschema.ValidationError) -> str
     if isinstance(error, json.JSONDecodeError):
         return f"invalid JSON: {error}"
     return str(error)
+
+
+def sent_params(params: MessageCreateParamsNonStreaming) -> MessageCreateParamsNonStreaming:
+    """*params* as the transports send them: with :data:`THINKING`."""
+    sent = params.copy()
+    sent["thinking"] = THINKING
+    return sent
 
 
 async def count_input_tokens(
@@ -684,7 +700,7 @@ class BatchTransport:
         custom_ids = [_new_custom_id(stage, round_no) for _ in chunk]
         batch = await self._client.messages.batches.create(
             requests=[
-                Request(custom_id=custom_id, params=request.params)
+                Request(custom_id=custom_id, params=sent_params(request.params))
                 for custom_id, request in zip(custom_ids, chunk, strict=True)
             ]
         )
@@ -889,7 +905,7 @@ class ImmediateTransport:
     async def _stream(self, request: LlmRequest) -> Message:
         # stream() takes the same keyword arguments minus ``stream`` itself, which
         # the non-streaming params type declares but stages never set.
-        params: dict[str, Any] = dict(request.params)
+        params: dict[str, Any] = dict(sent_params(request.params))
         async for attempt in tenacity.AsyncRetrying(
             retry=tenacity.retry_if_exception(is_mid_stream_transient),
             wait=self._mid_stream_wait,

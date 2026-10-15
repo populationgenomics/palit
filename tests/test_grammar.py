@@ -3,9 +3,9 @@
 The binding limit is an undocumented cap on compiled grammar size, which counts
 the output schema plus every declared tool (strict or not). Measured headroom for
 the extraction schema is small, so each configuration a stage sends is checked
-here with a 16-token request (a fraction of a cent each), on MODEL and on
-FALLBACK_MODEL, which gets the same requests after a refusal, and on LIGHT_MODEL
-for the stages that can run on it.
+here with a 16-token request (a fraction of a cent each), with the THINKING the
+transports send, on MODEL and on FALLBACK_MODEL, which gets the same requests
+after a refusal, and on LIGHT_MODEL for the stages that can run on it.
 
 Needs Claude credentials (the ``PALIT_ANTHROPIC_PROFILE`` profile), so it is opt-in:
 ``uv run pytest -m api``.
@@ -20,7 +20,14 @@ import anthropic
 import pytest
 from anthropic.types import ToolParam
 
-from palit.llm import FALLBACK_MODEL, LIGHT_MODEL, MODEL, json_output_config, make_client
+from palit.llm import (
+    FALLBACK_MODEL,
+    LIGHT_MODEL,
+    MODEL,
+    THINKING,
+    json_output_config,
+    make_client,
+)
 from palit.lookup_tools import TOOLS as EXTRACTION_TOOLS
 from palit.match_panels import matching_schema
 from palit.mondo_tools import TOOLS as MONDO_TOOLS
@@ -62,6 +69,7 @@ async def _compile(schema: dict[str, Any], tools: list[ToolParam], model: str) -
         messages=[{"role": "user", "content": "Reply with any valid output."}],
         tools=tools,
         output_config=json_output_config(schema, "low"),
+        thinking=THINKING,
     )
 
 

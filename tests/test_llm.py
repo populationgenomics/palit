@@ -35,6 +35,7 @@ from palit.llm import (
     MID_STREAM_ATTEMPTS,
     MIN_BATCH_REQUESTS,
     MODEL,
+    THINKING,
     BatchTransport,
     ImmediateTransport,
     LlmRequest,
@@ -330,9 +331,11 @@ class FakeStreams:
     def __init__(self, errors: list[Exception]) -> None:
         self._errors = errors
         self.calls = 0
+        self.params: list[dict[str, Any]] = []
 
     def stream(self, **params: Any) -> "FakeStreams":
         self.calls += 1
+        self.params.append(params)
         return self
 
     async def __aenter__(self) -> "FakeStreams":
@@ -350,6 +353,19 @@ class FakeStreams:
 def _immediate(streams: FakeStreams) -> ImmediateTransport:
     client = SimpleNamespace(messages=streams)
     return ImmediateTransport(client, mid_stream_wait=tenacity.wait_none())  # type: ignore[arg-type]
+
+
+def test_both_transports_ask_for_the_thinking_as_a_summary(db_path: Path) -> None:
+    request = _request("doi-a", "a")
+    batches = FakeBatches({"a": {"type": "succeeded", "message": _message("end_turn")}})
+    asyncio.run(_transport(db_path, batches).run("relevance", 1, [request]))
+    streams = FakeStreams([])
+    asyncio.run(_immediate(streams).run("relevance", 1, [request]))
+
+    assert batches.created[0][0]["params"]["thinking"] == THINKING
+    assert [params["thinking"] for params in streams.params] == [THINKING]
+    assert THINKING == {"type": "adaptive", "display": "summarized"}
+    assert "thinking" not in request.params
 
 
 def test_immediate_retries_error_events_inside_the_stream() -> None:

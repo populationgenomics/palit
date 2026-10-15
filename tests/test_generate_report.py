@@ -347,7 +347,7 @@ def db_path(tmp_path: Path) -> Path:
                     None,
                     json.dumps(
                         [
-                            {"panel_id": ATAXIA_PANEL_ID, "rationale": "ataxia"},
+                            {"panel_id": ATAXIA_PANEL_ID, "rationale": "Smith2024 reports ataxia."},
                             {"panel_id": 4242, "rationale": "panel gone"},
                             {"panel_id": EPILEPSY_PANEL_ID, "rationale": "epilepsy too"},
                         ]
@@ -656,6 +656,8 @@ def test_matched_panels_the_gene_is_not_on_come_first(
         ("Epilepsy", False),
         ("Ataxia", True),
     ]
+    # A rationale names papers as the summary does.
+    assert reused_matches[1].rationale == "PMID 111 reports ataxia."
     assert by_id[13].matched_panels is None
     assert {a.id: a.panel_matching for a in genea.associations} == {
         10: StageState.STORED,
@@ -901,7 +903,7 @@ def test_each_association_lists_its_panels_after_its_papers(
     ) in reused
     assert _panel_items(reused) == [
         "Epilepsy: epilepsy too",
-        "Ataxia (gene already on panel): ataxia",
+        "Ataxia (gene already on panel): PMID 111 reports ataxia.",
     ]
     assert (
         f'<a href="https://panelapp-aus.org/panels/{EPILEPSY_PANEL_ID}" target="_blank">'

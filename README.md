@@ -238,10 +238,15 @@ uv run palit assess-genes --panel-date $PANEL_DATE
 uv run palit map-mondo
 
 # 11. Match each association to diagnostic panels by its disease, MoI and
-#     summary. Requests go out immediately, not as batches, so that they read
-#     the shared panel list from the prompt cache, and each association's
-#     matches are stored as they arrive. Re-runs match only the associations
-#     still without matches.
+#     summary, and by the extractions of its papers: every disease each paper
+#     reports for the gene, with its MoI, patient count, summary and quotes
+#     with commentary. A paper's other diseases of the gene are included, with
+#     the disease and MoI of the gene's other associations; the model judges
+#     which diseases belong to the association. The extractions must have the
+#     per-disease shape. Requests go out immediately, not as batches, so
+#     that they read the shared panel list from the prompt cache, and each
+#     association's matches are stored as they arrive. Re-runs match only the
+#     associations still without matches.
 uv run palit match-panels --panel-date $PANEL_DATE
 
 # 12. Generate the report package: index.html, the PDF viewer page, and each

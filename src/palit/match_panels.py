@@ -3,7 +3,10 @@
 
 One request per association without panel matches: the system part lists every
 panel and is the same for all requests, so it is cached; the user part carries
-the association's disease, mode of inheritance and summary. Matches are stored
+the association's disease, mode of inheritance and summary, the disease and
+mode of inheritance of the gene's other associations, and the clinical fields
+its papers' extractions hold for the gene: each disease a paper reports, with
+its mode of inheritance, patient count, summary and quotes. Matches are stored
 on the association row, in the transaction that records the request. An
 association MODEL refused goes to FALLBACK_MODEL in the next attempt (see
 :mod:`palit.llm`).
@@ -32,6 +35,7 @@ import jsonschema
 import typer
 from anthropic.types.output_config_param import OutputConfigParam
 
+from palit.extract_evidence import evaluations_of_gene
 from palit.llm import (
     ALL_TIME,
     DEFAULT_IMMEDIATE_WORKERS,
@@ -69,6 +73,41 @@ SCHEMA_PATH = Path("prompts/panel_matching_schema.json")
 
 
 @dataclass(frozen=True)
+class CitedQuote:
+    quote: str
+    commentary: str
+
+
+@dataclass(frozen=True)
+class ReportedDisease:
+    """The clinical fields of one disease entity a paper's extraction holds for a gene."""
+
+    description: str
+    inheritance_mode: str
+    inheritance_details: str
+    patient_count: int
+    summary: str
+    citations: tuple[CitedQuote, ...]
+
+
+@dataclass(frozen=True)
+class PaperEvidence:
+    """One of an association's papers, with every disease it reports for the gene."""
+
+    paper_id: str  # the {LastName}{Year} ID the aggregation gave the paper
+    diseases: tuple[ReportedDisease, ...]
+
+
+@dataclass(frozen=True)
+class OtherAssociation:
+    """Another association of the same gene, which is matched on its own."""
+
+    description: str
+    inheritance_mode: str
+    inheritance_details: str
+
+
+@dataclass(frozen=True)
 class Association:
     """The fields of one unmatched association that the model sees."""
 
@@ -77,6 +116,8 @@ class Association:
     inheritance_mode: str
     inheritance_details: str
     summary: str
+    other_associations: tuple[OtherAssociation, ...]  # in the aggregation's order
+    papers: tuple[PaperEvidence, ...]
 
 
 @dataclass(frozen=True)
@@ -103,36 +144,110 @@ def format_all_panels_for_prompt(panels: dict[int, dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def reported_diseases(
+    conn: sqlite3.Connection, hgnc_id: int, doi: str
+) -> tuple[ReportedDisease, ...]:
+    """Every disease entity the paper's extraction holds for the gene.
+
+    Raises ValueError for a paper without an extraction, and for an extraction
+    in the gene-level shape (see :func:`evaluations_of_gene`).
+    """
+    row = conn.execute(
+        "SELECT evidence_extraction_json FROM papers "
+        "WHERE doi = ? AND evidence_extraction_json IS NOT NULL",
+        (doi,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"{doi}: no extraction")
+    (extraction_json,) = row
+    return tuple(
+        ReportedDisease(
+            description=entity["description"],
+            inheritance_mode=entity["inheritance_mode"],
+            inheritance_details=entity["inheritance_details"],
+            patient_count=entity["patient_count"],
+            summary=entity["summary"],
+            citations=tuple(
+                CitedQuote(quote=citation["quote"], commentary=citation["commentary"])
+                for citation in entity["citations"]
+            ),
+        )
+        for evaluation in evaluations_of_gene(json.loads(extraction_json), hgnc_id, doi)
+        for entity in evaluation["disease_entities"]
+    )
+
+
 def select_associations(db_path: Path, history: StageHistory) -> list[Association]:
     """Associations without panel matches, except the ones skipped for good.
 
     Only rows of a stored aggregation count: rows left behind by deleting a
-    ``gene_aggregations`` row are skipped.
+    ``gene_aggregations`` row are skipped. Each association comes with the gene's
+    other associations and with its papers (``dois``), ordered by the IDs its
+    aggregation gave them, which its summary uses. Raises ValueError when one of
+    them has no extraction or one in the gene-level shape.
     """
-    with sqlite3.connect(db_path) as conn:
+    associations: list[Association] = []
+    diseases: dict[tuple[int, str], tuple[ReportedDisease, ...]] = {}
+    with closing(sqlite3.connect(db_path)) as conn:
+        gene_associations: dict[int, list[tuple[int, OtherAssociation]]] = defaultdict(list)
+        for association_id, hgnc_id, assessment_json in conn.execute(
+            """
+            SELECT a.id, a.hgnc_id, a.assessment_json
+            FROM associations a
+            JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
+            WHERE a.hgnc_id IN (SELECT hgnc_id FROM associations WHERE matched_panels_json IS NULL)
+            ORDER BY a.hgnc_id, a.position
+            """
+        ):
+            assessment = json.loads(assessment_json)
+            gene_associations[hgnc_id].append(
+                (
+                    association_id,
+                    OtherAssociation(
+                        description=assessment["description"],
+                        inheritance_mode=assessment["inheritance_mode"],
+                        inheritance_details=assessment["inheritance_details"],
+                    ),
+                )
+            )
         rows = conn.execute(
             """
-            SELECT a.id, a.assessment_json
+            SELECT a.id, a.hgnc_id, a.assessment_json, g.paper_id_mapping
             FROM associations a
             JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
             WHERE a.matched_panels_json IS NULL
             ORDER BY a.id
             """
         ).fetchall()
-    associations = []
-    for association_id, assessment_json in rows:
-        if history.skipped(str(association_id)):
-            continue
-        assessment = json.loads(assessment_json)
-        associations.append(
-            Association(
-                id=association_id,
-                description=assessment["description"],
-                inheritance_mode=assessment["inheritance_mode"],
-                inheritance_details=assessment["inheritance_details"],
-                summary=assessment["summary"],
+        for association_id, hgnc_id, assessment_json, paper_id_mapping in rows:
+            if history.skipped(str(association_id)):
+                continue
+            assessment = json.loads(assessment_json)
+            doi_to_paper_id = {
+                doi: paper_id for paper_id, doi in json.loads(paper_id_mapping).items()
+            }
+            papers: list[PaperEvidence] = []
+            for doi in assessment["dois"]:
+                paper_diseases = diseases.get((hgnc_id, doi))
+                if paper_diseases is None:
+                    paper_diseases = reported_diseases(conn, hgnc_id, doi)
+                    diseases[(hgnc_id, doi)] = paper_diseases
+                papers.append(PaperEvidence(paper_id=doi_to_paper_id[doi], diseases=paper_diseases))
+            associations.append(
+                Association(
+                    id=association_id,
+                    description=assessment["description"],
+                    inheritance_mode=assessment["inheritance_mode"],
+                    inheritance_details=assessment["inheritance_details"],
+                    summary=assessment["summary"],
+                    other_associations=tuple(
+                        other
+                        for other_id, other in gene_associations[hgnc_id]
+                        if other_id != association_id
+                    ),
+                    papers=tuple(sorted(papers, key=lambda paper: paper.paper_id)),
+                )
             )
-        )
     return associations
 
 
@@ -180,11 +295,47 @@ def split_prompt(template: str, panel_list: str) -> tuple[str, str]:
     return system, template[index:]
 
 
-def format_inheritance(association: Association) -> str:
-    mode = "not reported" if association.inheritance_mode == "NR" else association.inheritance_mode
-    if association.inheritance_details:
-        return f"{mode} ({association.inheritance_details})"
+def format_inheritance(inheritance_mode: str, inheritance_details: str) -> str:
+    mode = "not reported" if inheritance_mode == "NR" else inheritance_mode
+    if inheritance_details:
+        return f"{mode} ({inheritance_details})"
     return mode
+
+
+def format_other_associations(others: Sequence[OtherAssociation]) -> str:
+    """One line per other association of the gene, or "None"."""
+    if not others:
+        return "None"
+    return "\n".join(
+        f"- {other.description}; mode of inheritance: "
+        f"{format_inheritance(other.inheritance_mode, other.inheritance_details)}"
+        for other in others
+    )
+
+
+def format_papers(papers: Sequence[PaperEvidence]) -> str:
+    """The papers' diseases for the gene, one indented block per disease.
+
+    Quotes are shown on one line each, with their whitespace collapsed.
+    """
+    lines: list[str] = []
+    for paper in papers:
+        lines.append(f"Paper {paper.paper_id}:")
+        for disease in paper.diseases:
+            mode = format_inheritance(disease.inheritance_mode, disease.inheritance_details)
+            lines += [
+                f"- Disease: {disease.description}",
+                f"  Mode of inheritance: {mode}",
+                f"  Patients: {disease.patient_count}",
+                f"  Summary: {disease.summary}",
+            ]
+            if disease.citations:
+                lines.append("  Quotes:")
+            for citation in disease.citations:
+                lines.append(f'  - "{" ".join(citation.quote.split())}"')
+                if citation.commentary:
+                    lines.append(f"    {citation.commentary}")
+    return "\n".join(lines)
 
 
 def build_request(
@@ -196,8 +347,12 @@ def build_request(
 ) -> LlmRequest:
     user_text = user_template.format(
         description=association.description,
-        inheritance=format_inheritance(association),
+        inheritance=format_inheritance(
+            association.inheritance_mode, association.inheritance_details
+        ),
         summary=association.summary,
+        other_associations=format_other_associations(association.other_associations),
+        papers=format_papers(association.papers),
     )
     return LlmRequest(
         subject=str(association.id),

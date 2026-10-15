@@ -1093,17 +1093,24 @@ def association_disputes(
 
 
 def _panel_matches(
-    matched_panels_json: str | None, hgnc_id: int, all_panels_data: AllPanelsData
+    matched_panels_json: str | None,
+    hgnc_id: int,
+    all_panels_data: AllPanelsData,
+    display_ids: dict[str, str],
 ) -> list[PanelMatch] | None:
     """An association's matched panels, or None while it has none stored.
 
-    The panels the gene is not on come first; within each group, by panel name.
+    The rationales name papers by their *display_ids*, as the summary does. The
+    panels the gene is not on come first; within each group, by panel name.
     """
     if matched_panels_json is None:
         return None
     current_panels = all_panels_data.gene_to_panels.get(hgnc_id, set())
+    stored = replace_paper_ids_for_display(
+        {"matched_panels": json.loads(matched_panels_json)}, display_ids
+    )["matched_panels"]
     matches = []
-    for match in json.loads(matched_panels_json):
+    for match in stored:
         panel_id = match["panel_id"]
         panel_name = all_panels_data.panel_names.get(panel_id)
         if panel_name is None:
@@ -1191,7 +1198,9 @@ def load_associations(
                     assessment, row["mondo_id"], panelapp_context["disputes"]
                 ),
                 variants=association_variants(assessment, gene_variants),
-                matched_panels=_panel_matches(row["matched_panels_json"], hgnc_id, all_panels_data),
+                matched_panels=_panel_matches(
+                    row["matched_panels_json"], hgnc_id, all_panels_data, display_ids
+                ),
                 panel_matching=stage_state(
                     row["matched_panels_json"] is not None,
                     row["matching_status"],

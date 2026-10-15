@@ -6,7 +6,7 @@ AVAILABLE PANELS:
 {panel_list}
 
 TASK:
-Match the gene-disease association at the end to every panel it belongs on. Its disease and its summary both come from the association's papers: the disease names the disorder and lists its reported features, and the summary describes the affected individuals, how many have each feature, and the evidence.
+Match the gene-disease association at the end to every panel it belongs on. Its disease and its summary both come from the association's papers: the disease names the disorder and lists its reported features, and the summary describes the affected individuals, how many have each feature, and the evidence. After them, each of these papers is shown as extracted from its full text, with every disease it reports for the association's gene. A paper may also report other diseases of the gene. A disease belongs to this association when it is the same disorder with the same mode of inheritance, whatever the paper calls it. Draw the reported features only from the diseases that belong, and do not match a panel because of a disease that does not. Papers often report the same individuals again, so take how many individuals have a feature from the summary or from a single paper, never by adding up papers.
 
 A clinician orders a panel when a patient's features raise the suspicion of a disorder the panel covers, often before the full picture is clear. A gene missing from a panel can mean a missed diagnosis, while a gene on a panel it does not belong on costs curators' review and dilutes the panel. An association belongs on a panel when a clinician seeing patients like these would order it.
 
@@ -30,3 +30,9 @@ ASSOCIATION:
 Disease: {description}
 Mode of inheritance: {inheritance}
 Summary: {summary}
+
+The gene's other associations, which are matched separately:
+{other_associations}
+
+PAPERS:
+{papers}

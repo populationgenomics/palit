@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -28,6 +29,10 @@ from palit.match_panels import (
     SCHEMA_PATH,
     STAGE,
     Association,
+    CitedQuote,
+    OtherAssociation,
+    PaperEvidence,
+    ReportedDisease,
     build_request,
     count_unmatched,
     handle_result,
@@ -43,50 +48,150 @@ PANEL_LIST = '<panel id="250">\nName: Hereditary Spastic Paraplegia\n</panel>'
 NAME_TO_ID = {"hereditary spastic paraplegia": 250, "mendeliome": 137}
 
 
-def _assessment(description: str, **fields: str) -> str:
+GENE = 11273
+OTHER_GENE = 4
+SMITH = "10.1/smith"  # reports two diseases for GENE, and one for another gene
+JONES = "10.1/jones"
+PAPER_IDS = {"Smith2020": SMITH, "Jones2018": JONES}
+
+
+def _assessment(description: str, dois: tuple[str, ...] = (JONES,), **fields: str) -> str:
     return json.dumps(
         {
             "description": description,
             "inheritance_mode": fields.get("inheritance_mode", "Biallelic"),
             "inheritance_details": fields.get("inheritance_details", ""),
             "summary": fields.get("summary", "Five families with spastic paraplegia."),
+            "dois": list(dois),
         }
     )
 
 
+def _entity(description: str, summary: str, quote: str, commentary: str) -> dict[str, Any]:
+    """A disease entity in the per-disease extraction shape, with the fields the
+    matching leaves out set to values the tests look for."""
+    return {
+        "description": description,
+        "variants": [{"variant": "c.100C>T", "quote": "VARIANT QUOTE"}],
+        "patient_count": 3,
+        "reported_family_count": 2,
+        "family_count": 2,
+        "independent_family_count": 2,
+        "count_reduction_reasoning": "COUNT REASONING",
+        "disease_mechanism": "MECHANISM",
+        "previously_reported_sources": [],
+        "inheritance_mode": "Biallelic",
+        "inheritance_details": "",
+        "citations": [{"commentary": commentary, "quote": quote}],
+        "evidence_weakening_factors": [
+            {"factor": "phenotype_non_mendelian", "present": False, "details": "WEAKENING"}
+        ],
+        "evidence_assessments": {
+            "criterion_A": {"met": True, "reasoning": "CRITERION", "citations": []}
+        },
+        "summary": summary,
+        "quality_concerns": [{"concern": "QUALITY CONCERN", "citations": []}],
+    }
+
+
+def _extraction(*evaluations: tuple[int, list[dict[str, Any]]]) -> str:
+    return json.dumps(
+        {
+            "gene_evaluations": [
+                {"gene_symbol": f"G{hgnc_id}", "hgnc_id": hgnc_id, "disease_entities": entities}
+                for hgnc_id, entities in evaluations
+            ]
+        }
+    )
+
+
+SMITH_EXTRACTION = _extraction(
+    (
+        GENE,
+        [
+            _entity(
+                "spastic paraplegia with thin corpus callosum",
+                "Two sibs with spastic gait from age 12.",
+                "Both sibs walked with a spastic gait.",
+                "Spastic gait in both sibs.",
+            ),
+            _entity(
+                "optic atrophy",
+                "One unrelated child with optic atrophy.",
+                "Fundoscopy showed\npale  optic discs.",
+                "",
+            ),
+        ],
+    ),
+    (
+        OTHER_GENE,
+        [
+            _entity(
+                "OTHER GENE DISEASE", "OTHER GENE SUMMARY", "OTHER GENE QUOTE", "OTHER GENE NOTE"
+            )
+        ],
+    ),
+)
+JONES_EXTRACTION = _extraction(
+    (
+        GENE,
+        [
+            _entity(
+                "hereditary spastic paraplegia",
+                "Three adults with lower-limb spasticity.",
+                "All three had lower-limb spasticity.",
+                "Spasticity in three adults.",
+            )
+        ],
+    )
+)
+
+
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
-    """Gene 11273 with a matched association (1), unmatched ones (2, 4, 5) and one this
-    stage refused for good (3). Association 4 was refused by MODEL here and by map-mondo."""
+    """GENE with a matched association (1), unmatched ones (2, 4, 5) and one this
+    stage refused for good (3). Association 4 was refused by MODEL here and by map-mondo.
+    Association 2 rests on Smith2020 and Jones2018, the others on Jones2018. OTHER_GENE
+    has a matched association (6)."""
     path = tmp_path / "run.sqlite"
     with sqlite3.connect(path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
-        conn.execute(
+        conn.executemany(
+            "INSERT INTO papers (doi, title, source, evidence_extraction_json) "
+            "VALUES (?, 't', 'pubmed', ?)",
+            [(SMITH, SMITH_EXTRACTION), (JONES, JONES_EXTRACTION)],
+        )
+        conn.executemany(
             """
             INSERT INTO gene_aggregations (hgnc_id, assessment_raw, paper_id_mapping,
                 panelapp_context_json, unassessed_reports_json)
-            VALUES (11273, '{}', '{}', '{}', '[]')
-            """
+            VALUES (?, '{}', ?, '{}', '[]')
+            """,
+            [(GENE, json.dumps(PAPER_IDS)), (OTHER_GENE, json.dumps({"Smith2020": SMITH}))],
         )
         conn.executemany(
-            "INSERT INTO associations (id, hgnc_id, position, assessment_json) VALUES (?, 11273, ?, ?)",
+            "INSERT INTO associations (id, hgnc_id, position, assessment_json) VALUES (?, ?, ?, ?)",
             [
-                (1, 0, _assessment("matched disease")),
+                (1, GENE, 0, _assessment("matched disease")),
                 (
                     2,
+                    GENE,
                     1,
                     _assessment(
                         "adult-onset hereditary spastic paraplegia",
+                        (SMITH, JONES),
                         inheritance_details="reduced penetrance",
                     ),
                 ),
-                (3, 2, _assessment("refused disease")),
-                (4, 3, _assessment("unclear disease", inheritance_mode="NR")),
-                (5, 4, _assessment("hereditary spastic paraplegia")),
+                (3, GENE, 2, _assessment("refused disease")),
+                (4, GENE, 3, _assessment("unclear disease", inheritance_mode="NR")),
+                (5, GENE, 4, _assessment("hereditary spastic paraplegia")),
+                (6, OTHER_GENE, 0, _assessment("OTHER GENE ASSOCIATION", (SMITH,))),
             ],
         )
         conn.execute(
-            "UPDATE associations SET matched_panels_json = '[]', matched_panels_raw = '{}' WHERE id = 1"
+            "UPDATE associations SET matched_panels_json = '[]', matched_panels_raw = '{}' "
+            "WHERE id IN (1, 6)"
         )
         conn.executemany(
             """
@@ -109,7 +214,67 @@ def _prompt() -> tuple[str, str]:
     return split_prompt((ROOT / PROMPT_PATH).read_text(), PANEL_LIST)
 
 
+def _disease(description: str, summary: str, quote: str, commentary: str) -> ReportedDisease:
+    return ReportedDisease(
+        description=description,
+        inheritance_mode="Biallelic",
+        inheritance_details="",
+        patient_count=3,
+        summary=summary,
+        citations=(CitedQuote(quote=quote, commentary=commentary),),
+    )
+
+
+JONES_PAPER = PaperEvidence(
+    paper_id="Jones2018",
+    diseases=(
+        _disease(
+            "hereditary spastic paraplegia",
+            "Three adults with lower-limb spasticity.",
+            "All three had lower-limb spasticity.",
+            "Spasticity in three adults.",
+        ),
+    ),
+)
+SMITH_PAPER = PaperEvidence(
+    paper_id="Smith2020",
+    diseases=(
+        _disease(
+            "spastic paraplegia with thin corpus callosum",
+            "Two sibs with spastic gait from age 12.",
+            "Both sibs walked with a spastic gait.",
+            "Spastic gait in both sibs.",
+        ),
+        _disease(
+            "optic atrophy",
+            "One unrelated child with optic atrophy.",
+            "Fundoscopy showed\npale  optic discs.",
+            "",
+        ),
+    ),
+)
+
+
+def _others(*descriptions: str) -> tuple[OtherAssociation, ...]:
+    """GENE's associations other than the one selected, by description."""
+    others = {
+        "matched disease": OtherAssociation("matched disease", "Biallelic", ""),
+        "adult-onset hereditary spastic paraplegia": OtherAssociation(
+            "adult-onset hereditary spastic paraplegia", "Biallelic", "reduced penetrance"
+        ),
+        "refused disease": OtherAssociation("refused disease", "Biallelic", ""),
+        "unclear disease": OtherAssociation("unclear disease", "NR", ""),
+        "hereditary spastic paraplegia": OtherAssociation(
+            "hereditary spastic paraplegia", "Biallelic", ""
+        ),
+    }
+    return tuple(others[description] for description in descriptions)
+
+
 def test_select_associations_skips_matched_and_refused_rows(db_path: Path) -> None:
+    """Each association comes with the gene's other associations, matched or not, in
+    the aggregation's order, and with every disease its papers report for the gene,
+    the papers ordered by their IDs."""
     assert select_associations(db_path, _history(db_path)) == [
         Association(
             id=2,
@@ -117,6 +282,13 @@ def test_select_associations_skips_matched_and_refused_rows(db_path: Path) -> No
             inheritance_mode="Biallelic",
             inheritance_details="reduced penetrance",
             summary="Five families with spastic paraplegia.",
+            other_associations=_others(
+                "matched disease",
+                "refused disease",
+                "unclear disease",
+                "hereditary spastic paraplegia",
+            ),
+            papers=(JONES_PAPER, SMITH_PAPER),
         ),
         Association(
             id=4,
@@ -124,6 +296,13 @@ def test_select_associations_skips_matched_and_refused_rows(db_path: Path) -> No
             inheritance_mode="NR",
             inheritance_details="",
             summary="Five families with spastic paraplegia.",
+            other_associations=_others(
+                "matched disease",
+                "adult-onset hereditary spastic paraplegia",
+                "refused disease",
+                "hereditary spastic paraplegia",
+            ),
+            papers=(JONES_PAPER,),
         ),
         Association(
             id=5,
@@ -131,6 +310,13 @@ def test_select_associations_skips_matched_and_refused_rows(db_path: Path) -> No
             inheritance_mode="Biallelic",
             inheritance_details="",
             summary="Five families with spastic paraplegia.",
+            other_associations=_others(
+                "matched disease",
+                "adult-onset hereditary spastic paraplegia",
+                "refused disease",
+                "unclear disease",
+            ),
+            papers=(JONES_PAPER,),
         ),
     ]
     assert count_unmatched(db_path) == 4
@@ -138,10 +324,31 @@ def test_select_associations_skips_matched_and_refused_rows(db_path: Path) -> No
     assert (history.model_for("2"), history.model_for("4")) == (MODEL, FALLBACK_MODEL)
 
 
+def test_select_associations_rejects_a_gene_level_extraction(db_path: Path) -> None:
+    gene_level = json.loads(JONES_EXTRACTION)
+    gene_level["gene_evaluations"][0]["summary"] = "Gene-level summary."
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE papers SET evidence_extraction_json = ? WHERE doi = ?",
+            (json.dumps(gene_level), JONES),
+        )
+    with pytest.raises(ValueError, match=f"{re.escape(JONES)}: gene-level extraction shape"):
+        select_associations(db_path, _history(db_path))
+
+
+def test_select_associations_rejects_a_paper_without_extraction(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE papers SET evidence_extraction_json = NULL WHERE doi = ?", (JONES,))
+    with pytest.raises(ValueError, match=f"{re.escape(JONES)}: no extraction"):
+        select_associations(db_path, _history(db_path))
+
+
 def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
-        conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = 11273")
-        (left_behind,) = conn.execute("SELECT COUNT(*) FROM associations").fetchone()
+        conn.execute("DELETE FROM gene_aggregations WHERE hgnc_id = ?", (GENE,))
+        (left_behind,) = conn.execute(
+            "SELECT COUNT(*) FROM associations WHERE hgnc_id = ?", (GENE,)
+        ).fetchone()
     assert left_behind == 5
     assert select_associations(db_path, _history(db_path)) == []
     assert count_unmatched(db_path) == 0
@@ -167,6 +374,10 @@ def _sent_messages(request: LlmRequest) -> list[dict[str, Any]]:
 
 
 def test_build_request_describes_one_association(db_path: Path) -> None:
+    """The user message holds the association, the gene's other associations, and each
+    paper with every disease it reports for the gene: the other gene's association and
+    disease, and the fields beyond the clinical ones, are left out. Quotes are on one
+    line each; an empty commentary has no line."""
     system, user_template = _prompt()
     output_config = json_output_config(SCHEMA, EFFORT)
     first, second, _ = (
@@ -183,10 +394,58 @@ def test_build_request_describes_one_association(db_path: Path) -> None:
                 "Disease: adult-onset hereditary spastic paraplegia\n"
                 "Mode of inheritance: Biallelic (reduced penetrance)\n"
                 "Summary: Five families with spastic paraplegia.\n"
+                "\n"
+                "The gene's other associations, which are matched separately:\n"
+                "- matched disease; mode of inheritance: Biallelic\n"
+                "- refused disease; mode of inheritance: Biallelic\n"
+                "- unclear disease; mode of inheritance: not reported\n"
+                "- hereditary spastic paraplegia; mode of inheritance: Biallelic\n"
+                "\n"
+                "PAPERS:\n"
+                "Paper Jones2018:\n"
+                "- Disease: hereditary spastic paraplegia\n"
+                "  Mode of inheritance: Biallelic\n"
+                "  Patients: 3\n"
+                "  Summary: Three adults with lower-limb spasticity.\n"
+                "  Quotes:\n"
+                '  - "All three had lower-limb spasticity."\n'
+                "    Spasticity in three adults.\n"
+                "Paper Smith2020:\n"
+                "- Disease: spastic paraplegia with thin corpus callosum\n"
+                "  Mode of inheritance: Biallelic\n"
+                "  Patients: 3\n"
+                "  Summary: Two sibs with spastic gait from age 12.\n"
+                "  Quotes:\n"
+                '  - "Both sibs walked with a spastic gait."\n'
+                "    Spastic gait in both sibs.\n"
+                "- Disease: optic atrophy\n"
+                "  Mode of inheritance: Biallelic\n"
+                "  Patients: 3\n"
+                "  Summary: One unrelated child with optic atrophy.\n"
+                "  Quotes:\n"
+                '  - "Fundoscopy showed pale optic discs."\n'
             ),
         }
     ]
+    content = _sent_messages(first)[0]["content"]
+    for left_out in [
+        "OTHER GENE",
+        "VARIANT",
+        "c.100C>T",
+        "COUNT REASONING",
+        "MECHANISM",
+        "WEAKENING",
+        "CRITERION",
+        "QUALITY CONCERN",
+        "10.1/",
+    ]:
+        assert left_out not in content
     assert "Mode of inheritance: not reported\n" in _sent_messages(second)[0]["content"]
+
+
+def test_a_gene_with_one_association_lists_no_others() -> None:
+    (message,) = _sent_messages(_request("1", MODEL))
+    assert "which are matched separately:\nNone\n\nPAPERS:\n" in message["content"]
 
 
 def _message(stop_reason: str, content: list[dict[str, Any]], message_id: str) -> Message:
@@ -310,6 +569,8 @@ def _request(subject: str, model: str) -> LlmRequest:
         inheritance_mode="Biallelic",
         inheritance_details="",
         summary="s",
+        other_associations=(),
+        papers=(JONES_PAPER,),
     )
     output_config = json_output_config(SCHEMA, EFFORT)
     return build_request(association, system, user_template, output_config, model)

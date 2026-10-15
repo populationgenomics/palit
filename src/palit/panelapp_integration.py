@@ -310,6 +310,7 @@ def prepare_prefill_data(
     panel_id: int,
     panel_rating: int | None,
     doi_to_pmid: dict[str, int | None],
+    rated: bool = True,
 ) -> PrefillData:
     """One PanelApp prefill for the gene, as the union over *associations*.
 
@@ -318,7 +319,9 @@ def prepare_prefill_data(
     on *panel_id* gets an add form rated with the top rating of *associations*. A
     gene on it gets a review form rated with the higher of its rating there and
     that top rating: the corpus holds only the papers this run read, so a lower
-    rating is no downgrade recommendation. The MoI is aggregated over
+    rating is no downgrade recommendation. When not *rated*, the associations do not
+    count toward the rating, and a review form keeps the gene's rating on the panel.
+    The MoI is aggregated over
     *moi_associations* (see derive_panelapp_moi): a review replaces the
     evaluation's MoI, so it has to cover every association of the gene, not only
     the described ones. Phenotypes, publications and
@@ -332,6 +335,7 @@ def prepare_prefill_data(
         panel_id: Target panel ID
         panel_rating: The gene's confidence level on *panel_id*; None when it is not on it
         doi_to_pmid: PMID (None when the paper has none) of every DOI the associations cite
+        rated: Whether the associations' top rating counts toward the form's rating
 
     Returns:
         PrefillData object ready for form rendering
@@ -339,9 +343,11 @@ def prepare_prefill_data(
     assessments = [a.assessment for a in associations]
     top_rating = calculate_gene_rating(assessments)
     if panel_rating is None:
+        if not rated:
+            raise ValueError("An add form is rated by its associations")
         form_type, rating = "add", top_rating
     else:
-        form_type, rating = "review", max(panel_rating, top_rating)
+        form_type, rating = "review", max(panel_rating, top_rating) if rated else panel_rating
 
     dois = dict.fromkeys(doi for assessment in assessments for doi in assessment["dois"])
     publications = ";".join(

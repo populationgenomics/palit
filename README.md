@@ -213,9 +213,15 @@ uv run palit extract-evidence
 #    as judged from those entries and reviews, and its rating from the evidence
 #    in this run's corpus. GenCC's disease terms for the gene, from every
 #    submitter, are offered as names; GenCC classes are not shown. A gene is
-#    skipped when PanelApp already cites all of its papers on the target
-#    panels. Safe to interrupt and re-run: it re-attaches to
-#    batches still in flight and skips genes that already have an aggregation.
+#    skipped when the target panels have already reviewed all of its papers:
+#    their entries for the gene and those entries' reviews cite every paper (by
+#    PMID, or by DOI in any letter case), and every entry of it there is known
+#    to have reviews. A gene is aggregated however many of its papers are cited
+#    when one of its entries on a target panel has no review, or reviews the
+#    snapshot does not hold: a gene entry whose reviews PanelApp could not
+#    serve, or a repeat-expansion entry, whose reviews the snapshot does not
+#    fetch. Safe to interrupt and re-run: it re-attaches to batches still in
+#    flight and skips genes that already have an aggregation.
 uv run palit assess-genes --panel-date $PANEL_DATE
 
 # 10. Map each association that reuses no GenCC disease term onto a
@@ -241,7 +247,17 @@ uv run palit match-panels --panel-date $PANEL_DATE
 # 12. Generate the report package: index.html, the PDF viewer page, and each
 #     cited paper's PDF (symlinked) with its quote highlights (citations/*.json).
 #     Each gene shows one block per association, with its relation to PanelApp
-#     Australia and its rating in this corpus. `aws s3 sync` uploads the
+#     Australia and its rating in this corpus. An association whose papers the
+#     target panels have all reviewed already, by the rule of step 9, is no
+#     finding whatever its rating, and says so; the statistics count those that
+#     would otherwise be findings. A gene without findings is prefilled with its
+#     other associations, or, when all are already reviewed, at its rating on
+#     the panel. PanelApp records citations per gene entry, not per disease,
+#     so a paper cited for one of the gene's diseases counts as reviewed for all
+#     of them. A gene on a target panel without findings goes under "Unreviewed
+#     on target panel" when any of its entries on the target panels has no
+#     review, and under "Already reviewed" when they all have reviews, or
+#     reviews the snapshot does not hold. `aws s3 sync` uploads the
 #     symlink targets.
 uv run palit generate-report --report-id report_mendeliome --panel-date $PANEL_DATE
 #     To view a report locally, serve its folder and open http://localhost:8000/.

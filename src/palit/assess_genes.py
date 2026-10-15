@@ -15,9 +15,11 @@ import asyncio
 import json
 import logging
 import sqlite3
+from collections import Counter
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -52,13 +54,8 @@ from palit.llm import (
     stage_history,
 )
 from palit.llm_usage import print_stage_summary
-from palit.panel_entries import PanelEntry, entries_by_gene
-from palit.panelapp_client import (
-    PanelAppClient,
-    PanelGeneData,
-    PanelPublications,
-    collect_panelapp_gene_publications,
-)
+from palit.panel_entries import PanelEntry, entries_by_gene, reviewed_in_full
+from palit.panelapp_client import PanelAppClient
 from palit.panelapp_integration import (
     INHERITANCE_DETAILS_VOCABULARY,
     NEW_RELATION_STATUSES,
@@ -205,27 +202,6 @@ def filter_preprint_evidence(
                 }
             )
     return kept, filtered
-
-
-def evidence_already_in_panelapp(
-    evidence_list: list[dict[str, Any]],
-    panelapp_publications: PanelPublications,
-) -> bool:
-    """True iff every evidence paper matches a PanelApp pub by DOI or PMID.
-
-    DOI matching is case-insensitive (PanelApp publication strings are free-text
-    and not case-normalized). PMID matching is exact. Caller is responsible for
-    guarding against empty evidence_list (which would vacuously return True).
-    """
-    panelapp_dois_lower = {d.lower() for d in panelapp_publications.dois}
-    for evidence in evidence_list:
-        doi = evidence["doi"]
-        pmid = evidence["pmid"]
-        in_dois = doi.lower() in panelapp_dois_lower
-        in_pmids = pmid is not None and pmid in panelapp_publications.pmids
-        if not (in_dois or in_pmids):
-            return False
-    return True
 
 
 def _citation_lists(parsed_json: dict[str, Any]) -> list[list[dict[str, Any]]]:
@@ -681,17 +657,10 @@ class _GenePreparation:
     db_processor: PaperBatchProcessor
     hgnc_resolver: HgncResolver
     panelapp_client: PanelAppClient
-    panel_data: PanelGeneData
     panel_date: str
     entries: dict[int, tuple[PanelEntry, ...]]  # every panel's entries, by gene
     gencc: GenccIndex
     prompt_path: Path
-
-
-def target_panels_holding(hgnc_id: int, panel_data: PanelGeneData) -> list[int]:
-    """The target panels with an entry for the gene, in target-panel order."""
-    held = panel_data.gene_panel_confidence.get(hgnc_id, {})
-    return [panel_id for panel_id in panel_data.panel_ids if panel_id in held]
 
 
 def panel_reviews(
@@ -714,32 +683,21 @@ def panel_reviews(
     ]
 
 
-def cited_on_panelapp(
-    hgnc_id: int,
-    client: PanelAppClient,
-    target_panel_ids: list[int],
-    reviews: list[PanelReviews],
-) -> PanelPublications:
-    """Publications cited for the gene by its entries and reviews on the target panels."""
-    by_panel = {p.panel_id: p.evaluations for p in reviews if p.evaluations is not None}
-    pmids: set[int] = set()
-    dois: set[str] = set()
-    for panel_id in target_panel_ids:
-        cited = collect_panelapp_gene_publications(
-            client.get_panel_data(panel_id), hgnc_id, by_panel.get(panel_id, [])
-        )
-        pmids |= cited.pmids
-        dois |= cited.dois
-    return PanelPublications(pmids=pmids, dois=dois)
+class SkipReason(StrEnum):
+    """Why a gene is not aggregated."""
+
+    NO_EVIDENCE = "no evidence"
+    PREPRINTS_FILTERED = "every paper a preprint below the family gate"
+    REVIEWED_IN_FULL = "every paper already reviewed on the target panels"
 
 
-def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
-    """The prompt and validation context for one gene, or None when it is skipped."""
+def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | SkipReason:
+    """The prompt and validation context for one gene, or why it is skipped."""
     hgnc_symbol = prep.hgnc_resolver.get_symbol(hgnc_id)
     evidence_list = prep.db_processor.get_evidence_for_gene(hgnc_id)
     if not evidence_list:
         logger.warning(f"No evidence found for {hgnc_symbol}")
-        return None
+        return SkipReason.NO_EVIDENCE
 
     evidence_list, filtered_papers = filter_preprint_evidence(evidence_list)
     if filtered_papers:
@@ -749,25 +707,22 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | None:
         )
     if not evidence_list:
         logger.info(f"Skipping {hgnc_symbol} — all papers filtered by preprint family gate")
-        return None
+        return SkipReason.PREPRINTS_FILTERED
 
     entries = prep.entries.get(hgnc_id, ())
-    reviews = panel_reviews(hgnc_id, prep.panelapp_client, entries)
-    target_panel_ids = target_panels_holding(hgnc_id, prep.panel_data)
-    if target_panel_ids and evidence_already_in_panelapp(
-        evidence_list,
-        cited_on_panelapp(hgnc_id, prep.panelapp_client, target_panel_ids, reviews),
-    ):
+    if reviewed_in_full(entries, {e["doi"]: e["pmid"] for e in evidence_list}):
+        target_panel_ids = list(dict.fromkeys(t.panel_id for t in entries if t.reference))
         logger.info(
             f"Skipping {hgnc_symbol} — all {len(evidence_list)} paper(s) already cited on "
-            f"target panels {target_panel_ids}: {[e['doi'] for e in evidence_list]}"
+            f"target panels {target_panel_ids}, which have reviewed it: "
+            f"{[e['doi'] for e in evidence_list]}"
         )
-        return None
+        return SkipReason.REVIEWED_IN_FULL
 
     context = PanelAppContext(
         gencc=prep.gencc.for_gene(hgnc_id),
         panel_entries=entries,
-        panel_reviews=reviews,
+        panel_reviews=panel_reviews(hgnc_id, prep.panelapp_client, entries),
     )
     prompt = render_prompt(
         prep.prompt_path,
@@ -1163,7 +1118,7 @@ async def _process_assessments(
     validator = jsonschema.Draft202012Validator(schema)
     configs = output_configs(schema)
     items: dict[str, _GeneBatchItem] = {}
-    skipped: set[int] = set()
+    skipped: dict[int, SkipReason] = {}
 
     def prepared(hgnc_ids: list[int]) -> list[_GeneBatchItem]:
         ready = []
@@ -1172,11 +1127,11 @@ async def _process_assessments(
                 continue
             item = items.get(str(hgnc_id))
             if item is None:
-                item = prepare_gene(hgnc_id, prep)
-                if item is None:
-                    skipped.add(hgnc_id)
+                prepared_gene = prepare_gene(hgnc_id, prep)
+                if isinstance(prepared_gene, SkipReason):
+                    skipped[hgnc_id] = prepared_gene
                     continue
-                items[str(hgnc_id)] = item
+                item = items[str(hgnc_id)] = prepared_gene
             ready.append(item)
         return ready
 
@@ -1186,34 +1141,50 @@ async def _process_assessments(
         outcome = handle_results(resumed, items, db_path, validator)
         logger.info("Collected %d results from earlier batches: %s", len(resumed), outcome)
 
+    async def attempts() -> None:
+        for attempt in range(1, max_retries + 1):
+            history = load_history()
+            hgnc_ids = [g for g in genes_to_assess(db_path, only, history) if g not in skipped]
+            if limit is not None:
+                hgnc_ids = hgnc_ids[:limit]
+            batch = prepared(hgnc_ids)
+            if not batch:
+                logger.info("No genes left to assess")
+                return
+            logger.info("Attempt %d: assessing %d genes", attempt, len(batch))
+            requests = [
+                build_request(item, configs, history.model_for(str(item.hgnc_id))) for item in batch
+            ]
+            outcome = handle_results(
+                await transport.run(STAGE, 1, requests), items, db_path, validator
+            )
+            logger.info(
+                "Attempt %d: stored %d, refused %d (%d go to the fallback model), failed %d",
+                attempt,
+                outcome.stored,
+                outcome.refused,
+                outcome.to_fallback,
+                outcome.failed,
+            )
+            if outcome.stored + outcome.to_fallback == 0:
+                logger.error("No progress in attempt %d - stopping", attempt)
+                return
+            if limit is not None:
+                return
+
     log_failed_for_good(load_history().failures, STAGE)
-    for attempt in range(1, max_retries + 1):
-        history = load_history()
-        hgnc_ids = [g for g in genes_to_assess(db_path, only, history) if g not in skipped]
-        if limit is not None:
-            hgnc_ids = hgnc_ids[:limit]
-        batch = prepared(hgnc_ids)
-        if not batch:
-            logger.info("No genes left to assess")
-            return
-        logger.info("Attempt %d: assessing %d genes", attempt, len(batch))
-        requests = [
-            build_request(item, configs, history.model_for(str(item.hgnc_id))) for item in batch
-        ]
-        outcome = handle_results(await transport.run(STAGE, 1, requests), items, db_path, validator)
-        logger.info(
-            "Attempt %d: stored %d, refused %d (%d go to the fallback model), failed %d",
-            attempt,
-            outcome.stored,
-            outcome.refused,
-            outcome.to_fallback,
-            outcome.failed,
-        )
-        if outcome.stored + outcome.to_fallback == 0:
-            logger.error("No progress in attempt %d - stopping", attempt)
-            return
-        if limit is not None:
-            return
+    await attempts()
+    log_skipped(skipped)
+
+
+def log_skipped(skipped: dict[int, SkipReason]) -> None:
+    """Log how many genes this invocation skipped, by reason."""
+    counts = Counter(skipped.values())
+    logger.info(
+        "Skipped %d genes: %s",
+        len(skipped),
+        ", ".join(f"{counts[reason]} with {reason}" for reason in SkipReason),
+    )
 
 
 @app.callback(invoke_without_command=True)
@@ -1300,7 +1271,6 @@ def main(
         db_processor=db_processor,
         hgnc_resolver=hgnc_resolver,
         panelapp_client=panelapp_client,
-        panel_data=panel_data,
         panel_date=panel_date,
         entries=entries,
         gencc=gencc,

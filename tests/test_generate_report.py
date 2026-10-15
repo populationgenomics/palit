@@ -16,7 +16,6 @@ from palit.assess_relevance import Refusal, refused_assessment
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.generate_report import (
-    ExistingPanelReviews,
     FavoriteJournalSections,
     Finding,
     FindingKind,
@@ -43,14 +42,13 @@ from palit.generate_report import (
     load_relevance_refusers,
     report_order,
     unreviewed_target_entries,
-    unreviewed_target_panels,
     write_viewer_package,
 )
 from palit.hgnc import HgncResolver
 from palit.llm import FALLBACK_MODEL, LIGHT_MODEL, MODEL
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
-from palit.panel_entries import entries_by_gene
+from palit.panel_entries import PanelEntry, ReviewState, entries_by_gene
 from palit.panelapp_client import AllPanelsData, PanelGeneData, PanelPublications
 from palit.panelapp_integration import (
     ENUM_TO_PANELAPP_MOI,
@@ -493,10 +491,32 @@ def db_path(tmp_path: Path) -> Path:
     return path
 
 
+def _target_entry(
+    panel_id: int, rating: int, review_state: ReviewState = ReviewState.UNREVIEWED
+) -> PanelEntry:
+    """An entry on target panel *panel_id* that cites nothing."""
+    return PanelEntry(
+        panel_id=panel_id,
+        panel_name={MENDELIOME_PANEL_ID: "Mendeliome", ATAXIA_PANEL_ID: "Ataxia"}[panel_id],
+        reference=True,
+        rating={3: "GREEN", 2: "AMBER", 1: "RED"}[rating],
+        moi="MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted",
+        mode_of_pathogenicity="",
+        phenotypes=(),
+        publications=(),
+        review_publications=(),
+        review_state=review_state,
+    )
+
+
 def _load(
-    db_path: Path, hgnc_resolver: HgncResolver, genea_rating: int = 2
+    db_path: Path,
+    hgnc_resolver: HgncResolver,
+    genea_rating: int = 2,
+    genea_reviews: ReviewState = ReviewState.UNREVIEWED,
 ) -> GeneAssessmentResults:
-    """The fixture's genes, with GENEA on the Mendeliome at *genea_rating*."""
+    """The fixture's genes, with GENEA on the Mendeliome at *genea_rating*, its reviews
+    there in state *genea_reviews*."""
     target = PanelGeneData(
         panel_ids=[MENDELIOME_PANEL_ID],
         gene_panel_confidence={1: {MENDELIOME_PANEL_ID: genea_rating}},
@@ -509,9 +529,12 @@ def _load(
             EPILEPSY_PANEL_ID: "Epilepsy",
         },
     )
+    entries: dict[int, tuple[PanelEntry, ...]] = {
+        1: (_target_entry(MENDELIOME_PANEL_ID, genea_rating, genea_reviews),)
+    }
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        return build_gene_assessment_results(conn, hgnc_resolver, target, all_panels, None, {})
+        return build_gene_assessment_results(conn, hgnc_resolver, target, all_panels, None, entries)
 
 
 @pytest.fixture
@@ -531,7 +554,12 @@ def _load_scoped(db_path: Path, hgnc_resolver: HgncResolver) -> GeneAssessmentRe
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         return build_gene_assessment_results(
-            conn, hgnc_resolver, target, all_panels, ATAXIA_PANEL_ID, {}
+            conn,
+            hgnc_resolver,
+            target,
+            all_panels,
+            ATAXIA_PANEL_ID,
+            {1: (_target_entry(ATAXIA_PANEL_ID, 2, ReviewState.REVIEWED),)},
         )
 
 
@@ -1010,6 +1038,7 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
         matched_panels=None,
         panel_matching=StageState.NOT_RUN,
         scope_verdict=None,
+        reviewed_on=(),
     )
 
 
@@ -1105,6 +1134,22 @@ def test_association_finding(
     assert actual == expected
 
 
+@pytest.mark.parametrize(
+    "association",
+    [
+        _association("d", panelapp_rating="AMBER", green=True),
+        _association("d", status="new_disease", green=True),
+        _association("d", status="new_moi", independent=2),
+    ],
+)
+@pytest.mark.parametrize("scoped", [False, True])
+def test_an_association_whose_papers_the_target_panels_reviewed_is_no_finding(
+    association: str, scoped: bool
+) -> None:
+    reviewed = dataclasses.replace(_report_association(7, association), reviewed_on=("Mendeliome",))
+    assert association_finding(reviewed, 2, scoped) is None
+
+
 def _gene(
     hgnc_id: int,
     current_rating: int | None,
@@ -1118,7 +1163,7 @@ def _gene(
         key=association_sort_key,
     )
     findings = gene_findings(rated, current_rating, scoped=False)
-    evaluations = [{"rating": "GREEN"}] if reviewed else []
+    review_state = ReviewState.REVIEWED if reviewed else ReviewState.UNREVIEWED
     return GeneAssessment(
         hgnc_id=hgnc_id,
         hgnc_symbol=f"GENE{hgnc_id}",
@@ -1129,10 +1174,10 @@ def _gene(
         contributing_papers=[],
         unassociated_variants=[],
         prefill=PrefillData("review", MENDELIOME_PANEL_ID, "HGNC:1", "GREEN", "", None, "", "", ""),
-        existing_panel_reviews=(
-            []
+        target_entries=(
+            ()
             if current_rating is None
-            else [ExistingPanelReviews(panel_id=MENDELIOME_PANEL_ID, evaluations=evaluations)]
+            else (_target_entry(MENDELIOME_PANEL_ID, current_rating, review_state),)
         ),
         refused_papers=[],
     )
@@ -1164,7 +1209,7 @@ def test_genes_are_placed_once_by_their_strongest_finding() -> None:
     }
     novel = [g for g in genes.values() if g.is_novel]
     known = [g for g in genes.values() if not g.is_novel]
-    groups = group_genes(novel, known, {MENDELIOME_PANEL_ID})
+    groups = group_genes(novel, known)
 
     def layout(gene_groups: list[Any]) -> list[tuple[str, str, list[int], bool, bool]]:
         return [
@@ -1489,7 +1534,7 @@ def test_green_gene_with_only_an_amber_finding(db_path: Path, hgnc_resolver: Hgn
     novel = results.novel_genes[0]
     assert (novel.prefill.form_type, novel.prefill.rating) == ("add", "GREEN")
 
-    groups = group_genes(results.novel_genes, results.known_genes, {MENDELIOME_PANEL_ID})
+    groups = group_genes(results.novel_genes, results.known_genes)
     assert [(g.key, [gene.hgnc_id for gene in g.genes]) for g in groups.with_findings] == [
         ("finding-amber", [1])
     ]
@@ -2097,13 +2142,28 @@ def test_only_upgrades_of_curated_associations_show_an_arrow(
     assert "curated, own rating unknown" not in unknown
 
 
-def test_a_target_panel_with_unavailable_reviews_is_not_unreviewed() -> None:
+def test_a_gene_with_any_unreviewed_target_entry_is_unreviewed() -> None:
+    """Reviews the snapshot does not hold may exist, so only an entry without reviews
+    makes the gene unreviewed, on whichever target panel it is."""
     gene = _gene(30, 3, [CURATED_GREEN], reviewed=False)
-    assert unreviewed_target_panels(gene, {MENDELIOME_PANEL_ID}) == [MENDELIOME_PANEL_ID]
-    unknown = dataclasses.replace(
-        gene, existing_panel_reviews=[ExistingPanelReviews(MENDELIOME_PANEL_ID, None)]
+    assert gene.unreviewed_target_panels == [MENDELIOME_PANEL_ID]
+    mixed = dataclasses.replace(
+        gene,
+        target_entries=(
+            _target_entry(ATAXIA_PANEL_ID, 3, ReviewState.REVIEWED),
+            _target_entry(MENDELIOME_PANEL_ID, 3, ReviewState.UNREVIEWED),
+        ),
     )
-    assert unreviewed_target_panels(unknown, {MENDELIOME_PANEL_ID}) == []
+    assert mixed.unreviewed_target_panels == [MENDELIOME_PANEL_ID]
+    unknown = dataclasses.replace(
+        gene,
+        hgnc_id=31,
+        target_entries=(_target_entry(MENDELIOME_PANEL_ID, 3, ReviewState.UNKNOWN),),
+    )
+    assert unknown.unreviewed_target_panels == []
+    groups = group_genes([], [mixed, unknown])
+    assert [[g.hgnc_id for g in group.genes] for group in groups.without_findings] == [[30]]
+    assert [[g.hgnc_id for g in group.genes] for group in groups.already_reviewed] == [[31]]
 
 
 def test_associations_judged_outside_the_scope_panel_are_no_findings(
@@ -2121,7 +2181,7 @@ def test_associations_judged_outside_the_scope_panel_are_no_findings(
     ]
     geneb = results.novel_genes[0]
     assert geneb.findings == []
-    groups = group_genes(results.novel_genes, results.known_genes, {ATAXIA_PANEL_ID})
+    groups = group_genes(results.novel_genes, results.known_genes)
     assert groups.new_genes == []
     assert [
         (g.key, [gene.hgnc_id for gene in g.genes], g.collapsed) for g in groups.outside_scope
@@ -2152,10 +2212,7 @@ def test_reports_without_a_scope_panel_show_no_verdicts(
     html = _render(db_path, results)
     assert 'class="scope-verdict' not in html
     assert 'id="outside-scope"' not in html
-    assert (
-        group_genes(results.novel_genes, results.known_genes, {MENDELIOME_PANEL_ID}).outside_scope
-        == []
-    )
+    assert group_genes(results.novel_genes, results.known_genes).outside_scope == []
 
 
 def test_a_link_into_a_fold_opens_it(db_path: Path, results: GeneAssessmentResults) -> None:
@@ -2177,8 +2234,7 @@ def test_unreviewed_target_entries_of_genes_without_associations_are_listed(
     mendeliome["genes"].append(genec)
     panelapp_snapshot[ATAXIA_PANEL_ID]["genes"][0]["evaluations"] = []
     entries = entries_by_gene([panelapp_snapshot[MENDELIOME_PANEL_ID]], [MENDELIOME_PANEL_ID])
-    unreviewed = unreviewed_target_entries(entries)
-    assert sorted(unreviewed) == [1, 4]
+    assert sorted(unreviewed_target_entries(entries)) == [1, 4]
 
     target = PanelGeneData(
         panel_ids=[MENDELIOME_PANEL_ID], gene_panel_confidence={1: {MENDELIOME_PANEL_ID: 2}}
@@ -2189,7 +2245,7 @@ def test_unreviewed_target_entries_of_genes_without_associations_are_listed(
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         results = build_gene_assessment_results(
-            conn, hgnc_resolver, target, all_panels, None, unreviewed
+            conn, hgnc_resolver, target, all_panels, None, entries
         )
     assert results.unreviewed_without_evidence == [
         UnreviewedEntry(4, "GENEC", MENDELIOME_PANEL_ID, "Mendeliome", "AMBER")
@@ -2210,15 +2266,7 @@ def test_already_reviewed_genes_come_last_in_a_folded_section(
     are gone, comes after every other section, folded."""
     with sqlite3.connect(db_path) as conn:
         conn.execute("DELETE FROM associations WHERE id IN (11, 12, 13)")
-        conn.execute(
-            "UPDATE gene_aggregations SET existing_panel_reviews_json = ? WHERE hgnc_id = 1",
-            (
-                json.dumps(
-                    [{"panel_id": MENDELIOME_PANEL_ID, "evaluations": [{"rating": "GREEN"}]}]
-                ),
-            ),
-        )
-    results = _load(db_path, hgnc_resolver)
+    results = _load(db_path, hgnc_resolver, genea_reviews=ReviewState.REVIEWED)
     html = _render(db_path, results)
     section = html[html.index('<section id="already-reviewed">') :]
     assert section.index('<details class="folded-section">') < section.index('id="known-gene-1"')
@@ -2226,3 +2274,184 @@ def test_already_reviewed_genes_come_last_in_a_folded_section(
     body = html[html.index("</nav>") :]
     assert body.index('<section id="new-genes">') < body.index('<section id="already-reviewed">')
     assert 'data-section-key="reviewed"' in _toc(html)
+
+
+# Papers of GENEA that the Mendeliome cites: P1 by PMID in its entry, P2 by DOI, in
+# another letter case, in a review. It does not cite P3.
+P1, P2, P3 = "10.1/p1", "10.1000/p2", "10.1/p3"
+REVIEWED = ({"rating": "AMBER", "publications": ("10.1000/P2",)},)
+
+
+def _load_cited(
+    db_path: Path,
+    hgnc_resolver: HgncResolver,
+    panelapp_snapshot: dict[int, dict[str, Any]],
+    associations: list[tuple[int, str]],
+    *,
+    evaluations: tuple[dict[str, Any], ...] | None = REVIEWED,
+) -> GeneAssessmentResults:
+    """The fixture's genes with GENEA's associations replaced by (id, assessment_json)
+    *associations*, GENEA AMBER on the Mendeliome, which cites P1 and P2. GENEA's reviews
+    there are *evaluations*, by default one that cites P2; None when PanelApp could not
+    serve them."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO papers (doi, pmid, title, source, source_type, evidence_extraction_json) "
+            "VALUES (?, ?, 't', 'pubmed', 'initial', ?)",
+            [(doi, pmid, _extraction(1)) for doi, pmid in ((P1, 11111), (P2, None), (P3, 33333))],
+        )
+        conn.executemany(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (1, 'GENEA', ?, 'recent_evidence')",
+            [(P1,), (P2,), (P3,)],
+        )
+        conn.execute("DELETE FROM associations WHERE hgnc_id = 1")
+        conn.executemany(
+            "INSERT INTO associations (id, hgnc_id, position, assessment_json) VALUES (?, 1, ?, ?)",
+            [(id_, position, a) for position, (id_, a) in enumerate(associations)],
+        )
+    mendeliome = panelapp_snapshot[MENDELIOME_PANEL_ID]
+    genea = mendeliome["genes"][0]
+    genea["confidence_level"] = "2"
+    genea["publications"] = ["PMID: 11111"]
+    genea["evaluations"] = (
+        None
+        if evaluations is None
+        else [{**review, "publications": list(review["publications"])} for review in evaluations]
+    )
+    target = PanelGeneData(
+        panel_ids=[MENDELIOME_PANEL_ID], gene_panel_confidence={1: {MENDELIOME_PANEL_ID: 2}}
+    )
+    all_panels = AllPanelsData(
+        gene_to_panels={1: {MENDELIOME_PANEL_ID}}, panel_names={MENDELIOME_PANEL_ID: "Mendeliome"}
+    )
+    entries = entries_by_gene([mendeliome], [MENDELIOME_PANEL_ID])
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        return build_gene_assessment_results(conn, hgnc_resolver, target, all_panels, None, entries)
+
+
+# PanelApp curates the association at AMBER; this corpus rates it GREEN.
+CITED_UPGRADE = _association("cited disease", panelapp_rating="AMBER", green=True, dois=(P1, P2))
+ALREADY_REVIEWED_NOTE = (
+    "No finding: every paper of this association is already cited for GENEA on Mendeliome, "
+    "where the gene is reviewed."
+)
+
+
+def test_an_upgrade_on_papers_cited_and_reviewed_is_no_finding(
+    db_path: Path, hgnc_resolver: HgncResolver, panelapp_snapshot: dict[int, dict[str, Any]]
+) -> None:
+    """GENEA's only association rests on P1 and P2, which the Mendeliome cites and has
+    reviewed: GENEA has no finding and goes under "Already reviewed"."""
+    results = _load_cited(db_path, hgnc_resolver, panelapp_snapshot, [(30, CITED_UPGRADE)])
+    genea = results.known_genes[0]
+    (association,) = genea.associations
+    assert (association.rating, association.reviewed_on) == (3, ("Mendeliome",))
+    assert genea.findings == []
+    groups = group_genes(results.novel_genes, results.known_genes)
+    assert [[g.hgnc_id for g in group.genes] for group in groups.already_reviewed] == [[1]]
+    assert groups.with_findings == []
+
+    statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
+    assert (
+        statistics.known_genes_with_findings,
+        statistics.upgrade_findings,
+        statistics.already_reviewed_findings,
+    ) == (0, 0, 1)
+    html = _render(db_path, results)
+    assert "<strong>Findings already reviewed:</strong> 1 " in html
+    section = html[html.index('<section id="already-reviewed">') :]
+    assert ALREADY_REVIEWED_NOTE in _strip_tags(_association_section(section, 30))
+    # Every association is already reviewed: the review keeps the gene's AMBER
+    assert (genea.prefill.form_type, genea.prefill.rating) == ("review", "AMBER")
+    assert genea.prefill.publications == f"11111;{P2}"
+
+
+def test_an_uncited_paper_makes_the_upgrade_a_finding(
+    db_path: Path, hgnc_resolver: HgncResolver, panelapp_snapshot: dict[int, dict[str, Any]]
+) -> None:
+    upgrade = _association("cited disease", panelapp_rating="AMBER", green=True, dois=(P1, P2, P3))
+    results = _load_cited(db_path, hgnc_resolver, panelapp_snapshot, [(30, upgrade)])
+    genea = results.known_genes[0]
+    assert genea.associations[0].reviewed_on == ()
+    assert genea.findings == [Finding(FindingKind.UPGRADE, 3, 30, 2)]
+    assert ALREADY_REVIEWED_NOTE not in _strip_tags(_render(db_path, results))
+
+
+def test_papers_cited_on_an_unreviewed_entry_still_make_findings(
+    db_path: Path, hgnc_resolver: HgncResolver, panelapp_snapshot: dict[int, dict[str, Any]]
+) -> None:
+    """Nobody has reviewed GENEA on the Mendeliome, so its cited papers are evaluated as
+    any others: the upgrade is a finding, flagged as unreviewed."""
+    results = _load_cited(
+        db_path, hgnc_resolver, panelapp_snapshot, [(30, CITED_UPGRADE)], evaluations=()
+    )
+    genea = results.known_genes[0]
+    assert genea.associations[0].reviewed_on == ()
+    assert genea.findings == [Finding(FindingKind.UPGRADE, 3, 30, 2)]
+    html = _render(db_path, results)
+    assert ALREADY_REVIEWED_NOTE not in _strip_tags(html)
+    assert 'class="unreviewed-badge"' in _gene_header(_article(html, "known-gene-1"))
+
+
+def test_a_reviewed_association_folds_next_to_a_finding_of_its_gene(
+    db_path: Path, hgnc_resolver: HgncResolver, panelapp_snapshot: dict[int, dict[str, Any]]
+) -> None:
+    """A new disease on P3 is a finding, so GENEA is placed by it; the association on
+    the cited papers folds under it with the reason it is no finding."""
+    new_disease = _association("new disease", status="new_disease", independent=2, dois=(P3,))
+    results = _load_cited(
+        db_path, hgnc_resolver, panelapp_snapshot, [(30, CITED_UPGRADE), (31, new_disease)]
+    )
+    genea = results.known_genes[0]
+    assert genea.findings == [Finding(FindingKind.NEW_DISEASE, 2, 31, None)]
+    assert [a.id for a in genea.other_associations] == [30]
+    article = _article(_render(db_path, results), "known-gene-1")
+    assert _fold_summary(article) == "Already curated in PanelApp (1): GENEA-related cited disease"
+    assert ALREADY_REVIEWED_NOTE in _strip_tags(_association_section(article, 30))
+
+
+def test_reviews_panelapp_could_not_serve_keep_the_finding(
+    db_path: Path, hgnc_resolver: HgncResolver, panelapp_snapshot: dict[int, dict[str, Any]]
+) -> None:
+    """GENEA's Mendeliome reviews are unknown: it may be unreviewed, and its reviews may
+    cite other papers, so the upgrade on P1 alone stays a finding."""
+    upgrade = _association("cited disease", panelapp_rating="AMBER", green=True, dois=(P1,))
+    results = _load_cited(
+        db_path, hgnc_resolver, panelapp_snapshot, [(30, upgrade)], evaluations=None
+    )
+    genea = results.known_genes[0]
+    assert genea.associations[0].reviewed_on == ()
+    assert genea.findings == [Finding(FindingKind.UPGRADE, 3, 30, 2)]
+    assert genea.unreviewed_target_panels == []
+
+
+def test_only_reviewed_associations_that_would_be_findings_are_counted(
+    db_path: Path, hgnc_resolver: HgncResolver, panelapp_snapshot: dict[int, dict[str, Any]]
+) -> None:
+    """Both associations rest on cited papers; only the upgrade would have been a finding."""
+    same_rating = _association("other cited disease", panelapp_rating="AMBER", dois=(P1,))
+    results = _load_cited(
+        db_path, hgnc_resolver, panelapp_snapshot, [(30, CITED_UPGRADE), (31, same_rating)]
+    )
+    assert [a.already_reviewed for a in results.known_genes[0].associations] == [True, True]
+    statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
+    assert statistics.already_reviewed_findings == 1
+
+
+def test_a_gene_without_findings_is_prefilled_without_its_reviewed_associations(
+    db_path: Path, hgnc_resolver: HgncResolver, panelapp_snapshot: dict[int, dict[str, Any]]
+) -> None:
+    """GENEA's AMBER association on P3 is no finding either; the review describes it
+    alone, at AMBER, without the already-reviewed GREEN upgrade's papers."""
+    curated = _association("uncited disease", panelapp_rating="AMBER", dois=(P3,))
+    results = _load_cited(
+        db_path, hgnc_resolver, panelapp_snapshot, [(30, CITED_UPGRADE), (31, curated)]
+    )
+    genea = results.known_genes[0]
+    assert genea.findings == []
+    prefill = genea.prefill
+    assert (prefill.form_type, prefill.rating, prefill.publications) == ("review", "AMBER", "33333")
+    assert "GENEA-related uncited disease" in prefill.phenotypes
+    assert "GENEA-related cited disease" not in prefill.phenotypes

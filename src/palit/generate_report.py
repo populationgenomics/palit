@@ -6,7 +6,7 @@ import logging
 import shutil
 import sqlite3
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from itertools import groupby
@@ -37,7 +37,7 @@ from palit.llm import (
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.match_panels import ScopeVerdict
-from palit.panel_entries import PanelEntry, entries_by_gene
+from palit.panel_entries import PanelEntry, entries_by_gene, reviewed_in_full
 from palit.panelapp_client import (
     AllPanelsData,
     PanelAppClient,
@@ -331,19 +331,6 @@ class PanelMatch:
 
 
 @dataclass(frozen=True)
-class ExistingPanelReviews:
-    """The PanelApp evaluations shown to assess-genes for one panel that held the gene.
-
-    An empty ``evaluations`` list means no expert has reviewed the gene on that
-    panel, the signal that drives the "Unreviewed on Target Panel" section. None
-    means PanelApp could not serve them, so whether anyone reviewed it is unknown.
-    """
-
-    panel_id: int
-    evaluations: list[dict[str, Any]] | None
-
-
-@dataclass(frozen=True)
 class DisputeRef:
     """A GenCC submission for the gene with the dispute status the association states.
 
@@ -405,11 +392,19 @@ class ReportAssociation:
     # match-panels' verdict on the scope panel of a panel-scoped run; None outside one, and
     # in one until match-panels has answered for this association
     scope_verdict: ScopeVerdict | None
+    # The names of the target panels holding the gene when they have reviewed the
+    # association's papers in full (see reviewed_in_full); empty otherwise
+    reviewed_on: tuple[str, ...]
 
     @property
     def judged_outside_scope(self) -> bool:
         """match-panels judged that the association does not belong on the scope panel."""
         return self.scope_verdict is not None and not self.scope_verdict.fits
+
+    @property
+    def already_reviewed(self) -> bool:
+        """The target panels cite all the association's papers and have reviewed the gene."""
+        return bool(self.reviewed_on)
 
     @property
     def relation_status(self) -> RelationStatus:
@@ -498,13 +493,18 @@ class GeneAssessment:
     contributing_papers: list[DetailedPaper]
     unassociated_variants: list[ReportVariant]  # the gene's variants that no association lists
     prefill: PrefillData
-    existing_panel_reviews: list[ExistingPanelReviews]  # per panel holding the gene
+    target_entries: tuple[PanelEntry, ...]  # the gene's entries on the target panels
     refused_papers: list[RefusedPaper]
 
     @property
     def is_novel(self) -> bool:
         """The gene is on none of the target panels."""
         return self.current_rating is None
+
+    @property
+    def unreviewed_target_panels(self) -> list[int]:
+        """The target panels on which nobody has reviewed an entry of the gene."""
+        return list(dict.fromkeys(e.panel_id for e in self.target_entries if e.unreviewed))
 
     @property
     def anchor(self) -> str:
@@ -630,6 +630,9 @@ class ComprehensiveStats:
     new_disease_findings: int
     new_moi_findings: int
     upgrade_findings: int
+    # Associations that would be findings but for the target panels having reviewed all
+    # their papers already
+    already_reviewed_findings: int
 
     # Papers of assessed genes that both models refused in extract-evidence
     refused_papers_count: int
@@ -780,9 +783,10 @@ def association_finding(
 
     *current_rating* is the gene's highest rating on the target panels, None
     when it is on none of them. An association judged outside the scope panel of
-    a panel-scoped run is no finding. Otherwise, every association of a gene on
-    none of the target panels is a finding, whatever PanelApp Australia curates
-    on other panels. On a gene on a
+    a panel-scoped run is no finding, nor is one whose papers the target panels
+    have all reviewed already, whatever its relation and rating. Otherwise, every
+    association of a gene on none of the target panels is a finding, whatever
+    PanelApp Australia curates on other panels. On a gene on a
     target panel, a new disease is a finding, and a new MoI once highlighted. An
     existing association is an upgrade when its corpus rating is above the rating
     it starts from. In a panel-scoped run (*scoped*), that is the gene's rating
@@ -790,7 +794,7 @@ def association_finding(
     the gene causes the feature, not each disease. Otherwise it is PanelApp's
     rating of the association, or the gene's current rating when that is unknown.
     """
-    if association.judged_outside_scope:
+    if association.judged_outside_scope or association.already_reviewed:
         return None
     if current_rating is None:
         return Finding(FindingKind.NEW_GENE, association.rating, association.id, None)
@@ -839,13 +843,12 @@ def report_order(
 def group_genes(
     novel_genes: list[GeneAssessment],
     known_genes: list[GeneAssessment],
-    target_panel_ids: set[int],
 ) -> GeneGroups:
     """Place each gene in one group, each group's genes by HGNC symbol.
 
     Genes with findings go by the rating of their strongest finding, new and
-    known genes apart. Known genes without findings go by whether any target
-    panel holding them lacks an expert review. New genes without findings, whose
+    known genes apart. Known genes without findings go by whether nobody has
+    reviewed one of their entries on the target panels. New genes without findings, whose
     associations a panel-scoped run all judged outside the scope panel, go
     together. The reviewed genes and those outside the scope start collapsed in
     the ToC; the groups of genes without findings are not preselected for bulk
@@ -877,8 +880,7 @@ def group_genes(
     reviewed: list[GeneAssessment] = []
     for gene in known:
         if not gene.findings:
-            on_unreviewed = unreviewed_target_panels(gene, target_panel_ids)
-            (unreviewed if on_unreviewed else reviewed).append(gene)
+            (unreviewed if gene.unreviewed_target_panels else reviewed).append(gene)
 
     def single(
         key: str, title: str, genes: list[GeneAssessment], collapsed: bool
@@ -1148,13 +1150,19 @@ def load_associations(
     display_ids: dict[str, str],
     all_panels_data: AllPanelsData,
     gene_variants: list[ReportVariant],
+    target_entries: tuple[PanelEntry, ...],
+    pmid_by_doi: dict[str, int | None],
 ) -> list[ReportAssociation]:
     """The gene's associations, by corpus rating and then independent family count.
 
     Each association carries its variants among *gene_variants* and the state of
     map-mondo and match-panels for it, from its latest request of each stage. Both
     stages send immediate requests only, which are recorded once they have completed.
+    *target_entries* are the gene's entries on the target panels, against which each
+    association's papers, with their PMIDs from *pmid_by_doi*, are checked for having
+    been reviewed already.
     """
+    target_panel_names = tuple(dict.fromkeys(e.panel_name for e in target_entries))
 
     def latest(column: str) -> str:
         return f"""
@@ -1182,6 +1190,9 @@ def load_associations(
     for row in cursor.fetchall():
         assessment = replace_paper_ids_for_display(json.loads(row["assessment_json"]), display_ids)
         mondo = _mondo_term(row, panelapp_context["gencc_terms"])
+        reviewed = reviewed_in_full(
+            target_entries, {doi: pmid_by_doi[doi] for doi in assessment["dois"]}
+        )
         associations.append(
             ReportAssociation(
                 id=row["id"],
@@ -1212,26 +1223,40 @@ def load_associations(
                     if row["scope_panel_json"] is None
                     else ScopeVerdict(**json.loads(row["scope_panel_json"]))
                 ),
+                reviewed_on=target_panel_names if reviewed else (),
             )
         )
     return sorted(associations, key=association_sort_key)
 
 
+@dataclass(frozen=True)
+class PrefillSelection:
+    """The associations a gene's prefill describes, and whether they rate the form."""
+
+    associations: list[ReportAssociation]  # in report order
+    rated: bool  # see prepare_prefill_data
+
+
 def prefill_associations(
     associations: list[ReportAssociation], findings: list[Finding]
-) -> list[ReportAssociation]:
+) -> PrefillSelection:
     """The associations a gene's prefill describes, in report order.
 
     The prefill describes what the report adds to the target panels: the
     associations with findings. For a gene on no target panel, that is all of
     them, except those a panel-scoped run judged outside the scope panel. A gene
-    without findings keeps all of them, so its form isn't empty: a review is often
-    the first for an unreviewed gene.
+    without findings describes the associations whose papers the target panels have
+    not all reviewed yet, so its form isn't empty: a review is often the first for an
+    unreviewed gene. When the target panels have reviewed the papers of every
+    association, the form describes them all but keeps the gene's rating on the panel.
     """
-    if not findings:
-        return associations
-    finding_ids = {f.association_id for f in findings}
-    return [a for a in associations if a.id in finding_ids]
+    if findings:
+        finding_ids = {f.association_id for f in findings}
+        return PrefillSelection([a for a in associations if a.id in finding_ids], rated=True)
+    unreviewed = [a for a in associations if not a.already_reviewed]
+    if unreviewed:
+        return PrefillSelection(unreviewed, rated=True)
+    return PrefillSelection(associations, rated=False)
 
 
 def load_gene(
@@ -1240,23 +1265,22 @@ def load_gene(
     hgnc_resolver: HgncResolver,
     target_panel_data: PanelGeneData,
     all_panels_data: AllPanelsData,
+    target_entries: tuple[PanelEntry, ...],
     scoped: bool,
 ) -> GeneAssessment:
     """One gene's aggregation row with its associations, papers and panel context.
 
-    *scoped* is true in a panel-scoped run, whose one target panel is the scope panel.
+    *target_entries* are the gene's entries on the target panels. *scoped* is true in a
+    panel-scoped run, whose one target panel is the scope panel.
     """
     hgnc_id: int = row["hgnc_id"]
     paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
     filtered_doi_reasons: dict[str, str] = {
         fp["doi"]: fp["reason"] for fp in json.loads(row["filtered_papers_json"] or "[]")
     }
-    existing_panel_reviews = [
-        ExistingPanelReviews(panel_id=entry["panel_id"], evaluations=entry["evaluations"])
-        for entry in json.loads(row["existing_panel_reviews_json"] or "[]")
-    ]
 
     contributing_papers = load_contributing_papers(cursor, hgnc_id, filtered_doi_reasons)
+    pmid_by_doi = {p.doi: p.pmid for p in contributing_papers}
 
     # Replace AuthorYear paper IDs with PMID display format
     doi_to_pmid = {p.doi: p.pmid for p in contributing_papers if p.pmid is not None}
@@ -1287,6 +1311,8 @@ def load_gene(
         display_ids,
         all_panels_data,
         gene_variants,
+        target_entries,
+        pmid_by_doi,
     )
     findings = gene_findings(rated_associations, current_rating, scoped)
     associations = report_order(rated_associations, findings)
@@ -1298,11 +1324,12 @@ def load_gene(
     described = prefill_associations(associations, findings)
     prefill = prepare_prefill_data(
         hgnc_id=hgnc_id,
-        associations=[PrefillAssociation(a.assessment, a.mondo) for a in described],
+        associations=[PrefillAssociation(a.assessment, a.mondo) for a in described.associations],
         moi_associations=[a.assessment for a in associations],
         panel_id=prefill_panel_id,
         panel_rating=panel_confidence.get(prefill_panel_id),
-        doi_to_pmid={p.doi: p.pmid for p in contributing_papers},
+        doi_to_pmid=pmid_by_doi,
+        rated=described.rated,
     )
 
     return GeneAssessment(
@@ -1315,7 +1342,7 @@ def load_gene(
         contributing_papers=contributing_papers,
         unassociated_variants=[v for v in gene_variants if v.variant_id not in associated_ids],
         prefill=prefill,
-        existing_panel_reviews=existing_panel_reviews,
+        target_entries=target_entries,
         refused_papers=load_refused_papers(cursor, hgnc_id),
     )
 
@@ -1326,14 +1353,14 @@ def build_gene_assessment_results(
     target_panel_data: PanelGeneData,
     all_panels_data: AllPanelsData,
     scope_panel_id: int | None,
-    unreviewed_entries: dict[int, list[PanelEntry]],
+    target_entries: dict[int, tuple[PanelEntry, ...]],
 ) -> GeneAssessmentResults:
     """Every aggregated gene with associations, split into novel and known genes.
 
     A gene whose reports all went to ``unassessed_reports`` has an aggregation but no
     associations. It has nothing to rate or submit, so the report leaves it out.
-    *unreviewed_entries* are the target panels' entries that nobody has reviewed, by
-    gene; those of genes the report leaves out are listed on their own.
+    *target_entries* are the target panels' entries, by gene. The entries nobody has
+    reviewed of genes the report leaves out are listed on their own.
 
     *conn* must use ``sqlite3.Row`` as its row factory.
     """
@@ -1350,7 +1377,7 @@ def build_gene_assessment_results(
     cursor.execute(
         """
         SELECT hgnc_id, paper_id_mapping, filtered_papers_json, panelapp_context_json,
-               existing_panel_reviews_json, unassessed_reports_json
+               unassessed_reports_json
         FROM gene_aggregations g
         WHERE EXISTS (SELECT 1 FROM associations a WHERE a.hgnc_id = g.hgnc_id)
         ORDER BY hgnc_id
@@ -1365,6 +1392,7 @@ def build_gene_assessment_results(
             hgnc_resolver,
             target_panel_data,
             all_panels_data,
+            target_entries.get(row["hgnc_id"], ()),
             scoped=scope_panel_id is not None,
         )
         (novel_genes if gene.is_novel else known_genes).append(gene)
@@ -1385,7 +1413,7 @@ def build_gene_assessment_results(
         panels_matched=match_panels_has_run(cursor),
         scope_panel_id=scope_panel_id,
         unreviewed_without_evidence=unreviewed_without_evidence(
-            unreviewed_entries,
+            unreviewed_target_entries(target_entries),
             {gene.hgnc_id for gene in novel_genes + known_genes},
             hgnc_resolver,
         ),
@@ -1471,7 +1499,7 @@ def load_gene_assessments(
             target_panel_data,
             all_panels_data,
             scope_panel_id,
-            unreviewed_target_entries(target_entries),
+            target_entries,
         )
 
 
@@ -1759,21 +1787,7 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
         return manual_download_papers
 
 
-def unreviewed_target_panels(gene: GeneAssessment, target_panel_ids: set[int]) -> list[int]:
-    """The target panels holding the gene, when none of them has an expert review; else [].
-
-    Only panels in the current target set count (assess and report may run with
-    different ``--target-panel-ids``), so a gene whose stored panels are all outside
-    it lands in "Already Reviewed" rather than a false positive. A target panel whose
-    reviews PanelApp could not serve may have some, so it rules the gene out too.
-    """
-    panels = [r for r in gene.existing_panel_reviews if r.panel_id in target_panel_ids]
-    if any(r.evaluations is None or r.evaluations for r in panels):
-        return []
-    return [r.panel_id for r in panels]
-
-
-def _gene_contribution_bucket(gene: GeneAssessment, target_panel_ids: set[int]) -> str:
+def _gene_contribution_bucket(gene: GeneAssessment) -> str:
     """Classify a gene by its place in the report.
 
     Returns one of: 'novel', 'findings', 'unreviewed', 'already_reviewed'.
@@ -1782,7 +1796,7 @@ def _gene_contribution_bucket(gene: GeneAssessment, target_panel_ids: set[int]) 
         return "novel"
     if gene.findings:
         return "findings"
-    if unreviewed_target_panels(gene, target_panel_ids):
+    if gene.unreviewed_target_panels:
         return "unreviewed"
     return "already_reviewed"
 
@@ -1794,7 +1808,6 @@ def load_favorite_journal_papers(
     db_path: Path,
     novel_genes: list[GeneAssessment],
     known_genes: list[GeneAssessment],
-    target_panel_ids: set[int],
 ) -> FavoriteJournalSections:
     """Load every initial-search paper from FAVORITE_JOURNALS, bucketed by the
     kind of contribution it made, mirroring the report's gene groups
@@ -1809,7 +1822,7 @@ def load_favorite_journal_papers(
         gene_anchors[gene.hgnc_id] = FavoriteJournalGeneLink(
             hgnc_id=gene.hgnc_id, hgnc_symbol=gene.hgnc_symbol, anchor=gene.anchor
         )
-        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(gene, target_panel_ids)
+        gene_buckets[gene.hgnc_id] = _gene_contribution_bucket(gene)
 
     # Build doi -> [(hgnc_id, filtered_reason)] from each gene's contributing papers.
     # A paper can appear under multiple genes; filtered_reason is per (gene, paper).
@@ -1966,12 +1979,18 @@ def calculate_comprehensive_statistics(
                 all_dois.add(p.doi)
 
         all_associations = [a for gene in all_genes for a in gene.associations]
-
-        # Count unreviewed known genes (per current target panel set)
-        target_panel_id_set = set(results.target_panel_data.panel_ids)
-        unreviewed_count = sum(
-            1 for gene in results.known_genes if unreviewed_target_panels(gene, target_panel_id_set)
+        scoped = results.scope_panel_id is not None
+        already_reviewed_findings = sum(
+            1
+            for gene in all_genes
+            for a in gene.associations
+            if a.already_reviewed
+            and association_finding(replace(a, reviewed_on=()), gene.current_rating, scoped)
+            is not None
         )
+
+        # Known genes with an entry on a target panel that nobody has reviewed
+        unreviewed_count = sum(1 for gene in results.known_genes if gene.unreviewed_target_panels)
 
         # Preprint stats (computed from already-loaded data)
         preprint_dois = {
@@ -2002,6 +2021,7 @@ def calculate_comprehensive_statistics(
             new_disease_findings=finding_kinds.count(FindingKind.NEW_DISEASE),
             new_moi_findings=finding_kinds.count(FindingKind.NEW_MOI),
             upgrade_findings=finding_kinds.count(FindingKind.UPGRADE),
+            already_reviewed_findings=already_reviewed_findings,
             refused_papers_count=len({p.doi for gene in all_genes for p in gene.refused_papers}),
             unreviewed_count=unreviewed_count,
             # Preprint stats
@@ -2162,8 +2182,7 @@ def generate_html_report(
         else None
     )
 
-    target_panel_id_set = set(target_panel_ids)
-    groups = group_genes(novel_genes, known_genes, target_panel_id_set)
+    groups = group_genes(novel_genes, known_genes)
 
     # Set up Jinja2 environment
     env = Environment(
@@ -2186,9 +2205,6 @@ def generate_html_report(
     env.filters["paper_key"] = doi_to_key
     env.filters["short_id"] = lambda display_id: display_id.removeprefix("PMID ")
     env.filters["papers_for_dois"] = papers_for_dois
-    env.filters["unreviewed_target_panels"] = lambda gene: unreviewed_target_panels(
-        gene, target_panel_id_set
-    )
 
     # Add custom sort filter that handles None values
     def sort_by_rating_count(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2323,7 +2339,7 @@ def main(
     low_confidence_papers = load_low_confidence_irrelevant_papers(db_path)
     manual_download_papers = load_manual_download_papers(db_path)
     favorite_journal_papers = load_favorite_journal_papers(
-        db_path, results.novel_genes, results.known_genes, set(actual_panel_ids)
+        db_path, results.novel_genes, results.known_genes
     )
     statistics = calculate_comprehensive_statistics(db_path, results, panel_validation)
 

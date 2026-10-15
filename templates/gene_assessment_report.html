@@ -274,9 +274,13 @@
             {{ mondo_marker(assoc) }}
         </header>
         {# What a finding is measured against: the PanelApp entry or review the relation rests
-           on; for a gene on no target panel, where PanelApp Australia curates it elsewhere #}
+           on; for a gene on no target panel, where PanelApp Australia curates it elsewhere.
+           An association whose papers the target panels have all reviewed says why it is
+           no finding. #}
         {% if assoc.id in gene.finding_association_ids and not (assoc.relation_status == 'new_disease' and gene.is_novel) %}
         <p class="relation-basis">PanelApp Australia: {{ e.panelapp_relation.basis }}</p>
+        {% elif assoc.already_reviewed %}
+        <p class="relation-basis">No finding: every paper of this association is already cited for {{ gene.hgnc_symbol }} on {{ assoc.reviewed_on | join(', ') }}, where the gene is reviewed.</p>
         {% endif %}
         <div class="summary-content">{{ e.summary | markdown_to_html }}</div>
         {% if scope_panel_name %}
@@ -472,7 +476,7 @@
 
     {# One gene: its status on the target panels, its findings, then everything below the header #}
     {% macro gene_article(gene) %}
-    {% set unreviewed_panels = gene | unreviewed_target_panels %}
+    {% set unreviewed_panels = gene.unreviewed_target_panels %}
     <article class="gene-assessment" id="{{ gene.anchor }}">
         <h3>
             {{ gene_header(gene) }}
@@ -713,11 +717,11 @@
     {% set gene_sections = [
         ('new-genes', 'New genes', "Genes on none of the target panels, grouped by their best finding's rating.", groups.new_genes),
         ('known-genes-with-findings', 'Known genes with findings', 'Genes on a target panel with at least one finding, grouped by the rating of their strongest finding.', groups.with_findings),
-        ('known-genes-without-findings', 'Known genes without findings', 'Genes on a target panel without findings that nobody has reviewed there: ' ~ no_finding_note, groups.without_findings)
+        ('known-genes-without-findings', 'Known genes without findings', 'Genes on a target panel without findings, with an entry on a target panel that has no reviews: ' ~ no_finding_note, groups.without_findings)
     ] | selectattr(3) | list %}
     {% set folded_sections = [
         ('outside-scope', "Possibly outside the panel's scope", 'Genes on none of the target panels whose associations match-panels all judged outside the ' ~ scope_panel_name ~ " panel's scope, by the phenotype their papers report. Each association gives the reason.", groups.outside_scope),
-        ('already-reviewed', 'Already reviewed', 'Genes on a target panel without findings, reviewed on every target panel that holds them: ' ~ no_finding_note, groups.already_reviewed)
+        ('already-reviewed', 'Already reviewed', 'Genes on a target panel without findings, whose entries on the target panels all have reviews, or reviews the snapshot does not hold: ' ~ no_finding_note ~ ' An association whose papers the target panels all cite already is no finding either, whatever its rating.', groups.already_reviewed)
     ] | selectattr(3) | list %}
 
     <nav class="toc">
@@ -769,6 +773,7 @@
                 {% if panels_matched %}<li><strong>Panel Suggestions:</strong> {{ statistics.total_panel_suggestions }}</li>{% endif %}
                 <li><strong>Associations:</strong> {{ statistics.total_associations }}</li>
                 <li><strong>Findings on known genes:</strong> new diseases: {{ statistics.new_disease_findings }}, new MoIs: {{ statistics.new_moi_findings }}, upgrades: {{ statistics.upgrade_findings }}</li>
+                <li><strong>Findings already reviewed:</strong> {{ statistics.already_reviewed_findings }} <span class="muted">(associations that would be findings, but the target panels cite all their papers and have reviewed the gene)</span></li>
                 <li><strong>Unreviewed on Target Panel:</strong> {{ statistics.unreviewed_count }}</li>
                 <li><strong>Preprints with Evidence:</strong> {{ statistics.preprints_relevant }}</li>
                 {% if statistics.refused_papers_count %}<li><strong>Papers Not Read (Extraction Refused):</strong> {{ statistics.refused_papers_count }}</li>{% endif %}

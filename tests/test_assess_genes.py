@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import logging
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +19,9 @@ from palit.assess_genes import (
     PanelAppContext,
     PanelReviews,
     PaperBatchProcessor,
+    SkipReason,
     _GeneBatchItem,
+    _GenePreparation,
     assessment_problems,
     association_problems,
     build_request,
@@ -26,15 +29,17 @@ from palit.assess_genes import (
     genes_to_assess,
     handle_results,
     log_association_warnings,
+    log_skipped,
     output_configs,
+    prepare_gene,
     render_prompt,
     replace_paper_ids_with_dois,
     replace_variant_ids,
     store_gene_aggregation,
-    target_panels_holding,
     uncopied_citations,
 )
 from palit.gencc import GenccIndex, GeneGencc, MondoRef
+from palit.hgnc import HgncResolver
 from palit.llm import (
     FALLBACK_MODEL,
     MAX_TOKENS_REJECTION,
@@ -43,8 +48,8 @@ from palit.llm import (
     ResultStatus,
     stage_history,
 )
-from palit.panel_entries import PanelEntry
-from palit.panelapp_client import PanelGeneData
+from palit.panel_entries import PanelEntry, ReviewState, entries_by_gene
+from palit.panelapp_client import PanelAppClient
 from palit.panelapp_integration import (
     INCIDENTALOME_PANEL_ID,
     MENDELIOME_PANEL_ID,
@@ -295,7 +300,8 @@ MENDELIOME_ENTRY = PanelEntry(
     mode_of_pathogenicity="",
     phenotypes=("disease A",),
     publications=(),
-    unreviewed=False,
+    review_publications=(),
+    review_state=ReviewState.REVIEWED,
 )
 
 
@@ -944,13 +950,110 @@ def test_reviews_from_several_panels_are_labelled_with_their_capture(
     ) in no_reviews
 
 
-def test_target_panels_holding_keeps_target_panel_order() -> None:
-    panel_data = PanelGeneData(
-        panel_ids=[MENDELIOME_PANEL_ID, INCIDENTALOME_PANEL_ID, 203],
-        gene_panel_confidence={GENEA: {203: 3, MENDELIOME_PANEL_ID: 2}},
+def _prepare(
+    tmp_path: Path,
+    snapshot: dict[int, dict[str, Any]],
+    hgnc_resolver: HgncResolver,
+    gencc_index: GenccIndex,
+    papers: dict[str, int],
+) -> _GeneBatchItem | SkipReason:
+    """Prepare GENEA, with evidence from *papers* (DOI to PMID), against the Mendeliome.
+
+    GENEA's Mendeliome entry cites PMID 12345 and DOI 10.1000/Cited.
+    """
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+        for doi, pmid in papers.items():
+            conn.execute(
+                "INSERT INTO papers (doi, pmid, title, journal, source, source_type, "
+                "evidence_extraction_json) VALUES (?, ?, 't', 'J', 'pubmed', 'initial', ?)",
+                (doi, pmid, _extraction(GENEA, "GENEA")),
+            )
+            conn.execute(
+                "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+                "VALUES (?, 'GENEA', ?, 'recent_evidence')",
+                (GENEA, doi),
+            )
+    for panel in snapshot.values():  # the client reads gene entries by their HGNC ID
+        panel["genes"] = [g for g in panel["genes"] if "hgnc_id" in g["gene_data"]]
+    panel_date = "2026-09-01"
+    (tmp_path / f"{panel_date}.json").write_text(json.dumps(snapshot))
+    prep = _GenePreparation(
+        db_processor=PaperBatchProcessor(db_path),
+        hgnc_resolver=hgnc_resolver,
+        panelapp_client=PanelAppClient(panel_date, snapshot_dir=tmp_path),
+        panel_date=panel_date,
+        entries=entries_by_gene(list(snapshot.values()), [MENDELIOME_PANEL_ID]),
+        gencc=gencc_index,
+        prompt_path=PROMPT_PATH,
     )
-    assert target_panels_holding(GENEA, panel_data) == [MENDELIOME_PANEL_ID, 203]
-    assert target_panels_holding(GENEB, panel_data) == []
+    return prepare_gene(GENEA, prep)
+
+
+CITED_PAPERS = {"10.1/p1": 12345, "10.1000/CITED": 54321}
+
+
+def test_a_gene_whose_papers_the_target_panels_cite_and_reviewed_is_skipped(
+    tmp_path: Path,
+    panelapp_snapshot: dict[int, dict[str, Any]],
+    hgnc_resolver: HgncResolver,
+    gencc_index: GenccIndex,
+) -> None:
+    assert (
+        _prepare(tmp_path, panelapp_snapshot, hgnc_resolver, gencc_index, CITED_PAPERS)
+        is SkipReason.REVIEWED_IN_FULL
+    )
+
+
+def test_a_gene_with_an_uncited_paper_is_aggregated(
+    tmp_path: Path,
+    panelapp_snapshot: dict[int, dict[str, Any]],
+    hgnc_resolver: HgncResolver,
+    gencc_index: GenccIndex,
+) -> None:
+    papers = CITED_PAPERS | {"10.1/p3": 99999}
+    item = _prepare(tmp_path, panelapp_snapshot, hgnc_resolver, gencc_index, papers)
+    assert isinstance(item, _GeneBatchItem)
+    assert [e["doi"] for e in item.evidence_list] == ["10.1/p1", "10.1/p3", "10.1000/CITED"]
+
+
+def test_a_gene_unreviewed_on_a_target_panel_is_aggregated_though_its_papers_are_cited(
+    tmp_path: Path,
+    panelapp_snapshot: dict[int, dict[str, Any]],
+    hgnc_resolver: HgncResolver,
+    gencc_index: GenccIndex,
+) -> None:
+    panelapp_snapshot[MENDELIOME_PANEL_ID]["genes"][0]["evaluations"] = []
+    item = _prepare(tmp_path, panelapp_snapshot, hgnc_resolver, gencc_index, CITED_PAPERS)
+    assert isinstance(item, _GeneBatchItem)
+    assert [e["doi"] for e in item.evidence_list] == ["10.1/p1", "10.1000/CITED"]
+
+
+def test_a_gene_whose_target_reviews_are_unknown_is_aggregated_though_its_papers_are_cited(
+    tmp_path: Path,
+    panelapp_snapshot: dict[int, dict[str, Any]],
+    hgnc_resolver: HgncResolver,
+    gencc_index: GenccIndex,
+) -> None:
+    panelapp_snapshot[MENDELIOME_PANEL_ID]["genes"][0]["evaluations"] = None
+    item = _prepare(tmp_path, panelapp_snapshot, hgnc_resolver, gencc_index, CITED_PAPERS)
+    assert isinstance(item, _GeneBatchItem)
+
+
+def test_skipped_genes_are_counted_by_reason(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.INFO, logger="palit.assess_genes"):
+        log_skipped(
+            {
+                1: SkipReason.REVIEWED_IN_FULL,
+                2: SkipReason.REVIEWED_IN_FULL,
+                3: SkipReason.NO_EVIDENCE,
+            }
+        )
+    assert caplog.messages == [
+        "Skipped 3 genes: 1 with no evidence, 0 with every paper a preprint below the family "
+        "gate, 2 with every paper already reviewed on the target panels"
+    ]
 
 
 def test_genes_failed_for_good_stay_out_unless_their_failures_predate_the_cutoff(

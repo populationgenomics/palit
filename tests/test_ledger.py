@@ -54,7 +54,7 @@ def _new_run_db(tmp_path: Path, name: str = "run.sqlite") -> Path:
 
 def _assessment(relevant: bool) -> str:
     screen = {"relevant": relevant, "confidence": "HIGH", "rationale": "r", "associations": []}
-    return json.dumps({"relevant": relevant, "screen": screen, "panelapp_check": None})
+    return json.dumps({"relevant": relevant, "screen": screen})
 
 
 def _articleset_gz(articles: list[tuple[str, int, str]]) -> bytes:
@@ -339,7 +339,7 @@ def test_writeback_updates_existing_and_inserts_expansion(tmp_path: Path) -> Non
 
 def test_writeback_settles_a_paper_both_models_refused(tmp_path: Path) -> None:
     ledger_path = _new_ledger(tmp_path)
-    settled = json.dumps(refused_assessment(Refusal("screen", FALLBACK_MODEL, "bio"), None))
+    settled = json.dumps(refused_assessment(Refusal(FALLBACK_MODEL, "bio")))
     run_db = _new_run_db(tmp_path)
     run = sqlite3.connect(run_db)
     try:
@@ -363,11 +363,7 @@ def test_writeback_settles_a_paper_both_models_refused(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert relevant == 0
-    assert json.loads(assessment)["refused"] == {
-        "level": "screen",
-        "model": FALLBACK_MODEL,
-        "category": "bio",
-    }
+    assert json.loads(assessment)["refused"] == {"model": FALLBACK_MODEL, "category": "bio"}
     assert ledger.settled_dois(ledger_path) == {"10.1/refused"}
     next_run = _new_run_db(tmp_path, "next.sqlite")
     seeded = ledger.seed_run_db_from_ledger(

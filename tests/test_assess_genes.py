@@ -43,7 +43,7 @@ from palit.llm import (
     ResultStatus,
     stage_history,
 )
-from palit.panelapp_check import CuratedRecord, PanelEntry
+from palit.panelapp_check import PanelEntry
 from palit.panelapp_client import PanelGeneData
 from palit.panelapp_integration import (
     INCIDENTALOME_PANEL_ID,
@@ -58,7 +58,8 @@ AARS1 = 20
 
 
 def _relevance(relevant: bool) -> str:
-    return json.dumps({"relevant": relevant, "screen": None, "panelapp_check": None})
+    screen = {"relevant": relevant, "confidence": "HIGH", "rationale": "r", "associations": []}
+    return json.dumps({"relevant": relevant, "screen": screen})
 
 
 def _extraction(hgnc_id: int, paper_gene_symbol: str) -> str:
@@ -258,8 +259,6 @@ MENDELIOME_ENTRY = PanelEntry(
     mode_of_pathogenicity="",
     phenotypes=("disease A",),
     publications=(),
-    pmids=frozenset(),
-    dois=frozenset(),
     unreviewed=False,
 )
 
@@ -443,7 +442,7 @@ def _normalized(hgvs_c: str, hgvs_p: str, original_text: str, candidates: int = 
 
 
 def test_prompt_lists_the_genes_variants_with_their_gnomad_figures(
-    tmp_path: Path, curated_record: CuratedRecord, gencc_index: GenccIndex
+    tmp_path: Path, panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
 ) -> None:
     """One row per distinct variant of the gene's papers, by first reporting paper ID."""
     db_path = tmp_path / "run.sqlite"
@@ -519,7 +518,7 @@ def test_prompt_lists_the_genes_variants_with_their_gnomad_figures(
         "GENEA",
         evidence,
         variants,
-        _context(curated_record, gencc_index, GENEA),
+        _context(panel_entries, gencc_index, GENEA),
         "2026-09-01",
     )
 
@@ -542,9 +541,9 @@ def test_prompt_lists_the_genes_variants_with_their_gnomad_figures(
 
 
 def test_prompt_without_variants_says_so(
-    curated_record: CuratedRecord, gencc_index: GenccIndex
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
 ) -> None:
-    prompt = _render(_context(curated_record, gencc_index, GENEA), "GENEA")
+    prompt = _render(_context(panel_entries, gencc_index, GENEA), "GENEA")
     assert (
         "VARIANTS OF GENEA (gnomAD v4.1):\nNone: the contributing papers report no variant of "
         "GENEA, so every association's `variant_ids` is []."
@@ -654,12 +653,12 @@ def test_existing_is_rejected_for_a_gene_without_any_curation(
 
 
 def test_existing_is_kept_when_a_panel_entry_or_review_curates_the_gene(
-    gencc_index: GenccIndex, curated_record: CuratedRecord
+    gencc_index: GenccIndex, panel_entries: dict[int, tuple[PanelEntry, ...]]
 ) -> None:
     reviewed = [PanelReviews(MENDELIOME_PANEL_ID, "Mendeliome", FETCHED_AT, [{"rating": "AMBER"}])]
     answer = _stored_form(_answer(_existing_without_gencc_row()))
     for context in (
-        dataclasses.replace(UNCURATED, panel_entries=curated_record.genes[GENEA]),
+        dataclasses.replace(UNCURATED, panel_entries=panel_entries[GENEA]),
         dataclasses.replace(UNCURATED, panel_reviews=reviewed),
     ):
         item = dataclasses.replace(_item(gencc_index), context=context)
@@ -789,14 +788,14 @@ def test_association_rating_is_computed_per_association() -> None:
 
 
 def _context(
-    record: CuratedRecord,
+    entries: dict[int, tuple[PanelEntry, ...]],
     gencc: GenccIndex,
     hgnc_id: int,
     reviews: list[PanelReviews] | None = None,
 ) -> PanelAppContext:
     return PanelAppContext(
         gencc=gencc.for_gene(hgnc_id),
-        panel_entries=record.genes[hgnc_id],
+        panel_entries=entries[hgnc_id],
         panel_reviews=reviews or [],
     )
 
@@ -810,9 +809,9 @@ def _render(context: PanelAppContext, symbol: str) -> str:
 
 
 def test_prompt_lists_entries_on_every_panel_target_panels_marked(
-    curated_record: CuratedRecord, gencc_index: GenccIndex
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
 ) -> None:
-    prompt = _render(_context(curated_record, gencc_index, GENEB), "GENEB")
+    prompt = _render(_context(panel_entries, gencc_index, GENEB), "GENEB")
     assert (
         "PANEL ENTRIES (every panel holding GENEB on 2026-09-01, target panels first; lumped):"
     ) in prompt
@@ -824,9 +823,9 @@ def test_prompt_lists_entries_on_every_panel_target_panels_marked(
 
 
 def test_prompt_lists_gencc_terms_without_classes(
-    curated_record: CuratedRecord, gencc_index: GenccIndex
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
 ) -> None:
-    prompt = _render(_context(curated_record, gencc_index, GENEA), "GENEA")
+    prompt = _render(_context(panel_entries, gencc_index, GENEA), "GENEA")
     assert '- MONDO:0000001 "disease A"; MoI Autosomal recessive' in prompt
     assert '- MONDO:0000002 "disease B"; MoI Autosomal dominant, Autosomal recessive' in prompt
     assert "obsolete MONDO term" not in prompt
@@ -835,9 +834,9 @@ def test_prompt_lists_gencc_terms_without_classes(
 
 
 def test_obsolete_gencc_term_is_marked(
-    curated_record: CuratedRecord, gencc_index: GenccIndex
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
 ) -> None:
-    context = _context(curated_record, gencc_index, GENEA)
+    context = _context(panel_entries, gencc_index, GENEA)
     disease_a, disease_b = context.gencc.terms
     obsolete = dataclasses.replace(
         disease_a, obsolete=True, replaced_by=(MondoRef("MONDO:0000003", "disease C"),)
@@ -853,10 +852,10 @@ def test_obsolete_gencc_term_is_marked(
 
 
 def test_reviews_panelapp_could_not_serve_are_marked_unavailable(
-    curated_record: CuratedRecord, gencc_index: GenccIndex
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
 ) -> None:
     reviews = [PanelReviews(9001, "Ataxia", FETCHED_AT, None)]
-    context = _context(curated_record, gencc_index, GENEA, reviews)
+    context = _context(panel_entries, gencc_index, GENEA, reviews)
     assert (
         '<previous_reviews panel="Ataxia" panel_id="9001" '
         'unavailable="PanelApp could not serve this panel\'s reviews of the gene"/>'
@@ -867,7 +866,7 @@ def test_reviews_panelapp_could_not_serve_are_marked_unavailable(
 
 
 def test_reviews_from_several_panels_are_labelled_with_their_capture(
-    curated_record: CuratedRecord, gencc_index: GenccIndex
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
 ) -> None:
     reviews = [
         PanelReviews(
@@ -879,7 +878,7 @@ def test_reviews_from_several_panels_are_labelled_with_their_capture(
         PanelReviews(9001, "Ataxia", FETCHED_AT, [{"rating": "AMBER"}]),
         PanelReviews(9002, "Silent", FETCHED_AT, []),
     ]
-    context = _context(curated_record, gencc_index, GENEA, reviews)
+    context = _context(panel_entries, gencc_index, GENEA, reviews)
     prompt = _render(context, "GENEA")
     assert (
         f'<previous_reviews panel="Mendeliome" panel_id="{MENDELIOME_PANEL_ID}" '
@@ -897,7 +896,7 @@ def test_reviews_from_several_panels_are_labelled_with_their_capture(
         {"panel_id": 9001, "fetched_at": FETCHED_AT, "evaluations": [{"rating": "AMBER"}]},
         {"panel_id": 9002, "fetched_at": FETCHED_AT, "evaluations": []},
     ]
-    no_reviews = _render(_context(curated_record, gencc_index, GENEA), "GENEA")
+    no_reviews = _render(_context(panel_entries, gencc_index, GENEA), "GENEA")
     assert (
         "REVIEWS (one block per panel that holds the gene and has reviews):\n\nNone."
     ) in no_reviews

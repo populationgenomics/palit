@@ -1,5 +1,5 @@
-"""Shared fixtures: a small PanelApp snapshot, GenCC index, HGNC resolver, curated record,
-and a builder of one-page PDFs with a text layer."""
+"""Shared fixtures: a small PanelApp snapshot, its genes' entries, GenCC index, HGNC
+resolver, and a builder of one-page PDFs with a text layer."""
 
 from collections.abc import Callable
 from typing import Any
@@ -8,7 +8,7 @@ import pytest
 
 from palit.gencc import GenccIndex, GenccTerm, GeneGencc
 from palit.hgnc import HgncEntry, HgncResolver
-from palit.panelapp_check import CuratedRecord
+from palit.panelapp_check import PanelEntry, entries_by_gene
 from palit.panelapp_integration import INCIDENTALOME_PANEL_ID, MENDELIOME_PANEL_ID
 
 OTHER_PANEL_ID = 9001
@@ -119,11 +119,11 @@ def gencc_index() -> GenccIndex:
 
 
 @pytest.fixture
-def curated_record(panelapp_snapshot: dict[int, dict[str, Any]]) -> CuratedRecord:
-    """Reference panels Mendeliome and Incidentalome, genes shown with all their panels."""
-    return CuratedRecord.build(
-        panelapp_snapshot, "2026-09-01", REFERENCE_PANEL_IDS, all_panels=True
-    )
+def panel_entries(
+    panelapp_snapshot: dict[int, dict[str, Any]],
+) -> dict[int, tuple[PanelEntry, ...]]:
+    """Each gene's entries on every panel; Mendeliome and Incidentalome are the reference panels."""
+    return entries_by_gene(list(panelapp_snapshot.values()), REFERENCE_PANEL_IDS)
 
 
 def _text_pdf(lines: list[str]) -> bytes:

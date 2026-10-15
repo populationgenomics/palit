@@ -11,7 +11,6 @@ import pytest
 from anthropic.types import Message
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
-from palit.assess_relevance import CHECK_STAGE as RELEVANCE_CHECK_STAGE
 from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.assess_relevance import Refusal, refused_assessment
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
@@ -51,7 +50,7 @@ from palit.hgnc import HgncResolver
 from palit.llm import FALLBACK_MODEL, LIGHT_MODEL, MODEL
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
-from palit.panelapp_check import CuratedRecord
+from palit.panelapp_check import entries_by_gene
 from palit.panelapp_client import AllPanelsData, PanelGeneData, PanelPublications
 from palit.panelapp_integration import (
     ENUM_TO_PANELAPP_MOI,
@@ -282,7 +281,6 @@ def db_path(tmp_path: Path) -> Path:
                             "rationale": "New families.",
                             "associations": [],
                         },
-                        "panelapp_check": None,
                     }
                 ),
             ),
@@ -808,7 +806,7 @@ def test_add_prefill_lists_every_association(db_path: Path, hgnc_resolver: HgncR
     assert geneb.prefill.publications == "222"
 
 
-NO_PANEL_VALIDATION = PanelValidationResult(0, 0, [], [], [], [], 0.0, 0.0)
+NO_PANEL_VALIDATION = PanelValidationResult(0, 0, [], [], [], 0.0)
 
 
 def _render(
@@ -1208,16 +1206,15 @@ def _screen(relevant: bool, confidence: str) -> dict[str, Any]:
     }
 
 
-def test_papers_both_models_refused_are_neither_passes_nor_rejections(
+def test_papers_both_models_refused_are_neither_passes_nor_misses(
     db_path: Path, results: GeneAssessmentResults
 ) -> None:
-    """Panel publications: a screen miss, and one paper refused at each relevance level."""
+    """Panel publications: a pass, a screen miss, and two papers refused for good."""
     assessments = {
-        "10.1/miss": {"relevant": False, "screen": _screen(False, "LOW"), "panelapp_check": None},
-        "10.1/refused-screen": refused_assessment(Refusal("screen", LIGHT_MODEL, "bio"), None),
-        "10.1/refused-check": refused_assessment(
-            Refusal("panelapp_check", LIGHT_MODEL, None), _screen(True, "HIGH")
-        ),
+        "10.1/pass": {"relevant": True, "screen": _screen(True, "HIGH")},
+        "10.1/miss": {"relevant": False, "screen": _screen(False, "LOW")},
+        "10.1/refused-bio": refused_assessment(Refusal(LIGHT_MODEL, "bio")),
+        "10.1/refused-none": refused_assessment(Refusal(LIGHT_MODEL, None)),
     }
     with sqlite3.connect(db_path) as conn:
         conn.executemany(
@@ -1231,40 +1228,34 @@ def test_papers_both_models_refused_are_neither_passes_nor_rejections(
             ],
         )
     # The relevance stage ran on LIGHT_MODEL, whose refusals are final.
-    for stage, doi in (
-        (RELEVANCE_STAGE, "10.1/refused-screen"),
-        (RELEVANCE_CHECK_STAGE, "10.1/refused-check"),
-    ):
+    for doi in ("10.1/refused-bio", "10.1/refused-none"):
         _add_requests(
             db_path,
-            stage,
+            RELEVANCE_STAGE,
             doi,
             [("refused", "2026-10-01T00:00:00+00:00", LIGHT_MODEL)],
         )
     validation = load_panel_publications_validation(
-        db_path, PanelPublications(pmids={900, 901, 902}, dois=set())
+        db_path, PanelPublications(pmids={900, 901, 902, 903}, dois=set())
     )
+    assert [p.doi for p in validation.true_positives] == ["10.1/pass"]
     assert [p.doi for p in validation.screen_misses] == ["10.1/miss"]
-    assert sorted(p.doi for p in validation.refused) == [
-        "10.1/refused-check",
-        "10.1/refused-screen",
-    ]
-    assert (validation.true_positives, validation.check_rejections) == ([], [])
-    assert validation.panel_papers_in_db == 3
-    assert validation.screen_sensitivity_pct == 0.0  # of the one assessed paper
+    assert sorted(p.doi for p in validation.refused) == ["10.1/refused-bio", "10.1/refused-none"]
+    assert validation.panel_papers_in_db == 4
+    assert validation.sensitivity_pct == 50.0  # of the two assessed papers
     low_confidence = load_low_confidence_irrelevant_papers(db_path)
     assert [p.doi for p in low_confidence] == ["10.1/miss"]
 
     html = _render(db_path, results, validation)
     assert "Refused (2)</strong>" in html
     assert "Refused to assess (left out of the sensitivity): 2" in html
+    assert "1 assessed relevant, 1 missed by the scope screen." in html
     assert (
         f"Haiku 5.5 refused the scope screen of this paper ({LIGHT_MODEL}, category: bio)"
     ) in html
-    assert "Haiku 5.5 refused the PanelApp check of this paper" in html
     assert "category: none given" in html
-    # The paper refused at the PanelApp check shows the screen it passed.
-    assert "Screen rationale HIGH." in html
+    # A paper's relevance note is the screen's decision with its rationale.
+    assert "<strong>Relevant:</strong> Yes (HIGH confidence). Screen rationale HIGH." in html
 
 
 def test_relevance_refusers_name_the_stage_model_and_its_fallback(db_path: Path) -> None:
@@ -1278,7 +1269,7 @@ def test_relevance_refusers_name_the_stage_model_and_its_fallback(db_path: Path)
     assert load_relevance_refusers(db_path) == "Sonnet 5.5"
     _add_requests(
         db_path,
-        RELEVANCE_CHECK_STAGE,
+        RELEVANCE_STAGE,
         "10.1/b",
         [("refused", "2026-10-01T00:00:00+00:00", MODEL)],
     )
@@ -2097,10 +2088,8 @@ def test_unreviewed_target_entries_of_genes_without_associations_are_listed(
     genec["confidence_level"] = "2"
     mendeliome["genes"].append(genec)
     panelapp_snapshot[ATAXIA_PANEL_ID]["genes"][0]["evaluations"] = []
-    record = CuratedRecord.build(
-        panelapp_snapshot, "2026-09-01", [MENDELIOME_PANEL_ID], all_panels=False
-    )
-    unreviewed = unreviewed_target_entries(record)
+    entries = entries_by_gene([panelapp_snapshot[MENDELIOME_PANEL_ID]], [MENDELIOME_PANEL_ID])
+    unreviewed = unreviewed_target_entries(entries)
     assert sorted(unreviewed) == [1, 4]
 
     target = PanelGeneData(

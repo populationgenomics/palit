@@ -31,22 +31,18 @@ CREATE TABLE papers (
     -- Download status tracking
     download_status TEXT CHECK(download_status IN ('scheduled', 'downloaded', 'manual_required')),
 
-    -- Relevance assessment of title and abstract, in two levels: a scope screen,
-    -- then a check of the screen's genes against PanelApp (see assess_relevance.py)
-    relevance_screen_raw JSON,  -- The Claude message of the scope screen
-    relevance_screen_json JSON,  -- The parsed screen, kept until the PanelApp check is done
-    relevance_assessment_raw JSON,  -- {"screen": message or null, "panelapp_check": message or null}
-    relevance_assessment_json JSON,  -- Final: {"relevant", "screen", "panelapp_check"}, plus
-                                     -- "refused" {"level", "model", "category"} when both models
-                                     -- refused a level (then relevant is false; screen is null
-                                     -- for a refused screen)
+    -- Relevance assessment of title and abstract: the scope screen (see assess_relevance.py)
+    relevance_assessment_raw JSON,  -- The Claude message of the screen; NULL for a refused paper
+    relevance_assessment_json JSON,  -- {"relevant", "screen"}, relevant being the screen's
+                                     -- decision; for a paper both models refused, relevant is
+                                     -- false, screen null, and "refused" {"model", "category"}
     evidence_extraction_raw TEXT,  -- The final Claude message of the extraction conversation
     evidence_extraction_json JSON
 );
 
 -- Normalized gene-paper relationships (automatically maintained from evidence extraction)
 -- Tracks which papers mention which genes with patient/disease evidence
--- Query relevance_assessment_json.panelapp_check.associations or evidence_extraction_json.disease_entities for actual disease associations
+-- Query relevance_assessment_json.screen.associations or evidence_extraction_json.disease_entities for actual disease associations
 CREATE TABLE gene_mentions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hgnc_id INTEGER NOT NULL,

@@ -3,8 +3,7 @@
 Extract the DOIs the relevance scope screen passed, as classifier positives.
 
 The classifier pre-filters papers ahead of the scope screen, so its positives
-are the screen's decisions, not the final ones (which also depend on the
-month's PanelApp state).
+are the screen's decisions.
 """
 
 import json
@@ -52,8 +51,8 @@ def extract(
 
     for doi, json_str in cursor.fetchall():
         total_assessed += 1
-        # A paper both models refused at the screen has no screen; one refused at the
-        # PanelApp check passed the screen and counts as a positive.
+        # A paper both models refused has no screen. Databases from before relevance
+        # became a single screen also hold papers the screen passed that are not relevant.
         screen = json.loads(json_str)["screen"]
         if screen is not None and screen["relevant"]:
             positive_dois.append(doi)

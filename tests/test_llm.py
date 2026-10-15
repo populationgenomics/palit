@@ -552,7 +552,6 @@ def test_refusals_list_the_subject_outcome(db_path: Path, hgnc_resolver: HgncRes
 def test_every_stage_has_its_subject_kind() -> None:
     assert STAGE_SUBJECT_KINDS == {
         assess_relevance.STAGE: SubjectKind.PAPER,
-        assess_relevance.CHECK_STAGE: SubjectKind.PAPER,
         extract_evidence.STAGE: SubjectKind.PAPER,
         assess_genes.STAGE: SubjectKind.GENE,
         scan_mechanisms.STAGE: SubjectKind.GENE,
@@ -560,6 +559,7 @@ def test_every_stage_has_its_subject_kind() -> None:
         reduce_literature.STAGE: SubjectKind.TOURNAMENT_PROMPT,
         map_mondo.STAGE: SubjectKind.ASSOCIATION,
         match_panels.STAGE: SubjectKind.ASSOCIATION,
+        "relevance_panelapp": SubjectKind.PAPER,
     }
 
 

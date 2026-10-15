@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _relevance(relevant: bool) -> str:
-    return json.dumps({"relevant": relevant, "screen": None, "panelapp_check": None})
+    screen = {"relevant": relevant, "confidence": "HIGH", "rationale": "r", "associations": []}
+    return json.dumps({"relevant": relevant, "screen": screen})
 
 
 def _extraction(*hgnc_ids: int) -> str:

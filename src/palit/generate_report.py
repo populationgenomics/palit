@@ -21,7 +21,6 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
-from palit.assess_relevance import CHECK_STAGE as RELEVANCE_CHECK_STAGE
 from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
@@ -37,7 +36,7 @@ from palit.llm import (
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
 from palit.match_panels import ScopeVerdict
-from palit.panelapp_check import CuratedRecord, PanelEntry
+from palit.panelapp_check import PanelEntry, entries_by_gene
 from palit.panelapp_client import (
     AllPanelsData,
     PanelAppClient,
@@ -594,10 +593,8 @@ class PanelValidationResult:
     panel_papers_in_db: int  # with a relevance result, including the refused ones
     true_positives: list[DetailedPaper]
     screen_misses: list[DetailedPaper]  # rejected by the scope screen
-    check_rejections: list[DetailedPaper]  # passed the screen, judged curated by the PanelApp check
-    refused: list[DetailedPaper]  # refused for good at a level; left out of the sensitivity
+    refused: list[DetailedPaper]  # refused for good; left out of the sensitivity
     sensitivity_pct: float  # share of the assessed (not refused) ones assessed relevant
-    screen_sensitivity_pct: float  # share of the assessed (not refused) ones that passed the screen
 
 
 @dataclass
@@ -614,9 +611,7 @@ class ComprehensiveStats:
     total_panel_papers: int
     panel_papers_in_db: int
     validation_sensitivity_pct: float
-    validation_screen_sensitivity_pct: float
     screen_misses_count: int
-    check_rejections_count: int
     true_positives_count: int
     panel_refused_count: int  # relevance refused for good, not in the sensitivity
 
@@ -1387,11 +1382,13 @@ def build_gene_assessment_results(
     )
 
 
-def unreviewed_target_entries(record: CuratedRecord) -> dict[int, list[PanelEntry]]:
-    """The entries of *record*'s reference panels that nobody has reviewed, by gene."""
+def unreviewed_target_entries(
+    entries: dict[int, tuple[PanelEntry, ...]],
+) -> dict[int, list[PanelEntry]]:
+    """The entries on the reference panels that nobody has reviewed, by gene."""
     by_gene = {
-        hgnc_id: [e for e in entries if e.reference and e.unreviewed]
-        for hgnc_id, entries in record.genes.items()
+        hgnc_id: [e for e in gene_entries if e.reference and e.unreviewed]
+        for hgnc_id, gene_entries in entries.items()
     }
     return {hgnc_id: entries for hgnc_id, entries in by_gene.items() if entries}
 
@@ -1451,11 +1448,9 @@ def load_gene_assessments(
         f"Loaded {len(target_panel_data.gene_panel_confidence)} genes from target panels, {len(all_panels_data.gene_to_panels)} genes from all panels"
     )
 
-    record = CuratedRecord.build(
-        panelapp_client.get_all_panel_data(),
-        panel_date,
+    target_entries = entries_by_gene(
+        [panelapp_client.get_panel_data(panel_id) for panel_id in target_panel_data.panel_ids],
         target_panel_data.panel_ids,
-        all_panels=False,
     )
 
     with sqlite3.connect(db_path) as conn:
@@ -1466,7 +1461,7 @@ def load_gene_assessments(
             target_panel_data,
             all_panels_data,
             scope_panel_id,
-            unreviewed_target_entries(record),
+            unreviewed_target_entries(target_entries),
         )
 
 
@@ -1496,10 +1491,8 @@ def load_panel_publications_validation(
                 panel_papers_in_db=0,
                 true_positives=[],
                 screen_misses=[],
-                check_rejections=[],
                 refused=[],
                 sensitivity_pct=0.0,
-                screen_sensitivity_pct=0.0,
             )
 
         # Match panel publications against our DB by both PMID and DOI
@@ -1555,7 +1548,6 @@ def load_panel_publications_validation(
         # Convert to DetailedPaper objects and categorize
         true_positives: list[DetailedPaper] = []
         screen_misses: list[DetailedPaper] = []
-        check_rejections: list[DetailedPaper] = []
         refused: list[DetailedPaper] = []
 
         for row in all_panel_papers:
@@ -1595,34 +1587,24 @@ def load_panel_publications_validation(
                 refused.append(detailed_paper)
             elif relevance_assessment["relevant"]:
                 true_positives.append(detailed_paper)
-            elif relevance_assessment["screen"]["relevant"]:
-                check_rejections.append(detailed_paper)
             else:
                 screen_misses.append(detailed_paper)
 
-        total_assessed = len(true_positives) + len(screen_misses) + len(check_rejections)
-
-        def pct(count: int) -> float:
-            return count / total_assessed * 100 if total_assessed > 0 else 0.0
-
-        sensitivity_pct = pct(len(true_positives))
-        screen_sensitivity_pct = pct(len(true_positives) + len(check_rejections))
+        total_assessed = len(true_positives) + len(screen_misses)
+        sensitivity_pct = len(true_positives) / total_assessed * 100 if total_assessed else 0.0
         logger.info(
             f"Panel validation: {len(true_positives)} relevant, {len(screen_misses)} missed by "
-            f"the screen, {len(check_rejections)} judged curated by the PanelApp check, "
-            f"{len(refused)} refused for good"
+            f"the screen, {len(refused)} refused for good"
         )
-        logger.info(f"Sensitivity: {sensitivity_pct:.1f}% (screen: {screen_sensitivity_pct:.1f}%)")
+        logger.info(f"Sensitivity: {sensitivity_pct:.1f}%")
 
         return PanelValidationResult(
             total_panel_papers=total_panel_refs,
             panel_papers_in_db=total_assessed + len(refused),
             true_positives=true_positives,
             screen_misses=screen_misses,
-            check_rejections=check_rejections,
             refused=refused,
             sensitivity_pct=sensitivity_pct,
-            screen_sensitivity_pct=screen_sensitivity_pct,
         )
 
 
@@ -1706,9 +1688,9 @@ def load_relevance_refusers(db_path: Path) -> str:
             for (model,) in conn.execute(
                 """
                 SELECT DISTINCT model FROM llm_requests
-                WHERE stage IN (?, ?) AND status = 'refused'
+                WHERE stage = ? AND status = 'refused'
                 """,
-                (RELEVANCE_STAGE, RELEVANCE_CHECK_STAGE),
+                (RELEVANCE_STAGE,),
             )
         }
     phrases = []
@@ -2016,9 +1998,7 @@ def calculate_comprehensive_statistics(
             total_panel_papers=panel_validation.total_panel_papers,
             panel_papers_in_db=panel_validation.panel_papers_in_db,
             validation_sensitivity_pct=panel_validation.sensitivity_pct,
-            validation_screen_sensitivity_pct=panel_validation.screen_sensitivity_pct,
             screen_misses_count=len(panel_validation.screen_misses),
-            check_rejections_count=len(panel_validation.check_rejections),
             true_positives_count=len(panel_validation.true_positives),
             panel_refused_count=len(panel_validation.refused),
             # Source breakdown

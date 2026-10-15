@@ -641,25 +641,14 @@
 
         {% if paper.relevance_assessment %}
         {% set screen = paper.relevance_assessment.screen %}
-        {% set check = paper.relevance_assessment.panelapp_check %}
         {% set refused = paper.relevance_assessment.refused %}
         <details class="llm-relevance-assessment">
             <summary><strong>LLM Relevance Assessment</strong></summary>
-            <p><strong>Relevant:</strong> {{ 'Yes' if paper.relevance_assessment.relevant else 'No' }}</p>
+            <p><strong>Relevant:</strong> {{ 'Yes' if paper.relevance_assessment.relevant else 'No' }}{% if screen %} ({{ screen.confidence }} confidence). {{ screen.rationale }}{% endif %}</p>
             {% if refused %}
-            <p><strong>Refused:</strong> {{ relevance_refusers }} refused the {{ 'scope screen' if refused.level == 'screen' else 'PanelApp check' }} of this paper ({{ refused.model }}, category: {{ refused.category or 'none given' }}), so it counts as not relevant without a verdict.</p>
+            <p><strong>Refused:</strong> {{ relevance_refusers }} refused the scope screen of this paper ({{ refused.model }}, category: {{ refused.category or 'none given' }}), so it counts as not relevant without a screen decision.</p>
             {% endif %}
-            {% if screen %}
-            <p><strong>Scope screen:</strong> {{ 'passed' if screen.relevant else 'not relevant' }} ({{ screen.confidence }} confidence). {{ screen.rationale }}</p>
-            {% endif %}
-            {% if check %}
-            <p><strong>PanelApp check</strong> (snapshot {{ check.panel_date }}): {{ check.rationale }}</p>
-            <ul>
-                {% for assoc in check.associations %}
-                <li>{{ assoc.gene_symbol }} → {{ assoc.disease }}: <strong>{{ assoc.verdict | replace('_', ' ') }}</strong>. {{ assoc.reason }}{% if assoc.unreviewed and assoc.verdict in ('already_curated', 'already_cited') %} Counts as relevant: nobody has reviewed the gene's entry on the reference panels yet.{% endif %}</li>
-                {% endfor %}
-            </ul>
-            {% elif screen and screen.associations %}
+            {% if screen and screen.associations %}
             <div><strong>Associations:</strong>
                 <ul>
                     {% for assoc in screen.associations %}
@@ -785,7 +774,7 @@
                 {% if statistics.refused_papers_count %}<li><strong>Papers Not Read (Extraction Refused):</strong> {{ statistics.refused_papers_count }}</li>{% endif %}
                 {% if refused_genes %}<li><strong>Genes Not Aggregated (assess-genes Refused):</strong> {% for g in refused_genes %}{{ g.hgnc_symbol }} (HGNC:{{ g.hgnc_id }}){% if not loop.last %}, {% endif %}{% endfor %}</li>{% endif %}
                 {% if statistics.papers_filtered %}<li><strong>Papers Excluded (Preprint Family Gate):</strong> {{ statistics.papers_filtered }}</li>{% endif %}
-                <li><strong>Panel Publications Correctly Identified:</strong> {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% ({{ statistics.true_positives_count }}/{{ statistics.true_positives_count + statistics.screen_misses_count + statistics.check_rejections_count }})</li>
+                <li><strong>Panel Publications Correctly Identified:</strong> {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% ({{ statistics.true_positives_count }}/{{ statistics.true_positives_count + statistics.screen_misses_count }})</li>
             </ul>
 
             <details>
@@ -806,9 +795,8 @@
                         <li>Found in recent literature: {{ statistics.panel_papers_in_db }}</li>
                         <li>Correctly identified as relevant: {{ statistics.true_positives_count }}</li>
                         <li>Missed by the scope screen: {{ statistics.screen_misses_count }}</li>
-                        <li>Judged already curated by the PanelApp check: {{ statistics.check_rejections_count }}</li>
                         {% if statistics.panel_refused_count %}<li>Refused to assess (left out of the sensitivity): {{ statistics.panel_refused_count }}</li>{% endif %}
-                        <li>Sensitivity: {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}% (scope screen: {{ "%.1f"|format(statistics.validation_screen_sensitivity_pct) }}%)</li>
+                        <li>Sensitivity: {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}%</li>
                     </ul>
                 </div>
 
@@ -887,12 +875,12 @@
             {{ featured_bucket(
                 favorite_journal_papers.refused,
                 "Relevance refused",
-                relevance_refusers ~ " refused to assess the paper's relevance, so it counts as not relevant without a verdict.",
+                relevance_refusers ~ " refused to assess the paper's relevance, so it counts as not relevant without a screen decision.",
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.not_relevant,
                 "Screened out (not relevant)",
-                "The relevance assessment (scope screen or PanelApp check) found the paper not relevant for gene curation.",
+                "The scope screen found the paper not relevant for gene curation.",
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.off_panel,
@@ -942,7 +930,7 @@
 
             <div class="validation-summary">
                 <p>Analysis of {{ panel_validation.panel_papers_in_db }} panel publications found in recent literature.</p>
-                <p><strong>Sensitivity: {{ "%.1f"|format(panel_validation.sensitivity_pct) }}%</strong> - {{ panel_validation.true_positives|length }} assessed relevant, {{ panel_validation.screen_misses|length }} missed by the scope screen, {{ panel_validation.check_rejections|length }} judged already curated by the PanelApp check (scope screen sensitivity: {{ "%.1f"|format(panel_validation.screen_sensitivity_pct) }}%).{% if panel_validation.refused %} The sensitivity leaves out the {{ panel_validation.refused|length }} that {{ relevance_refusers }} refused to assess.{% endif %}</p>
+                <p><strong>Sensitivity: {{ "%.1f"|format(panel_validation.sensitivity_pct) }}%</strong> - {{ panel_validation.true_positives|length }} assessed relevant, {{ panel_validation.screen_misses|length }} missed by the scope screen.{% if panel_validation.refused %} The sensitivity leaves out the {{ panel_validation.refused|length }} that {{ relevance_refusers }} refused to assess.{% endif %}</p>
             </div>
 
             {% if panel_validation.screen_misses %}
@@ -956,21 +944,10 @@
             </details>
             {% endif %}
 
-            {% if panel_validation.check_rejections %}
-            <details class="false-negatives">
-                <summary><strong>Judged Already Curated by the PanelApp Check ({{ panel_validation.check_rejections|length }})</strong></summary>
-                <p><em>Publications mentioned in panels that passed the scope screen, but whose genes the PanelApp check found already curated at the time of the run</em></p>
-
-                {% for paper in panel_validation.check_rejections %}
-                {{ paper_display(paper, include_evidence=false) }}
-                {% endfor %}
-            </details>
-            {% endif %}
-
             {% if panel_validation.refused %}
             <details class="false-negatives">
                 <summary><strong>Refused ({{ panel_validation.refused|length }})</strong></summary>
-                <p><em>Publications mentioned in panels whose relevance assessment {{ relevance_refusers }} refused, so they count as not relevant without a verdict</em></p>
+                <p><em>Publications mentioned in panels whose relevance assessment {{ relevance_refusers }} refused, so they count as not relevant without a screen decision</em></p>
 
                 {% for paper in panel_validation.refused %}
                 {{ paper_display(paper, include_evidence=false) }}

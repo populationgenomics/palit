@@ -52,20 +52,20 @@ ant auth login --profile <profile>
 
 Palit reads the profile name from `PALIT_ANTHROPIC_PROFILE`, set either in the environment or in `.env` (see `.env.example`). The variable is required: an LLM stage stops with a validation error naming it before sending any request. Palit deliberately ignores `ANTHROPIC_PROFILE` and `ANTHROPIC_API_KEY`, which Claude Code sessions may export for their own workspace. The SDK refreshes the access token itself. The refresh token eventually expires, so when a previously working profile starts failing authentication, run `ant auth login --profile <profile>` again. Run one palit process per profile: the SDK serialises token refreshes within a process only.
 
-Requests go to Claude Opus 5.5 (`MODEL` in `src/palit/llm.py`). When Opus 5.5 refuses a paper, gene or association in a stage, the stage's next attempt sends that subject to Claude Sonnet 5.5 (`FALLBACK_MODEL`) with the same prompt, schema, effort and token limit. The multi-round stages (`extract-evidence`, `map-mondo`) restart the subject's conversation from round 1 on Sonnet 5.5, since thinking blocks cannot be replayed to another model, and the tournament resends a refused prompt on Sonnet 5.5 within its round. A subject is refused for good only when Sonnet 5.5 refuses it too; this is what "refused" means in the stage summaries and the report, and stages skip such subjects. The fallback attempt runs in the same invocation and counts toward `--max-retries`. With `--limit`, a stage runs one attempt, so the fallback waits for the next invocation. `--retry-refused` on `assess-relevance` and `extract-evidence` sends the subjects refused for good in earlier invocations through both models once more. The fallback is palit's own because the Batches API rejects the server-side `fallbacks` parameter. `assess-relevance --model` runs both relevance levels on Sonnet 5.5 or Haiku 5.5 instead, for comparing models; only Opus 5.5 has a fallback, which is always a lower tier, so these models' refusals are final.
+Requests go to Claude Opus 5.5 (`MODEL` in `src/palit/llm.py`). When Opus 5.5 refuses a paper, gene or association in a stage, the stage's next attempt sends that subject to Claude Sonnet 5.5 (`FALLBACK_MODEL`) with the same prompt, schema, effort and token limit. The multi-round stages (`extract-evidence`, `map-mondo`) restart the subject's conversation from round 1 on Sonnet 5.5, since thinking blocks cannot be replayed to another model, and the tournament resends a refused prompt on Sonnet 5.5 within its round. A subject is refused for good only when Sonnet 5.5 refuses it too; this is what "refused" means in the stage summaries and the report, and stages skip such subjects. The fallback attempt runs in the same invocation and counts toward `--max-retries`. With `--limit`, a stage runs one attempt, so the fallback waits for the next invocation. `--retry-refused` on `assess-relevance` and `extract-evidence` sends the subjects refused for good in earlier invocations through both models once more. The fallback is palit's own because the Batches API rejects the server-side `fallbacks` parameter. `assess-relevance --model` runs the relevance screen on Sonnet 5.5 or Haiku 5.5 instead, for comparing models; only Opus 5.5 has a fallback, which is always a lower tier, so these models' refusals are final.
 
 A stage also gives up on a subject once it has rejected two of its answers, or seen them cut off at `max_tokens`, since the subject's latest accepted answer (`MAX_FAILED_ANSWERS` in `src/palit/llm.py`); later invocations skip it as failed for good. `--retry-failed` on `assess-relevance`, `extract-evidence`, `assess-genes`, `map-mondo` and `match-panels` sends such subjects again, until they fail that often within the invocation.
 
 Stages send their requests as Message Batches, except that a model's requests in a round go out as immediate requests when there are fewer than 10 of them (`MIN_BATCH_REQUESTS`), since a batch can take hours however few requests it holds. `map-mondo` and `match-panels` send all of their requests immediately. A `map-mondo` mapping takes several tool rounds. Every `match-panels` request starts with the same system prompt, the list of all panels, of about 61,000 tokens. Once the first request to a model has written that prefix to the prompt cache, the model's other immediate requests read it from the cache at a fraction of the batch price. In a batch, most requests write the cache instead of reading it.
 
-`assess-relevance` settles a paper refused for good as not relevant, so that `ledger writeback` marks it settled and later runs do not ingest it again. Its `relevance_assessment_json` keeps the usual two-level shape and records the refusal:
+`assess-relevance` settles a paper refused for good as not relevant, so that `ledger writeback` marks it settled and later runs do not ingest it again. Its `relevance_assessment_json` records the refusal in place of a screen:
 
 ```json
-{"relevant": false, "screen": null, "panelapp_check": null,
- "refused": {"level": "screen", "model": "claude-sonnet-5-5", "category": "bio"}}
+{"relevant": false, "screen": null,
+ "refused": {"model": "claude-sonnet-5-5", "category": "bio"}}
 ```
 
-`level` is `screen` or `panelapp_check`. For a refusal at the PanelApp check, `screen` holds the scope screen the paper passed, and the paper's genes stay in `gene_mentions` like those of any paper the screen passed. Every invocation first settles the papers refused for good that still have no result, since a run database's recorded refusals may lack one. With `--retry-refused`, it reopens the settled papers instead, and any refused for good again are settled again. The report shows these papers as refused: they are kept out of the screen misses, the PanelApp-check rejections and the low-confidence review list, and the panel-publication sensitivity leaves them out.
+Every invocation first settles the papers refused for good that still have no result, since a run database's recorded refusals may lack one. With `--retry-refused`, it reopens the settled papers instead, and any refused for good again are settled again. The report shows these papers as refused: they are kept out of the screen misses and the low-confidence review list, and the panel-publication sensitivity leaves them out.
 
 `uv run palit llm costs --db-path data/db.sqlite` shows requests, refusals, rejected answers, tokens, and USD cost per stage, model and service tier for a run database. A rejected answer failed the stage's schema or structural checks, or was cut off at `max_tokens`, and is asked for again; `llm_requests.rejection` records why. Every stage prints the same summary for itself when it finishes, listing each refused request; `uv run palit llm refusals --db-path data/db.sqlite` lists all refusals with their safety-classifier category and the subject's outcome: recovered (answered after the refusal), refused for good (Sonnet 5.5 refused it last), or not answered yet. It then lists the subjects failed for good with their last rejection, as does each stage's summary. `uv run pytest -m api` checks that every stage's structured-output configuration still compiles on the API for both models (it needs the profile above).
 
@@ -99,8 +99,8 @@ LEDGER=data/pubmed_ingestion_ledger.sqlite
 #    `palit ledger seed` if you have prior corpora.
 uv run palit ledger init --ledger $LEDGER
 
-# 0a. Build the PanelApp snapshot of PANEL_DATE, which every later stage reads:
-#     each public panel at its version on that date, with the reviews of its
+# 0a. Build the PanelApp snapshot of PANEL_DATE, which the stages from literature
+#     expansion on read: each public panel at its version on that date, with the reviews of its
 #     genes. PanelApp serves reviews only as they are now and edits them in
 #     place, so each panel records when its reviews were captured
 #     (evaluations_fetched_at); build the snapshot on PANEL_DATE so that the
@@ -118,25 +118,20 @@ uv run palit panelapp snapshot --panel-date $PANEL_DATE
 uv run palit ingest-preprints --ledger $LEDGER $START_DATE $END_DATE
 uv run palit ingest-pubmed --ledger $LEDGER $START_DATE $END_DATE
 
-# 2. Assess relevance of papers in two levels, sent as Message Batches. A scope
-#    screen of every title and abstract lists the genes of papers with human
-#    genetic evidence; a PanelApp check then compares those genes with their
-#    PanelApp entries (at PANEL_DATE) and keeps a paper only if a gene is new to
-#    the target panels, has a new disease or inheritance mode, or the
-#    association is still amber or red. A paper on a curated gene stays relevant
-#    too while nobody has reviewed the gene's entry on a target panel, so its
-#    evidence gets written up. A gene on the target panels is shown
-#    with its entries on every panel, because an entry on a panel that lists
-#    only one of the gene's diseases rates that disease apart from the gene's
-#    lumped rating. Safe to interrupt and re-run: it re-attaches to
+# 2. Assess the relevance of every title and abstract with the scope screen,
+#    sent as Message Batches. A paper is relevant when it reports new patients
+#    with pathogenic variants, or functional tests of disease variants, for a
+#    specific gene within scope; the screen lists its gene-disease associations.
+#    Relevance only decides whether a paper gets a full-text read. Whether an
+#    association is already curated is not judged from an abstract, so papers on
+#    curated genes are read too. Safe to interrupt and re-run: it re-attaches to
 #    batches still in flight. Papers Opus 5.5 refuses go to Sonnet 5.5 (see
 #    "Claude API" above); papers both refuse are settled as not relevant, and
 #    --retry-refused sends them once more.
-uv run palit assess-relevance --panel-date $PANEL_DATE
+uv run palit assess-relevance
 
-# 2a. (Optional) Screen the PubMed baseline with the retrospective prompt. The
-#     baseline is a comprehensive repository, so the screen decides alone.
-uv run palit assess-relevance --db-path data/pubmed_baseline_screening.sqlite --prompt-path prompts/retrospective_screening_prompt.txt --screen-only
+# 2a. (Optional) Screen the PubMed baseline with the retrospective prompt.
+uv run palit assess-relevance --db-path data/pubmed_baseline_screening.sqlite --prompt-path prompts/retrospective_screening_prompt.txt
 
 # 3. Download full-text papers (automated PMC + preprints, manual fallback)
 uv run palit download-papers attempt-pmc
@@ -380,20 +375,19 @@ For historical baseline screening (2000-2025), use the **retrospective screening
 # Retrospective mode: evaluates historical evidence value, not novelty
 uv run palit assess-relevance \
   --db-path data/pubmed_baseline_screening.sqlite \
-  --prompt-path prompts/retrospective_screening_prompt.txt \
-  --screen-only
+  --prompt-path prompts/retrospective_screening_prompt.txt
 ```
 
 **Key difference from standard relevance assessment:**
 
-- **Standard prompt** (`relevance_assessment_prompt.txt`): the scope screen of the monthly run, followed by the PanelApp check that asks whether the evidence is new relative to the target panels - optimized for recent literature
+- **Standard prompt** (`relevance_assessment_prompt.txt`): the scope screen of the monthly run, which asks whether a paper reports new patients or functional tests of disease variants for a specific gene, without judging whether the association is already known; optimized for recent literature
 - **Retrospective prompt** (`retrospective_screening_prompt.txt`): Asks "Does this provide SUBSTANTIAL evidence for gene-disease relationships?" - optimized for historical baseline screening
 
 The retrospective prompt evaluates papers in their historical context, accepting important early descriptions of gene-disease associations even if those genes are now well-established. This ensures comprehensive coverage across 25 years of literature for downstream tournament selection and analysis.
 
 ### Updating the Baseline
 
-After each fortnightly processing run completes, feed the papers its scope screen passed back into the baseline screening DB so it grows as a comprehensive repository. This includes papers the PanelApp check found already curated, which the monthly report leaves out:
+After each fortnightly processing run completes, feed the papers its scope screen passed back into the baseline screening DB so it grows as a comprehensive repository:
 
 ```bash
 FORTNIGHTLY_DB=data/db_2026_february_h1.sqlite
@@ -404,7 +398,7 @@ ATTACH '$FORTNIGHTLY_DB' AS source;
 CREATE TEMP TABLE relevant_dois AS
 SELECT doi FROM source.papers
 WHERE relevance_assessment_json IS NOT NULL
-  AND json_extract(relevance_assessment_json, '$.screen.relevant') = 1;
+  AND json_extract(relevance_assessment_json, '$.relevant') = 1;
 
 INSERT OR IGNORE INTO papers
   (doi, pmid, title, abstract, authors, journal, source_date,
@@ -448,10 +442,9 @@ uv run palit panelapp snapshot --panel-date $PANEL_DATE
 sqlite3 data/$PANEL_NAME.sqlite < schema.sql
 sqlite3 data/$PANEL_NAME.sqlite "ATTACH 'data/pubmed_baseline_screening.sqlite' AS source; INSERT INTO papers (doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, source_type, source_details) SELECT doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, 'initial', source_details FROM source.papers"
 
-# 2. Assess relevance scoped to the panel: the screen gets the panel description,
-#    and the PanelApp check compares against this panel only. As in the main
-#    workflow, papers on genes the panel lists without any review stay
-#    relevant, so the run gathers the evidence those genes lack
+# 2. Assess relevance scoped to the panel: the screen gets the panel description
+#    and passes papers with human genetic evidence within the panel's phenotypic
+#    scope, whether or not the panel already lists the gene
 uv run palit assess-relevance \
   --db-path data/$PANEL_NAME.sqlite \
   --panel-date $PANEL_DATE \

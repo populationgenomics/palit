@@ -85,7 +85,6 @@ class SubjectKind(StrEnum):
 # tests/test_llm.py checks them against each module's STAGE.
 STAGE_SUBJECT_KINDS: dict[str, SubjectKind] = {
     "relevance": SubjectKind.PAPER,
-    "relevance_panelapp": SubjectKind.PAPER,
     "extraction": SubjectKind.PAPER,
     "assess_genes": SubjectKind.GENE,
     "scan_mechanisms": SubjectKind.GENE,
@@ -93,6 +92,9 @@ STAGE_SUBJECT_KINDS: dict[str, SubjectKind] = {
     "reduce_literature": SubjectKind.TOURNAMENT_PROMPT,
     "map_mondo": SubjectKind.ASSOCIATION,
     "match_panels": SubjectKind.ASSOCIATION,
+    # Run databases hold requests of this stage, the PanelApp check of relevance, which
+    # no module sends.
+    "relevance_panelapp": SubjectKind.PAPER,
 }
 
 

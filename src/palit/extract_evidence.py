@@ -263,14 +263,47 @@ def citation_lists(extraction: dict[str, Any]) -> list[list[dict[str, Any]]]:
         for entity in gene["disease_entities"]:
             lists.append(entity["citations"])
             lists += [assessment["citations"] for assessment in entity["evidence_assessments"]]
-        lists += [concern["citations"] for concern in gene["quality_concerns"]]
+            lists += [concern["citations"] for concern in entity["quality_concerns"]]
     return lists
 
 
+def gene_variants(gene: dict[str, Any]) -> list[dict[str, Any]]:
+    """A gene evaluation's distinct variants, gathered from its disease entities.
+
+    A variant carried by families of several entities is listed in each of them;
+    it is returned once, with the quote of the first entity that lists it.
+    """
+    variants: dict[str, dict[str, Any]] = {}
+    for entity in gene["disease_entities"]:
+        for variant in entity["variants"]:
+            variants.setdefault(variant["variant"], variant)
+    return list(variants.values())
+
+
+def evaluations_of_gene(extraction: dict[str, Any], hgnc_id: int, doi: str) -> list[dict[str, Any]]:
+    """A stored extraction's evaluations of one gene; empty when it has none.
+
+    There is usually one, but the paper may name the gene under two symbols that
+    resolve to the same HGNC ID. Raises ValueError for an extraction in the
+    gene-level shape (a summary on the gene evaluation, or an entity without
+    variants), which has to be extracted again.
+    """
+    evaluations = [g for g in extraction["gene_evaluations"] if g.get("hgnc_id") == hgnc_id]
+    for evaluation in evaluations:
+        if "summary" in evaluation or any(
+            "variants" not in entity for entity in evaluation["disease_entities"]
+        ):
+            raise ValueError(f"{doi}: gene-level extraction shape; re-extract the paper")
+    return evaluations
+
+
 def variant_quotes(extraction: dict[str, Any]) -> set[str]:
-    """The quotes of an extraction's variants."""
+    """The quotes of an extraction's variants, in every entity that lists them."""
     return {
-        variant["quote"] for gene in extraction["gene_evaluations"] for variant in gene["variants"]
+        variant["quote"]
+        for gene in extraction["gene_evaluations"]
+        for entity in gene["disease_entities"]
+        for variant in entity["variants"]
     }
 
 
@@ -1390,7 +1423,7 @@ class ExtractionRunner:
     async def _frequency_rows(
         self, extraction: dict[str, Any], messages: list[dict[str, Any]]
     ) -> list[tuple[str, str, str, dict[str, Any]]]:
-        """(paper gene symbol, variant, quote, lookup result) for every extracted variant.
+        """(paper gene symbol, variant, quote, lookup result) for each gene's distinct variants.
 
         Variants the model extracted without looking them up are looked up here,
         so the report's variant table is complete. So are variants whose lookup
@@ -1410,7 +1443,7 @@ class ExtractionRunner:
         # (paper gene symbol, variant, quote, lookup input)
         missing: list[tuple[str, str, str, dict[str, Any]]] = []
         for gene in extraction["gene_evaluations"]:
-            for variant in gene["variants"]:
+            for variant in gene_variants(gene):
                 symbol, text, quote = gene["gene_symbol"], variant["variant"], variant["quote"]
                 item = looked_up.get((symbol.upper(), text))
                 if item is None:

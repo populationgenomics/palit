@@ -1830,6 +1830,76 @@ def test_quality_concerns_show_in_their_associations(
     assert article.index('class="other-associations"') < article.index('id="association-10"')
 
 
+def _paper_entity(
+    description: str, independent: int, summary: str, concerns: tuple[str, ...]
+) -> dict[str, Any]:
+    """A disease entity of a paper's extraction, in its stored form."""
+    return {
+        "description": description,
+        "variants": [],
+        "patient_count": independent,
+        "reported_family_count": independent,
+        "family_count": independent,
+        "independent_family_count": independent,
+        "count_reduction_reasoning": f"No reduction ({independent} families)",
+        "inheritance_mode": "Monoallelic",
+        "inheritance_details": "",
+        "evidence_assessments": [
+            {"name": name, "result": False, "rationale": "r", "confidence": "LOW", "citations": []}
+            for name in PANELAPP_CRITERIA
+        ],
+        "summary": summary,
+        "quality_concerns": [{"concern": concern, "citations": []} for concern in concerns],
+    }
+
+
+def test_paper_evidence_shows_each_entitys_summary_and_concerns(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """A paper's evidence gives each disease entity its own summary and quality concerns."""
+    entities = [
+        _paper_entity("ataxia", 1, "Reports one individual with ataxia.", ()),
+        _paper_entity(
+            "neuropathy", 2, "Reports two individuals with neuropathy.", ("No parental samples.",)
+        ),
+    ]
+    extraction = {"gene_evaluations": [{"hgnc_id": 1, "disease_entities": entities}]}
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE papers SET evidence_extraction_json = ? WHERE doi = '10.1/a'",
+            (json.dumps(extraction),),
+        )
+
+    known = _article(_render(db_path, _load(db_path, hgnc_resolver)), "known-gene-1")
+    evidence = known[known.index('<details class="individual-evidence-extraction">') :]
+    sections = [
+        section[: section.index("</section>")]
+        for section in evidence.split('<section class="per-entity-criteria-section">')[1:]
+    ]
+    # By independent family count, as in the entity table above them.
+    neuropathy, ataxia = sections
+    assert "neuropathy</h6>" in neuropathy
+    assert "<p>Reports two individuals with neuropathy.</p>" in neuropathy
+    assert "No parental samples." in neuropathy
+    assert "<p>Reports one individual with ataxia.</p>" in ataxia
+    assert "quality-concerns" not in ataxia
+
+
+def test_report_rejects_a_gene_level_extraction(db_path: Path, hgnc_resolver: HgncResolver) -> None:
+    gene_level = {
+        "gene_evaluations": [
+            {"hgnc_id": 1, "summary": "s", "disease_entities": [], "quality_concerns": []}
+        ]
+    }
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE papers SET evidence_extraction_json = ? WHERE doi = '10.1/a'",
+            (json.dumps(gene_level),),
+        )
+    with pytest.raises(ValueError, match=r"10\.1/a: gene-level extraction shape; re-extract"):
+        _load(db_path, hgnc_resolver)
+
+
 def test_each_association_shows_its_criteria_after_its_toggles(
     db_path: Path, results: GeneAssessmentResults
 ) -> None:

@@ -27,6 +27,7 @@ from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from palit.extract_evidence import evaluations_of_gene
 from palit.gencc import GenccIndex, GeneGencc, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
@@ -321,32 +322,29 @@ class PaperBatchProcessor:
 
             evidence_list = []
             for row in cursor.fetchall():
-                try:
-                    evidence_json = json.loads(row["evidence_extraction_json"])
-                    # Filter to only include evaluations for this specific gene (by hgnc_id)
-                    filtered_evaluations = []
-                    for gene_eval in evidence_json.get("gene_evaluations", []):
-                        if gene_eval.get("hgnc_id") == hgnc_id:
-                            del gene_eval["variants"]  # Drop detailed variants from prompt.
-                            filtered_evaluations.append(gene_eval)
+                filtered_evaluations = evaluations_of_gene(
+                    json.loads(row["evidence_extraction_json"]), hgnc_id, row["doi"]
+                )
+                # Each entity keeps its variants' notations, which tie its families to
+                # rows of the prompt's VARIANTS table. The table holds each variant's
+                # HGVS, papers and gnomAD figures; the quotes only locate it in the PDF.
+                for gene_eval in filtered_evaluations:
+                    for entity in gene_eval["disease_entities"]:
+                        entity["variants"] = [v["variant"] for v in entity["variants"]]
 
-                    if filtered_evaluations:
-                        evidence_list.append(
-                            {
-                                "doi": row["doi"],
-                                "pmid": row["pmid"],
-                                "journal": row["journal"],
-                                "date": row["source_date"],
-                                "title": row["title"],
-                                "authors": row["authors"],
-                                "paper_gene_symbol": row["paper_gene_symbol"],
-                                "gene_evaluations": filtered_evaluations,
-                            }
-                        )
-
-                except (json.JSONDecodeError, KeyError) as e:
-                    logger.warning(f"Error parsing evidence for DOI {row['doi']}: {e}")
-                    continue
+                if filtered_evaluations:
+                    evidence_list.append(
+                        {
+                            "doi": row["doi"],
+                            "pmid": row["pmid"],
+                            "journal": row["journal"],
+                            "date": row["source_date"],
+                            "title": row["title"],
+                            "authors": row["authors"],
+                            "paper_gene_symbol": row["paper_gene_symbol"],
+                            "gene_evaluations": filtered_evaluations,
+                        }
+                    )
 
             logger.debug(f"Found {len(evidence_list)} papers with evidence for HGNC:{hgnc_id}")
             return evidence_list

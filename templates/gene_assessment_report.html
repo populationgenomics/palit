@@ -660,41 +660,41 @@
         </details>
         {% endif %}
 
-        {% if include_evidence and paper.evidence_extraction %}
+        {% if include_evidence and paper.gene_evaluations %}
         <details class="individual-evidence-extraction">
             <summary><strong>Evidence</strong></summary>
-            {% set gene_eval = (paper.evidence_extraction.gene_evaluations | selectattr('hgnc_id', 'defined') | selectattr('hgnc_id', 'equalto', gene.hgnc_id) | list)[0] %}
+            {% for gene_eval in paper.gene_evaluations %}
             <div class="gene-evaluation">
                 <div class="evidence-summary-expanded">
-                    <h5><strong>Summary</strong></h5>
-                    <p>{{ gene_eval.summary }}</p>
-
                     {{ disease_entity_table(gene_eval.disease_entities) }}
-
-                    {% if gene_eval.quality_concerns %}
-                    <div class="quality-concerns">
-                        <h6><strong>⚠️ Quality Concerns</strong></h6>
-                        <ul>
-                            {% for concern in gene_eval.quality_concerns %}
-                            <li>
-                                {{ concern.concern }}
-                                {% for link in concern.citations | paper_citation_links(paper) %}{{ cite(link) }} {% endfor %}
-                            </li>
-                            {% endfor %}
-                        </ul>
-                    </div>
-                    {% endif %}
                 </div>
 
                 {% for entity in gene_eval.disease_entities | sort_by_rating_count %}
                 <section class="per-entity-criteria-section">
                     <h6 class="per-entity-criteria-heading">{{ entity.description }}</h6>
                     <div class="per-entity-criteria-body">
+                        <p>{{ entity.summary }}</p>
+
+                        {% if entity.quality_concerns %}
+                        <div class="quality-concerns">
+                            <h6><strong>⚠️ Quality Concerns</strong></h6>
+                            <ul>
+                                {% for concern in entity.quality_concerns %}
+                                <li>
+                                    {{ concern.concern }}
+                                    {% for link in concern.citations | paper_citation_links(paper) %}{{ cite(link) }} {% endfor %}
+                                </li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                        {% endif %}
+
                         {{ criteria_grid(entity, paper=paper) }}
                     </div>
                 </section>
                 {% endfor %}
             </div>
+            {% endfor %}
         </details>
         {% elif include_evidence %}
         <p><em>No evidence extraction available for this paper.</em></p>

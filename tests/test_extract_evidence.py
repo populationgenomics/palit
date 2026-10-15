@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx2
+import jsonschema
 import pypdf
 import pypdfium2 as pdfium
 import pytest
@@ -41,9 +42,11 @@ from palit.extract_evidence import (
     _process_evidence,
     count_remaining,
     drop_placeholder_citations,
+    evaluations_of_gene,
     extraction_quotes,
     first_user_message,
     fitting_pages,
+    gene_variants,
     load_conversation,
     normalize_extraction_genes,
     page_copy,
@@ -86,6 +89,14 @@ from palit.papers import doi_to_path
 from palit.quotes import PaperQuotes
 
 CRITERIA = ["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
+WEAKENING_FACTORS = [
+    "founder_or_recurrent_variant",
+    "inherited_no_segregation_with_affected",
+    "missense_no_variant_specific_functional",
+    "population_frequency_incompatible_with_moi",
+    "phenotype_non_mendelian",
+    "functional_below_criterion_c_threshold",
+]
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schema.sql"
 
 
@@ -95,6 +106,7 @@ def _citation(quote: str) -> dict[str, str]:
 
 def _entity(family_count: int | None, independent: int | None) -> dict[str, Any]:
     return {
+        "variants": [{"variant": "c.1A>G", "quote": "variant quote"}],
         "family_count": family_count,
         "independent_family_count": independent,
         "citations": [_citation("entity quote")],
@@ -102,17 +114,13 @@ def _entity(family_count: int | None, independent: int | None) -> dict[str, Any]
             {"name": name, "result": False, "rationale": "r", "confidence": "LOW", "citations": []}
             for name in CRITERIA
         ],
+        "summary": "s",
+        "quality_concerns": [{"concern": "x", "citations": [_citation("concern quote")]}],
     }
 
 
 def _gene(symbol: str, entities: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "gene_symbol": symbol,
-        "summary": "s",
-        "variants": [{"variant": "c.1A>G", "quote": "variant quote"}],
-        "disease_entities": entities,
-        "quality_concerns": [{"concern": "x", "citations": [_citation("concern quote")]}],
-    }
+    return {"gene_symbol": symbol, "disease_entities": entities}
 
 
 def test_extraction_quotes_covers_every_citation_site() -> None:
@@ -126,6 +134,103 @@ def test_extraction_quotes_covers_every_citation_site() -> None:
         "criterion quote",
         "concern quote",
     }
+
+
+def test_gene_variants_lists_a_variant_of_several_entities_once() -> None:
+    """Entities list the variants their families carry; the gene gets each variant once."""
+    monoallelic, biallelic = _entity(1, 1), _entity(1, 1)
+    monoallelic["variants"] = [
+        {"variant": "c.1A>G", "quote": "c.1A>G in family 1"},
+        {"variant": "c.2A>G", "quote": "c.2A>G in family 1"},
+    ]
+    biallelic["variants"] = [
+        {"variant": "c.2A>G", "quote": "c.2A>G in family 2"},
+        {"variant": "c.3A>G", "quote": "c.3A>G in family 2"},
+    ]
+    extraction = {"gene_evaluations": [_gene("ABC1", [monoallelic, biallelic])]}
+
+    assert gene_variants(extraction["gene_evaluations"][0]) == [
+        {"variant": "c.1A>G", "quote": "c.1A>G in family 1"},
+        {"variant": "c.2A>G", "quote": "c.2A>G in family 1"},
+        {"variant": "c.3A>G", "quote": "c.3A>G in family 2"},
+    ]
+    # Every entity's quote is located, so either can be cited.
+    assert {"c.2A>G in family 1", "c.2A>G in family 2"} <= extraction_quotes(extraction)
+
+
+def _complete_answer() -> dict[str, Any]:
+    """A complete answer in the schema's shape: one gene, one disease entity."""
+    entity = {
+        "description": "developmental epileptic encephalopathy",
+        "variants": [{"variant": "NM_000123.4:c.1A>G", "quote": "variant quote"}],
+        "patient_count": 2,
+        "reported_family_count": 2,
+        "family_count": 2,
+        "independent_family_count": 2,
+        "count_reduction_reasoning": "No reduction (2 families)",
+        "disease_mechanism": "NR",
+        "previously_reported_sources": [],
+        "inheritance_mode": "Monoallelic",
+        "inheritance_details": "",
+        "citations": [_citation("entity quote")],
+        "evidence_weakening_factors": [
+            {"factor": factor, "present": False, "details": "Not present"}
+            for factor in WEAKENING_FACTORS
+        ],
+        "evidence_assessments": {
+            name: {"result": False, "rationale": "r", "confidence": "LOW", "citations": []}
+            for name in CRITERIA
+        },
+        "summary": "Reports two individuals from two families with de novo variants and seizures.",
+        "quality_concerns": [{"concern": "x", "citations": [_citation("concern quote")]}],
+    }
+    return {
+        "genome_build": "GRCh38",
+        "gene_evaluations": [{"gene_symbol": "ABC1", "disease_entities": [entity]}],
+    }
+
+
+def test_schema_holds_summary_variants_and_concerns_in_each_entity() -> None:
+    schema = json.loads((SCHEMA_SQL.parent / "prompts/evidence_extraction_schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+    answer = _complete_answer()
+    validator.validate(answer)
+
+    gene = answer["gene_evaluations"][0]
+    entity = gene["disease_entities"][0]
+    del entity["variants"]
+    with pytest.raises(jsonschema.ValidationError, match="'variants' is a required"):
+        validator.validate(answer)
+    gene["disease_entities"] = [_complete_answer()["gene_evaluations"][0]["disease_entities"][0]]
+    gene["summary"] = "gene-level summary"
+    with pytest.raises(jsonschema.ValidationError, match="Additional properties"):
+        validator.validate(answer)
+
+
+def test_evaluations_of_gene_picks_the_genes_evaluations() -> None:
+    entity = _entity(1, 1)
+    extraction = {
+        "gene_evaluations": [
+            {"hgnc_id": 1, "disease_entities": [entity]},
+            {"disease_entities": [entity]},  # unresolved symbol
+            {"hgnc_id": 2, "disease_entities": []},
+        ]
+    }
+    assert evaluations_of_gene(extraction, 1, "10.1/a") == [extraction["gene_evaluations"][0]]
+    assert evaluations_of_gene(extraction, 3, "10.1/a") == []
+
+
+@pytest.mark.parametrize("old_field", ["summary", "variants"])
+def test_evaluations_of_gene_rejects_the_gene_level_shape(old_field: str) -> None:
+    """Gene-level summary, variants and concerns: an extraction to extract again."""
+    entity = _entity(1, 1)
+    gene = {"hgnc_id": 1, "disease_entities": [entity]}
+    if old_field == "summary":
+        gene["summary"] = "s"
+    else:
+        del entity["variants"]
+    with pytest.raises(ValueError, match=r"10\.1/a: gene-level extraction shape; re-extract"):
+        evaluations_of_gene({"gene_evaluations": [gene]}, 1, "10.1/a")
 
 
 def test_structural_problems() -> None:
@@ -255,67 +360,68 @@ C9ORF72 = _hgnc_entry(28337, "C9orf72", ())
 
 def test_normalize_extraction_genes_keeps_paper_symbol() -> None:
     normalized, unresolved = normalize_extraction_genes(
-        {"gene_evaluations": [{"gene_symbol": "Park2", "summary": "PARK2 variants"}]},
+        {"gene_evaluations": [_gene("Park2", [{"summary": "PARK2 variants"}])]},
         _resolver(PRKN),
     )
     gene = normalized["gene_evaluations"][0]
     assert gene["hgnc_id"] == 8607
     assert gene["paper_gene_symbol"] == "PARK2"
     assert "gene_symbol" not in gene
-    assert gene["summary"] == "PRKN variants"
+    assert gene["disease_entities"][0]["summary"] == "PRKN variants"
     assert unresolved == []
 
 
 def test_normalize_extraction_genes_resolves_mixed_case_current_symbol() -> None:
     normalized, _ = normalize_extraction_genes(
-        {"gene_evaluations": [{"gene_symbol": "C9orf72", "summary": "C9orf72 repeat"}]},
+        {"gene_evaluations": [_gene("C9orf72", [{"summary": "C9orf72 repeat"}])]},
         _resolver(C9ORF72),
     )
     gene = normalized["gene_evaluations"][0]
     assert gene["hgnc_id"] == 28337
     assert gene["paper_gene_symbol"] == "C9ORF72"
-    assert gene["summary"] == "C9orf72 repeat"
+    assert gene["disease_entities"][0]["summary"] == "C9orf72 repeat"
 
 
 def test_normalize_extraction_genes_leaves_current_symbol_alone() -> None:
     normalized, _ = normalize_extraction_genes(
         {
             "gene_evaluations": [
-                {
-                    "gene_symbol": "AARS",
-                    "summary": "AARS (now AARS1) and AARS-1; AARS-related neuropathy.",
-                }
+                _gene(
+                    "AARS", [{"summary": "AARS (now AARS1) and AARS-1; AARS-related neuropathy."}]
+                )
             ]
         },
         _resolver(AARS1),
     )
     gene = normalized["gene_evaluations"][0]
     assert gene["paper_gene_symbol"] == "AARS"
-    assert gene["summary"] == "AARS1 (now AARS1) and AARS-1; AARS1-related neuropathy."
+    assert (
+        gene["disease_entities"][0]["summary"]
+        == "AARS1 (now AARS1) and AARS-1; AARS1-related neuropathy."
+    )
 
 
 def test_normalize_extraction_genes_keeps_verbatim_fields() -> None:
-    gene = {
-        "gene_symbol": "PARK2",
-        "summary": "PARK2 loss",
-        "variants": [{"variant": "PARK2 c.1A>G", "quote": "PARK2 c.1A>G in two families"}],
-        "disease_entities": [
+    gene = _gene(
+        "PARK2",
+        [
             {
                 "description": "PARK2 parkinsonism",
+                "variants": [{"variant": "PARK2 c.1A>G", "quote": "PARK2 c.1A>G in two families"}],
                 "citations": [{"quote": "mutations in PARK2", "commentary": "PARK2 cases"}],
                 "previously_reported_sources": [
                     {"title": "PARK2 mutations in parkinsonism", "context": "PARK2 cohort"}
                 ],
+                "summary": "PARK2 loss",
             }
         ],
-    }
+    )
     normalized, _ = normalize_extraction_genes({"gene_evaluations": [gene]}, _resolver(PRKN))
-    result = normalized["gene_evaluations"][0]
-    assert result["summary"] == "PRKN loss"
-    assert result["variants"] == [
+    entity = normalized["gene_evaluations"][0]["disease_entities"][0]
+    assert entity["summary"] == "PRKN loss"
+    assert entity["variants"] == [
         {"variant": "PARK2 c.1A>G", "quote": "PARK2 c.1A>G in two families"}
     ]
-    entity = result["disease_entities"][0]
     assert entity["description"] == "PRKN parkinsonism"
     assert entity["citations"] == [{"quote": "mutations in PARK2", "commentary": "PRKN cases"}]
     assert entity["previously_reported_sources"] == [
@@ -369,14 +475,15 @@ def test_placeholder_citations_are_dropped_and_variants_kept() -> None:
         _citation("N/A"),
     ]
     entity["evidence_assessments"][0]["citations"] = [_citation("tbd"), _citation("criterion")]
-    gene = _gene("ABC1", [entity])
-    gene["variants"].append({"variant": "c.2A>G", "quote": "x"})
-    extraction = {"gene_evaluations": [gene]}
+    entity["variants"].append({"variant": "c.2A>G", "quote": "x"})
+    entity["quality_concerns"][0]["citations"].append(_citation("n/a"))
+    extraction = {"gene_evaluations": [_gene("ABC1", [entity])]}
 
-    assert drop_placeholder_citations(extraction) == 7
+    assert drop_placeholder_citations(extraction) == 8
     assert entity["citations"] == [_citation("entity quote")]
     assert entity["evidence_assessments"][0]["citations"] == [_citation("criterion")]
-    assert [v["quote"] for v in gene["variants"]] == ["variant quote", "x"]
+    assert entity["quality_concerns"][0]["citations"] == [_citation("concern quote")]
+    assert [v["quote"] for v in entity["variants"]] == ["variant quote", "x"]
 
 
 def test_select_papers_skips_only_papers_refused_for_good(tmp_path: Path) -> None:
@@ -1466,7 +1573,9 @@ def test_unlocated_quotes_are_stored_and_only_placeholders_dropped(
     assert all(
         len(c["citations"]) == 1 for c in gene["disease_entities"][0]["evidence_assessments"]
     )
-    assert gene["quality_concerns"][0]["citations"] == [_citation("concern quote")]
+    assert gene["disease_entities"][0]["quality_concerns"][0]["citations"] == [
+        _citation("concern quote")
+    ]
     assert locations == dict.fromkeys(quotes, "[]")
     assert rejection is None
     assert (
@@ -2128,7 +2237,10 @@ def test_transiently_failed_lookups_of_an_unsent_round_are_run_again_and_saved(
 def test_frequency_rows_look_up_transient_failures_again(
     tmp_path: Path, hgnc_resolver: HgncResolver
 ) -> None:
-    """A transient failure is looked up again with the model's input; other results stay."""
+    """A transient failure is looked up again with the model's input; other results stay.
+
+    A variant two entities list gets one row, with the first entity's quote.
+    """
     messages = [
         {"role": "user", "content": "paper"},
         *_lookup_round(
@@ -2141,12 +2253,14 @@ def test_frequency_rows_look_up_transient_failures_again(
             "finalise",
         ),
     ]
-    gene = _gene("GENEA", [])
-    gene["variants"] = [
-        {"variant": variant, "quote": f"quote {variant}"}
-        for variant in ("c.1A>G", "c.2A>G", "c.3A>G", "c.4A>G")
+    first, second = _entity(1, 1), _entity(1, 1)
+    first["variants"] = [
+        {"variant": variant, "quote": f"quote {variant}"} for variant in ("c.1A>G", "c.2A>G")
     ]
-    extraction = {"genome_build": "GRCh38", "gene_evaluations": [gene]}
+    second["variants"] = [
+        {"variant": variant, "quote": f"quote {variant}"} for variant in ("c.3A>G", "c.4A>G")
+    ] + [{"variant": "c.1A>G", "quote": "c.1A>G in the second entity's family"}]
+    extraction = {"genome_build": "GRCh38", "gene_evaluations": [_gene("GENEA", [first, second])]}
     variants = RecordingVariantClient(timing_out=set())
 
     async def run() -> list[tuple[str, str, str, dict[str, Any]]]:
@@ -2163,7 +2277,7 @@ def test_frequency_rows_look_up_transient_failures_again(
     assert by_variant["c.2A>G"]["error_code"] == "NO_GENOMIC_COORDS"
     assert by_variant["c.3A>G"]["candidates"][0]["vcf"] == "vcf:c.3A>G"
     assert by_variant["c.4A>G"]["candidates"][0]["vcf"] == "vcf:c.4A>G"
-    assert {quote for _, _, quote, _ in rows} == {f"quote c.{n}A>G" for n in range(1, 5)}
+    assert sorted(quote for _, _, quote, _ in rows) == [f"quote c.{n}A>G" for n in range(1, 5)]
 
 
 def _two_page_pdf(text_pdf: Callable[[list[str]], bytes], first: str, second: str) -> bytes:

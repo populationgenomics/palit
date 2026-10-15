@@ -23,6 +23,7 @@ from markupsafe import Markup
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
 from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
+from palit.extract_evidence import evaluations_of_gene
 from palit.gencc import MondoRef
 from palit.hgnc import HgncResolver
 from palit.llm import (
@@ -250,7 +251,9 @@ class DetailedPaper:
     source_type: str | None
     source_details: str | None
     relevance_assessment: dict[str, Any] | None
-    evidence_extraction: dict[str, Any] | None
+    # The paper's evaluations of the gene whose section shows its evidence (see
+    # evaluations_of_gene); empty where the paper is shown without evidence.
+    gene_evaluations: list[dict[str, Any]]
     quote_refs: dict[str, QuoteRef]  # this paper's quotes -> position in its citations file
     preprint: bool = False
     pmid: int | None = None  # For PubMed display links
@@ -943,12 +946,14 @@ def load_contributing_papers(
             if paper_row["relevance_assessment_json"]
             else None
         )
-        evidence_extraction = json.loads(paper_row["evidence_extraction_json"])
+        doi = paper_row["doi"]
+        gene_evaluations = evaluations_of_gene(
+            json.loads(paper_row["evidence_extraction_json"]), hgnc_id, doi
+        )
         # A paper may mention the gene but only have evidence for other genes.
-        if not any(g.get("hgnc_id") == hgnc_id for g in evidence_extraction["gene_evaluations"]):
+        if not gene_evaluations:
             continue
 
-        doi = paper_row["doi"]
         contributing_papers.append(
             DetailedPaper(
                 doi=doi,
@@ -960,7 +965,7 @@ def load_contributing_papers(
                 source_type=paper_row["source_type"],
                 source_details=paper_row["source_details"],
                 relevance_assessment=relevance_assessment,
-                evidence_extraction=evidence_extraction,
+                gene_evaluations=gene_evaluations,
                 quote_refs=load_quote_refs(cursor, doi),
                 preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
                 pmid=paper_row["pmid"],
@@ -1509,7 +1514,7 @@ def load_panel_publications_validation(
 
         _panel_cols = """p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
             p.source_date, p.source_type, p.source_details,
-            p.relevance_assessment_json, p.evidence_extraction_json"""
+            p.relevance_assessment_json"""
 
         # Match PMIDs
         pmids_list = list(panel_pubs.pmids)
@@ -1558,15 +1563,6 @@ def load_panel_publications_validation(
                 logger.warning(f"Failed to parse relevance assessment for panel DOI {row['doi']}")
                 continue
 
-            evidence_extraction = None
-            if row["evidence_extraction_json"]:
-                try:
-                    evidence_extraction = json.loads(row["evidence_extraction_json"])
-                except json.JSONDecodeError:
-                    logger.warning(
-                        f"Failed to parse evidence extraction for panel DOI {row['doi']}"
-                    )
-
             detailed_paper = DetailedPaper(
                 doi=row["doi"],
                 title=row["title"] or "Unknown Title",
@@ -1577,7 +1573,7 @@ def load_panel_publications_validation(
                 source_type=row["source_type"],
                 source_details=row["source_details"],
                 relevance_assessment=relevance_assessment,
-                evidence_extraction=evidence_extraction,
+                gene_evaluations=[],
                 quote_refs=load_quote_refs(cursor, row["doi"]),
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
@@ -1628,8 +1624,7 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                 p.source_date,
                 p.source_type,
                 p.source_details,
-                p.relevance_assessment_json,
-                p.evidence_extraction_json
+                p.relevance_assessment_json
             FROM papers p
             WHERE p.relevance_assessment_json IS NOT NULL
             ORDER BY p.source_date DESC, p.doi DESC
@@ -1650,13 +1645,6 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                 continue
             screen = relevance_assessment["screen"]
             if not screen["relevant"] and screen["confidence"] == "LOW":
-                evidence_extraction = None
-                if row["evidence_extraction_json"]:
-                    try:
-                        evidence_extraction = json.loads(row["evidence_extraction_json"])
-                    except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse evidence extraction for DOI {row['doi']}")
-
                 detailed_paper = DetailedPaper(
                     doi=row["doi"],
                     title=row["title"] or "Unknown Title",
@@ -1667,7 +1655,7 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                     source_type=row["source_type"],
                     source_details=row["source_details"],
                     relevance_assessment=relevance_assessment,
-                    evidence_extraction=evidence_extraction,
+                    gene_evaluations=[],
                     quote_refs=load_quote_refs(cursor, row["doi"]),
                     preprint=is_preprint(row["journal"], row["pmid"]),
                     pmid=row["pmid"],
@@ -1755,7 +1743,7 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
                 source_type=row["source_type"],
                 source_details=row["source_details"],
                 relevance_assessment=relevance_assessment,
-                evidence_extraction=None,
+                gene_evaluations=[],
                 quote_refs={},
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],

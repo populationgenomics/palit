@@ -19,31 +19,6 @@
                     "gene_symbol": {
                         "type": "string"
                     },
-                    "summary": {
-                        "type": "string",
-                        "description": "Prose evidence summary for this gene."
-                    },
-                    "variants": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "variant": {
-                                    "type": "string",
-                                    "description": "Variant in standard notation."
-                                },
-                                "quote": {
-                                    "type": "string"
-                                }
-                            },
-                            "required": [
-                                "variant",
-                                "quote"
-                            ],
-                            "additionalProperties": false
-                        },
-                        "description": "Unique variants with citations."
-                    },
                     "disease_entities": {
                         "type": "array",
                         "description": "Distinct (phenotype x MoI) disease entities.",
@@ -53,6 +28,27 @@
                                 "description": {
                                     "type": "string",
                                     "description": "Disease name or clinical description."
+                                },
+                                "variants": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "variant": {
+                                                "type": "string",
+                                                "description": "Variant in standard notation."
+                                            },
+                                            "quote": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "required": [
+                                            "variant",
+                                            "quote"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    "description": "Unique variants carried by this entity's families, with citations."
                                 },
                                 "patient_count": {
                                     "type": "integer",
@@ -217,10 +213,54 @@
                                         "criterion_E"
                                     ],
                                     "additionalProperties": false
+                                },
+                                "summary": {
+                                    "type": "string",
+                                    "description": "Prose evidence summary for this disease entity."
+                                },
+                                "quality_concerns": {
+                                    "type": "array",
+                                    "description": "Evidence-quality concerns; empty if none.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "concern": {
+                                                "type": "string",
+                                                "description": "The issue and why it matters."
+                                            },
+                                            "citations": {
+                                                "type": "array",
+                                                "description": "Citations to the problematic claim.",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "commentary": {
+                                                            "type": "string",
+                                                            "description": "What the citation shows."
+                                                        },
+                                                        "quote": {
+                                                            "type": "string"
+                                                        }
+                                                    },
+                                                    "required": [
+                                                        "commentary",
+                                                        "quote"
+                                                    ],
+                                                    "additionalProperties": false
+                                                }
+                                            }
+                                        },
+                                        "required": [
+                                            "concern",
+                                            "citations"
+                                        ],
+                                        "additionalProperties": false
+                                    }
                                 }
                             },
                             "required": [
                                 "description",
+                                "variants",
                                 "patient_count",
                                 "reported_family_count",
                                 "family_count",
@@ -232,46 +272,9 @@
                                 "previously_reported_sources",
                                 "citations",
                                 "evidence_weakening_factors",
-                                "evidence_assessments"
-                            ],
-                            "additionalProperties": false
-                        }
-                    },
-                    "quality_concerns": {
-                        "type": "array",
-                        "description": "Evidence-quality concerns; empty if none.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "concern": {
-                                    "type": "string",
-                                    "description": "The issue and why it matters."
-                                },
-                                "citations": {
-                                    "type": "array",
-                                    "description": "Citations to the problematic claim.",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "commentary": {
-                                                "type": "string",
-                                                "description": "What the citation shows."
-                                            },
-                                            "quote": {
-                                                "type": "string"
-                                            }
-                                        },
-                                        "required": [
-                                            "commentary",
-                                            "quote"
-                                        ],
-                                        "additionalProperties": false
-                                    }
-                                }
-                            },
-                            "required": [
-                                "concern",
-                                "citations"
+                                "evidence_assessments",
+                                "summary",
+                                "quality_concerns"
                             ],
                             "additionalProperties": false
                         }
@@ -279,10 +282,7 @@
                 },
                 "required": [
                     "gene_symbol",
-                    "summary",
-                    "variants",
-                    "disease_entities",
-                    "quality_concerns"
+                    "disease_entities"
                 ],
                 "additionalProperties": false
             }

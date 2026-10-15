@@ -9,13 +9,13 @@ You are extracting evidence specifically for the following diagnostic panel:
 
 PANEL-SCOPED EXTRACTION: A gene is relevant only if its associated disease/phenotype aligns with this panel's scope (see Relevant disorders and Description above). Skip genes discussed for unrelated conditions—if a paper discusses multiple genes but only some cause phenotypes matching this panel's scope, only extract evidence for those panel-relevant genes.
 {% endif %}
-For each relevant gene in this paper, provide a concise summary of key evidence, then evaluate the five PanelApp criteria independently. A gene is relevant if it has patient-level evidence (variants and phenotypes) reported in this paper and meets the extraction criteria in IMPORTANT INSTRUCTIONS below. For each criterion that evaluates to TRUE, you MUST provide a detailed rationale with direct citations from the paper.
+For each relevant gene in this paper, record its disease entities. Each disease entity carries its own variants, its own evaluation of the five PanelApp criteria and its own concise summary of the evidence. A disease gets a disease entity only when it has patient-level evidence (variants and phenotypes) reported in this paper and meets the extraction criteria in IMPORTANT INSTRUCTIONS below; these criteria are decided for each disease entity (one disease with one mode of inheritance) separately. A gene is relevant when at least one of its diseases gets a disease entity. For each criterion that evaluates to TRUE, you MUST provide a detailed rationale with direct citations from the paper.
 
 The paper is attached as a PDF. You can see every page, including figures, pedigrees, and tables.
 
 WORKFLOW (one lookup round):
-1. Read the whole paper. Collect every gene you will evaluate and every variant you will list in any gene's `variants` array.
-2. In a single turn, call `lookup_genes` once with all of those gene symbols and, if there is at least one variant, `lookup_variants` once with all of the variants. Do not write the JSON answer before you have the results. If no gene in the paper has patient-level evidence, answer directly without lookups.
+1. Read the whole paper. Collect every gene you will evaluate and every variant you will list in any disease entity's `variants` array.
+2. In a single turn, call `lookup_genes` once with all of those gene symbols and, if there is at least one variant, `lookup_variants` once with all of the variants, each variant once even when it belongs to several disease entities. Do not write the JSON answer before you have the results. If no disease in the paper gets a disease entity, answer directly without lookups.
 3. After the results arrive, write the final JSON answer. There is no second lookup round.
 
 CITATION REQUIREMENTS:
@@ -103,7 +103,7 @@ When reporting family/patient counts, only count those that share the SAME disea
 
 PER-ENTITY EVALUATION:
 
-Each entry in the gene's `disease_entities` array is an independent gene–disease association and carries its OWN `evidence_assessments` (an object with the five keys criterion_A through criterion_E) AND its OWN `evidence_weakening_factors` (6 entries). Evaluate all five criteria per entity using only that entity's own evidence in this paper. Downstream aggregation across papers will compute the gene-level GREEN as: at least one entity satisfies `(A or B or C) AND D AND E` on its own. Therefore, never stitch criteria across entities — entry X passing A and entry Y passing E does not together justify GREEN.
+Each entry in the gene's `disease_entities` array is an independent gene–disease association and carries its OWN `variants`, its OWN `evidence_assessments` (an object with the five keys criterion_A through criterion_E), its OWN `evidence_weakening_factors` (6 entries), its OWN `summary` and its OWN `quality_concerns`. Evaluate all five criteria per entity using only that entity's own evidence in this paper. Downstream aggregation across papers rates each gene–disease association on its own: GREEN only when it satisfies `(A or B or C) AND D AND E`. Therefore, never stitch criteria across entities — entry X passing A and entry Y passing E does not together justify GREEN.
 
 EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST (PER ENTITY):
 
@@ -202,7 +202,7 @@ For each entity, set `criterion_E.result` to false when one or more of the follo
 
 Otherwise set `criterion_E.result` to true for the entity.
 
-Note: E is about gene-disease *validity* for this entity (is there convincing contradiction about causation?). Paper-internal contradictions and minor outliers belong in `quality_concerns` or this entity's `evidence_weakening_factors`, not E.
+Note: E is about gene-disease *validity* for this entity (is there convincing contradiction about causation?). Paper-internal contradictions and minor outliers belong in this entity's `quality_concerns` or `evidence_weakening_factors`, not E.
 
 WEAKENING FACTORS DO NOT FAIL E: the six `evidence_weakening_factors` (founder/recurrent variant, inherited-without-segregation, missense-without-functional, population-frequency, non-Mendelian, sub-Pillar-2 functional) are confidence caveats — already reflected in `independent_family_count`, the criterion rationales, and the checklist. They are NOT, individually or aggregated, grounds to set `criterion_E` false; do not synthesise them into a "contradictory evidence" finding. A recurrent/founder allele, inherited variants lacking segregation, or a single high-frequency outlier never fail E. With a strong `independent_family_count`, set E false only for a compelling, reproduced contradiction.
 
@@ -214,6 +214,7 @@ NEVER infer, estimate, or make assumptions about missing data.
 
 - disease_entities: array of distinct disease entities with their patient and family counts. Each entry must include:
   * description: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the paper.
+  * variants: the variants this disease entity's reported families carry, with citations. See VARIANT EXTRACTION REQUIREMENTS.
   * patient_count: number of patients for this specific disease entity (always required)
   * reported_family_count: every family the paper reports for this disease entity, before the qualifying gate (count families, not individuals). Null when the paper reports no families. See FAMILY COUNTS.
   * family_count: families whose genotype passes the QUALIFYING VARIANT GATE, including families derived under COHORTS WITHOUT FAMILY STRUCTURE. Null only when the paper gives no usable patient or family numbers. See FAMILY COUNTS.
@@ -272,7 +273,9 @@ NEVER infer, estimate, or make assumptions about missing data.
   * citations: array of citations (quote, commentary) where this disease entity is described
   * evidence_weakening_factors: REQUIRED per entity — exactly 6 entries (one per factor enum value) capturing weakening factors for THIS entity's evidence in this paper. See EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST above. The examples below omit this field for brevity but it must always be present.
   * evidence_assessments: REQUIRED per entity — an object with all five keys criterion_A through criterion_E, capturing the PanelApp diagnostic evidence assessment for THIS entity's gene–disease relationship from this paper. See the CRITERION A–E sections above for per-entity rules. The examples below omit this field for brevity but it must always be present.
-  Examples (showing entity descriptors only; `evidence_weakening_factors` and `evidence_assessments` are required but elided for readability — see the JSON output format at the bottom for full shape):
+  * summary: prose summary of THIS entity's evidence in this paper. See PROSE SUMMARY REQUIREMENTS.
+  * quality_concerns: the quality concerns about THIS entity's evidence, or []. See QUALITY CONCERNS.
+  Examples (showing entity descriptors only; `variants`, `evidence_weakening_factors`, `evidence_assessments`, `summary` and `quality_concerns` are required but elided for readability — see the JSON output format at the bottom for full shape):
 {% raw %}
   - All novel families: [{"description": "developmental epileptic encephalopathy with infantile spasms, onset 3-6 months", "patient_count": 7, "reported_family_count": 4, "family_count": 4, "independent_family_count": 4, "count_reduction_reasoning": "No reduction (4 families)", "disease_mechanism": "gain-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "", "previously_reported_sources": [], "citations": [{"quote": "<verbatim passage>", "commentary": "clinical features and patient counts"}, {"quote": "<verbatim passage>", "commentary": "family counts"}]}]
   - Mixed novel + previously reported: [{"description": "Beckwith-Wiedemann syndrome with multi-locus imprinting disturbance", "patient_count": 10, "reported_family_count": 10, "family_count": 10, "independent_family_count": 10, "count_reduction_reasoning": "No reduction (10 families)", "disease_mechanism": "loss-of-function", "inheritance_mode": "Monoallelic", "inheritance_details": "imprinting", "previously_reported_sources": [{"title": "Novel genetic variants of KHDC3L and other members of the subcortical maternal complex", "family_count": 1, "context": "including the 1 family previously described [ref 27]"}], "citations": [{"quote": "<verbatim passage>", "commentary": "mentions 10 total families including 1 previously reported"}]}]
@@ -291,18 +294,18 @@ WRITING STYLE (applies to `summary`, every `rationale`, `details`, `commentary`,
 - Do not use PanelApp criterion vocabulary ("Criterion A", "diagnostic-grade", "meets the functional bar") in `summary`; that belongs in `evidence_assessments`.
 
 PROSE SUMMARY REQUIREMENTS:
-Provide a short prose summary (at most ~90 words per gene) of the gene–disease evidence in this paper, for curators and for aggregation across papers. Target pattern: "Reports N individuals from M families with <zygosity> <variant type> variants and <key phenotype>." followed by one or two sentences on the main clinical features, then at most one sentence on functional or animal-model experiments and their readouts. Example: "Reports three individuals from two consanguineous families with homozygous truncating variants and congenital hypopituitarism with growth-hormone deficiency. All three have short stature from infancy; two have hypoglycaemia and one has central hypothyroidism. Patient fibroblasts show protein mislocalisation and increased cell death."
-The clinical-features sentences name the core features and their age of onset, then the variable ones, across every organ system involved. For each feature, say how many of the individuals have it (e.g., "seizures in 9 of 21", "hypotonia in 56%"), counted from the paper's text and its patient tables, including supplementary tables when they are in the document. Keep the paper's own form: a count stays a count, and a percentage stays a percentage. Say when a figure covers individuals pooled with earlier publications or from a literature review. Name a feature without a count only when the paper gives none. N and M are the numbers the paper reports (`patient_count` and `reported_family_count`); leave out "from M families" when the paper reports no families. Write them in plain words, without "qualifying" or other gate vocabulary: the qualifying and independent counts are carried by their own fields.
+Each disease entity carries its own `summary`: a short prose summary (at most ~90 words) of the evidence this paper reports for THAT entity only, for curators and for aggregation across papers. It describes the individuals counted in this entity; individuals of the gene's other entities belong in those entities' summaries. Target pattern: "Reports N individuals from M families with <zygosity> <variant type> variants and <key phenotype>." followed by one or two sentences on the main clinical features, then at most one sentence on functional or animal-model experiments and their readouts. Example: "Reports three individuals from two consanguineous families with homozygous truncating variants and congenital hypopituitarism with growth-hormone deficiency. All three have short stature from infancy; two have hypoglycaemia and one has central hypothyroidism. Patient fibroblasts show protein mislocalisation and increased cell death."
+The clinical-features sentences name the core features and their age of onset, then the variable ones, across every organ system involved. For each feature, say how many of this entity's individuals have it (e.g., "seizures in 9 of 21", "hypotonia in 56%"), counted from the paper's text and its patient tables, including supplementary tables when they are in the document. Keep the paper's own form: a count stays a count, and a percentage stays a percentage. Say when a figure covers individuals pooled with earlier publications or from a literature review. Name a feature without a count only when the paper gives none. N and M are the numbers the paper reports for this entity (its `patient_count` and `reported_family_count`); leave out "from M families" when the paper reports no families. Write them in plain words, without "qualifying" or other gate vocabulary: the qualifying and independent counts are carried by their own fields.
 
 Omit protein-function background, study design narrative, and anything the structured fields already carry.
 
 CALIBRATE CAUSAL LANGUAGE TO EVIDENCE: use "associated with" / "identified in" and "in-vitro evidence of reduced/impaired [function]" for missense (or other non-null) variants supported only by cell-based or biochemical assays, or lacking segregation. Reserve "causes" and unqualified mechanism labels ("loss-of-function", "gain-of-function", "haploinsufficiency") for proven-null variants in an established loss-of-function gene, variants segregating across informative meioses, or robust variant-specific functional validation. Keep the variant-level readout ("the variants reduced transactivation in vitro") distinct from the disease-level mechanism claim ("haploinsufficiency causes the phenotype").
 
-   When disease_mechanism is "NR", simply omit it and include other available information. When multiple distinct mechanisms exist, organize by mechanism to clarify the genotype-phenotype relationship.
+When disease_mechanism is "NR", simply omit it and include other available information.
 
 
 VARIANT EXTRACTION REQUIREMENTS:
-For each gene, extract variants following these strict guidelines:
+Each disease entity lists in its `variants` array the variants of the gene that this entity's reported families carry, whether or not they pass the QUALIFYING VARIANT GATE. A variant carried by families of several of the gene's entities is listed in each of them. A variant carried only by families excluded as CNV, gene-fusion or digenic/oligogenic is listed in none. Extract variants following these strict guidelines:
 
 1. TRANSCRIPT REFERENCE ASSOCIATION:
    Transcript references are often provided at the GENE level, not alongside each variant.
@@ -331,8 +334,8 @@ For each gene, extract variants following these strict guidelines:
      * Extract ONLY: {% raw %}[{"variant": "c.91G>T", "quote": "<verbatim passage containing the variant>"}]{% endraw %}
      * DO NOT extract both or combine them
 
-   **CRITICAL DEDUPLICATION**: Each unique variant appears EXACTLY ONCE
-   - If the same variant appears multiple times (even with formatting differences), extract it ONCE
+   **CRITICAL DEDUPLICATION**: Each unique variant appears EXACTLY ONCE in an entity's `variants` array
+   - If the same variant appears multiple times (even with formatting differences), extract it ONCE per entity, with the same notation and quote in every entity that lists it
    - Quote the passage where the MOST COMPLETE coding notation appears
    - Only include variants clearly associated with the gene being evaluated
    - Example: If paper mentions "c.374G>C" in 3 places and "NM_000123.1:c.374G>C" in 1 place:
@@ -354,7 +357,7 @@ For each gene, extract variants following these strict guidelines:
    - Variants from other genes mentioned in the paper
    - Redundant protein notations when coding notation exists
    - If variant has NO standard notation in paper, omit it entirely
-   - If NO variants found for a gene, use empty array: []
+   - If NO variants found for an entity, use empty array: []
 
    SAME VARIANT RECOGNITION (extract only once, using best notation):
    - Spacing variations: "c.123A>T" = "c.123 A > T" = "c.123A > T"
@@ -374,10 +377,23 @@ IMPORTANT INSTRUCTIONS:
   (congenital overgrowth, vascular malformations, cortical malformations, pigmentary
   mosaicism, enchondromatosis, autoinflammatory/immune conditions, secreting tumors
   causing endocrine disease)
+- SCOPE PER DISEASE ENTITY: The extraction criteria below are decided for each would-be
+  disease entity separately, that is for one disease with one mode of inheritance (see
+  LUMPING AND SPLITTING DISEASE ENTITIES). A would-be entity whose only evidence in this
+  paper is excluded by one of them is not created, even when the same gene has another
+  entity in this paper that qualifies (another disease, or the same disease with another
+  mode of inheritance); that other entity is still created. A gene with no entity that
+  qualifies gets no gene evaluation at all.
 - Exclude cancer-associated somatic mutations: tumor drivers, acquired hematological
   malignancy mutations (MDS, MPN, CHIP), and cancer predisposition as primary phenotype
-- CRITICAL: Only extract genes with patient variants and phenotypes reported in THIS paper
-  * Exclude genes mentioned only for mechanistic context (e.g., knockout models, pathway interactions, proteins studied to understand another gene)
+  * A would-be disease entity (one disease with one mode of inheritance) whose only evidence
+    in this paper is such cancer-associated somatic variants, or cancer predisposition, is
+    not created
+- CRITICAL: Only create a disease entity for a disease with patient variants and phenotypes
+  reported in THIS paper
+  * A disease the paper mentions only for mechanistic context (e.g., knockout models, pathway
+    interactions, proteins studied to understand another gene) gets no disease entity; a gene
+    mentioned only for such context gets no gene evaluation
 - CNV EXCLUSION: PanelApp gene curation is based on sequence-level variants that
   specifically disrupt individual genes, not on large CNV deletions or duplications that
   remove or encompass entire genes or multi-gene regions.
@@ -387,11 +403,13 @@ IMPORTANT INSTRUCTIONS:
   * Do NOT count families whose only link to the gene is through a whole-gene or multi-gene
     CNV deletion/duplication — these provide evidence for a genomic region, not a specific gene
   * Base Criteria A–E on gene-specific variant families only
-  * You MAY reference CNV findings as supporting context in the prose summary (e.g., "whole-gene
-    deletions in additional families support haploinsufficiency"), but clearly distinguish this
-    from the gene-specific evidence and do not include CNV families in counts
-  * If a gene has ONLY large-CNV evidence in this paper (no gene-specific variants), do not
-    create a gene evaluation for it
+  * You MAY reference CNV findings as supporting context in the `summary` of the disease
+    entity they concern (e.g., "whole-gene deletions in additional families support
+    haploinsufficiency"), but clearly distinguish this from the gene-specific evidence and do
+    not include CNV families in counts
+  * If a would-be disease entity (one disease with one mode of inheritance) has ONLY
+    large-CNV evidence in this paper (no gene-specific variants), do not create it, even when
+    the same gene has another entity with gene-specific variants in this paper
 - GENE FUSION EXCLUSION: PanelApp gene curation is based on sequence-level variants that
   specifically disrupt individual genes, not on gene fusions — chimeric genes or fusion
   transcripts formed by joining two genes via a translocation or other structural rearrangement.
@@ -402,17 +420,21 @@ IMPORTANT INSTRUCTIONS:
   * Balanced (copy-number-neutral) translocation fusions are NOT captured by the CNV exclusion
     above; exclude them here.
   * Base Criteria A–E on gene-specific sequence-level variant families only.
-  * You MAY reference fusion findings as supporting context in the prose summary, but clearly
-    distinguish this from gene-specific evidence and do not include fusion families in counts.
-  * If a gene has ONLY gene-fusion evidence in this paper (no gene-specific sequence-level
-    variants), do not create a gene evaluation for it.
+  * You MAY reference fusion findings as supporting context in the `summary` of the disease
+    entity they concern, but clearly distinguish this from gene-specific evidence and do not
+    include fusion families in counts.
+  * If a would-be disease entity (one disease with one mode of inheritance) has ONLY
+    gene-fusion evidence in this paper (no gene-specific sequence-level variants), do not
+    create it, even when the same gene has another entity with gene-specific sequence-level
+    variants in this paper.
 - DIGENIC/OLIGOGENIC EXCLUSION: Digenic and oligogenic inheritance are out of scope.
   * Do NOT count families whose disease causation requires variants in multiple different genes
     toward family_count or patient_count. Base Criteria A-E on monogenic families only.
-  * You MAY note digenic/oligogenic findings as context in the prose summary, but do not
-    include those families in counts.
-  * If a gene has ONLY digenic/oligogenic evidence in this paper, do not create a gene
-    evaluation for it.
+  * You MAY note digenic/oligogenic findings as context in the `summary` of the disease entity
+    they concern, but do not include those families in counts.
+  * If a would-be disease entity (one disease with one mode of inheritance) has ONLY
+    digenic/oligogenic evidence in this paper, do not create it, even when the same gene has
+    another entity with monogenic evidence in this paper.
   * Biallelic (two alleles in the same gene) remains in scope.
 - INDEPENDENT FAMILIES: Criteria A/B/C count `independent_family_count`, not `family_count` — see FAMILY COUNTS for how shared-origin families collapse.
 - FOUNDER / RECURRENT VARIANT TERMINOLOGY: Do not describe a variant as a "founder allele", "founder variant", or as showing a "founder effect" unless one of the following holds: (a) the paper itself uses that term about the specific variant, (b) the paper documents shared haplotype evidence linking carriers, or (c) the paper cites prior work establishing founder status. Elevated allele frequency in a specific ancestry alone is consistent with founder effect but does not establish it — alternative explanations include drift, recurrent mutation at hotspots (e.g., CpG sites), and simple polymorphism. Describe the observation in the paper's own terms (e.g., "present at higher frequency in X population", "carrier frequency 1:N suggesting a founder effect") rather than escalating to "founder allele". This applies wherever variants are described — `summary`, `quality_concerns`, and citation commentary alike. (The structured `evidence_weakening_factors.founder_or_recurrent_variant` factor concerns counting/independence and is governed by the FAMILY COUNTS rule, not by this terminology rule.)
@@ -422,9 +444,10 @@ IMPORTANT INSTRUCTIONS:
 - CRITERION C BAR: Use the two-pillar rule; biochemical or heterologous-overexpression evidence alone does not satisfy Pillar 2.
 - GENE SYMBOL REQUIREMENTS: Use the approved symbol returned by `lookup_genes`. Every gene_symbol in gene_evaluations must be a valid HGNC gene
   symbol. Do NOT include placeholder entries, marker entries, notes, or dummy gene symbols
-  (e.g., "PLACEHOLDER", "PLACEHOLDER_REMOVE", "GENE_NOTE"). If a gene does not meet the
-  extraction criteria above, omit it entirely — do not create an empty entry for it.
-- SUMMARY must be CONCISE and FACTUAL - only report what's explicitly stated
+  (e.g., "PLACEHOLDER", "PLACEHOLDER_REMOVE", "GENE_NOTE"). If none of a gene's diseases
+  meets the extraction criteria above, omit the gene entirely — do not create an entry with
+  an empty `disease_entities` array for it.
+- Each entity's `summary` must be CONCISE and FACTUAL - only report what's explicitly stated
 
 CONFIDENCE LEVELS:
 - HIGH: Very certain about the assessment based on clear evidence/absence
@@ -432,7 +455,7 @@ CONFIDENCE LEVELS:
 - LOW: Uncertain due to insufficient or conflicting information
 
 QUALITY CONCERNS:
-Flag significant issues that should make curators cautious about this evidence. These complement (do not duplicate) the structured `evidence_weakening_factors`.
+Each disease entity lists in its `quality_concerns` the significant issues that should make curators cautious about THAT entity's evidence. These complement (do not duplicate) the structured `evidence_weakening_factors`. A concern that affects several of the gene's entities (e.g., an internal contradiction about a variant carried by families of two entities, or a study design limitation of the whole cohort) goes into the `quality_concerns` of each of them, stated in full.
 
 THRESHOLD - Only flag issues that:
 - Could change how the evidence should be interpreted
@@ -472,12 +495,13 @@ CATEGORIES OF MAJOR ISSUES (examples, not exhaustive):
 
 For citations: Point to where the problematic claim or contradiction appears.
 
-If no major issues are found, use an empty array: []
+An entity without major issues has an empty array: []
 
 The response schema is complex:
 - For each disease entity, its `evidence_weakening_factors` MUST contain exactly 6 entries, one per factor enum value, each with `factor`, `present`, `details`. Fill these out FIRST per entity.
 - For each disease entity, its `evidence_assessments` MUST contain all five criteria (criterion_A through criterion_E), each with result, rationale, confidence, and citations, including criteria that evaluate to false. Each rationale must reference any `present:true` weakening factor for THAT entity that affects the verdict.
-Plan both arrays per entity for each gene before you begin writing the JSON output.
+- Decide which variants and which quality concerns belong to each disease entity: a variant goes into the `variants` of every entity whose families carry it, and a concern into the `quality_concerns` of every entity it affects.
+Plan these per entity, for each gene, before you begin writing the JSON output.
 
 Respond in JSON format with your evaluation:
 
@@ -487,15 +511,14 @@ Respond in JSON format with your evaluation:
   "gene_evaluations": [
     {
       "gene_symbol": "GENE_SYMBOL",
-      "summary": "Reports [N] individuals from [N] families with [inheritance] variants presenting with [phenotype]. [Clinical features]. [Functional evidence]. [Notable specifics].",
-      "variants": [
-        {"variant": "NM_000123.4:c.1234A>T", "quote": "<verbatim passage containing the variant>"},
-        {"variant": "NM_000123.4:c.5678G>C", "quote": "<verbatim passage containing the variant>"},
-        {"variant": "rs123456", "quote": "<verbatim passage containing the variant>"}
-      ],
       "disease_entities": [
         {
           "description": "disease name or clinical features with modifiers",
+          "variants": [
+            {"variant": "NM_000123.4:c.1234A>T", "quote": "<verbatim passage containing the variant>"},
+            {"variant": "NM_000123.4:c.5678G>C", "quote": "<verbatim passage containing the variant>"},
+            {"variant": "rs123456", "quote": "<verbatim passage containing the variant>"}
+          ],
           "patient_count": N,
           "reported_family_count": N_or_null,
           "family_count": N_or_null,
@@ -520,13 +543,14 @@ Respond in JSON format with your evaluation:
             "criterion_C": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
             "criterion_D": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []},
             "criterion_E": {"result": boolean, "rationale": "...", "confidence": "HIGH|MEDIUM|LOW", "citations": []}
-          }
-        }
-      ],
-      "quality_concerns": [
-        {
-          "concern": "description of the issue and why it matters",
-          "citations": [{"quote": "<verbatim passage>", "commentary": "where the problematic claim appears"}]
+          },
+          "summary": "Reports [N] individuals from [M] families with [zygosity] [variant type] variants and [phenotype of this entity]. [Clinical features]. [Functional evidence].",
+          "quality_concerns": [
+            {
+              "concern": "description of the issue and why it matters",
+              "citations": [{"quote": "<verbatim passage>", "commentary": "where the problematic claim appears"}]
+            }
+          ]
         }
       ]
     }

@@ -157,6 +157,14 @@ uv run palit download-papers register
 #    the report and its viewer mark it as not located. Only placeholder
 #    citations that quote nothing (an empty quote, "x", "placeholder") are
 #    dropped.
+#    The extraction lists, for each gene with evidence in the paper, one disease
+#    entity per disease and MoI. Each entity has its own variants, family
+#    counts, criteria, summary and quality concerns. A disease whose only
+#    evidence in the paper is out of scope (large CNVs, gene fusions, digenic
+#    inheritance, somatic tumour variants, mechanistic context) gets no entity,
+#    even when another disease of the same gene gets one; a gene without an
+#    entity is left out. The gene's variants are looked up in gnomAD once each,
+#    however many of its entities list them.
 #    Each disease entity carries three family counts. The reported count is
 #    every family the paper reports. The qualifying count (`family_count`) is
 #    the families whose genotype passes the qualifying variant gate. The

@@ -62,7 +62,13 @@ def _relevance(relevant: bool) -> str:
     return json.dumps({"relevant": relevant, "screen": screen})
 
 
-def _extraction(hgnc_id: int, paper_gene_symbol: str) -> str:
+def _extraction(hgnc_id: int, paper_gene_symbol: str, variants: tuple[str, ...] = ()) -> str:
+    entity = {
+        "description": "d",
+        "variants": [{"variant": v, "quote": f"{v} in family 1"} for v in variants],
+        "summary": "s",
+        "quality_concerns": [],
+    }
     return json.dumps(
         {
             "genome_build": "unknown",
@@ -70,10 +76,7 @@ def _extraction(hgnc_id: int, paper_gene_symbol: str) -> str:
                 {
                     "hgnc_id": hgnc_id,
                     "paper_gene_symbol": paper_gene_symbol,
-                    "summary": "s",
-                    "variants": [],
-                    "disease_entities": [{"description": "d"}],
-                    "quality_concerns": [],
+                    "disease_entities": [entity],
                 }
             ],
         }
@@ -99,6 +102,39 @@ def test_evidence_for_gene_lists_each_paper_once_with_extraction_symbol(tmp_path
     evidence = PaperBatchProcessor(db_path).get_evidence_for_gene(AARS1)
 
     assert [(e["doi"], e["paper_gene_symbol"]) for e in evidence] == [("10.1/a", "AARS1")]
+
+
+def test_evidence_for_gene_rejects_a_gene_level_extraction(tmp_path: Path) -> None:
+    """An extraction with gene-level summary, variants and concerns is extracted again."""
+    gene_level = {
+        "genome_build": "unknown",
+        "gene_evaluations": [
+            {
+                "hgnc_id": AARS1,
+                "paper_gene_symbol": "AARS1",
+                "summary": "s",
+                "variants": [],
+                "disease_entities": [{"description": "d"}],
+                "quality_concerns": [],
+            }
+        ],
+    }
+    db_path = tmp_path / "run.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript((ROOT / "schema.sql").read_text())
+        conn.execute(
+            "INSERT INTO papers (doi, title, source, source_type, evidence_extraction_json) "
+            "VALUES ('10.1/a', 't', 'pubmed', 'initial', ?)",
+            (json.dumps(gene_level),),
+        )
+        conn.execute(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (?, 'AARS1', '10.1/a', 'recent_evidence')",
+            (AARS1,),
+        )
+
+    with pytest.raises(ValueError, match=r"10\.1/a: gene-level extraction shape; re-extract"):
+        PaperBatchProcessor(db_path).get_evidence_for_gene(AARS1)
 
 
 def test_uncopied_citations_are_kept_and_placeholders_dropped() -> None:
@@ -461,8 +497,8 @@ def test_prompt_lists_the_genes_variants_with_their_gnomad_figures(
             "INSERT INTO papers (doi, title, authors, source_date, source, source_type, "
             "evidence_extraction_json) VALUES (?, 't', ?, ?, 'pubmed', 'initial', ?)",
             [
-                ("10.1/a", "Smith, A", "2024-01-01", _extraction(GENEA, "GENEA")),
-                ("10.1/b", "Jones, B", "2023-01-01", _extraction(GENEA, "GENEA")),
+                ("10.1/a", "Smith, A", "2024-01-01", _extraction(GENEA, "GENEA", ("p.R10*",))),
+                ("10.1/b", "Jones, B", "2023-01-01", _extraction(GENEA, "GENEA", ("c.50G>A",))),
             ],
         )
         conn.executemany(
@@ -510,7 +546,13 @@ def test_prompt_lists_the_genes_variants_with_their_gnomad_figures(
         )
     processor = PaperBatchProcessor(db_path)
     evidence = processor.get_evidence_for_gene(GENEA)
-    assert all("variants" not in g for e in evidence for g in e["gene_evaluations"])
+    # Each entity names its variants as the paper writes them; the quotes stay out.
+    assert [
+        entity["variants"]
+        for e in evidence
+        for g in e["gene_evaluations"]
+        for entity in g["disease_entities"]
+    ] == [["p.R10*"], ["c.50G>A"]]
     variants = processor.get_variants_for_gene(GENEA, [e["doi"] for e in evidence])
 
     prompt = render_prompt(

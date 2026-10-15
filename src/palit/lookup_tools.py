@@ -33,10 +33,10 @@ LOOKUP_VARIANTS_TOOL: ToolParam = {
     "description": (
         "Normalises variants (Mutalyzer; protein changes are back-translated to candidate DNA "
         "changes) and looks up gnomAD v4.1 joint exome+genome counts. Takes many variants in one "
-        "call: call it once with every variant from the paper. For each input returns either an "
-        "error (notation could not be parsed or mapped) or one or more normalised candidates, each "
-        "with gnomAD AC, AN, homozygote, heterozygote and hemizygote counts and FAF95 popmax, or a "
-        "marker that the candidate is absent from gnomAD."
+        "call: call it once with every variant you will list in the disease entities, each once. "
+        "For each input returns either an error (notation could not be parsed or mapped) or one "
+        "or more normalised candidates, each with gnomAD AC, AN, homozygote, heterozygote and "
+        "hemizygote counts and FAF95 popmax, or a marker that the candidate is absent from gnomAD."
     ),
     "input_schema": {
         "type": "object",
@@ -53,8 +53,8 @@ LOOKUP_VARIANTS_TOOL: ToolParam = {
                         "variant": {
                             "type": "string",
                             "description": (
-                                "One notation exactly as in the gene's `variants` array "
-                                "(e.g. NM_000123.4:c.1234A>T)."
+                                "One notation exactly as you will list it in the disease "
+                                "entities' `variants` arrays (e.g. NM_000123.4:c.1234A>T)."
                             ),
                         },
                         "genome_build": {"type": "string", "enum": ["GRCh38", "GRCh37", "unknown"]},

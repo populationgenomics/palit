@@ -607,7 +607,7 @@ def test_novel_and_known_split(results: GeneAssessmentResults) -> None:
     ]
     geneb = results.novel_genes[0]
     assert geneb.current_rating is None
-    assert geneb.findings == [Finding(FindingKind.NEW_GENE, 3, 20, None)]
+    assert geneb.findings == [Finding(FindingKind.NEW_DISEASE, 3, 20, None)]
 
 
 def test_associations_by_rating_then_independent_families(results: GeneAssessmentResults) -> None:
@@ -1052,25 +1052,25 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
             _association("d", status="new_disease", green=True),
             None,
             False,
-            (FindingKind.NEW_GENE, 3),
+            (FindingKind.NEW_DISEASE, 3),
         ),
         (
             _association("d", status="new_moi", independent=1),
             None,
             False,
-            (FindingKind.NEW_GENE, 1),
+            (FindingKind.NEW_DISEASE, 1),
         ),
         (
             _association("d", panelapp_rating="GREEN", green=True),
             None,
             True,
-            (FindingKind.NEW_GENE, 3),
+            (FindingKind.NEW_DISEASE, 3),
         ),
         (
             _association("d", panelapp_rating="AMBER", independent=1),
             None,
             True,
-            (FindingKind.NEW_GENE, 1),
+            (FindingKind.NEW_DISEASE, 1),
         ),
         # A new disease of a gene on a target panel, at any corpus rating
         (
@@ -1241,9 +1241,9 @@ def test_genes_are_placed_once_by_their_strongest_finding() -> None:
         name: [(f.kind, f.rating) for f in genes[name].findings]
         for name in ("new_amber", "new_amber_moi", "new_red")
     } == {
-        "new_amber": [(FindingKind.NEW_GENE, 2)],
-        "new_amber_moi": [(FindingKind.NEW_GENE, 2), (FindingKind.NEW_GENE, 2)],
-        "new_red": [(FindingKind.NEW_GENE, 1)],
+        "new_amber": [(FindingKind.NEW_DISEASE, 2)],
+        "new_amber_moi": [(FindingKind.NEW_DISEASE, 2), (FindingKind.NEW_DISEASE, 2)],
+        "new_red": [(FindingKind.NEW_DISEASE, 1)],
     }
 
 
@@ -1428,7 +1428,7 @@ def test_association_headings_show_the_relation_then_the_corpus_rating(
     assert ">new disease</span>" not in novel
     assert 'class="rating-arrow"' not in novel
     assert ">disease not curated in PanelApp</span>" in novel
-    assert novel.count("add GREEN</a>") == 1
+    assert novel.count("new disease GREEN</a>") == 1
     for removed in ("Basis:", "As described:", "Grouping:", "Matched panels:", "by Sonnet 5.5"):
         assert removed not in html
 
@@ -1517,7 +1517,7 @@ def test_gene_headers_show_the_current_status_without_an_arrow(
     assert '<span class="rating-badge rating-grey">Not in panel</span>' in novel
     assert re.findall(
         r'<a class="finding-badge rating-(\w+)" href="#association-(\d+)"[^>]*>([^<]+)</a>', novel
-    ) == [("green", "20", "add GREEN")]
+    ) == [("green", "20", "new disease GREEN")]
     assert novel.index("Not in panel") < novel.index('class="finding-badge')
     assert "On panel" not in novel
 
@@ -2035,11 +2035,11 @@ def test_findings_with_the_same_badge_merge_and_come_first(
         ("amber", "11", "new MoI AMBER"),
     ]
     assert (
-        'data-title="Diseases PanelApp Australia does not curate for this gene:'
+        'data-title="Diseases the target panels do not curate for this gene:'
         '&#10;• GENEA-related other disease&#10;• GENEA-related second disease"'
     ) in header
     assert (
-        'data-title="A disease PanelApp Australia does not curate for this gene:'
+        'data-title="A disease the target panels do not curate for this gene:'
         '&#10;• GENEA-related ataxia variant"'
     ) in header
 
@@ -2170,7 +2170,7 @@ def test_a_scoped_run_measures_upgrades_from_the_scope_panel_rating(
     assert statistics.upgrade_findings == 1
 
     geneb = results.novel_genes[0]
-    assert geneb.findings == [Finding(FindingKind.NEW_GENE, 3, 20, None)]
+    assert geneb.findings == [Finding(FindingKind.NEW_DISEASE, 3, 20, None)]
     assert (geneb.prefill.form_type, geneb.prefill.panel_id, geneb.prefill.rating) == (
         "add",
         ATAXIA_PANEL_ID,

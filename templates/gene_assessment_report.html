@@ -41,14 +41,14 @@
        from this report's papers, after their count when there are several #}
     {% macro finding_text(group) -%}
     {% set rating = group.rating | confidence_to_color | upper %}
-    {% if group.count > 1 %}{{ group.count }}× {% endif %}{% if group.kind == 'new_gene' %}add {{ rating }}{% elif group.kind == 'new_disease' %}new disease {{ rating }}{% elif group.kind == 'new_moi' %}new MoI {{ rating }}{% else %}upgrade {{ group.from_rating | confidence_to_color | upper }}→{{ rating }}{% endif %}
+    {% if group.count > 1 %}{{ group.count }}× {% endif %}{% if group.kind == 'new_disease' %}new disease {{ rating }}{% elif group.kind == 'new_moi' %}new MoI {{ rating }}{% else %}upgrade {{ group.from_rating | confidence_to_color | upper }}→{{ rating }}{% endif %}
     {%- endmacro %}
 
     {% macro finding_title(group) -%}
     {% if group.count == 1 %}
-    {% if group.kind == 'new_gene' %}An association of a gene on none of the target panels{% elif group.kind == 'new_disease' %}A disease PanelApp Australia does not curate for this gene{% elif group.kind == 'new_moi' %}A mode of inheritance PanelApp Australia does not curate for this disease, with {{ min_families_for_moi_expansion }} or more independent families{% else %}An association PanelApp Australia already curates, rated higher on this report's papers than in PanelApp Australia{% endif %}
+    {% if group.kind == 'new_disease' %}A disease the target panels do not curate for this gene{% elif group.kind == 'new_moi' %}A mode of inheritance PanelApp Australia does not curate for this disease, with {{ min_families_for_moi_expansion }} or more independent families{% else %}An association PanelApp Australia already curates, rated higher on this report's papers than in PanelApp Australia{% endif %}
     {% else %}
-    {% if group.kind == 'new_gene' %}Associations of a gene on none of the target panels{% elif group.kind == 'new_disease' %}Diseases PanelApp Australia does not curate for this gene{% elif group.kind == 'new_moi' %}Modes of inheritance PanelApp Australia does not curate for these diseases, each with {{ min_families_for_moi_expansion }} or more independent families{% else %}Associations PanelApp Australia already curates, rated higher on this report's papers than in PanelApp Australia{% endif %}
+    {% if group.kind == 'new_disease' %}Diseases the target panels do not curate for this gene{% elif group.kind == 'new_moi' %}Modes of inheritance PanelApp Australia does not curate for these diseases, each with {{ min_families_for_moi_expansion }} or more independent families{% else %}Associations PanelApp Australia already curates, rated higher on this report's papers than in PanelApp Australia{% endif %}
     {% endif %}
     {%- endmacro %}
 
@@ -68,7 +68,7 @@
     {# A one-letter finding badge for the ToC, with the group's count when it has several;
        the legend above the gene lists explains the letters #}
     {% macro finding_chip(kind, rating, href=none, title=none, count=1) -%}
-    <a class="finding-chip rating-{{ rating | confidence_to_color | lower }}"{% if href %} href="{{ href }}"{% endif %}{% if title %} data-title="{{ title }}"{% endif %}>{{ {'new_gene': '+', 'new_disease': 'D', 'new_moi': 'M', 'upgrade': '↑'}[kind] }}{% if count > 1 %}<sup>{{ count }}</sup>{% endif %}</a>
+    <a class="finding-chip rating-{{ rating | confidence_to_color | lower }}"{% if href %} href="{{ href }}"{% endif %}{% if title %} data-title="{{ title }}"{% endif %}>{{ {'new_disease': 'D', 'new_moi': 'M', 'upgrade': '↑'}[kind] }}{% if count > 1 %}<sup>{{ count }}</sup>{% endif %}</a>
     {%- endmacro %}
 
     {# Link to a quote in the report's PDF viewer, with its page, or marked when the PDF can't place it #}
@@ -718,7 +718,7 @@
             <li><a href="#featured-journals">Papers in Featured Journals ({{ favorite_journal_papers.total }})</a></li>
             {% endif %}
             {% if groups.new_genes or groups.with_findings %}
-            <li class="toc-legend">Finding badges: {{ finding_chip('new_gene', 3) }} an association of a gene on none of the target panels, {{ finding_chip('new_disease', 3) }} new disease, {{ finding_chip('new_moi', 2) }} new mode of inheritance, {{ finding_chip('upgrade', 1) }} an association PanelApp already curates, now rated higher. Each badge's colour is its association's rating from this report's papers.</li>
+            <li class="toc-legend">Finding badges: {{ finding_chip('new_disease', 3) }} a disease the target panels do not curate for the gene, which is every association of a new gene, {{ finding_chip('new_moi', 2) }} new mode of inheritance, {{ finding_chip('upgrade', 1) }} an association PanelApp already curates, now rated higher. Each badge's colour is its association's rating from this report's papers.</li>
             {% endif %}
             {% for anchor, title, _, gene_groups in gene_sections %}
             {{ toc_section(anchor, title, gene_groups) }}

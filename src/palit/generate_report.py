@@ -417,7 +417,8 @@ class ReportAssociation:
 class FindingKind(StrEnum):
     """What an association adds to the target panels' curation of a gene."""
 
-    NEW_GENE = "new_gene"  # any association of a gene on none of the target panels
+    # A disease the target panels do not curate for the gene, which includes every
+    # association of a gene on none of them
     NEW_DISEASE = "new_disease"
     NEW_MOI = "new_moi"  # highlighted new_moi associations only
     UPGRADE = "upgrade"  # an existing association rated higher in this corpus
@@ -802,8 +803,8 @@ def association_finding(
     *current_rating* is the gene's highest rating on the target panels, None
     when it is on none of them. An association whose papers the target panels
     have all reviewed already is no finding, whatever its relation and rating.
-    Otherwise, every association of a gene on none of the target panels is a
-    finding, whatever PanelApp Australia curates on other panels. On a gene on a
+    Otherwise, every association of a gene on none of the target panels is a new
+    disease, whatever PanelApp Australia curates on other panels. On a gene on a
     target panel, a new disease is a finding, and a new MoI once highlighted. An
     existing association is an upgrade when its corpus rating is above the rating
     it starts from. In a panel-scoped run (*scoped*), that is the gene's rating
@@ -814,7 +815,7 @@ def association_finding(
     if association.already_reviewed:
         return None
     if current_rating is None:
-        return Finding(FindingKind.NEW_GENE, association.rating, association.id, None)
+        return Finding(FindingKind.NEW_DISEASE, association.rating, association.id, None)
     status = association.relation_status
     if status == "new_disease":
         return Finding(FindingKind.NEW_DISEASE, association.rating, association.id, None)
@@ -2026,7 +2027,7 @@ def calculate_comprehensive_statistics(
         cursor = conn.cursor()
 
         all_genes = results.novel_genes + results.known_genes
-        finding_kinds = [finding.kind for gene in all_genes for finding in gene.findings]
+        finding_kinds = [finding.kind for gene in results.known_genes for finding in gene.findings]
         total_panel_suggestions = sum(
             len(
                 {

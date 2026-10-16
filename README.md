@@ -297,7 +297,7 @@ Seeding takes, for each of the run's genes, the publications PanelApp cites for 
 - A cited paper the run database does not hold is copied from the baseline (`data/pubmed_baseline_screening.sqlite`, or `--baseline-db-path`) if the baseline holds it, matched by PMID or by DOI in any letter case, and fetched from PubMed (batched efetch) or CrossRef otherwise. It is stored as an expansion paper with `source_details = 'panelapp:{hgnc_id}'`, the lowest HGNC ID citing it, and scheduled for download. Since the baseline takes in every PanelApp citation (see "Updating the Baseline"), fetching is the exception.
 - Table `panelapp_citations` gets one row per run gene and held paper PanelApp cites for it, whether the run held the paper before seeding or seeding added it. A linked paper without a download status, such as an initial paper the relevance screen rejected, is scheduled for download.
 
-A paper linked to one of the run's genes is in the corpus whatever its relevance, so it is downloaded and extracted with the expansion papers; `download-papers open-browser --expansion-only` lists it too. The run's genes come from relevant papers only, so the extraction of a cited paper the screen rejected adds no genes. A cited paper the screen passed adds its genes like any relevant paper, and it may be extracted only after seeding (for example when `reduce-literature` had unscheduled it and seeding scheduled it again). Seeding logs how many run genes it covered; when the run's genes have grown since, run it again for the new genes.
+A paper linked to one of the run's genes is in the corpus whatever its relevance, so it is downloaded and extracted with the expansion papers; `download-papers open-browser --expansion-only` lists it too. The run's genes come from relevant papers only, so the extraction of a cited paper the screen rejected adds no genes. A cited paper the screen passed adds its genes like any relevant paper, and it may be extracted only after seeding (for example when `reduce-literature` had unscheduled it and seeding scheduled it again). Seeding runs once per run, so a gene that first enters the run through such a paper is aggregated without the papers PanelApp cites for it.
 
 In the monthly workflow `expand-literature` seeds. It does so after `--force-all`'s expansion wipe, so seeded papers survive it, and before the tournament's early return, so a rerun still picks up publications added to a panel since. Panel-scoped runs have no `expand-literature` and seed with `palit panelapp seed-citations` (see "Panel-Specific Curation"), which runs the same seeding.
 
@@ -536,10 +536,9 @@ uv run palit download-papers open-browser --db-path data/$PANEL_NAME.sqlite --ex
 uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 #    A relevant paper extracted in this round (one reduce-literature had left
-#    out, then seeded because PanelApp cites it) can add run genes, which step 6
-#    did not seed for. Run step 6 again, which fetches nothing it holds already;
-#    if it reports more run genes than before, repeat step 7 as well, until the
-#    count stays the same.
+#    out, then seeded because PanelApp cites it) can add run genes. Step 6 runs
+#    once, so these genes are aggregated without the papers PanelApp cites for
+#    them.
 
 # 8. Assess genes against the panel, which is the only target panel. Each
 #    association gets a `scope_rationale` condensed from those of the

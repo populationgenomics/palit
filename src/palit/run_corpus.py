@@ -21,8 +21,9 @@ from relevant papers only, however a paper entered the corpus: the extraction of
 a cited paper the screen rejected adds no genes to the run, while that of a cited
 paper the screen passed does, as for any relevant paper. Such a paper can be
 extracted only after seeding, for example when reduce-literature had left it
-unscheduled and seeding scheduled it again, so the run's genes can grow after
-seeding, and seeding is then run again for the new genes.
+unscheduled and seeding scheduled it again. Seeding runs once, so a gene that
+first enters the run this way is aggregated without the papers PanelApp cites for
+it.
 """
 
 import sqlite3

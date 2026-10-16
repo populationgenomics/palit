@@ -42,13 +42,17 @@ from palit.panelapp_client import (
     PanelAppClient,
     PanelGeneData,
     PanelPublications,
+    ordered_panel_publications,
 )
 from palit.panelapp_integration import (
     RATING_CONFIDENCE,
+    Finding,
+    FindingKind,
     MondoMatch,
     MondoTerm,
     PrefillAssociation,
     PrefillData,
+    PrefillEntry,
     RelationStatus,
     calculate_association_rating,
     panelapp_confidence_to_color,
@@ -431,32 +435,6 @@ class ReportAssociation:
     @property
     def new_moi_highlighted(self) -> bool:
         return is_highlighted_new_moi(self.assessment)
-
-
-class FindingKind(StrEnum):
-    """What an association adds to the target panels' curation of a gene."""
-
-    # A disease the target panels do not curate for the gene, which includes every
-    # association of a gene on none of them
-    NEW_DISEASE = "new_disease"
-    NEW_MOI = "new_moi"  # highlighted new_moi associations only
-    UPGRADE = "upgrade"  # an existing association rated higher in this corpus
-
-
-@dataclass(frozen=True)
-class Finding:
-    """An association that the target panels lack or rate lower than this corpus does."""
-
-    kind: FindingKind
-    rating: int  # the association's corpus rating: 3 GREEN, 2 AMBER, 1 RED
-    association_id: int
-    # Upgrades only: the rating the corpus rating is above, see association_finding
-    from_rating: int | None
-
-    @property
-    def badge(self) -> tuple[FindingKind, int, int | None]:
-        """What the finding's badge shows; a gene's findings with the same badge share one."""
-        return (self.kind, self.rating, self.from_rating)
 
 
 @dataclass(frozen=True)
@@ -1319,6 +1297,29 @@ def prefill_associations(
     return PrefillSelection(associations, rated=False)
 
 
+def prefill_entry(
+    target_entries: tuple[PanelEntry, ...], panel_id: int, rating: int
+) -> PrefillEntry:
+    """The gene's entry on *panel_id*, which its review form extends; *rating* is the
+    gene's confidence level there.
+
+    *target_entries* are the gene's entries on the target panels. The review is of the
+    gene entry; a gene that the panel holds only as repeat expansions gets its first
+    repeat-expansion entry there. Raises ValueError when the panel holds neither.
+    """
+    on_panel = [e for e in target_entries if e.panel_id == panel_id]
+    if not on_panel:
+        raise ValueError(f"The gene has no entry on panel {panel_id} for its review form")
+    gene_entries = [e for e in on_panel if e.entity_type == "gene"]
+    entry = (gene_entries or on_panel)[0]
+    return PrefillEntry(
+        rating=rating,
+        moi=entry.moi,
+        phenotypes=entry.phenotypes,
+        publications=tuple(ordered_panel_publications(list(entry.publications))),
+    )
+
+
 def load_gene(
     cursor: sqlite3.Cursor,
     row: sqlite3.Row,
@@ -1383,12 +1384,20 @@ def load_gene(
     )["unassessed_reports"]
 
     described = prefill_associations(associations, findings)
+    finding_by_association = {f.association_id: f for f in findings}
     prefill = prepare_prefill_data(
         hgnc_id=hgnc_id,
-        associations=[PrefillAssociation(a.assessment, a.mondo) for a in described.associations],
+        associations=[
+            PrefillAssociation(a.assessment, a.mondo, finding_by_association.get(a.id))
+            for a in described.associations
+        ],
         moi_associations=[a.assessment for a in associations],
         panel_id=prefill_panel_id,
-        panel_rating=panel_confidence.get(prefill_panel_id),
+        entry=(
+            prefill_entry(target_entries, prefill_panel_id, panel_confidence[prefill_panel_id])
+            if holding
+            else None
+        ),
         doi_to_pmid=pmid_by_doi,
         rated=described.rated,
     )

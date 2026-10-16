@@ -260,9 +260,25 @@ uv run palit match-panels --panel-date $PANEL_DATE
 #     Australia and its rating in this corpus. An association whose papers the
 #     target panels have all reviewed already, by the rule of step 9, is no
 #     finding whatever its rating, and says so; the statistics count those that
-#     would otherwise be findings. A gene without findings is prefilled with its
-#     other associations, or, when all are already reviewed, at its rating on
-#     the panel. PanelApp records citations per gene entry, not per disease,
+#     would otherwise be findings. Each gene has a PanelApp prefill: a review
+#     form on the first target panel holding it, an add form on the first target
+#     panel otherwise. It describes the gene's findings. A gene without findings
+#     is prefilled with its other associations, or, when all are already
+#     reviewed, at its rating on the panel. A review replaces the curator's
+#     evaluation of the gene's entry, so its MoI, phenotypes and publications
+#     combine the entry's with those of the report's associations. The union is
+#     with the panel entry, not with the curator's own earlier review: a
+#     phenotype or publication that the review had and the entry lacks is
+#     replaced on submit, so the curator adds it back in the form. The comment
+#     is added to the earlier ones, so it describes only the prefilled
+#     associations: each gets a heading line with its finding (new disease, new
+#     MoI, or upgrade from the rating it starts from), disease, MoI and rating,
+#     then its summary. An association without a finding gets the heading
+#     without a finding kind. When the target panels have already reviewed the
+#     papers of every association, the comment is empty. An add form's comment
+#     heads each association with its disease, MoI and rating, and is the
+#     summary alone for a single association. PanelApp records citations per
+#     gene entry, not per disease,
 #     so a paper cited for one of the gene's diseases counts as reviewed for all
 #     of them. A gene on a target panel without findings goes under "Unreviewed
 #     on target panel" when any of its entries on the target panels has no

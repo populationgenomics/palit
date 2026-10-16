@@ -6,7 +6,7 @@ Every example is a publication string from the PanelApp Australia snapshot of
 
 import pytest
 
-from palit.panelapp_client import clean_panel_publications
+from palit.panelapp_client import clean_panel_publications, ordered_panel_publications
 
 
 @pytest.mark.parametrize(
@@ -125,3 +125,15 @@ def test_does_not_read_a_dois_digits_as_a_pmid() -> None:
     )
     assert cited.pmids == set()
     assert cited.dois == {"10.1101/773028", "10.64898/2026.02.18.706528", "10.1002/mds.28915"}
+
+
+def test_ordered_publications_keep_the_strings_order() -> None:
+    """Each string's PMIDs, then its DOIs, each sorted; a repeat in a later string stays."""
+    assert ordered_panel_publications(
+        [
+            "PMID: 38022338, 36944331, https://doi.org/10.1016/j.jaci.2022.10.022",
+            "OMIM 601492",
+            "10.1101/773028",
+            "36944331",
+        ]
+    ) == [36944331, 38022338, "10.1016/j.jaci.2022.10.022", "10.1101/773028", 36944331]

@@ -14,7 +14,8 @@ Snapshot = dict[int, dict[str, Any]]
 def test_entries_include_repeat_expansions(
     panel_entries: dict[int, tuple[PanelEntry, ...]],
 ) -> None:
-    assert [e.panel_name for e in panel_entries[2]] == ["Mendeliome"]
+    assert [(e.panel_name, e.entity_type) for e in panel_entries[2]] == [("Mendeliome", "str")]
+    assert [(e.panel_name, e.entity_type) for e in panel_entries[1]] == [("Mendeliome", "gene")]
 
 
 def test_entries_list_reference_panels_first(

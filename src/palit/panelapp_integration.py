@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Shared utilities for PanelApp criteria evaluation and integration."""
 
+import re
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Literal
 
 from palit.gencc import MondoRef
@@ -30,6 +32,34 @@ PANEL_NAMES = {
 # curated with this MoI, curated only with another MoI, or not curated.
 RelationStatus = Literal["existing", "new_disease", "new_moi"]
 NEW_RELATION_STATUSES: frozenset[RelationStatus] = frozenset({"new_disease", "new_moi"})
+
+
+class FindingKind(StrEnum):
+    """What an association adds to the target panels' curation of a gene."""
+
+    # A disease the target panels do not curate for the gene, which includes every
+    # association of a gene on none of them
+    NEW_DISEASE = "new_disease"
+    NEW_MOI = "new_moi"  # highlighted new_moi associations only
+    UPGRADE = "upgrade"  # an existing association rated higher in this corpus
+
+
+@dataclass(frozen=True)
+class Finding:
+    """An association that the target panels lack or rate lower than this corpus does."""
+
+    kind: FindingKind
+    rating: int  # the association's corpus rating: 3 GREEN, 2 AMBER, 1 RED
+    association_id: int
+    # Upgrades only: the rating the corpus rating is above, see
+    # generate_report.association_finding
+    from_rating: int | None
+
+    @property
+    def badge(self) -> tuple[FindingKind, int, int | None]:
+        """What the finding's badge shows; a gene's findings with the same badge share one."""
+        return (self.kind, self.rating, self.from_rating)
+
 
 # PanelApp criteria names
 CriterionName = Literal["criterion_A", "criterion_B", "criterion_C", "criterion_D", "criterion_E"]
@@ -144,6 +174,36 @@ IMPRINTING_TO_PANELAPP_MOI = {
 IMPRINTED_STATUS_UNKNOWN_PANELAPP_MOI = (
     "MONOALLELIC, autosomal or pseudoautosomal, imprinted status unknown"
 )
+# The imprinting direction each imprinted PanelApp MoI states
+_PANELAPP_MOI_IMPRINTING = {moi: direction for direction, moi in IMPRINTING_TO_PANELAPP_MOI.items()}
+
+# PanelApp MoIs that refine a mode of the extraction enum beyond its own PanelApp MoI
+BOTH_BIALLELIC_MORE_SEVERE_PANELAPP_MOI = (
+    "BOTH monoallelic and biallelic (but BIALLELIC mutations cause a more SEVERE disease form),"
+    " autosomal or pseudoautosomal"
+)
+X_LINKED_BIALLELIC_FEMALES_PANELAPP_MOI = (
+    "X-LINKED: hemizygous mutation in males, biallelic mutations in females"
+)
+# The MoI of a PanelApp entry that has none, as panel_entries.PanelEntry holds it
+MOI_NOT_SPECIFIED = "not specified"
+
+# The extraction enum mode that each MoI a PanelApp entry can hold names; None for one
+# that names no mode
+PANELAPP_MOI_MODES: dict[str, str | None] = {
+    ENUM_TO_PANELAPP_MOI["Monoallelic"]: "Monoallelic",
+    **dict.fromkeys(IMPRINTING_TO_PANELAPP_MOI.values(), "Monoallelic"),
+    IMPRINTED_STATUS_UNKNOWN_PANELAPP_MOI: "Monoallelic",
+    ENUM_TO_PANELAPP_MOI["Biallelic"]: "Biallelic",
+    ENUM_TO_PANELAPP_MOI["Monoallelic_and_biallelic"]: "Monoallelic_and_biallelic",
+    BOTH_BIALLELIC_MORE_SEVERE_PANELAPP_MOI: "Monoallelic_and_biallelic",
+    ENUM_TO_PANELAPP_MOI["X-linked"]: "X-linked",
+    X_LINKED_BIALLELIC_FEMALES_PANELAPP_MOI: "X-linked",
+    ENUM_TO_PANELAPP_MOI["Mitochondrial"]: "Mitochondrial",
+    "Unknown": None,
+    "Other": None,
+    MOI_NOT_SPECIFIED: None,
+}
 
 
 def inheritance_details_items(details: str) -> list[str]:
@@ -172,21 +232,44 @@ class PrefillAssociation:
 
     assessment: dict[str, Any]  # the stored association JSON, paper IDs in display form
     mondo: MondoTerm | None  # None until map-mondo has run for this association
+    finding: Finding | None  # None for an association without a finding
+
+
+@dataclass(frozen=True)
+class PrefillEntry:
+    """The gene's entry on a review form's panel, which the review extends.
+
+    A review replaces the curator's evaluation of the entry with the form's rating,
+    MoI, phenotypes and publications, so these cover the entry's curation as well as
+    the described associations. Its comment is added to the earlier ones.
+    """
+
+    rating: int  # the gene's confidence level on the panel
+    moi: str  # the entry's MoI, a key of PANELAPP_MOI_MODES
+    phenotypes: tuple[str, ...]
+    publications: tuple[int | str, ...]  # the entry's PMIDs and DOIs, in its order
+
+
+FormType = Literal["add", "review"]
 
 
 @dataclass
 class PrefillData:
     """Prefill form data for PanelApp integration."""
 
-    form_type: str  # "add" or "review"
+    form_type: FormType
     panel_id: int
     hgnc_id: str  # "HGNC:8607" format for PanelApp
     rating: str  # "GREEN", "AMBER", "RED"
     moi: str  # Full PanelApp MoI string
     mode_of_pathogenicity: str | None
-    publications: str  # semicolon-separated identifiers (PMIDs where available, DOIs otherwise)
-    phenotypes: str  # semicolon-separated "label, MONDO:id" entries or bare disease names
-    comments: str  # one plain-text section per association
+    # Semicolon-separated identifiers: a review's entry PMIDs and DOIs as the entry spells
+    # them, then the associations' papers, by PMID where available and DOI otherwise
+    publications: str
+    # Semicolon-separated: a review's entry phenotypes as PanelApp lists them (free
+    # text), then the associations' "label, MONDO:id" entries or bare disease names
+    phenotypes: str
+    comments: str  # what the described associations add, see prefill_comments
 
 
 def derive_aggregate_moi(disease_entities: list[dict[str, Any]]) -> str:
@@ -266,41 +349,156 @@ def derive_panelapp_moi(associations: list[dict[str, Any]]) -> str:
     return IMPRINTED_STATUS_UNKNOWN_PANELAPP_MOI
 
 
-def prefill_phenotype(association: PrefillAssociation) -> str:
-    """The association's entry in the prefill's phenotype field.
+def derive_review_moi(entry_moi: str, associations: list[dict[str, Any]]) -> str:
+    """A review form's MoI: the entry's MoI on the panel combined with *associations*.
 
-    A MONDO term gives ``label, MONDO:id``: its own label for a reused GenCC term
-    and an exact match, the proposed disease name for a broader match. A reused
-    GenCC term that MONDO obsoleted with exactly one replacement gives the
-    replacement instead; with no or several replacements it stays as submitted.
-    An association without a MONDO term gives its proposed disease name alone.
+    The entry's MoI counts as one more association, of the mode it names (see
+    PANELAPP_MOI_MODES) and with the imprinting direction it states; an MoI that names
+    no mode counts for nothing. The combination follows derive_panelapp_moi. When the
+    associations leave the MoI the entry alone yields, the entry's own MoI stands,
+    which keeps what the extraction enum cannot express: "imprinted status unknown",
+    a more severe biallelic form, biallelic variants in females. So does an entry's
+    "Unknown" or "Other" when no association reports a mode either.
+    """
+    mode = PANELAPP_MOI_MODES[entry_moi]
+    if mode is None:
+        combined = derive_panelapp_moi(associations)
+        unreported = combined == ENUM_TO_PANELAPP_MOI["NR"]
+        return entry_moi if unreported and entry_moi != MOI_NOT_SPECIFIED else combined
+    entry = {
+        "inheritance_mode": mode,
+        "inheritance_details": _PANELAPP_MOI_IMPRINTING.get(entry_moi, ""),
+    }
+    combined = derive_panelapp_moi([entry, *associations])
+    return entry_moi if combined == derive_panelapp_moi([entry]) else combined
+
+
+@dataclass(frozen=True)
+class PrefillDisease:
+    """How the prefill names an association's disease."""
+
+    name: str
+    mondo_id: str | None  # None for an association without a MONDO term
+
+
+def prefill_disease(association: PrefillAssociation) -> PrefillDisease:
+    """The association's disease as the prefill names it.
+
+    A reused GenCC term and an exact match are named by their MONDO label, a broader
+    match by the proposed disease name. A reused GenCC term that MONDO obsoleted with
+    exactly one replacement gives the replacement instead; with no or several
+    replacements it stays as submitted. An association without a MONDO term is named
+    by its proposed disease name.
     """
     mondo = association.mondo
-    if mondo is None:
-        name: str = association.assessment["proposed_disease_name"]
-        return name
-    if mondo.match == "broader":
-        return f"{association.assessment['proposed_disease_name']}, {mondo.mondo_id}"
+    if mondo is None or mondo.match == "broader":
+        proposed_name: str = association.assessment["proposed_disease_name"]
+        return PrefillDisease(proposed_name, None if mondo is None else mondo.mondo_id)
     if mondo.obsolete and len(mondo.replaced_by) == 1:
         replacement = mondo.replaced_by[0]
-        return f"{replacement.label}, {replacement.mondo_id}"
-    return f"{mondo.label}, {mondo.mondo_id}"
+        return PrefillDisease(replacement.label, replacement.mondo_id)
+    return PrefillDisease(mondo.label, mondo.mondo_id)
 
 
-def prefill_comment_section(association: PrefillAssociation) -> str:
-    """The association's section of the prefill comment: a heading line, then its summary.
+def prefill_phenotype(association: PrefillAssociation) -> str:
+    """The association's entry in the prefill's phenotype field: ``name, MONDO:id``, or the
+    name alone without a MONDO term (see prefill_disease)."""
+    disease = prefill_disease(association)
+    return disease.name if disease.mondo_id is None else f"{disease.name}, {disease.mondo_id}"
 
-    The heading names the disease as the phenotype field does, flags a broader
-    MONDO term with its label, and gives the MoI and the rating computed from
-    this run's papers.
+
+# A MONDO ID in a PanelApp phenotype string
+_MONDO_ID = re.compile(r"MONDO:\d{7}")
+
+
+# How a prefill comment's heading names each MoI of the extraction enum
+HEADING_MOI = {
+    "Monoallelic": "Monoallelic",
+    "Biallelic": "Biallelic",
+    "Monoallelic_and_biallelic": "Monoallelic and biallelic",
+    "X-linked": "X-linked",
+    "Mitochondrial": "Mitochondrial",
+    "Other": "other MoI",
+    "NR": "MoI not reported",
+}
+
+# The prefill's name of each confidence level. PanelApp's review form rates Green,
+# Amber or Red only, so confidence 0 (not rated) is Red, as panel_entries reads it.
+PREFILL_RATINGS = {0: "Red", 1: "Red", 2: "Amber", 3: "Green"}
+
+
+def prefill_comment_heading(association: PrefillAssociation, form_type: FormType) -> str:
+    """The heading of the association's section of the prefill comment.
+
+    It names the disease as prefill_disease does, its first letter capitalised and
+    without its MONDO ID, with the MoI (see HEADING_MOI) and the association's rating:
+    "<Disease> (<MoI>, <Rating>)". On a review form an association with a finding is
+    headed by its kind: "New disease: ", "New MoI: " or "Upgrade from <rating>: ".
     """
     assessment = association.assessment
-    disease = prefill_phenotype(association)
-    if association.mondo is not None and association.mondo.match == "broader":
-        disease += f" (broader MONDO term: {association.mondo.label})"
-    moi = assessment["inheritance_mode"].replace("_", " ")
-    rating = panelapp_confidence_to_color(calculate_association_rating(assessment)).upper()
-    return f"{disease} | {moi} | {rating} on the papers reviewed\n{assessment['summary']}"
+    name = prefill_disease(association).name
+    disease = name[0].upper() + name[1:]
+    moi = HEADING_MOI[assessment["inheritance_mode"]]
+    rating = PREFILL_RATINGS[calculate_association_rating(assessment)]
+    heading = f"{disease} ({moi}, {rating})"
+    finding = association.finding
+    if form_type == "add" or finding is None:
+        return heading
+    match finding.kind:
+        case FindingKind.NEW_DISEASE:
+            kind = "New disease"
+        case FindingKind.NEW_MOI:
+            kind = "New MoI"
+        case FindingKind.UPGRADE:
+            if finding.from_rating is None:
+                raise ValueError(
+                    f"Upgrade finding of association {finding.association_id} has no from_rating"
+                )
+            kind = f"Upgrade from {PREFILL_RATINGS[finding.from_rating]}"
+    return f"{kind}: {heading}"
+
+
+def prefill_comments(form_type: FormType, associations: list[PrefillAssociation]) -> str:
+    """The prefill's comment: what the described associations add to PanelApp's curation.
+
+    PanelApp shows the comment publicly, next to the curator's earlier ones, so it
+    describes the associations alone. Each association gets a section of its heading
+    (see prefill_comment_heading) and its summary, the sections separated by a blank
+    line. An add form that describes one association gives its summary alone.
+    """
+    if form_type == "add" and len(associations) == 1:
+        summary: str = associations[0].assessment["summary"]
+        return summary
+    return "\n\n".join(
+        f"{prefill_comment_heading(a, form_type)}\n{a.assessment['summary']}" for a in associations
+    )
+
+
+def prefill_publications(
+    entry_publications: tuple[int | str, ...],
+    dois: list[str],
+    doi_to_pmid: dict[str, int | None],
+) -> list[str]:
+    """The prefill's publications: *entry_publications*, then the papers of *dois*.
+
+    A paper of *dois* is listed by its PMID when it has one, by its DOI otherwise. Each
+    paper is listed once, where it first appears: a DOI is the same paper as the PMID
+    *doi_to_pmid* gives it, and DOIs match in any letter case.
+    """
+    pmid_by_doi = {doi.lower(): pmid for doi, pmid in doi_to_pmid.items()}
+
+    def paper(identifier: int | str) -> int | str:
+        if isinstance(identifier, int):
+            return identifier
+        doi = identifier.lower()
+        pmid = pmid_by_doi.get(doi)
+        return doi if pmid is None else pmid
+
+    report_publications = [doi if (pmid := doi_to_pmid[doi]) is None else pmid for doi in dois]
+    listed: dict[int | str, str] = {}
+    for identifier in (*entry_publications, *report_publications):
+        listed.setdefault(paper(identifier), str(identifier))
+    return list(listed.values())
 
 
 def prepare_prefill_data(
@@ -308,7 +506,7 @@ def prepare_prefill_data(
     associations: list[PrefillAssociation],
     moi_associations: list[dict[str, Any]],
     panel_id: int,
-    panel_rating: int | None,
+    entry: PrefillEntry | None,
     doi_to_pmid: dict[str, int | None],
     rated: bool = True,
 ) -> PrefillData:
@@ -316,24 +514,31 @@ def prepare_prefill_data(
 
     *associations* are the ones the prefill describes, which the caller chooses
     (the report's choice is generate_report.prefill_associations). A gene not
-    on *panel_id* gets an add form rated with the top rating of *associations*. A
-    gene on it gets a review form rated with the higher of its rating there and
-    that top rating: the corpus holds only the papers this run read, so a lower
-    rating is no downgrade recommendation. When not *rated*, the associations do not
-    count toward the rating, and a review form keeps the gene's rating on the panel.
-    The MoI is aggregated over
-    *moi_associations* (see derive_panelapp_moi): a review replaces the
-    evaluation's MoI, so it has to cover every association of the gene, not only
-    the described ones. Phenotypes, publications and
-    comment sections follow the order of *associations*; repeated phenotypes and
-    publications are listed once.
+    on *panel_id* (no *entry*) gets an add form rated with the top rating of
+    *associations*. A gene on it gets a review form of its *entry* there, rated with
+    the higher of the gene's rating on the panel and that top rating: the corpus holds
+    only the papers this run read, so a lower rating is no downgrade recommendation.
+    When not *rated*, the associations do not count toward the rating, a review form
+    keeps the gene's rating on the panel, and the comment is empty: the target panels
+    have reviewed every paper it would describe.
+
+    A review replaces the curator's evaluation of the entry, so its fields describe
+    the whole gene. Its MoI combines the entry's MoI with *moi_associations*, every
+    association of the gene and not only the described ones (see derive_review_moi);
+    its phenotypes and publications are the entry's, then those of *associations*. An
+    add form's MoI is aggregated over *moi_associations* (see derive_panelapp_moi),
+    and its phenotypes and publications are those of *associations*. Phenotypes and
+    publications follow the order of *associations*, each listed once; phenotypes
+    match after surrounding whitespace is stripped, publications as prefill_publications
+    describes. A phenotype of *associations* whose MONDO ID an entry phenotype holds is
+    not listed. The comment describes the associations alone (see prefill_comments).
 
     Args:
         hgnc_id: HGNC ID (integer) of the gene
         associations: The associations the prefill describes, in report order
         moi_associations: Every association of the gene, for the MoI
         panel_id: Target panel ID
-        panel_rating: The gene's confidence level on *panel_id*; None when it is not on it
+        entry: The gene's entry on *panel_id*; None when it is not on it
         doi_to_pmid: PMID (None when the paper has none) of every DOI the associations cite
         rated: Whether the associations' top rating counts toward the form's rating
 
@@ -342,31 +547,48 @@ def prepare_prefill_data(
     """
     assessments = [a.assessment for a in associations]
     top_rating = calculate_gene_rating(assessments)
-    if panel_rating is None:
+    form_type: FormType
+    if entry is None:
         if not rated:
             raise ValueError("An add form is rated by its associations")
         form_type, rating = "add", top_rating
+        moi = derive_panelapp_moi(moi_associations)
+        entry_phenotypes: tuple[str, ...] = ()
+        entry_publications: tuple[int | str, ...] = ()
     else:
-        form_type, rating = "review", max(panel_rating, top_rating) if rated else panel_rating
+        form_type = "review"
+        rating = max(entry.rating, top_rating) if rated else entry.rating
+        moi = derive_review_moi(entry.moi, moi_associations)
+        entry_phenotypes, entry_publications = entry.phenotypes, entry.publications
 
-    dois = dict.fromkeys(doi for assessment in assessments for doi in assessment["dois"])
-    publications = ";".join(
-        doi if (pmid := doi_to_pmid[doi]) is None else str(pmid) for doi in dois
+    entry_mondo_ids = {m for phenotype in entry_phenotypes for m in _MONDO_ID.findall(phenotype)}
+    phenotypes = dict.fromkeys(
+        phenotype.strip()
+        for phenotype in (
+            *entry_phenotypes,
+            *(
+                prefill_phenotype(a)
+                for a in associations
+                if prefill_disease(a).mondo_id not in entry_mondo_ids
+            ),
+        )
     )
-
-    phenotypes = ";".join(dict.fromkeys(prefill_phenotype(a) for a in associations))
-    comments = "\n\n".join(prefill_comment_section(a) for a in associations)
+    publications = prefill_publications(
+        entry_publications,
+        [doi for assessment in assessments for doi in assessment["dois"]],
+        doi_to_pmid,
+    )
 
     return PrefillData(
         form_type=form_type,
         panel_id=panel_id,
         hgnc_id=f"HGNC:{hgnc_id}",
-        rating=panelapp_confidence_to_color(rating).upper(),
-        moi=derive_panelapp_moi(moi_associations),
+        rating=PREFILL_RATINGS[rating].upper(),
+        moi=moi,
         mode_of_pathogenicity=None,
-        publications=publications,
-        phenotypes=phenotypes,
-        comments=comments,
+        publications=";".join(publications),
+        phenotypes=";".join(phenotypes),
+        comments=prefill_comments(form_type, associations) if rated else "",
     )
 
 

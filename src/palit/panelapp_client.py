@@ -137,6 +137,20 @@ def clean_panel_publications(publications: list[str]) -> PanelPublications:
     return PanelPublications(pmids=pmids, dois=dois)
 
 
+def ordered_panel_publications(publications: list[str]) -> list[int | str]:
+    """The PMIDs and DOIs of PanelApp publication strings, in the strings' order.
+
+    Each string gives its PMIDs, then its DOIs, each sorted, as clean_panel_publications
+    reads them; an identifier repeated in a later string is listed again.
+    """
+    identifiers: list[int | str] = []
+    for entry in publications:
+        cleaned = clean_panel_publications([entry])
+        identifiers += sorted(cleaned.pmids)
+        identifiers += sorted(cleaned.dois)
+    return identifiers
+
+
 def extract_panel_publications(panel_data: dict[str, Any]) -> PanelPublications:
     """Extract all PMIDs and DOIs from panel genes, strs, and regions publications."""
     all_pmids: set[int] = set()

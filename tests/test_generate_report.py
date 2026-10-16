@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from anthropic.types import Message
@@ -19,8 +19,6 @@ from palit.generate_report import (
     MONTHLY_REPORT_TITLE,
     DerivedFamilies,
     FavoriteJournalSections,
-    Finding,
-    FindingKind,
     GeneAssessment,
     GeneAssessmentResults,
     PanelValidationResult,
@@ -47,6 +45,7 @@ from palit.generate_report import (
     load_panel_publications_validation,
     load_quote_refs,
     load_relevance_refusers,
+    prefill_entry,
     report_order,
     unreviewed_target_entries,
     write_viewer_package,
@@ -61,7 +60,10 @@ from palit.panelapp_integration import (
     ENUM_TO_PANELAPP_MOI,
     MENDELIOME_PANEL_ID,
     PANELAPP_CRITERIA,
+    Finding,
+    FindingKind,
     PrefillData,
+    PrefillEntry,
     calculate_association_rating,
 )
 from palit.papers import doi_to_path
@@ -506,6 +508,7 @@ def _target_entry(
         panel_id=panel_id,
         panel_name={MENDELIOME_PANEL_ID: "Mendeliome", ATAXIA_PANEL_ID: "Ataxia"}[panel_id],
         reference=True,
+        entity_type="gene",
         rating={3: "GREEN", 2: "AMBER", 1: "RED"}[rating],
         moi="MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted",
         mode_of_pathogenicity="",
@@ -782,10 +785,9 @@ def test_review_prefill_unions_the_findings_in_report_order(
     ]
     assert prefill["publications"] == "111"
     assert [section.split("\n")[0] for section in prefill["comments"].split("\n\n")] == [
-        "GENEA-related ataxia variant, MONDO:0000200 (broader MONDO term: ataxia)"
-        " | Monoallelic | GREEN on the papers reviewed",
-        "GENEA-related other disease | Monoallelic | AMBER on the papers reviewed",
-        "GENEA-related biallelic disease | Biallelic | AMBER on the papers reviewed",
+        "New disease: GENEA-related ataxia variant (Monoallelic, Green)",
+        "New disease: GENEA-related other disease (Monoallelic, Amber)",
+        "New MoI: GENEA-related biallelic disease (Biallelic, Amber)",
     ]
     assert prefill["comments"].split("\n")[1] == "PMID 111 reports ataxia variant."
 
@@ -812,8 +814,7 @@ def test_review_prefill_of_a_green_gene_lists_only_its_amber_finding(
     # The MoI covers the curated biallelic association too: a review replaces the evaluation's MoI.
     assert prefill.moi == ENUM_TO_PANELAPP_MOI["Monoallelic_and_biallelic"]
     assert prefill.comments == (
-        "GENEA-related new disease | Monoallelic | AMBER on the papers reviewed\n"
-        "PMID 111 reports new disease."
+        "New disease: GENEA-related new disease (Monoallelic, Amber)\nPMID 111 reports new disease."
     )
 
 
@@ -827,6 +828,9 @@ def test_review_prefill_of_a_gene_without_findings_lists_all_its_associations(
     assert genea.findings == []
     assert (genea.prefill.form_type, genea.prefill.rating) == ("review", "AMBER")
     assert genea.prefill.phenotypes == "disease A, replacement, MONDO:0000009"
+    assert genea.prefill.comments == (
+        "Disease A, replacement (Monoallelic, Red)\nPMID 111 reports disease A."
+    )
 
 
 def test_add_prefill_lists_every_association(db_path: Path, hgnc_resolver: HgncResolver) -> None:
@@ -842,6 +846,62 @@ def test_add_prefill_lists_every_association(db_path: Path, hgnc_resolver: HgncR
     assert (geneb.prefill.form_type, geneb.prefill.panel_id) == ("add", MENDELIOME_PANEL_ID)
     assert geneb.prefill.phenotypes == "GENEA-related B disease;GENEA-related curated B"
     assert geneb.prefill.publications == "222"
+    # Both are new diseases of a new gene, so their headings don't say so.
+    assert geneb.prefill.comments == (
+        "GENEA-related B disease (Monoallelic, Green)\nSmith2024 reports B disease.\n\n"
+        "GENEA-related curated B (Monoallelic, Amber)\nSmith2024 reports curated B."
+    )
+
+
+def test_add_prefill_of_one_association_comments_its_summary(
+    results: GeneAssessmentResults,
+) -> None:
+    geneb = results.novel_genes[0]
+    assert geneb.prefill.form_type == "add"
+    assert geneb.prefill.comments == "Smith2024 reports B disease."
+
+
+def _panel_entry(
+    panel_id: int, entity_type: Literal["gene", "str"], moi: str, publications: tuple[str, ...]
+) -> PanelEntry:
+    return dataclasses.replace(
+        _target_entry(panel_id, 2),
+        entity_type=entity_type,
+        moi=moi,
+        phenotypes=(f"{entity_type} phenotype",),
+        publications=publications,
+    )
+
+
+def test_a_review_extends_the_gene_entry_on_its_panel() -> None:
+    """The panel's gene entry, not its repeat expansion nor the gene's entry on another
+    panel; the entry's publications are read as PMIDs and DOIs in their order."""
+    repeat = _panel_entry(MENDELIOME_PANEL_ID, "str", "Unknown", ("PMID: 1",))
+    gene = _panel_entry(
+        MENDELIOME_PANEL_ID,
+        "gene",
+        ENUM_TO_PANELAPP_MOI["Biallelic"],
+        ("PMID: 33333, 22222", "doi: 10.1000/X", "OMIM 601492", "11111"),
+    )
+    other = _panel_entry(ATAXIA_PANEL_ID, "gene", "Other", ())
+    assert prefill_entry((other, repeat, gene), MENDELIOME_PANEL_ID, 3) == PrefillEntry(
+        rating=3,
+        moi=ENUM_TO_PANELAPP_MOI["Biallelic"],
+        phenotypes=("gene phenotype",),
+        publications=(22222, 33333, "10.1000/X", 11111),
+    )
+
+
+def test_a_review_of_a_gene_held_only_as_a_repeat_expansion_extends_that_entry() -> None:
+    repeat = _panel_entry(MENDELIOME_PANEL_ID, "str", "Unknown", ("PMID: 11111",))
+    entry = prefill_entry((repeat,), MENDELIOME_PANEL_ID, 2)
+    assert (entry.moi, entry.publications) == ("Unknown", (11111,))
+
+
+def test_a_review_without_an_entry_on_its_panel_raises() -> None:
+    other = _panel_entry(ATAXIA_PANEL_ID, "gene", "Other", ())
+    with pytest.raises(ValueError, match="no entry on panel 137"):
+        prefill_entry((other,), MENDELIOME_PANEL_ID, 2)
 
 
 NO_PANEL_VALIDATION = PanelValidationResult(0, 0, [], [], 0, [], 0.0)
@@ -2486,9 +2546,13 @@ def test_an_upgrade_on_papers_cited_and_reviewed_is_no_finding(
     assert "<strong>Findings already reviewed:</strong> 1 " in html
     section = html[html.index('<section id="already-reviewed">') :]
     assert ALREADY_REVIEWED_NOTE in _strip_tags(_association_section(section, 30))
-    # Every association is already reviewed: the review keeps the gene's AMBER
+    # Every association is already reviewed: the review keeps the gene's AMBER. The
+    # entry cites P1 by its PMID, which the association's P1 does not repeat.
     assert (genea.prefill.form_type, genea.prefill.rating) == ("review", "AMBER")
     assert genea.prefill.publications == f"11111;{P2}"
+    assert genea.prefill.comments == ""
+    assert genea.prefill.phenotypes == ("Some disease MIM#100000;GENEA-related cited disease")
+    assert genea.prefill.moi == ENUM_TO_PANELAPP_MOI["Monoallelic_and_biallelic"]
 
 
 def test_an_uncited_paper_makes_the_upgrade_a_finding(
@@ -2575,9 +2639,13 @@ def test_a_gene_without_findings_is_prefilled_without_its_reviewed_associations(
     genea = results.known_genes[0]
     assert genea.findings == []
     prefill = genea.prefill
-    assert (prefill.form_type, prefill.rating, prefill.publications) == ("review", "AMBER", "33333")
-    assert "GENEA-related uncited disease" in prefill.phenotypes
-    assert "GENEA-related cited disease" not in prefill.phenotypes
+    # The entry's PMID 11111 first, then the association's paper
+    assert (prefill.form_type, prefill.rating, prefill.publications) == (
+        "review",
+        "AMBER",
+        "11111;33333",
+    )
+    assert prefill.phenotypes == "Some disease MIM#100000;GENEA-related uncited disease"
 
 
 def test_a_scoped_report_names_its_panel_in_its_title(

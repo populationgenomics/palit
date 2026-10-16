@@ -300,6 +300,7 @@ MENDELIOME_ENTRY = PanelEntry(
     panel_id=MENDELIOME_PANEL_ID,
     panel_name="Mendeliome",
     reference=True,
+    entity_type="gene",
     rating="GREEN",
     moi="BIALLELIC, autosomal or pseudoautosomal",
     mode_of_pathogenicity="",

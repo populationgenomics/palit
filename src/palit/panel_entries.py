@@ -9,9 +9,10 @@ not aggregated, and an association resting on it is no finding.
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from palit.panelapp_client import EVALUATIONS_FETCHED_AT, clean_panel_publications
+from palit.panelapp_integration import MOI_NOT_SPECIFIED
 
 _RATINGS = {"3": "GREEN", "2": "AMBER", "1": "RED", "0": "RED"}
 
@@ -33,8 +34,9 @@ class PanelEntry:
     panel_id: int
     panel_name: str
     reference: bool  # the panel is one of the reference (target) panels
+    entity_type: Literal["gene", "str"]  # a gene or a repeat-expansion (STR) entry
     rating: str
-    moi: str
+    moi: str  # MOI_NOT_SPECIFIED when the entry has none
     mode_of_pathogenicity: str  # empty when the entry has none
     phenotypes: tuple[str, ...]
     publications: tuple[str, ...]  # as PanelApp lists them
@@ -81,10 +83,11 @@ def _panel_entries(panel: dict[str, Any], reference: bool) -> list[tuple[int, Pa
             f"Panel {panel['id']} has no reviews in the snapshot; add them with "
             "`palit panelapp add-reviews`"
         )
-    entities = [(gene, gene["evaluations"]) for gene in panel["genes"]]
-    entities += [(str_entity, None) for str_entity in panel["strs"]]
+    entities: list[tuple[dict[str, Any], Literal["gene", "str"], list[dict[str, Any]] | None]]
+    entities = [(gene, "gene", gene["evaluations"]) for gene in panel["genes"]]
+    entities += [(str_entity, "str", None) for str_entity in panel["strs"]]
     entries = []
-    for entity, reviews in entities:
+    for entity, entity_type, reviews in entities:
         hgnc_id = entity["gene_data"].get("hgnc_id")
         if hgnc_id is None:
             if reference:
@@ -99,8 +102,9 @@ def _panel_entries(panel: dict[str, Any], reference: bool) -> list[tuple[int, Pa
                     panel_id=panel["id"],
                     panel_name=panel["name"],
                     reference=reference,
+                    entity_type=entity_type,
                     rating=_RATINGS[entity["confidence_level"]],
-                    moi=entity.get("mode_of_inheritance") or "not specified",
+                    moi=entity.get("mode_of_inheritance") or MOI_NOT_SPECIFIED,
                     mode_of_pathogenicity=entity.get("mode_of_pathogenicity") or "",
                     phenotypes=tuple(entity.get("phenotypes") or ()),
                     publications=tuple(entity.get("publications") or ()),

@@ -272,9 +272,6 @@
         {% elif assoc.already_reviewed %}
         <p class="relation-basis">No finding: every paper of this association is already cited for {{ gene.hgnc_symbol }} on {{ assoc.reviewed_on | join(', ') }}, where the gene is reviewed.</p>
         {% endif %}
-        {% if assoc.scope_rationale is not none %}
-        <p class="scope-rationale"><strong>Panel fit:</strong> {{ assoc.scope_rationale }}</p>
-        {% endif %}
         <div class="summary-content">{{ e.summary | markdown_to_html }}</div>
         {{ family_counts(e) }}
         {% if e.segregation != 'NR' %}
@@ -295,6 +292,9 @@
         {% endif %}
         {% if panels_matched %}
         {{ association_panels(assoc) }}
+        {% endif %}
+        {% if assoc.scope_rationale is not none %}
+        <p class="scope-rationale"><strong>Panel fit:</strong> {{ assoc.scope_rationale }}</p>
         {% endif %}
         {{ association_disputes(assoc) }}
         {% if assoc.variants %}

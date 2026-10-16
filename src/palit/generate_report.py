@@ -61,6 +61,7 @@ from palit.papers import (
     is_preprint,
     replace_paper_ids_for_display,
 )
+from palit.run_corpus import CITED_PAPER, CORPUS_PAPER, RELEVANT_PAPER
 from palit.variants import GeneVariant, GnomadFrequency, GnomadMiss, load_gene_variants
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,9 @@ GNOMAD_HEMI_THRESHOLD = 30  # hemizygotes; X-linked
 
 # A new_moi association is highlighted only from this many independent families on
 MIN_FAMILIES_FOR_MOI_EXPANSION = 2
+
+# The heading of a report without a scope panel
+MONTHLY_REPORT_TITLE = "PanelApp Literature Assessment Report"
 
 # Hand-picked journals surfaced in the "Papers in Featured Journals" section.
 # Strings are PubMed-style and must match papers.journal verbatim.
@@ -254,11 +258,24 @@ class DetailedPaper:
     # evaluations_of_gene); empty where the paper is shown without evidence.
     gene_evaluations: list[dict[str, Any]]
     quote_refs: dict[str, QuoteRef]  # this paper's quotes -> position in its citations file
+    cited_for_run_gene: bool  # PanelApp cites it for one of the run's genes
     preprint: bool = False
     pmid: int | None = None  # For PubMed display links
     display_id: str = ""  # "PMID {pmid}" for published papers, AuthorYear for preprints
     paper_gene_symbol: str | None = None
     filtered_reason: str | None = None  # Set when paper was excluded from assessment
+
+    @property
+    def passed_screen(self) -> bool:
+        """The scope screen passed the paper."""
+        return self.relevance_assessment is not None and self.relevance_assessment["relevant"]
+
+    @property
+    def entered_through_citation(self) -> bool:
+        """The run took the paper in because PanelApp cites it for one of the run's genes,
+        not because the scope screen passed it. As in load_paper_sources, a paper the
+        screen passed counts as relevant, and a cited expansion paper as cited."""
+        return self.cited_for_run_gene and not self.passed_screen
 
 
 @dataclass(frozen=True)
@@ -289,9 +306,9 @@ class FavoriteJournalPaper:
 class FavoriteJournalSections:
     """Featured-journal papers bucketed by the kind of contribution they made.
 
-    Only initial-search papers are surfaced here; expansion papers (added via
+    Only initial papers are surfaced here; expansion papers (added via
     citation chasing) are excluded entirely. Transient pipeline states
-    (downloaded but not yet extracted, etc.) are also dropped — they're not
+    (downloaded but not yet extracted, etc.) are also dropped: they're not
     actionable and just clutter the section."""
 
     novel: list[FavoriteJournalPaper]
@@ -301,8 +318,10 @@ class FavoriteJournalSections:
     filtered: list[FavoriteJournalPaper]
     manual_download: list[FavoriteJournalPaper]
     refused: list[FavoriteJournalPaper]  # its relevance assessment was refused for good
+    # Rejected by the scope screen, not read and not cited for a run gene; always empty in
+    # a panel-scoped run
     not_relevant: list[FavoriteJournalPaper]
-    off_panel: list[FavoriteJournalPaper]
+    read_no_evidence: list[FavoriteJournalPaper]  # read in full, no evidence in the report
 
     @property
     def total(self) -> int:
@@ -315,7 +334,7 @@ class FavoriteJournalSections:
             + len(self.manual_download)
             + len(self.refused)
             + len(self.not_relevant)
-            + len(self.off_panel)
+            + len(self.read_no_evidence)
         )
 
 
@@ -618,8 +637,21 @@ class PanelValidationResult:
     panel_papers_in_db: int  # with a relevance result, including the refused ones
     true_positives: list[DetailedPaper]
     screen_misses: list[DetailedPaper]  # rejected by the scope screen
+    # Of the screen misses, those read in full because PanelApp cites them for a run gene
+    screen_misses_read: int
     refused: list[DetailedPaper]  # refused for good; left out of the sensitivity
     sensitivity_pct: float  # share of the assessed (not refused) ones assessed relevant
+
+
+@dataclass(frozen=True)
+class PaperSources:
+    """The papers with an extraction, by how they entered the corpus (see palit.run_corpus)."""
+
+    relevant: int  # passed by the scope screen
+    cited: int  # not passed by the screen, but PanelApp cites them for one of the run's genes
+    expansion: int  # the other expansion papers: tournament picks and referenced papers
+    # Initial papers neither passed by the screen nor cited for one of the run's genes
+    outside_corpus: int
 
 
 @dataclass
@@ -637,12 +669,11 @@ class ComprehensiveStats:
     panel_papers_in_db: int
     validation_sensitivity_pct: float
     screen_misses_count: int
+    screen_misses_read_count: int  # read in full because PanelApp cites them for a run gene
     true_positives_count: int
     panel_refused_count: int  # relevance refused for good, not in the sensitivity
 
-    # Source breakdown
-    initial_papers: int
-    expansion_papers: int
+    paper_sources: PaperSources
 
     # Distinct (gene, panel) pairs an association matched where the gene is not on the panel
     total_panel_suggestions: int
@@ -927,7 +958,7 @@ def load_contributing_papers(
     relevance-stage mention may carry an older symbol of the same gene).
     """
     cursor.execute(
-        """
+        f"""
         SELECT
             p.doi,
             p.title,
@@ -940,6 +971,7 @@ def load_contributing_papers(
             p.pmid,
             p.relevance_assessment_json,
             p.evidence_extraction_json,
+            {CITED_PAPER} AS cited_for_run_gene,
             gm.paper_gene_symbol
         FROM papers p
         JOIN gene_mentions gm ON p.doi = gm.paper_doi
@@ -979,6 +1011,7 @@ def load_contributing_papers(
                 relevance_assessment=relevance_assessment,
                 gene_evaluations=gene_evaluations,
                 quote_refs=load_quote_refs(cursor, doi),
+                cited_for_run_gene=bool(paper_row["cited_for_run_gene"]),
                 preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
                 pmid=paper_row["pmid"],
                 paper_gene_symbol=paper_row["paper_gene_symbol"],
@@ -1589,7 +1622,8 @@ def load_panel_publications_validation(
 
     Compares LLM assessments against *panel_pubs*, the publications the target panels
     cite in the run's snapshot. Uses source_type = 'initial' to avoid date range issues
-    with expansion.
+    with expansion. Of the screen misses, it counts those read in full all the same,
+    because PanelApp cites them for one of the run's genes.
     """
     logger.info("Loading panel publications validation...")
 
@@ -1608,6 +1642,7 @@ def load_panel_publications_validation(
                 panel_papers_in_db=0,
                 true_positives=[],
                 screen_misses=[],
+                screen_misses_read=0,
                 refused=[],
                 sensitivity_pct=0.0,
             )
@@ -1624,9 +1659,11 @@ def load_panel_publications_validation(
                     seen_dois.add(doi)
                     all_panel_papers.append(row)
 
-        _panel_cols = """p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
+        _panel_cols = f"""p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
             p.source_date, p.source_type, p.source_details,
-            p.relevance_assessment_json"""
+            p.relevance_assessment_json,
+            p.evidence_extraction_json IS NOT NULL AS extracted,
+            {CITED_PAPER} AS cited_for_run_gene"""
 
         # Match PMIDs
         pmids_list = list(panel_pubs.pmids)
@@ -1665,6 +1702,7 @@ def load_panel_publications_validation(
         # Convert to DetailedPaper objects and categorize
         true_positives: list[DetailedPaper] = []
         screen_misses: list[DetailedPaper] = []
+        screen_misses_read = 0
         refused: list[DetailedPaper] = []
 
         for row in all_panel_papers:
@@ -1687,6 +1725,7 @@ def load_panel_publications_validation(
                 relevance_assessment=relevance_assessment,
                 gene_evaluations=[],
                 quote_refs=load_quote_refs(cursor, row["doi"]),
+                cited_for_run_gene=bool(row["cited_for_run_gene"]),
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
             )
@@ -1697,12 +1736,15 @@ def load_panel_publications_validation(
                 true_positives.append(detailed_paper)
             else:
                 screen_misses.append(detailed_paper)
+                if detailed_paper.cited_for_run_gene and row["extracted"]:
+                    screen_misses_read += 1
 
         total_assessed = len(true_positives) + len(screen_misses)
         sensitivity_pct = len(true_positives) / total_assessed * 100 if total_assessed else 0.0
         logger.info(
             f"Panel validation: {len(true_positives)} relevant, {len(screen_misses)} missed by "
-            f"the screen, {len(refused)} refused for good"
+            f"the screen ({screen_misses_read} of them read through PanelApp citations), "
+            f"{len(refused)} refused for good"
         )
         logger.info(f"Sensitivity: {sensitivity_pct:.1f}%")
 
@@ -1711,6 +1753,7 @@ def load_panel_publications_validation(
             panel_papers_in_db=total_assessed + len(refused),
             true_positives=true_positives,
             screen_misses=screen_misses,
+            screen_misses_read=screen_misses_read,
             refused=refused,
             sensitivity_pct=sensitivity_pct,
         )
@@ -1725,7 +1768,7 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
         cursor = conn.cursor()
 
         # Get all papers with relevance assessments (filtered in Python below)
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
                 p.doi,
                 p.pmid,
@@ -1736,7 +1779,8 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                 p.source_date,
                 p.source_type,
                 p.source_details,
-                p.relevance_assessment_json
+                p.relevance_assessment_json,
+                {CITED_PAPER} AS cited_for_run_gene
             FROM papers p
             WHERE p.relevance_assessment_json IS NOT NULL
             ORDER BY p.source_date DESC, p.doi DESC
@@ -1769,6 +1813,7 @@ def load_low_confidence_irrelevant_papers(db_path: Path) -> list[DetailedPaper]:
                     relevance_assessment=relevance_assessment,
                     gene_evaluations=[],
                     quote_refs=load_quote_refs(cursor, row["doi"]),
+                    cited_for_run_gene=bool(row["cited_for_run_gene"]),
                     preprint=is_preprint(row["journal"], row["pmid"]),
                     pmid=row["pmid"],
                 )
@@ -1818,7 +1863,7 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
         cursor = conn.cursor()
 
         # Get papers from recent literature with manual_required download status
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
                 p.doi,
                 p.pmid,
@@ -1829,7 +1874,8 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
                 p.source_date,
                 p.source_type,
                 p.source_details,
-                p.relevance_assessment_json
+                p.relevance_assessment_json,
+                {CITED_PAPER} AS cited_for_run_gene
             FROM papers p
             WHERE p.source_type = 'initial'
             AND p.download_status = 'manual_required'
@@ -1857,6 +1903,7 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
                 relevance_assessment=relevance_assessment,
                 gene_evaluations=[],
                 quote_refs={},
+                cited_for_run_gene=bool(row["cited_for_run_gene"]),
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
             )
@@ -1882,19 +1929,34 @@ def _gene_contribution_bucket(gene: GeneAssessment) -> str:
 
 _BUCKET_PRIORITY = ("novel", "findings", "unreviewed", "already_reviewed")
 
+# A `papers` row `p` outside the run's corpus that the run did not read and whose relevance
+# assessment was not refused: an initial paper the screen rejected and PanelApp does not
+# cite for a run gene, or one without a relevance result
+UNREAD_OUTSIDE_CORPUS = f"""(
+    p.evidence_extraction_json IS NULL
+    AND NOT {CORPUS_PAPER}
+    AND json_extract(p.relevance_assessment_json, '$.refused') IS NULL
+)"""
+
 
 def load_favorite_journal_papers(
     db_path: Path,
     novel_genes: list[GeneAssessment],
     known_genes: list[GeneAssessment],
+    scoped: bool,
 ) -> FavoriteJournalSections:
-    """Load every initial-search paper from FAVORITE_JOURNALS, bucketed by the
+    """Load every initial paper from FAVORITE_JOURNALS, bucketed by the
     kind of contribution it made, mirroring the report's gene groups
     (new genes / known genes with findings / unreviewed / already reviewed)
     and the reasons a paper did not contribute (filtered out of aggregate /
-    requiring manual download / relevance refused for good / screened
-    out by relevance / off-panel evidence). Expansion papers are excluded
-    entirely."""
+    read in full without evidence for the report / requiring manual download /
+    relevance refused for good / screened out by relevance). Expansion papers
+    are excluded entirely. Papers are bucketed by corpus membership (see
+    palit.run_corpus): a corpus paper the run has not read is due for manual
+    download or still in progress, whatever the screen said, and only papers
+    outside the corpus are refused or screened out. A panel-scoped run
+    (*scoped*) screens the whole baseline, so it leaves out the unread papers
+    outside the corpus: there is no "screened out" bucket."""
     gene_anchors: dict[int, FavoriteJournalGeneLink] = {}
     gene_buckets: dict[int, str] = {}
     for gene in (*novel_genes, *known_genes):
@@ -1918,12 +1980,14 @@ def load_favorite_journal_papers(
         cursor = conn.cursor()
         cursor.execute(
             f"""
-            SELECT doi, pmid, title, journal, source_date, download_status,
-                   relevance_assessment_json, evidence_extraction_json
-            FROM papers
-            WHERE journal IN ({placeholders})
-              AND source_type = 'initial'
-            ORDER BY source_date DESC, doi DESC
+            SELECT p.doi, p.pmid, p.title, p.journal, p.source_date, p.download_status,
+                   p.relevance_assessment_json, p.evidence_extraction_json,
+                   {CORPUS_PAPER} AS in_corpus
+            FROM papers p
+            WHERE p.journal IN ({placeholders})
+              AND p.source_type = 'initial'
+              {f"AND NOT {UNREAD_OUTSIDE_CORPUS}" if scoped else ""}
+            ORDER BY p.source_date DESC, p.doi DESC
             """,
             FAVORITE_JOURNALS,
         )
@@ -1938,7 +2002,7 @@ def load_favorite_journal_papers(
         manual_download=[],
         refused=[],
         not_relevant=[],
-        off_panel=[],
+        read_no_evidence=[],
     )
 
     for row in rows:
@@ -1986,36 +2050,69 @@ def load_favorite_journal_papers(
         if row["relevance_assessment_json"] is None:
             continue
 
+        # Read in full, whatever the screen said: a paper PanelApp cites for one of the
+        # run's genes is read even when the screen rejected it.
+        if row["evidence_extraction_json"] is not None:
+            sections.read_no_evidence.append(paper)
+            continue
+
+        # Due to be read: the screen passed it, or PanelApp cites it for a run gene.
+        if row["in_corpus"]:
+            if row["download_status"] == "manual_required":
+                sections.manual_download.append(paper)
+            # else: its download or extraction is still in progress: drop.
+            continue
+
         assessment = json.loads(row["relevance_assessment_json"])
         if assessment.get("refused") is not None:
             sections.refused.append(paper)
-            continue
-        if not assessment["relevant"]:
+        else:
             sections.not_relevant.append(paper)
-            continue
-
-        if row["download_status"] == "manual_required":
-            sections.manual_download.append(paper)
-        elif row["evidence_extraction_json"] is not None:
-            sections.off_panel.append(paper)
-        # else: relevant + downloaded + extraction in flight — drop.
 
     logger.info(
         "Featured journals: %d total; novel=%d, findings=%d, "
-        "unreviewed=%d, already_reviewed=%d, filtered=%d, manual_download=%d, refused=%d, "
-        "not_relevant=%d, off_panel=%d",
+        "unreviewed=%d, already_reviewed=%d, filtered=%d, read_no_evidence=%d, "
+        "manual_download=%d, refused=%d, not_relevant=%s",
         sections.total,
         len(sections.novel),
         len(sections.findings),
         len(sections.unreviewed),
         len(sections.already_reviewed),
         len(sections.filtered),
+        len(sections.read_no_evidence),
         len(sections.manual_download),
         len(sections.refused),
-        len(sections.not_relevant),
-        len(sections.off_panel),
+        "left out (panel-scoped run)" if scoped else len(sections.not_relevant),
     )
     return sections
+
+
+def load_paper_sources(cursor: sqlite3.Cursor) -> PaperSources:
+    """Count the papers with an extraction by how they entered the corpus.
+
+    A paper the scope screen passed counts as relevant, whether or not PanelApp
+    cites it. Of the others, a paper PanelApp cites for one of the run's genes
+    counts as cited, initial or expansion, and the remaining expansion papers as
+    expansion.
+    """
+    cursor.execute(
+        f"""
+        SELECT COALESCE(SUM(relevant), 0),
+               COALESCE(SUM(NOT relevant AND cited), 0),
+               COALESCE(SUM(NOT relevant AND NOT cited AND expansion), 0),
+               COALESCE(SUM(NOT relevant AND NOT cited AND NOT expansion), 0)
+        FROM (
+            SELECT {RELEVANT_PAPER} AS relevant, {CITED_PAPER} AS cited,
+                   p.source_type IS 'expansion' AS expansion
+            FROM papers p
+            WHERE p.evidence_extraction_json IS NOT NULL
+        )
+        """
+    )
+    relevant, cited, expansion, outside_corpus = cursor.fetchone()
+    return PaperSources(
+        relevant=relevant, cited=cited, expansion=expansion, outside_corpus=outside_corpus
+    )
 
 
 def calculate_comprehensive_statistics(
@@ -2039,17 +2136,6 @@ def calculate_comprehensive_statistics(
             )
             for gene in all_genes
         )
-
-        # Paper source breakdown - show ALL papers for statistics
-        cursor.execute("""
-            SELECT
-                source_type,
-                COUNT(DISTINCT doi) as count
-            FROM papers
-            WHERE evidence_extraction_json IS NOT NULL
-            GROUP BY source_type
-        """)
-        source_counts = dict(cursor.fetchall())
 
         # Papers contributing to assessments
         all_dois = set()
@@ -2090,11 +2176,10 @@ def calculate_comprehensive_statistics(
             panel_papers_in_db=panel_validation.panel_papers_in_db,
             validation_sensitivity_pct=panel_validation.sensitivity_pct,
             screen_misses_count=len(panel_validation.screen_misses),
+            screen_misses_read_count=panel_validation.screen_misses_read,
             true_positives_count=len(panel_validation.true_positives),
             panel_refused_count=len(panel_validation.refused),
-            # Source breakdown
-            initial_papers=source_counts.get("initial", 0),
-            expansion_papers=source_counts.get("expansion", 0),
+            paper_sources=load_paper_sources(cursor),
             total_panel_suggestions=total_panel_suggestions,
             total_associations=len(all_associations),
             new_disease_findings=finding_kinds.count(FindingKind.NEW_DISEASE),
@@ -2115,6 +2200,38 @@ def format_inheritance(mode: str, details: str = "") -> str:
     if details and details.strip():
         return f"{formatted_mode} ({details})"
     return formatted_mode
+
+
+class DerivedFamilies(StrEnum):
+    """How many of an entity's qualifying families are evidently patients counted as one
+    family each.
+
+    Papers that report patients without grouping them into families (COHORTS WITHOUT
+    FAMILY STRUCTURE in the extraction and aggregation prompts) add no reported
+    families, but each of their qualifying patients counts as one qualifying family.
+    This shows only where the qualifying count exceeds the reported one: families that
+    fail the qualifying gate can hide derived ones.
+    """
+
+    NOT_EVIDENT = "not_evident"  # no more qualifying families than reported ones
+    SOME = "some"  # fewer reported families than qualifying ones
+    ALL = "all"  # no reported families, but qualifying ones
+
+
+def derived_families(entity: dict[str, Any]) -> DerivedFamilies:
+    """Whether some or all of the qualifying families of an association or a paper's
+    disease entity are evidently patients counted as one family each.
+
+    An entity without ``reported_family_count`` comes from an extraction that did not
+    count reported families, so none are evident.
+    """
+    qualifying: int | None = entity["family_count"]
+    if not qualifying or "reported_family_count" not in entity:
+        return DerivedFamilies.NOT_EVIDENT
+    reported: int | None = entity["reported_family_count"]
+    if reported is None:
+        return DerivedFamilies.ALL
+    return DerivedFamilies.SOME if reported < qualifying else DerivedFamilies.NOT_EVIDENT
 
 
 @dataclass(frozen=True)
@@ -2227,6 +2344,13 @@ def build_report_config(
     return json.dumps(config)
 
 
+def report_title(scope_panel_id: int | None, target_panel_names: dict[int, str]) -> str:
+    """The report's title and heading: the scope panel's name and ID in a panel-scoped run."""
+    if scope_panel_id is None:
+        return MONTHLY_REPORT_TITLE
+    return f"{target_panel_names[scope_panel_id]} ({scope_panel_id}): Literature Assessment Report"
+
+
 def generate_html_report(
     novel_genes: list[GeneAssessment],
     known_genes: list[GeneAssessment],
@@ -2246,9 +2370,12 @@ def generate_html_report(
     panels_matched: bool,
     panelapp_integration: bool,
     unreviewed_without_evidence: list[UnreviewedEntry],
-    scoped: bool,
+    scope_panel_id: int | None,
 ) -> str:
-    """Generate HTML report directly using Jinja2 templates."""
+    """Generate HTML report directly using Jinja2 templates.
+
+    *scope_panel_id* is the panel of a panel-scoped run, which is then the only target panel.
+    """
 
     # Build report config JSON for PanelApp integration
     report_config_json = (
@@ -2273,6 +2400,7 @@ def generate_html_report(
     env.filters["prepare_citation_links"] = prepare_aggregate_citation_links
     env.filters["paper_citation_links"] = prepare_paper_citation_links
     env.filters["frequency_flag"] = variant_frequency_flag
+    env.filters["derived_families"] = derived_families
     env.filters["confidence_to_color"] = panelapp_confidence_to_color
     # Double-encode: first quote produces the on-disk filename (e.g. 10.1038%2Fxyz),
     # second quote escapes the % for use in file:/// URLs so browsers don't
@@ -2307,6 +2435,7 @@ def generate_html_report(
 
     # Render HTML
     html = template.render(
+        title=report_title(scope_panel_id, target_panel_names),
         groups=groups,
         statistics=statistics,
         panel_validation=panel_validation,
@@ -2322,7 +2451,7 @@ def generate_html_report(
         refused_genes=refused_genes,
         panels_matched=panels_matched,
         unreviewed_without_evidence=unreviewed_without_evidence,
-        scoped=scoped,
+        scoped=scope_panel_id is not None,
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
         model_name=MODEL_NAMES[MODEL],
         relevance_refusers=relevance_refusers,
@@ -2414,7 +2543,7 @@ def main(
     low_confidence_papers = load_low_confidence_irrelevant_papers(db_path)
     manual_download_papers = load_manual_download_papers(db_path)
     favorite_journal_papers = load_favorite_journal_papers(
-        db_path, results.novel_genes, results.known_genes
+        db_path, results.novel_genes, results.known_genes, scoped=scope_panel_id is not None
     )
     statistics = calculate_comprehensive_statistics(db_path, results, panel_validation)
 
@@ -2436,7 +2565,7 @@ def main(
         panels_matched=results.panels_matched,
         panelapp_integration=panelapp_integration,
         unreviewed_without_evidence=results.unreviewed_without_evidence,
-        scoped=scope_panel_id is not None,
+        scope_panel_id=scope_panel_id,
     )
 
     # Save HTML as index.html

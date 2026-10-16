@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PanelApp Literature Assessment Report</title>
+    <title>{{ title }}</title>
     <style>
 {{ custom_css }}
     </style>
@@ -107,7 +107,9 @@
     {% endmacro %}
 
     {# A paper's disease entities with their counts. Rows render as one line each:
-       the report holds thousands of these tables. #}
+       the report holds thousands of these tables. A qualifying count that counts
+       patients as one family each, where the paper does not group them into
+       families, says so. #}
     {% macro disease_entity_table(disease_entities) %}
     {% if disease_entities %}
     {% set with_reported = disease_entities[0].reported_family_count is defined %}
@@ -117,6 +119,7 @@
     {% set sorted_entities = disease_entities | sort_by_rating_count %}
     {% set max_independent = sorted_entities[0].independent_family_count if sorted_entities[0].independent_family_count is not none else none %}
     {% for entity in sorted_entities %}
+    {% set derived = entity | derived_families %}
     <tr><td>{{ entity.description }}</td>
     {#- MoI -#}
     <td>{{ entity.inheritance_mode | format_inheritance(entity.inheritance_details) if entity.inheritance_mode else 'NR' }}</td>
@@ -125,7 +128,7 @@
     {#- Reported families -#}
     {% if with_reported %}<td>{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }}</td>{% endif %}
     {#- Qualifying families -#}
-    <td{% if entity.independent_family_count is not none and entity.independent_family_count == max_independent and max_independent > 0 %} class="disease-entity-max-family-count"{% endif %}{% if entity.count_reduction_reasoning %} data-title="{{ entity.count_reduction_reasoning }}"{% endif %}>{% if entity.family_count is none %}NR{% elif entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %}{{ entity.family_count }} → {{ entity.independent_family_count }}{% else %}{{ entity.family_count }}{% endif %}</td></tr>
+    <td{% if entity.independent_family_count is not none and entity.independent_family_count == max_independent and max_independent > 0 %} class="disease-entity-max-family-count"{% endif %}{% if entity.count_reduction_reasoning %} data-title="{{ entity.count_reduction_reasoning }}"{% endif %}>{% if entity.family_count is none %}NR{% elif entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %}{{ entity.family_count }} → {{ entity.independent_family_count }}{% else %}{{ entity.family_count }}{% endif %}{% if derived == 'all' %} <span class="muted">(per patient)</span>{% elif derived == 'some' %} <span class="muted">(partly per patient)</span>{% endif %}</td></tr>
     {% endfor %}
     </tbody>
     </table>
@@ -361,10 +364,14 @@
     {% endif %}
     {% endmacro %}
 
-    {# Reported, qualifying and independent families of an entity or association #}
+    {# Reported, qualifying and independent families of an association. Patients that
+       papers report without grouping them into families count as one qualifying family
+       each but as no reported family, so the qualifying count can exceed the reported
+       one; the text then says why. #}
     {% macro family_counts(entity) %}
     {% set count_note = 'A/B/C use the independent count.' ~ ((' ' ~ entity.count_reduction_reasoning) if entity.count_reduction_reasoning else '') %}
-    <p class="entity-count-summary"><strong>Patients:</strong> {{ entity.patient_count }}; <strong>Families:</strong> <span class="family-counts" data-title="{{ count_note }}">{% if entity.family_count is none %}NR{% else %}{% if entity.reported_family_count is defined %}{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }} reported, {% endif %}{{ entity.family_count }} qualifying{% if entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %} → {{ entity.independent_family_count }} independent{% endif %}{% endif %}</span></p>
+    {% set derived = entity | derived_families %}
+    <p class="entity-count-summary"><strong>Patients:</strong> {{ entity.patient_count }}; <strong>Families:</strong> <span class="family-counts" data-title="{{ count_note }}">{% if entity.family_count is none %}NR{% else %}{% if entity.reported_family_count is defined and derived != 'all' %}{{ 'NR' if entity.reported_family_count is none else entity.reported_family_count }} reported, {% endif %}{{ entity.family_count }} qualifying{% if entity.independent_family_count is not none and entity.independent_family_count != entity.family_count %} → {{ entity.independent_family_count }} independent{% endif %}{% if derived == 'some' %} (includes patients counted as one family each, where papers report patients without grouping them into families){% elif derived == 'all' %} (patients counted as one family each, where papers report patients without grouping them into families){% endif %}{% endif %}</span></p>
     {% endmacro %}
 
     {# The PanelApp criteria of one association or one paper's disease entity, with the
@@ -612,7 +619,9 @@
                     {% if paper.journal %}<li><strong>Journal:</strong> {{ paper.journal }}</li>{% endif %}
                     <li><strong>Date:</strong> {{ paper.source_date or 'Unknown' }}</li>
                     <li><strong>Why considered:</strong>
-                        {% if paper.source_type == 'initial' %}Initial literature search
+                        {% if paper.passed_screen %}Passed by the scope screen
+                        {% elif paper.entered_through_citation %}Cited by PanelApp for one of the run's genes
+                        {% elif paper.source_type == 'initial' %}Initial literature search
                         {% elif paper.source_type == 'expansion' %}Literature expansion
                         {% else %}{{ paper.source_type or 'Unknown' }}{% endif %}
                     </li>
@@ -694,7 +703,7 @@
     {% endmacro %}
 
     <header>
-        <h1>PanelApp Literature Assessment Report</h1>
+        <h1>{{ title }}</h1>
         <p>Generated on {{ generated_at }} | Panel state as of {{ panel_date }}</p>
     </header>
 
@@ -771,11 +780,16 @@
             <details>
                 <summary><strong>Detailed Statistics</strong></summary>
 
+                {% set sources = statistics.paper_sources %}
+                {% macro papers_count(count) %}{{ count }} paper{% if count != 1 %}s{% endif %}{% endmacro %}
                 <div class="stats-card">
                     <h3>Paper Sources</h3>
+                    <p class="muted">Papers read in full, by how they entered the run</p>
                     <ul>
-                        <li>Initial Literature: {{ statistics.initial_papers }} papers</li>
-                        <li>Literature Expansion: {{ statistics.expansion_papers }} papers</li>
+                        <li>Passed by the scope screen: {{ papers_count(sources.relevant) }}</li>
+                        <li>Cited by PanelApp for one of the run's genes, not passed by the screen: {{ papers_count(sources.cited) }}</li>
+                        {% if sources.expansion %}<li>Literature expansion: {{ papers_count(sources.expansion) }}</li>{% endif %}
+                        {% if sources.outside_corpus %}<li>Neither passed by the screen nor cited for one of the run's genes: {{ papers_count(sources.outside_corpus) }}</li>{% endif %}
                     </ul>
                 </div>
 
@@ -783,9 +797,9 @@
                     <h3>Panel Publication Validation</h3>
                     <ul>
                         <li>Total panel publications: {{ statistics.total_panel_papers }}</li>
-                        <li>Found in recent literature: {{ statistics.panel_papers_in_db }}</li>
+                        <li>Screened in this run: {{ statistics.panel_papers_in_db }}</li>
                         <li>Correctly identified as relevant: {{ statistics.true_positives_count }}</li>
-                        <li>Missed by the scope screen: {{ statistics.screen_misses_count }}</li>
+                        <li>Missed by the scope screen: {{ statistics.screen_misses_count }}{% if statistics.screen_misses_read_count %}, of which {{ statistics.screen_misses_read_count }} {{ 'was' if statistics.screen_misses_read_count == 1 else 'were' }} read in full all the same, as PanelApp cites them for one of the run's genes{% endif %}</li>
                         {% if statistics.panel_refused_count %}<li>Refused to assess (left out of the sensitivity): {{ statistics.panel_refused_count }}</li>{% endif %}
                         <li>Sensitivity: {{ "%.1f"|format(statistics.validation_sensitivity_pct) }}%</li>
                     </ul>
@@ -831,7 +845,11 @@
         {% if favorite_journal_papers.total %}
         <section id="featured-journals">
             <h2>Papers in Featured Journals ({{ favorite_journal_papers.total }})</h2>
-            <p><em>Every paper read for this report from a hand-picked set of high-impact journals, bucketed by what role they played in this report. Each subsection is collapsed by default.</em></p>
+            {% if scoped %}
+            <p><em>Every paper from a hand-picked set of high-impact journals that the run read or is due to read, because the scope screen passed it or PanelApp cites it for one of the run's genes, bucketed by the role it played in this report. The papers the screen rejected that PanelApp does not cite for any of the run's genes are left out, as a panel-scoped run screens the whole baseline. Each subsection is collapsed by default.</em></p>
+            {% else %}
+            <p><em>Every paper of the run's literature from a hand-picked set of high-impact journals, bucketed by the role it played in this report. Each subsection is collapsed by default.</em></p>
+            {% endif %}
 
             {{ featured_bucket(
                 favorite_journal_papers.novel,
@@ -859,9 +877,14 @@
                 "Paper had extracted evidence for a gene in this report, but was excluded from that gene's aggregate assessment by an explicit gate (e.g. preprint family-gate).",
             ) }}
             {{ featured_bucket(
+                favorite_journal_papers.read_no_evidence,
+                "Read, no evidence in this report",
+                "The paper was read in full, but its extraction recorded no evidence for any gene in this report: usually none at all, sometimes only for genes outside the report. A paper PanelApp cites for one of the run's genes is read even when the scope screen rejected it.",
+            ) }}
+            {{ featured_bucket(
                 favorite_journal_papers.manual_download,
                 "Requiring manual download",
-                "The relevance assessment found the paper relevant, but the PDF could not be downloaded automatically and needs to be fetched by hand before evidence extraction can run.",
+                "The run is due to read the paper, as the scope screen passed it or PanelApp cites it for one of the run's genes, but the PDF could not be downloaded automatically and needs to be fetched by hand before evidence extraction can run.",
             ) }}
             {{ featured_bucket(
                 favorite_journal_papers.refused,
@@ -871,12 +894,7 @@
             {{ featured_bucket(
                 favorite_journal_papers.not_relevant,
                 "Screened out (not relevant)",
-                "The scope screen found the paper not relevant for gene curation.",
-            ) }}
-            {{ featured_bucket(
-                favorite_journal_papers.off_panel,
-                "Off-panel evidence",
-                "Paper has extracted gene evaluations, but none of those genes appear in this report's panel.",
+                "The scope screen found the paper not relevant for gene curation, and PanelApp does not cite it for any of the run's genes, so the run did not read it.",
             ) }}
         </section>
         {% endif %}
@@ -935,14 +953,14 @@
             <p><em>Validation of LLM assessments against publications mentioned in PanelApp panels</em></p>
 
             <div class="validation-summary">
-                <p>Analysis of {{ panel_validation.panel_papers_in_db }} panel publications found in recent literature.</p>
-                <p><strong>Sensitivity: {{ "%.1f"|format(panel_validation.sensitivity_pct) }}%</strong> - {{ panel_validation.true_positives|length }} assessed relevant, {{ panel_validation.screen_misses|length }} missed by the scope screen.{% if panel_validation.refused %} The sensitivity leaves out the {{ panel_validation.refused|length }} that {{ relevance_refusers }} refused to assess.{% endif %}</p>
+                <p>Analysis of {{ panel_validation.panel_papers_in_db }} panel publications screened in this run.</p>
+                <p><strong>Sensitivity: {{ "%.1f"|format(panel_validation.sensitivity_pct) }}%</strong> - {{ panel_validation.true_positives|length }} assessed relevant, {{ panel_validation.screen_misses|length }} missed by the scope screen.{% if panel_validation.screen_misses_read %} Of the missed ones, {{ panel_validation.screen_misses_read }} {{ 'was' if panel_validation.screen_misses_read == 1 else 'were' }} read in full all the same, as PanelApp cites them for one of the run's genes.{% endif %}{% if panel_validation.refused %} The sensitivity leaves out the {{ panel_validation.refused|length }} that {{ relevance_refusers }} refused to assess.{% endif %}</p>
             </div>
 
             {% if panel_validation.screen_misses %}
             <details class="false-negatives">
                 <summary><strong>Missed by the Scope Screen ({{ panel_validation.screen_misses|length }})</strong></summary>
-                <p><em>Publications mentioned in panels that the scope screen assessed as not relevant: potential missed associations</em></p>
+                <p><em>Publications mentioned in panels that the scope screen assessed as not relevant: potential missed associations{% if panel_validation.screen_misses_read %}. {{ panel_validation.screen_misses_read }} of them {{ 'was' if panel_validation.screen_misses_read == 1 else 'were' }} read in full all the same, as PanelApp cites them for one of the run's genes.{% endif %}</em></p>
 
                 {% for paper in panel_validation.screen_misses %}
                 {{ paper_display(paper, include_evidence=false) }}

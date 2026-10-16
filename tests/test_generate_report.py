@@ -16,12 +16,15 @@ from palit.assess_relevance import Refusal, refused_assessment
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.generate_report import (
+    MONTHLY_REPORT_TITLE,
+    DerivedFamilies,
     FavoriteJournalSections,
     Finding,
     FindingKind,
     GeneAssessment,
     GeneAssessmentResults,
     PanelValidationResult,
+    PaperSources,
     PapersRead,
     QuoteRef,
     ReadPaper,
@@ -33,11 +36,13 @@ from palit.generate_report import (
     build_gene_assessment_results,
     build_report_config,
     calculate_comprehensive_statistics,
+    derived_families,
     format_inheritance,
     gene_findings,
     generate_html_report,
     group_genes,
     is_highlighted_new_moi,
+    load_favorite_journal_papers,
     load_low_confidence_irrelevant_papers,
     load_panel_publications_validation,
     load_quote_refs,
@@ -839,13 +844,15 @@ def test_add_prefill_lists_every_association(db_path: Path, hgnc_resolver: HgncR
     assert geneb.prefill.publications == "222"
 
 
-NO_PANEL_VALIDATION = PanelValidationResult(0, 0, [], [], [], 0.0)
+NO_PANEL_VALIDATION = PanelValidationResult(0, 0, [], [], 0, [], 0.0)
+NO_FEATURED_PAPERS = FavoriteJournalSections([], [], [], [], [], [], [], [], [])
 
 
 def _render(
     db_path: Path,
     results: GeneAssessmentResults,
     panel_validation: PanelValidationResult = NO_PANEL_VALIDATION,
+    favorite_journal_papers: FavoriteJournalSections = NO_FEATURED_PAPERS,
 ) -> str:
     return generate_html_report(
         novel_genes=results.novel_genes,
@@ -854,7 +861,7 @@ def _render(
         panel_validation=panel_validation,
         low_confidence_papers=[],
         manual_download_papers=[],
-        favorite_journal_papers=FavoriteJournalSections([], [], [], [], [], [], [], [], []),
+        favorite_journal_papers=favorite_journal_papers,
         template_dir=ROOT / "templates",
         panel_date="2026-10-01",
         report_id="test",
@@ -865,7 +872,7 @@ def _render(
         panels_matched=results.panels_matched,
         panelapp_integration=False,
         unreviewed_without_evidence=results.unreviewed_without_evidence,
-        scoped=results.scope_panel_id is not None,
+        scope_panel_id=results.scope_panel_id,
     )
 
 
@@ -2365,7 +2372,9 @@ def test_unreviewed_target_entries_of_genes_without_associations_are_listed(
         '705</a>: E paper <span class="muted">(disease extracted)</span></li>'
         in monthly["no-association"]
     )
-    scoped = groups(_render(db_path, dataclasses.replace(results, scope_panel_id=1)))
+    scoped = groups(
+        _render(db_path, dataclasses.replace(results, scope_panel_id=MENDELIOME_PANEL_ID))
+    )
     assert scoped["no-disease"].startswith("Papers read, none fit the panel (1)</h3>")
     assert (
         'href="#unreviewed-without-evidence">Unreviewed panel genes without associations (3)'
@@ -2569,3 +2578,406 @@ def test_a_gene_without_findings_is_prefilled_without_its_reviewed_associations(
     assert (prefill.form_type, prefill.rating, prefill.publications) == ("review", "AMBER", "33333")
     assert "GENEA-related uncited disease" in prefill.phenotypes
     assert "GENEA-related cited disease" not in prefill.phenotypes
+
+
+def test_a_scoped_report_names_its_panel_in_its_title(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    monthly = _render(db_path, _load(db_path, hgnc_resolver))
+    assert f"<title>{MONTHLY_REPORT_TITLE}</title>" in monthly
+    assert f"<h1>{MONTHLY_REPORT_TITLE}</h1>" in monthly
+    scoped = _render(db_path, _load_scoped(db_path, hgnc_resolver, genea_rating=1))
+    title = f"Ataxia ({ATAXIA_PANEL_ID}): Literature Assessment Report"
+    assert f"<title>{title}</title>" in scoped
+    assert f"<h1>{title}</h1>" in scoped
+
+
+def _rejected() -> str:
+    return json.dumps({"relevant": False, "screen": _screen(False, "HIGH")})
+
+
+def _add_papers(
+    db_path: Path,
+    papers: list[tuple[str, int | None, str, str | None, str | None]],
+    citations: list[tuple[int, str]],
+    journal: str | None = None,
+) -> None:
+    """Add (doi, pmid, source_type, relevance_assessment_json, evidence_extraction_json)
+    papers and the (hgnc_id, doi) PanelApp citations of a run's seeding."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO papers (doi, pmid, title, journal, source, source_type,
+                                relevance_assessment_json, evidence_extraction_json)
+            VALUES (?, ?, ?, ?, 'pubmed', ?, ?, ?)
+            """,
+            [
+                (doi, pmid, f"Title {doi}", journal, source_type, relevance, extraction)
+                for doi, pmid, source_type, relevance, extraction in papers
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO panelapp_citations (hgnc_id, paper_doi) VALUES (?, ?)", citations
+        )
+
+
+def test_featured_journals_leave_out_unread_screen_rejections_in_a_scoped_run(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """In a featured journal: Paper B, which contributes to the new gene GENEB; a paper
+    the screen rejected and the run did not read; one it rejected but the run read as
+    PanelApp cites it for GENEB, without evidence for the report; and one refused."""
+    journal = "Nature genetics"
+    _add_papers(
+        db_path,
+        [
+            ("10.1/fj-rejected", None, "initial", _rejected(), None),
+            ("10.1/fj-cited", None, "initial", _rejected(), _extraction(3)),
+            (
+                "10.1/fj-refused",
+                None,
+                "initial",
+                json.dumps(refused_assessment(Refusal(MODEL, "bio"))),
+                None,
+            ),
+        ],
+        [(3, "10.1/fj-cited")],
+        journal,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE papers SET journal = ? WHERE doi = '10.1/b'", (journal,))
+
+    def buckets(sections: FavoriteJournalSections) -> dict[str, list[str]]:
+        return {
+            field.name: [paper.doi for paper in getattr(sections, field.name)]
+            for field in dataclasses.fields(sections)
+            if getattr(sections, field.name)
+        }
+
+    results = _load(db_path, hgnc_resolver)
+    monthly = load_favorite_journal_papers(
+        db_path, results.novel_genes, results.known_genes, scoped=False
+    )
+    assert buckets(monthly) == {
+        "novel": ["10.1/b"],
+        "refused": ["10.1/fj-refused"],
+        "not_relevant": ["10.1/fj-rejected"],
+        "read_no_evidence": ["10.1/fj-cited"],
+    }
+    assert monthly.total == 4
+    monthly_html = _render(db_path, results, favorite_journal_papers=monthly)
+    assert "Papers in Featured Journals (4)</a>" in _toc(monthly_html)
+    assert "<strong>Screened out (not relevant)</strong> (1)" in monthly_html
+    assert "<strong>Read, no evidence in this report</strong> (1)" in monthly_html
+
+    scoped_results = _load_scoped(db_path, hgnc_resolver, genea_rating=1)
+    scoped = load_favorite_journal_papers(
+        db_path, scoped_results.novel_genes, scoped_results.known_genes, scoped=True
+    )
+    assert buckets(scoped) == {
+        "novel": ["10.1/b"],
+        "refused": ["10.1/fj-refused"],
+        "read_no_evidence": ["10.1/fj-cited"],
+    }
+    assert scoped.total == 3
+    scoped_html = _render(db_path, scoped_results, favorite_journal_papers=scoped)
+    assert "Papers in Featured Journals (3)</a>" in _toc(scoped_html)
+    assert "<h2>Papers in Featured Journals (3)</h2>" in scoped_html
+    assert "Screened out" not in scoped_html
+    assert (
+        "The papers the screen rejected that PanelApp does not cite for any of the run's genes "
+        "are left out"
+    ) in scoped_html
+
+
+def test_paper_sources_split_the_read_papers_by_how_they_entered_the_run(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    """Paper B passed the screen and makes GENEB (HGNC:3) a run gene. PanelApp cites for
+    GENEB an initial paper the screen rejected, one it passed, and an expansion paper
+    seeding added. Another expansion paper is a tournament pick. Paper A, never screened,
+    and a rejected paper cited for GENEA, which is no run gene, are outside the corpus."""
+    _add_papers(
+        db_path,
+        [
+            ("10.1/cited", None, "initial", _rejected(), _extraction(3)),
+            (
+                "10.1/cited-relevant",
+                None,
+                "initial",
+                json.dumps({"relevant": True, "screen": _screen(True, "HIGH")}),
+                _extraction(3),
+            ),
+            ("10.1/cited-expansion", None, "expansion", None, _extraction(3)),
+            ("10.1/expansion", None, "expansion", None, _extraction(3)),
+            ("10.1/cited-other-gene", None, "initial", _rejected(), _extraction(1)),
+        ],
+        [
+            (3, "10.1/cited"),
+            (3, "10.1/cited-relevant"),
+            (3, "10.1/cited-expansion"),
+            (1, "10.1/cited-other-gene"),
+        ],
+    )
+    statistics = calculate_comprehensive_statistics(db_path, results, NO_PANEL_VALIDATION)
+    assert statistics.paper_sources == PaperSources(
+        relevant=2, cited=2, expansion=1, outside_corpus=2
+    )
+    html = _render(db_path, results)
+    assert "<li>Passed by the scope screen: 2 papers</li>" in html
+    assert (
+        "<li>Cited by PanelApp for one of the run's genes, not passed by the screen: 2 papers</li>"
+    ) in html
+    assert "<li>Literature expansion: 1 paper</li>" in html
+    assert (
+        "<li>Neither passed by the screen nor cited for one of the run's genes: 2 papers</li>"
+    ) in html
+
+
+def test_a_corpus_without_papers_outside_it_or_expansion_papers_lists_only_two_sources(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE papers SET evidence_extraction_json = NULL WHERE doi = '10.1/a'")
+    html = _render(db_path, results)
+    assert "<li>Passed by the scope screen: 1 paper</li>" in html
+    assert "Literature expansion" not in html
+    assert "Neither passed by the screen" not in html
+
+
+def test_panel_validation_counts_the_screen_misses_read_through_panelapp_citations(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    """Of four screen misses, PanelApp cites two for the run gene GENEB, of which the run
+    has read one so far; it cites another for GENEA, no run gene, and the fourth not at
+    all."""
+    _add_papers(
+        db_path,
+        [
+            (
+                "10.1/pass",
+                900,
+                "initial",
+                json.dumps({"relevant": True, "screen": _screen(True, "HIGH")}),
+                None,
+            ),
+            ("10.1/miss-read", 901, "initial", _rejected(), _extraction(3)),
+            ("10.1/miss-other-gene", 902, "initial", _rejected(), _extraction(1)),
+            ("10.1/miss-unread", 903, "initial", _rejected(), None),
+            ("10.1/miss-cited-unread", 904, "initial", _rejected(), None),
+        ],
+        [(3, "10.1/miss-read"), (1, "10.1/miss-other-gene"), (3, "10.1/miss-cited-unread")],
+    )
+    validation = load_panel_publications_validation(
+        db_path, PanelPublications(pmids={900, 901, 902, 903, 904}, dois=set())
+    )
+    assert len(validation.screen_misses) == 4
+    assert validation.screen_misses_read == 1
+    assert validation.sensitivity_pct == 20.0
+    html = _render(db_path, results, validation)
+    assert (
+        "<li>Missed by the scope screen: 4, of which 1 was read in full all the same, as "
+        "PanelApp cites them for one of the run's genes</li>"
+    ) in html
+    assert (
+        "1 assessed relevant, 4 missed by the scope screen. Of the missed ones, 1 was read in "
+        "full all the same, as PanelApp cites them for one of the run's genes."
+    ) in html
+    assert "<li>Screened in this run: 5</li>" in html
+
+
+def test_panel_validation_without_read_misses_keeps_the_plain_line(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    _add_papers(db_path, [("10.1/miss-unread", 903, "initial", _rejected(), None)], [])
+    validation = load_panel_publications_validation(
+        db_path, PanelPublications(pmids={903}, dois=set())
+    )
+    assert validation.screen_misses_read == 0
+    html = _render(db_path, results, validation)
+    assert "<li>Missed by the scope screen: 1</li>" in html
+    assert "read in full all the same" not in html
+
+
+def _counts(
+    reported: int | None, qualifying: int | None, independent: int | None
+) -> dict[str, Any]:
+    return {
+        "reported_family_count": reported,
+        "family_count": qualifying,
+        "independent_family_count": independent,
+    }
+
+
+@pytest.mark.parametrize(
+    ("entity", "derived"),
+    [
+        (_counts(3, 3, 2), DerivedFamilies.NOT_EVIDENT),
+        # Families failed the qualifying gate; some qualifying ones may still be derived
+        (_counts(5, 3, 3), DerivedFamilies.NOT_EVIDENT),
+        (_counts(25, 71, 71), DerivedFamilies.SOME),
+        (_counts(None, 20, 18), DerivedFamilies.ALL),
+        (_counts(None, 0, 0), DerivedFamilies.NOT_EVIDENT),
+        (_counts(None, None, None), DerivedFamilies.NOT_EVIDENT),
+        ({"family_count": 4, "independent_family_count": 4}, DerivedFamilies.NOT_EVIDENT),
+    ],
+)
+def test_derived_families(entity: dict[str, Any], derived: DerivedFamilies) -> None:
+    assert derived_families(entity) == derived
+
+
+def _family_counts(section: str) -> str:
+    match = re.search(r'<p class="entity-count-summary">(.*?)</p>', section, re.DOTALL)
+    assert match is not None
+    return _strip_tags(match.group(1))
+
+
+def test_family_counts_say_when_patients_count_as_families(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """Association 30 has fewer reported families than qualifying ones, 31 none reported;
+    32 has as many reported as qualifying, and 33 fewer qualifying than reported."""
+    associations = {
+        30: _counts(25, 71, 71),
+        31: _counts(None, 20, 18),
+        32: _counts(3, 3, 2),
+        33: _counts(5, 3, 3),
+    }
+    stored = []
+    for position, (association_id, counts) in enumerate(associations.items(), start=4):
+        assessment = json.loads(_association(f"disease {association_id}")) | counts
+        stored.append((association_id, position, json.dumps(assessment)))
+    _add_genea_associations(db_path, stored)
+    html = _render(db_path, _load(db_path, hgnc_resolver))
+    assert _family_counts(_association_section(html, 30)) == (
+        "Patients: 4; Families: 25 reported, 71 qualifying (includes patients counted as one "
+        "family each, where papers report patients without grouping them into families)"
+    )
+    assert _family_counts(_association_section(html, 31)) == (
+        "Patients: 4; Families: 20 qualifying → 18 independent (patients counted as one "
+        "family each, where papers report patients without grouping them into families)"
+    )
+    assert _family_counts(_association_section(html, 32)) == (
+        "Patients: 4; Families: 3 reported, 3 qualifying → 2 independent"
+    )
+    assert _family_counts(_association_section(html, 33)) == (
+        "Patients: 4; Families: 5 reported, 3 qualifying"
+    )
+
+
+def test_paper_entity_table_marks_qualifying_families_counted_per_patient(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    entities = [
+        _paper_entity("registry", 20, "A registry.", ()) | _counts(None, 20, 18),
+        _paper_entity("mixed", 10, "Families and a cohort.", ()) | _counts(4, 10, 10),
+        _paper_entity("families", 3, "Three families.", ()),
+    ]
+    extraction = {"gene_evaluations": [{"hgnc_id": 1, "disease_entities": entities}]}
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE papers SET evidence_extraction_json = ? WHERE doi = '10.1/a'",
+            (json.dumps(extraction),),
+        )
+    known = _article(_render(db_path, _load(db_path, hgnc_resolver)), "known-gene-1")
+    evidence = known[known.index('<details class="individual-evidence-extraction">') :]
+    table = evidence[: evidence.index("</table>")]
+    rows = [_strip_tags(row) for row in re.findall(r"<tr>(.*?)</tr>", table)[1:]]
+    # Description, MoI, patients, reported and qualifying families, by independent families
+    assert rows == [
+        "registryMonoallelic20NR20 → 18 (per patient)",
+        "mixedMonoallelic10410 (partly per patient)",
+        "familiesMonoallelic333",
+    ]
+
+
+def _why_considered(html: str, doi: str, pmid: int | None = None) -> str:
+    """The "Why considered" reason on the paper card of *doi*, which links to PubMed when
+    the paper has a *pmid*."""
+    href = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else f"https://doi.org/{doi}"
+    card = html[html.index(f'<a href="{href}" target="_blank">') :]
+    match = re.search(r"<strong>Why considered:</strong>\s*(.*?)\s*</li>", card, re.DOTALL)
+    assert match is not None
+    return match.group(1)
+
+
+def test_a_paper_card_says_when_the_run_read_a_paper_because_panelapp_cites_it(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """GENEB's papers: Paper B, which the screen passed; an initial paper it passed that
+    PanelApp also cites; one it rejected that PanelApp cites; and an expansion paper
+    seeding added. The screen passing a paper comes before PanelApp citing it. Paper A,
+    never screened and cited for no run gene, keeps its initial search."""
+    passed = json.dumps({"relevant": True, "screen": _screen(True, "HIGH")})
+    _add_papers(
+        db_path,
+        [
+            ("10.1/cited-relevant", None, "initial", passed, _extraction(3)),
+            ("10.1/cited", None, "initial", _rejected(), _extraction(3)),
+            ("10.1/cited-expansion", None, "expansion", None, _extraction(3)),
+        ],
+        [(3, "10.1/cited-relevant"), (3, "10.1/cited"), (3, "10.1/cited-expansion")],
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (3, 'GENEB', ?, ?)",
+            [
+                ("10.1/cited-relevant", "recent_evidence"),
+                ("10.1/cited", "recent_evidence"),
+                ("10.1/cited-expansion", "expansion_evidence"),
+            ],
+        )
+    results = _load(db_path, hgnc_resolver)
+    papers = {p.doi: p for p in results.novel_genes[0].contributing_papers}
+    assert {doi: paper.entered_through_citation for doi, paper in papers.items()} == {
+        "10.1/b": False,
+        "10.1/cited-relevant": False,
+        "10.1/cited": True,
+        "10.1/cited-expansion": True,
+    }
+    geneb = _article(_render(db_path, results), "novel-gene-3")
+    cited = "Cited by PanelApp for one of the run's genes"
+    assert _why_considered(geneb, "10.1/cited") == cited
+    assert _why_considered(geneb, "10.1/cited-expansion") == cited
+    assert _why_considered(geneb, "10.1/cited-relevant") == "Passed by the scope screen"
+    assert _why_considered(geneb, "10.1/b", 222) == "Passed by the scope screen"
+    genea = _article(_render(db_path, results), "known-gene-1")
+    assert _why_considered(genea, "10.1/a", 111) == "Initial literature search"
+
+
+def test_a_cited_rejected_featured_paper_awaiting_manual_download_is_due_to_be_read(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """PanelApp cites for GENEB a featured-journal paper the screen rejected; its PDF needs a
+    manual download. Another one cited for GENEB is still being downloaded. Both are in
+    the corpus, so neither counts as screened out, in a monthly or a scoped run."""
+    journal = "Nature genetics"
+    _add_papers(
+        db_path,
+        [
+            ("10.1/fj-manual", None, "initial", _rejected(), None),
+            ("10.1/fj-in-progress", None, "initial", _rejected(), None),
+        ],
+        [(3, "10.1/fj-manual"), (3, "10.1/fj-in-progress")],
+        journal,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE papers SET download_status = 'manual_required' WHERE doi = '10.1/fj-manual'"
+        )
+        conn.execute(
+            "UPDATE papers SET download_status = 'scheduled' WHERE doi = '10.1/fj-in-progress'"
+        )
+    for scoped in (False, True):
+        results = (
+            _load_scoped(db_path, hgnc_resolver, genea_rating=1)
+            if scoped
+            else _load(db_path, hgnc_resolver)
+        )
+        sections = load_favorite_journal_papers(
+            db_path, results.novel_genes, results.known_genes, scoped=scoped
+        )
+        assert [p.doi for p in sections.manual_download] == ["10.1/fj-manual"]
+        assert sections.not_relevant == []
+        assert sections.total == 1

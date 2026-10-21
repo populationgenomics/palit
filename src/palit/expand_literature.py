@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Tournament-based literature expansion using hierarchical LLM filtering."""
+"""Literature expansion for a run's genes: the publications PanelApp cites, and in
+monthly runs tournament selection over the screened baseline using hierarchical LLM
+filtering."""
 
 import asyncio
 import json
@@ -20,7 +22,10 @@ from palit.papers import Paper, deserialize_source_metadata, serialize_source_me
 from palit.run_corpus import RUN_GENES
 from palit.tournament import TournamentEntry, TournamentOutcome, record_abandoned, run_tournaments
 
-app = typer.Typer(help="Tournament-based literature expansion using hierarchical LLM filtering")
+app = typer.Typer(
+    help="Expand the run's literature with the publications PanelApp cites, and in monthly "
+    "runs with tournament selection over the screened baseline"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -237,15 +242,23 @@ async def _process_expansion(
 
 @app.callback(invoke_without_command=True)
 def main(
-    cutoff_date: str = typer.Option(
-        ...,
-        "--cutoff-date",
-        help="Only consider papers up to this date (YYYY-MM-DD)",
-    ),
     panel_date: str = typer.Option(
         ...,
         "--panel-date",
         help="Panel state date (YYYY-MM-DD) whose snapshot supplies PanelApp's cited publications",
+    ),
+    scope_panel_id: int | None = typer.Option(
+        None,
+        "--scope-panel-id",
+        help="Panel ID of a panel-scoped run, whose first corpus is already the whole screened "
+        "baseline: expansion seeds PanelApp's citations and runs no tournament. Exclusive with "
+        "--cutoff-date.",
+    ),
+    cutoff_date: str | None = typer.Option(
+        None,
+        "--cutoff-date",
+        help="Tournament (monthly runs): only consider papers up to this date (YYYY-MM-DD). "
+        "Required without --scope-panel-id.",
     ),
     db_path: Path = typer.Option(
         Path("data/db.sqlite"),
@@ -261,7 +274,7 @@ def main(
     max_papers: int = typer.Option(
         20,
         "--max-papers",
-        help="Maximum papers to select per gene",
+        help="Maximum papers the tournament selects per gene",
     ),
     papers_per_round: int = typer.Option(
         100,
@@ -271,38 +284,55 @@ def main(
     max_retries: int = typer.Option(
         5,
         "--max-retries",
-        help="Maximum number of retries for failed batches",
+        help="Maximum number of retries for failed tournament batches",
     ),
     immediate: bool = typer.Option(
         False,
         "--immediate",
-        help="Send requests immediately instead of as Message Batches (for prompt development)",
+        help="Send the tournament's requests immediately instead of as Message Batches "
+        "(for prompt development)",
     ),
     force_gene: list[int] = typer.Option(
         [],
         "--force-gene",
-        help="Re-run expansion for specific gene (HGNC ID)",
+        help="Re-run the tournament for a specific gene (HGNC ID)",
     ),
     force_all: bool = typer.Option(
         False,
         "--force-all",
-        help="Re-run expansion for all genes",
+        help="Clear all expansion results (tournament picks, seeded papers and their citation "
+        "links) and expand again",
     ),
     paper_limit: int = typer.Option(
         10000,
         "--paper-limit",
-        help="Maximum number of papers to consider per gene",
+        help="Maximum number of papers the tournament considers per gene",
     ),
 ) -> None:
-    """Expand literature for the run's genes, from two sources.
+    """Expand the literature of the run's genes beyond the run's first corpus.
 
-    Tournament selection picks a minimal, non-redundant set from the screened
-    baseline. Seeding first adds, unconditionally, every publication PanelApp
-    already cites for those genes on any panel, including papers the tournament
-    would discard as redundant and papers the baseline never contained, and
-    records which genes cite each held paper (see
-    :mod:`palit.panelapp_publications`).
+    Seeding adds, unconditionally, every publication PanelApp already cites for
+    those genes on any panel, and records which genes cite each held paper (see
+    :mod:`palit.panelapp_publications`). In a monthly run, tournament selection
+    then picks a minimal, non-redundant set of each gene's papers up to
+    --cutoff-date from the screened baseline. Seeding keeps the cited papers the
+    tournament would discard as redundant, and those the baseline never contained.
+
+    A panel-scoped run (--scope-panel-id) only seeds. Its first corpus is already
+    the whole baseline, screened against the panel, so a tournament over the
+    baseline has no candidates to add.
     """
+    if scope_panel_id is None and cutoff_date is None:
+        logger.error("--cutoff-date is required without --scope-panel-id")
+        raise typer.Exit(1)
+
+    if scope_panel_id is not None and cutoff_date is not None:
+        logger.error(
+            "--cutoff-date bounds the tournament's candidates, and a panel-scoped run "
+            "(--scope-panel-id) runs no tournament"
+        )
+        raise typer.Exit(1)
+
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
@@ -311,23 +341,11 @@ def main(
         logger.error(f"Baseline database not found: {baseline_db_path}")
         raise typer.Exit(1)
 
-    # Load prompt and schema
-    prompt_path = Path("prompts/tournament_selection_prompt.txt")
-    schema_path = Path("prompts/tournament_selection_schema.json")
-
-    if not prompt_path.exists():
-        logger.error(f"Prompt not found: {prompt_path}")
+    panels = load_panels_with_reviews(panel_date, DEFAULT_SNAPSHOT_DIR)
+    if scope_panel_id is not None and scope_panel_id not in panels:
+        logger.error(f"Panel {scope_panel_id} is not in the {panel_date} snapshot")
         raise typer.Exit(1)
 
-    if not schema_path.exists():
-        logger.error(f"Schema not found: {schema_path}")
-        raise typer.Exit(1)
-
-    template = prompt_path.read_text()
-    schema: dict[str, Any] = json.loads(schema_path.read_text())
-
-    # Determine genes to process
-    logger.info("Preparing expansion gene list...")
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
@@ -347,17 +365,33 @@ def main(
             )
             conn.commit()
 
-    genes = genes_to_expand(db_path)
-
-    # Load HGNC resolver for gene symbol lookup
     hgnc_resolver = HgncResolver.from_file()
 
     # Seed the publications PanelApp already cites. Runs after --force-all's
     # expansion wipe so seeded papers survive it, and before the tournament's
     # early return so a rerun still picks up publications added to a panel.
-    panels = load_panels_with_reviews(panel_date, DEFAULT_SNAPSHOT_DIR)
     seed_panelapp_publications(db_path, panels, baseline_db_path, hgnc_resolver)
 
+    if scope_panel_id is not None:
+        logger.info(f"Panel-scoped run for panel {scope_panel_id}: seeding is the whole expansion")
+        return
+    assert cutoff_date is not None
+
+    prompt_path = Path("prompts/tournament_selection_prompt.txt")
+    schema_path = Path("prompts/tournament_selection_schema.json")
+
+    if not prompt_path.exists():
+        logger.error(f"Prompt not found: {prompt_path}")
+        raise typer.Exit(1)
+
+    if not schema_path.exists():
+        logger.error(f"Schema not found: {schema_path}")
+        raise typer.Exit(1)
+
+    template = prompt_path.read_text()
+    schema: dict[str, Any] = json.loads(schema_path.read_text())
+
+    genes = genes_to_expand(db_path)
     logger.info(f"Found {len(genes)} gene(s) to expand")
 
     if not genes:

@@ -16,8 +16,8 @@ panel has dropped since the snapshot's version.
 ``snapshot`` builds a new snapshot. ``add-reviews`` adds the reviews to a
 snapshot written before they were captured; its reviews are those of the day it
 runs. ``ingest-citations`` adds every publication a snapshot cites to a database,
-normally the baseline, and ``seed-citations`` adds those it cites for a run's
-genes to the run (see :mod:`palit.panelapp_publications`).
+normally the baseline; ``expand-literature`` adds those it cites for a run's genes
+to the run (see :mod:`palit.panelapp_publications`).
 """
 
 import asyncio
@@ -32,18 +32,13 @@ import httpx2
 import tenacity
 import typer
 
-from palit.hgnc import HgncResolver
 from palit.panelapp_client import (
     DEFAULT_SNAPSHOT_DIR,
     EVALUATIONS_FETCHED_AT,
     PanelAppClient,
     snapshot_path,
 )
-from palit.panelapp_publications import (
-    BASELINE_DB_PATH,
-    ingest_snapshot_citations,
-    seed_panelapp_publications,
-)
+from palit.panelapp_publications import BASELINE_DB_PATH, ingest_snapshot_citations
 from palit.progress import LoggingProgress as Progress
 
 logger = logging.getLogger(__name__)
@@ -342,32 +337,3 @@ def ingest_citations_command(
         raise typer.Exit(1)
     panels = load_panels_with_reviews(panel_date, snapshot_dir)
     ingest_snapshot_citations(db_path, panels, panel_date)
-
-
-@app.command("seed-citations")
-def seed_citations_command(
-    panel_date: str = PANEL_DATE_OPTION,
-    snapshot_dir: Path = SNAPSHOT_DIR_OPTION,
-    db_path: Path = typer.Option(Path("data/db.sqlite"), "--db-path", help="The run database"),
-    baseline_db_path: Path = typer.Option(
-        BASELINE_DB_PATH,
-        "--baseline-db-path",
-        help="Baseline database to copy cited papers from before fetching them",
-    ),
-) -> None:
-    """Add every publication PanelApp cites for the run's genes, on any panel, to a run.
-
-    The run's genes have recent evidence from a relevant paper, so this runs after
-    a first extraction. Papers the run lacks are copied from the baseline, or
-    fetched from PubMed or CrossRef, as expansion papers scheduled for download.
-    Records which genes cite each held paper (table panelapp_citations) and
-    schedules the cited papers without a download status: they are in the corpus
-    whatever their relevance. Safe to rerun. expand-literature runs the same
-    seeding.
-    """
-    for path in (db_path, baseline_db_path):
-        if not path.exists():
-            logger.error("Database not found: %s", path)
-            raise typer.Exit(1)
-    panels = load_panels_with_reviews(panel_date, snapshot_dir)
-    seed_panelapp_publications(db_path, panels, baseline_db_path, HgncResolver.from_file())

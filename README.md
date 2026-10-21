@@ -191,11 +191,12 @@ uv run palit discover-citations discover
 # 5a. Optionally add papers manually that weren't found automatically
 uv run palit discover-citations add --gene GENE_SYMBOL PMID1 PMID2 ...
 
-# 6. Expand literature beyond citations. Tournament selection over the screened
-#    baseline, bounded by --cutoff-date to the literature preceding the window,
-#    then unconditional seeding of the publications PanelApp already cites for
-#    each gene, on any panel of the --panel-date snapshot, copied from the
-#    baseline where it holds them (see "PanelApp Publication Seeding" below).
+# 6. Expand literature beyond citations. Unconditional seeding of the
+#    publications PanelApp already cites for each gene, on any panel of the
+#    --panel-date snapshot, copied from the baseline where it holds them (see
+#    "PanelApp Publication Seeding" below), then tournament selection over the
+#    screened baseline, bounded by --cutoff-date to the literature preceding the
+#    window.
 uv run palit expand-literature --cutoff-date $START_DATE --panel-date $PANEL_DATE
 
 # 7. Download expansion papers and the papers PanelApp cites for the run's
@@ -315,7 +316,7 @@ Seeding takes, for each of the run's genes, the publications PanelApp cites for 
 
 A paper linked to one of the run's genes is in the corpus whatever its relevance, so it is downloaded and extracted with the expansion papers; `download-papers open-browser --expansion-only` lists it too. The run's genes come from relevant papers only, so the extraction of a cited paper the screen rejected adds no genes. A cited paper the screen passed adds its genes like any relevant paper, and it may be extracted only after seeding (for example when `reduce-literature` had unscheduled it and seeding scheduled it again). Seeding runs once per run, so a gene that first enters the run through such a paper is aggregated without the papers PanelApp cites for it.
 
-In the monthly workflow `expand-literature` seeds. It does so after `--force-all`'s expansion wipe, so seeded papers survive it, and before the tournament's early return, so a rerun still picks up publications added to a panel since. Panel-scoped runs have no `expand-literature` and seed with `palit panelapp seed-citations` (see "Panel-Specific Curation"), which runs the same seeding.
+`expand-literature` seeds in both workflows. It does so after `--force-all`'s expansion wipe, so seeded papers survive it, and before the tournament's early return, so a rerun still picks up publications added to a panel since. With `--scope-panel-id`, as in a panel-scoped run (see "Panel-Specific Curation"), seeding is all it does.
 
 Seeding can be rerun: papers already held are counted and skipped, and the table is rebuilt from the snapshot each time. Publications that never resolve to a DOI, and those whose PDF cannot be obtained, are logged and stay out of the corpus, so seeding widens coverage without guaranteeing it.
 
@@ -537,12 +538,15 @@ uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 #    genes.
 uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 
-# 6. Seed the publications PanelApp cites for the run's genes, on any panel
-#    (see "PanelApp Publication Seeding"). Most are already in the database,
-#    copied from the baseline in step 1; those the screen rejected are scheduled
-#    for download all the same. The rest are copied from the baseline or
-#    fetched.
-uv run palit panelapp seed-citations --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE
+# 6. Expand literature. For a panel-scoped run this only seeds the publications
+#    PanelApp cites for the run's genes, on any panel (see "PanelApp Publication
+#    Seeding"). There is no tournament: step 1 copied the whole baseline and
+#    step 2 screened it against the panel, so a tournament over the baseline
+#    would only pick papers the run has already screened. Most cited papers are
+#    in the database too, copied from the baseline in step 1; those the screen
+#    rejected are scheduled for download all the same. The rest are copied from
+#    the baseline or fetched.
+uv run palit expand-literature --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 
 # 7. Download and extract the seeded papers, as in steps 4 and 5
 uv run palit download-papers attempt-pmc --db-path data/$PANEL_NAME.sqlite

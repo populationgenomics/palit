@@ -129,8 +129,8 @@ def _make_baseline(tmp_path: Path, papers: list[tuple[str, int | None]]) -> Path
             """
             CREATE TABLE papers (
                 doi TEXT PRIMARY KEY, pmid INTEGER, title TEXT NOT NULL, abstract TEXT,
-                authors TEXT, journal TEXT, source TEXT NOT NULL, source_date DATE,
-                source_metadata JSON, source_type TEXT, source_details TEXT,
+                authors TEXT, journal TEXT, journal_issn TEXT, source TEXT NOT NULL,
+                source_date DATE, source_metadata JSON, source_type TEXT, source_details TEXT,
                 download_status TEXT
             );
             CREATE TABLE gene_mentions (hgnc_id INTEGER, paper_doi TEXT, source TEXT);
@@ -151,6 +151,7 @@ def _paper(doi: str, pmid: int | None) -> Paper:
         abstract="",
         authors="",
         journal="",
+        journal_issn=None,
         source="pubmed" if pmid is not None else "crossref",
         source_date="2001-01-01",
         source_metadata=PubmedMetadata() if pmid is not None else CrossrefMetadata(),

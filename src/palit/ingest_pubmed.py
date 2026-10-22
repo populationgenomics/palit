@@ -71,15 +71,16 @@ def process_xml_file(
             cursor.executemany(
                 """
                 INSERT INTO papers
-                (doi, pmid, title, abstract, authors, journal, source, source_date,
-                 source_metadata, source_type, source_details)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (doi, pmid, title, abstract, authors, journal, journal_issn, source,
+                 source_date, source_metadata, source_type, source_details)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(doi) DO UPDATE SET
                     pmid = excluded.pmid,
                     title = excluded.title,
                     abstract = excluded.abstract,
                     authors = excluded.authors,
                     journal = excluded.journal,
+                    journal_issn = excluded.journal_issn,
                     source_date = excluded.source_date,
                     source_metadata = excluded.source_metadata,
                     source_type = excluded.source_type,
@@ -100,6 +101,7 @@ def process_xml_file(
                         p.abstract,
                         p.authors,
                         p.journal,
+                        p.journal_issn,
                         p.source,
                         p.source_date,
                         serialize_source_metadata(p.source_metadata),

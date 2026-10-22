@@ -283,6 +283,16 @@ class DetailedPaper:
 
 
 @dataclass(frozen=True)
+class ManualDownloadPaper:
+    """A paper awaiting manual download, with the figure the section orders it by."""
+
+    paper: DetailedPaper
+    # The journal's OpenAlex two-year mean citedness (journal_metrics); None for a
+    # preprint, or when the paper has no journal ISSN or OpenAlex gives no figure.
+    journal_citedness: float | None
+
+
+@dataclass(frozen=True)
 class FavoriteJournalGeneLink:
     """Hyperlink from a featured-journal paper to a gene's anchor in this report."""
 
@@ -1859,11 +1869,15 @@ def load_relevance_refusers(db_path: Path) -> str:
     return " or ".join(phrases)
 
 
-def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
+def load_manual_download_papers(db_path: Path) -> list[ManualDownloadPaper]:
     """Load papers from recent literature that require manual download.
 
     These papers were not downloaded (missed or paywalled), so they only have
-    basic metadata and relevance assessment from abstract.
+    basic metadata and relevance assessment from abstract. They are ordered by
+    their journal's OpenAlex citedness, highest first, then newest first. Preprints,
+    which PubMed indexes too, have no figure, as a preprint server's says nothing of
+    the paper; they come last with the papers whose journal has none. Raises
+    ValueError when journal-metrics has not looked up the journal of one of them.
     """
     logger.info("Loading papers requiring manual download...")
 
@@ -1880,19 +1894,37 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
                 p.abstract,
                 p.authors,
                 p.journal,
+                p.journal_issn,
+                m.issn IS NOT NULL AS journal_looked_up,
+                m.two_year_mean_citedness,
                 p.source_date,
                 p.source_type,
                 p.source_details,
                 p.relevance_assessment_json,
                 {CITED_PAPER} AS cited_for_run_gene
             FROM papers p
+            LEFT JOIN journal_metrics m ON m.issn = p.journal_issn
             WHERE p.source_type = 'initial'
             AND p.download_status = 'manual_required'
             ORDER BY p.source_date DESC, p.doi DESC
         """)
+        rows = cursor.fetchall()
+
+        not_looked_up = sorted(
+            {
+                row["journal_issn"]
+                for row in rows
+                if row["journal_issn"] and not row["journal_looked_up"]
+            }
+        )
+        if not_looked_up:
+            raise ValueError(
+                f"No journal metrics for ISSNs {not_looked_up} of papers awaiting manual "
+                f"download; run `palit journal-metrics --db-path {db_path}` first"
+            )
 
         manual_download_papers = []
-        for row in cursor.fetchall():
+        for row in rows:
             relevance_assessment = None
             if row["relevance_assessment_json"]:
                 try:
@@ -1916,10 +1948,15 @@ def load_manual_download_papers(db_path: Path) -> list[DetailedPaper]:
                 preprint=is_preprint(row["journal"], row["pmid"]),
                 pmid=row["pmid"],
             )
-            manual_download_papers.append(detailed_paper)
+            citedness = None if detailed_paper.preprint else row["two_year_mean_citedness"]
+            manual_download_papers.append(ManualDownloadPaper(detailed_paper, citedness))
 
         logger.info(f"Found {len(manual_download_papers)} papers requiring manual download")
-        return manual_download_papers
+        # A stable sort, so papers with equal figures stay newest first.
+        return sorted(
+            manual_download_papers,
+            key=lambda p: (p.journal_citedness is None, -(p.journal_citedness or 0.0)),
+        )
 
 
 def _gene_contribution_bucket(gene: GeneAssessment) -> str:
@@ -2366,7 +2403,7 @@ def generate_html_report(
     statistics: ComprehensiveStats,
     panel_validation: PanelValidationResult,
     low_confidence_papers: list[DetailedPaper],
-    manual_download_papers: list[DetailedPaper],
+    manual_download_papers: list[ManualDownloadPaper],
     favorite_journal_papers: FavoriteJournalSections,
     template_dir: Path,
     panel_date: str,

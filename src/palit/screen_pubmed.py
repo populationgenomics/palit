@@ -125,6 +125,7 @@ def insert_relevant_papers(
             paper.abstract,
             paper.authors,
             paper.journal,
+            paper.journal_issn,
             paper.source,
             paper.source_date,
             serialize_source_metadata(paper.source_metadata),
@@ -143,9 +144,9 @@ def insert_relevant_papers(
         cursor.executemany(
             """
             INSERT INTO papers
-            (doi, pmid, title, abstract, authors, journal, source, source_date,
-             source_metadata, source_type, source_details)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (doi, pmid, title, abstract, authors, journal, journal_issn, source,
+             source_date, source_metadata, source_type, source_details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(doi) DO NOTHING
             """,
             batch,

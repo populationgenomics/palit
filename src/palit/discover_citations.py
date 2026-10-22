@@ -348,6 +348,7 @@ def fetch_paper_metadata_by_doi(doi: str, source_details: str) -> Paper | None:
         abstract=abstract,
         authors=format_crossref_authors(record.get("author", [])),
         journal=journal,
+        journal_issn=None,
         source="crossref",
         source_date=parse_crossref_date(date_obj),
         source_metadata=CrossrefMetadata(),
@@ -388,9 +389,9 @@ def store_referenced_paper(db_path: Path, paper: Paper) -> bool:
         cursor.execute(
             """
             INSERT INTO papers
-            (doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata,
-             source_type, source_details, download_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+            (doi, pmid, title, abstract, authors, journal, journal_issn, source, source_date,
+             source_metadata, source_type, source_details, download_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
             ON CONFLICT(doi) DO NOTHING
             """,
             (
@@ -400,6 +401,7 @@ def store_referenced_paper(db_path: Path, paper: Paper) -> bool:
                 paper.abstract,
                 paper.authors,
                 paper.journal,
+                paper.journal_issn,
                 paper.source,
                 paper.source_date,
                 serialize_source_metadata(paper.source_metadata),

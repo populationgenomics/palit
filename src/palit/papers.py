@@ -137,6 +137,7 @@ class Paper:
     abstract: str
     authors: str
     journal: str
+    journal_issn: str | None  # Set for PubMed records only (see schema.sql)
     source: str
     source_date: str
     source_metadata: SourceMetadata

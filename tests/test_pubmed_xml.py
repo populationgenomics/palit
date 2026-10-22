@@ -1,4 +1,4 @@
-"""Tests for PubMed XML extraction: skip gates and their tallies."""
+"""Tests for PubMed XML extraction: skip gates and their tallies, and journal ISSNs."""
 
 from palit.papers import SkipReason
 from palit.pubmed_xml import extract_papers_from_xml
@@ -13,14 +13,23 @@ def _article(
     title: str = "A title",
     abstract: str | None = "An abstract",
     day: str = "2026-01-15",
+    issn_linking: str | None = None,
+    journal_issn: str | None = None,
 ) -> str:
-    """Build one PubmedArticle element; `languages=None` omits Language entirely."""
+    """Build one PubmedArticle element; `languages=None` omits Language entirely, and
+    an ISSN left None omits its element."""
     y, m, d = day.split("-")
     lang_xml = "".join(f"<Language>{code}</Language>" for code in languages or [])
     abstract_xml = (
         f"<Abstract><AbstractText>{abstract}</AbstractText></Abstract>" if abstract else ""
     )
     doi_xml = f'<ArticleId IdType="doi">{doi}</ArticleId>' if doi else ""
+    linking_xml = (
+        f"<MedlineJournalInfo><ISSNLinking>{issn_linking}</ISSNLinking></MedlineJournalInfo>"
+        if issn_linking
+        else ""
+    )
+    journal_issn_xml = f'<ISSN IssnType="Electronic">{journal_issn}</ISSN>' if journal_issn else ""
     return f"""
         <PubmedArticle>
           <MedlineCitation>
@@ -29,9 +38,10 @@ def _article(
               {abstract_xml}
               <AuthorList><Author><LastName>Smith</LastName>
                 <ForeName>Jane</ForeName></Author></AuthorList>
-              <Journal><Title>Test Journal</Title></Journal>
+              <Journal>{journal_issn_xml}<Title>Test Journal</Title></Journal>
               {lang_xml}
             </Article>
+            {linking_xml}
           </MedlineCitation>
           <PubmedData>
             <History><PubMedPubDate PubStatus="entrez">
@@ -111,3 +121,25 @@ def test_mixed_set_keeps_only_english() -> None:
     )
     assert dois == ["10.1000/a", "10.1000/c"]
     assert skipped == {SkipReason.NON_ENGLISH: 2}
+
+
+# --- journal ISSN -----------------------------------------------------------
+
+
+def _journal_issn(article: str) -> str | None:
+    papers, _ = extract_papers_from_xml(_articleset(article), "initial", "test")
+    return papers[0].journal_issn
+
+
+def test_journal_issn_is_the_linking_issn() -> None:
+    """The ISSN-L names the journal whichever of its print or online ISSNs the article has."""
+    article = _article(issn_linking="0002-9297", journal_issn="1537-6605")
+    assert _journal_issn(article) == "0002-9297"
+
+
+def test_journal_issn_falls_back_to_the_articles_journal_issn() -> None:
+    assert _journal_issn(_article(journal_issn="2211-1247")) == "2211-1247"
+
+
+def test_journal_issn_is_none_without_either_issn() -> None:
+    assert _journal_issn(_article()) is None

@@ -255,6 +255,13 @@ uv run palit map-mondo
 #     associations still without matches.
 uv run palit match-panels --panel-date $PANEL_DATE
 
+# 11a. Fetch each journal's two-year mean citedness from OpenAlex, an open
+#      analogue of the impact factor, by the ISSN of the papers' PubMed records.
+#      The report orders the papers awaiting manual download by it, and stops
+#      if a journal of theirs has not been looked up. Re-runs look up only the
+#      journals still without figures.
+uv run palit journal-metrics
+
 # 12. Generate the report package: index.html, the PDF viewer page, and each
 #     cited paper's PDF (symlinked) with its quote highlights (citations/*.json).
 #     Each gene shows one block per association, with its relation to PanelApp
@@ -451,10 +458,10 @@ WHERE relevance_assessment_json IS NOT NULL
   AND json_extract(relevance_assessment_json, '$.screen.relevant') = 1;
 
 INSERT OR IGNORE INTO papers
-  (doi, pmid, title, abstract, authors, journal, source_date,
+  (doi, pmid, title, abstract, authors, journal, journal_issn, source_date,
    source, source_metadata, source_type, source_details, download_status,
    relevance_assessment_raw, relevance_assessment_json)
-SELECT doi, pmid, title, abstract, authors, journal, source_date,
+SELECT doi, pmid, title, abstract, authors, journal, journal_issn, source_date,
        source, source_metadata, source_type, source_details, 'scheduled',
        relevance_assessment_raw, relevance_assessment_json
 FROM source.papers WHERE doi IN relevant_dois;
@@ -499,7 +506,7 @@ uv run palit panelapp snapshot --panel-date $PANEL_DATE
 #    paper metadata is copied: step 2 assesses relevance afresh and schedules
 #    the relevant papers for download.
 sqlite3 data/$PANEL_NAME.sqlite < schema.sql
-sqlite3 data/$PANEL_NAME.sqlite "ATTACH 'data/pubmed_baseline_screening.sqlite' AS source; INSERT INTO papers (doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, source_type, source_details) SELECT doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata, 'initial', source_details FROM source.papers"
+sqlite3 data/$PANEL_NAME.sqlite "ATTACH 'data/pubmed_baseline_screening.sqlite' AS source; INSERT INTO papers (doi, pmid, title, abstract, authors, journal, journal_issn, source, source_date, source_metadata, source_type, source_details) SELECT doi, pmid, title, abstract, authors, journal, journal_issn, source, source_date, source_metadata, 'initial', source_details FROM source.papers"
 
 # 2. Assess relevance scoped to the panel: the screen gets the panel description
 #    and passes papers with human genetic evidence within the panel's phenotypic
@@ -571,6 +578,9 @@ uv run palit assess-genes --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_
 # 9. Map associations without a GenCC term onto MONDO terms, as in the main
 #    workflow. Panel-scoped runs do not run match-panels.
 uv run palit map-mondo --db-path data/$PANEL_NAME.sqlite
+
+# 9a. Fetch journal figures from OpenAlex, as in the main workflow
+uv run palit journal-metrics --db-path data/$PANEL_NAME.sqlite
 
 # 10. Generate report package against the panel: every association of a gene
 #     not on it is a finding, and an upgrade starts from the gene's rating on it.

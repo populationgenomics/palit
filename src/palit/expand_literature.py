@@ -49,7 +49,7 @@ def get_papers_for_gene(
         cursor.execute(
             """
             SELECT DISTINCT p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
-                   p.source, p.source_date, p.source_metadata
+                   p.journal_issn, p.source, p.source_date, p.source_metadata
             FROM papers p
             JOIN gene_mentions gm ON p.doi = gm.paper_doi
             WHERE gm.hgnc_id = ?
@@ -70,6 +70,7 @@ def get_papers_for_gene(
                     abstract=row["abstract"],
                     authors=row["authors"],
                     journal=row["journal"],
+                    journal_issn=row["journal_issn"],
                     source=row["source"],
                     source_date=row["source_date"],
                     source_metadata=deserialize_source_metadata(
@@ -103,9 +104,9 @@ def store_expansion_papers(db_path: Path, papers: list[Paper], gene_symbol: str)
             cursor.execute(
                 """
                 INSERT INTO papers
-                (doi, pmid, title, abstract, authors, journal, source, source_date, source_metadata,
-                 source_type, source_details, download_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+                (doi, pmid, title, abstract, authors, journal, journal_issn, source, source_date,
+                 source_metadata, source_type, source_details, download_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
                 ON CONFLICT(doi) DO UPDATE SET
                     source_type = excluded.source_type,
                     source_details = excluded.source_details,
@@ -124,6 +125,7 @@ def store_expansion_papers(db_path: Path, papers: list[Paper], gene_symbol: str)
                     paper.abstract,
                     paper.authors,
                     paper.journal,
+                    paper.journal_issn,
                     paper.source,
                     paper.source_date,
                     serialize_source_metadata(paper.source_metadata),

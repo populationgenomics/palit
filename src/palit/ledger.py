@@ -146,10 +146,10 @@ def upsert_papers(conn: sqlite3.Connection, papers: list[Paper], today: str) -> 
     """Upsert fetched metadata into the ledger without touching disposition.
 
     On insert: a fresh row with NULL disposition and first_seen = last_seen =
-    today. On conflict: refresh title/abstract/authors/journal/source_date/
-    source_metadata, coalesce in a newly-available PMID, and bump last_seen. The
-    disposition columns are deliberately left for the run write-back to own, so a
-    late-arriving abstract simply updates the row (abstract-lag handled).
+    today. On conflict: refresh title/abstract/authors/journal/journal_issn/
+    source_date/source_metadata, coalesce in a newly-available PMID, and bump
+    last_seen. The disposition columns are deliberately left for the run write-back
+    to own, so a late-arriving abstract simply updates the row (abstract-lag handled).
 
     Returns (inserted, updated).
     """
@@ -159,15 +159,16 @@ def upsert_papers(conn: sqlite3.Connection, papers: list[Paper], today: str) -> 
     conn.executemany(
         """
         INSERT INTO ledger
-            (doi, pmid, title, abstract, authors, journal, source, source_date,
-             source_metadata, first_seen, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (doi, pmid, title, abstract, authors, journal, journal_issn, source,
+             source_date, source_metadata, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(doi) DO UPDATE SET
             pmid = COALESCE(excluded.pmid, ledger.pmid),
             title = excluded.title,
             abstract = excluded.abstract,
             authors = excluded.authors,
             journal = excluded.journal,
+            journal_issn = excluded.journal_issn,
             source = excluded.source,
             source_date = excluded.source_date,
             source_metadata = excluded.source_metadata,
@@ -181,6 +182,7 @@ def upsert_papers(conn: sqlite3.Connection, papers: list[Paper], today: str) -> 
                 p.abstract,
                 p.authors,
                 p.journal,
+                p.journal_issn,
                 p.source,
                 p.source_date,
                 serialize_source_metadata(p.source_metadata),
@@ -364,11 +366,11 @@ def seed_run_db_from_ledger(
         conn.execute(
             f"""
             INSERT OR IGNORE INTO papers
-                (doi, pmid, title, abstract, authors, journal, source, source_date,
-                 source_metadata, source_type, source_details, download_status,
-                 relevance_assessment_json)
-            SELECT doi, pmid, title, abstract, authors, journal, source, source_date,
-                   source_metadata, 'initial', 'ledger',
+                (doi, pmid, title, abstract, authors, journal, journal_issn, source,
+                 source_date, source_metadata, source_type, source_details,
+                 download_status, relevance_assessment_json)
+            SELECT doi, pmid, title, abstract, authors, journal, journal_issn, source,
+                   source_date, source_metadata, 'initial', 'ledger',
                    CASE WHEN relevant IS 1 THEN download_status END,
                    relevance_assessment_json
             FROM ledger.ledger
@@ -429,8 +431,8 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
     try:
         rows = run_conn.execute(
             """
-            SELECT doi, pmid, title, abstract, authors, journal, source, source_date,
-                   source_metadata, relevance_assessment_json, download_status
+            SELECT doi, pmid, title, abstract, authors, journal, journal_issn, source,
+                   source_date, source_metadata, relevance_assessment_json, download_status
             FROM papers
             WHERE title IS NOT NULL
             """
@@ -455,6 +457,7 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
             abstract,
             authors,
             journal,
+            journal_issn,
             source,
             source_date,
             source_metadata,
@@ -465,10 +468,10 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
             ledger_conn.execute(
                 """
                 INSERT INTO ledger
-                    (doi, pmid, title, abstract, authors, journal, source, source_date,
-                     source_metadata, relevance_assessment_json, relevant, download_status,
-                     reported_run, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (doi, pmid, title, abstract, authors, journal, journal_issn, source,
+                     source_date, source_metadata, relevance_assessment_json, relevant,
+                     download_status, reported_run, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(doi) DO UPDATE SET
                     relevance_assessment_json = excluded.relevance_assessment_json,
                     relevant = excluded.relevant,
@@ -483,6 +486,7 @@ def writeback(ledger_path: Path, run_db_path: Path, run_id: str) -> int:
                     abstract,
                     authors,
                     journal,
+                    journal_issn,
                     source,
                     source_date,
                     source_metadata,

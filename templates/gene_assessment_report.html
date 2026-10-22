@@ -605,7 +605,7 @@
     {% endmacro %}
 
     {# Unified macro for displaying papers - used across all sections #}
-    {% macro paper_display(paper, include_evidence=false, gene=none) %}
+    {% macro paper_display(paper, include_evidence=false, gene=none, journal_note=none) %}
     <article class="detailed-paper{% if paper.preprint %} paper-preprint{% endif %}{% if paper.filtered_reason %} paper-filtered{% endif %}">
         <header class="paper-header">
             <h6>
@@ -616,7 +616,7 @@
             <div class="paper-metadata">
                 <ul>
                     {% if paper.authors %}<li><strong>Authors:</strong> {{ paper.authors }}</li>{% endif %}
-                    {% if paper.journal %}<li><strong>Journal:</strong> {{ paper.journal }}</li>{% endif %}
+                    {% if paper.journal %}<li><strong>Journal:</strong> {{ paper.journal }}{% if journal_note %} ({{ journal_note }}){% endif %}</li>{% endif %}
                     <li><strong>Date:</strong> {{ paper.source_date or 'Unknown' }}</li>
                     <li><strong>Why considered:</strong>
                         {% if paper.passed_screen %}Passed by the scope screen
@@ -940,10 +940,13 @@
         {% if manual_download_papers %}
         <section id="manual-download-papers" class="review-section">
             <h2>Papers Requiring Manual Download</h2>
-            <p><em>Papers from recent literature that weren't downloaded (missed or paywalled)</em></p>
+            <p><em>Papers from recent literature that weren't downloaded (missed or paywalled), ordered by their journal's two-year mean citedness in OpenAlex, an open analogue of the impact factor, highest first, then newest first. Preprints and papers whose journal has no such figure come last.</em></p>
 
-            {% for paper in manual_download_papers %}
-            {{ paper_display(paper, include_evidence=false) }}
+            {% for entry in manual_download_papers %}
+            {% if entry.paper.preprint %}{% set note = none %}
+            {% elif entry.journal_citedness is none %}{% set note = "no OpenAlex citedness" %}
+            {% else %}{% set note = "OpenAlex 2-year mean citedness %.1f"|format(entry.journal_citedness) %}{% endif %}
+            {{ paper_display(entry.paper, include_evidence=false, journal_note=note) }}
             {% endfor %}
         </section>
         {% endif %}

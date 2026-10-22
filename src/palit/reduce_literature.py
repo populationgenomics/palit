@@ -45,7 +45,7 @@ def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
         cursor.execute(
             f"""
             SELECT DISTINCT p.doi, p.pmid, p.title, p.abstract, p.authors, p.journal,
-                   p.source, p.source_date, p.source_metadata
+                   p.journal_issn, p.source, p.source_date, p.source_metadata
             FROM papers p
             JOIN gene_mentions gm ON p.doi = gm.paper_doi
             WHERE gm.hgnc_id = ? AND {RELEVANT_PAPER}
@@ -65,6 +65,7 @@ def get_papers_for_gene(db_path: Path, hgnc_id: int, limit: int) -> list[Paper]:
                     abstract=row["abstract"],
                     authors=row["authors"],
                     journal=row["journal"],
+                    journal_issn=row["journal_issn"],
                     source=row["source"],
                     source_date=row["source_date"],
                     source_metadata=deserialize_source_metadata(

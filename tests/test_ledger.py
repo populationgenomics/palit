@@ -4,6 +4,7 @@ import gzip
 import json
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ def _make_paper(doi: str, pmid: int | None, source_date: str, title: str = "T") 
         abstract="abstract",
         authors="Smith, Jane",
         journal="Test Journal",
+        journal_issn="1234-5678",
         source="pubmed",
         source_date=source_date,
         source_metadata=PubmedMetadata(pmcid=None),
@@ -198,6 +200,27 @@ def test_seed_run_db_partitions_settled_and_actionable(tmp_path: Path) -> None:
             "SELECT relevance_assessment_json FROM papers WHERE doi='10.1/never'"
         ).fetchone()
         assert never[0] is None
+    finally:
+        run.close()
+
+
+def test_seeded_papers_carry_the_journal_issn_of_their_latest_fetch(tmp_path: Path) -> None:
+    ledger_path = _new_ledger(tmp_path)
+    conn = ledger.connect(ledger_path)
+    try:
+        paper = _make_paper("10.1/a", 1, "2026-01-10")
+        ledger.upsert_papers(conn, [paper], "2026-01-20")
+        ledger.upsert_papers(conn, [replace(paper, journal_issn="8765-4321")], "2026-01-21")
+    finally:
+        conn.close()
+
+    run_db = _new_run_db(tmp_path)
+    ledger.seed_run_db_from_ledger(
+        ledger_path, run_db, horizon_floor="2025-07-31", end_date="2026-01-31"
+    )
+    run = sqlite3.connect(run_db)
+    try:
+        assert run.execute("SELECT journal_issn FROM papers").fetchall() == [("8765-4321",)]
     finally:
         run.close()
 

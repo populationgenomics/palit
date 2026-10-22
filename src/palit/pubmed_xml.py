@@ -64,6 +64,22 @@ def extract_journal(article_elem: etree._Element) -> str:
     return ""
 
 
+def extract_journal_issn(article_elem: etree._Element) -> str | None:
+    """Extract the journal's ISSN: its linking ISSN (ISSN-L), else the article's.
+
+    Some records carry no ISSNLinking, mostly from journals that publish online
+    only and so have a single ISSN, which the Journal element gives instead.
+    """
+    for path in (
+        ".//MedlineCitation/MedlineJournalInfo/ISSNLinking",
+        ".//MedlineCitation/Article/Journal/ISSN",
+    ):
+        issn: str | None = article_elem.findtext(path)
+        if issn and issn.strip():
+            return issn.strip()
+    return None
+
+
 def extract_languages(article_elem: etree._Element) -> list[str]:
     """Extract the article's language codes from Language elements.
 
@@ -168,6 +184,7 @@ def extract_paper(
         abstract=abstract,
         authors=authors,
         journal=journal,
+        journal_issn=extract_journal_issn(article_elem),
         source="pubmed",
         source_date=source_date,
         source_metadata=PubmedMetadata(pmcid=article_ids.get("pmc")),

@@ -346,6 +346,7 @@ def _baseline_paper(row: sqlite3.Row) -> Paper:
         abstract=row["abstract"],
         authors=row["authors"],
         journal=row["journal"],
+        journal_issn=row["journal_issn"],
         source=row["source"],
         source_date=row["source_date"],
         source_metadata=deserialize_source_metadata(row["source"], row["source_metadata"]),
@@ -380,8 +381,8 @@ def baseline_papers(
             chunk = found[i : i + QUERY_CHUNK_SIZE]
             rows = conn.execute(
                 f"""
-                SELECT doi, pmid, title, abstract, authors, journal, source, source_date,
-                       source_metadata, source_type, source_details
+                SELECT doi, pmid, title, abstract, authors, journal, journal_issn, source,
+                       source_date, source_metadata, source_type, source_details
                 FROM papers WHERE doi IN ({",".join("?" * len(chunk))})
                 """,
                 chunk,

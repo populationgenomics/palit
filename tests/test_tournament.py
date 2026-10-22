@@ -25,6 +25,7 @@ def _paper(doi: str, title: str) -> Paper:
         abstract="Three families.",
         authors="",
         journal="",
+        journal_issn=None,
         source="pubmed",
         source_date="2024-01-15",
         source_metadata=PubmedMetadata(),

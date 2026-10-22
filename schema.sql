@@ -14,6 +14,10 @@ CREATE TABLE papers (
     abstract TEXT,
     authors TEXT,
     journal TEXT,
+    -- The journal's ISSN from the PubMed record: its linking ISSN (ISSN-L), or the
+    -- journal ISSN of the article when the record has no ISSN-L. NULL for papers
+    -- from other sources (preprint servers, CrossRef). Keys journal_metrics.
+    journal_issn TEXT,
 
     -- Where the paper came from ('pubmed', 'biorxiv', 'medrxiv', etc.)
     source TEXT NOT NULL,
@@ -75,6 +79,21 @@ CREATE TABLE panelapp_citations (
     hgnc_id INTEGER NOT NULL,
     paper_doi TEXT NOT NULL REFERENCES papers(doi),
     PRIMARY KEY (hgnc_id, paper_doi)
+);
+
+-- OpenAlex's figures for the journals of the database's papers, one row per
+-- papers.journal_issn (see journal_metrics.py). The report orders the papers
+-- awaiting manual download by them. A row with a NULL source records that OpenAlex
+-- has no journal with the ISSN.
+CREATE TABLE journal_metrics (
+    issn TEXT PRIMARY KEY,
+    openalex_source_id TEXT,           -- e.g. 'https://openalex.org/S134425043'
+    openalex_display_name TEXT,
+    -- OpenAlex summary_stats.2yr_mean_citedness, which OpenAlex describes as a
+    -- journal-impact-factor-style two-year mean citedness. It is recomputed as
+    -- citations accrue, hence fetched_at. NULL when OpenAlex gives none.
+    two_year_mean_citedness REAL,
+    fetched_at TEXT NOT NULL           -- ISO time of the lookup
 );
 
 CREATE INDEX idx_papers_pmid ON papers(pmid) WHERE pmid IS NOT NULL;

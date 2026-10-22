@@ -26,6 +26,7 @@ CREATE TABLE ledger (
     abstract TEXT,
     authors TEXT,
     journal TEXT,
+    journal_issn TEXT,                -- ISSN-L, else the article's journal ISSN (schema.sql)
     source TEXT NOT NULL,             -- 'pubmed' for fetched records; other sources
                                       -- only enter via run write-back of expansion /
                                       -- discovered-citation papers (keyed by DOI)

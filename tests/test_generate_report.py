@@ -21,6 +21,7 @@ from palit.generate_report import (
     FavoriteJournalSections,
     GeneAssessment,
     GeneAssessmentResults,
+    ManualDownloadPaper,
     PanelValidationResult,
     PaperSources,
     PapersRead,
@@ -42,6 +43,7 @@ from palit.generate_report import (
     is_highlighted_new_moi,
     load_favorite_journal_papers,
     load_low_confidence_irrelevant_papers,
+    load_manual_download_papers,
     load_panel_publications_validation,
     load_quote_refs,
     load_relevance_refusers,
@@ -913,6 +915,7 @@ def _render(
     results: GeneAssessmentResults,
     panel_validation: PanelValidationResult = NO_PANEL_VALIDATION,
     favorite_journal_papers: FavoriteJournalSections = NO_FEATURED_PAPERS,
+    manual_download_papers: list[ManualDownloadPaper] | None = None,
 ) -> str:
     return generate_html_report(
         novel_genes=results.novel_genes,
@@ -920,7 +923,7 @@ def _render(
         statistics=calculate_comprehensive_statistics(db_path, results, panel_validation),
         panel_validation=panel_validation,
         low_confidence_papers=[],
-        manual_download_papers=[],
+        manual_download_papers=manual_download_papers or [],
         favorite_journal_papers=favorite_journal_papers,
         template_dir=ROOT / "templates",
         panel_date="2026-10-01",
@@ -3049,3 +3052,70 @@ def test_a_cited_rejected_featured_paper_awaiting_manual_download_is_due_to_be_r
         assert [p.doi for p in sections.manual_download] == ["10.1/fj-manual"]
         assert sections.not_relevant == []
         assert sections.total == 1
+
+
+def _add_manual_download_papers(
+    db_path: Path,
+    papers: list[tuple[str, str, str | None, str]],
+    metrics: list[tuple[str, float | None]],
+) -> None:
+    """Initial PubMed papers awaiting manual download as (doi, journal, journal_issn,
+    source_date), and journal_metrics rows as (issn, citedness); a None citedness is a
+    journal OpenAlex does not know."""
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO papers (doi, pmid, title, journal, journal_issn, source, source_date, "
+            "source_type, download_status) "
+            "VALUES (?, 1, 'T', ?, ?, 'pubmed', ?, 'initial', 'manual_required')",
+            papers,
+        )
+        conn.executemany(
+            "INSERT INTO journal_metrics (issn, openalex_source_id, two_year_mean_citedness, "
+            "fetched_at) VALUES (?, CASE WHEN ? IS NULL THEN NULL ELSE 'S' END, ?, 'now')",
+            [(issn, citedness, citedness) for issn, citedness in metrics],
+        )
+
+
+def test_manual_downloads_are_ordered_by_journal_citedness_then_newest_first(
+    db_path: Path, results: GeneAssessmentResults
+) -> None:
+    """Papers whose journal has no figure come last, with preprints, which PubMed
+    indexes too: a preprint server's figure says nothing of the paper."""
+    _add_manual_download_papers(
+        db_path,
+        [
+            ("10.9/low-old", "J", "2222-2222", "2026-01-01"),
+            ("10.9/no-issn", "J", None, "2026-03-01"),
+            ("10.9/high", "J", "1111-1111", "2026-01-01"),
+            (
+                "10.9/preprint",
+                "bioRxiv : the preprint server for biology",
+                "4444-4444",
+                "2026-01-15",
+            ),
+            ("10.9/unknown-journal", "J", "3333-3333", "2026-02-01"),
+            ("10.9/low-new", "J", "2222-2222", "2026-02-01"),
+        ],
+        [("1111-1111", 7.3), ("2222-2222", 0.6), ("3333-3333", None), ("4444-4444", 9.0)],
+    )
+    papers = load_manual_download_papers(db_path)
+    assert [(p.paper.doi, p.journal_citedness) for p in papers] == [
+        ("10.9/high", 7.3),
+        ("10.9/low-new", 0.6),
+        ("10.9/low-old", 0.6),
+        ("10.9/no-issn", None),
+        ("10.9/unknown-journal", None),
+        ("10.9/preprint", None),
+    ]
+
+    html = _render(db_path, results, manual_download_papers=papers)
+    section = html[html.index('id="manual-download-papers"') :]
+    assert "J (OpenAlex 2-year mean citedness 7.3)" in section
+    assert "J (no OpenAlex citedness)" in section
+    assert "for biology</li>" in section
+
+
+def test_manual_downloads_need_every_journal_looked_up(db_path: Path) -> None:
+    _add_manual_download_papers(db_path, [("10.9/a", "J", "1111-1111", "2026-01-01")], [])
+    with pytest.raises(ValueError, match=r"\['1111-1111'\].*palit journal-metrics"):
+        load_manual_download_papers(db_path)

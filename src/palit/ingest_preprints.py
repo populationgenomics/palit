@@ -73,6 +73,7 @@ def _parse_rxiv_paper(record: dict[str, Any], server: RxivServer, source_details
         abstract=record["abstract"],
         authors=record["authors"],
         journal=server.journal,
+        journal_issn=None,
         source=server.source,
         source_date=record["date"],
         source_metadata=RxivMetadata(
@@ -163,6 +164,7 @@ def _parse_crossref_paper(record: dict[str, Any], source_details: str) -> Paper:
         abstract=strip_xml_tags(record["abstract"]),
         authors=format_crossref_authors(record.get("author", [])),
         journal="Research Square",
+        journal_issn=None,
         source="researchsquare",
         source_date=parse_crossref_date(record["posted"]),
         source_metadata=ResearchSquareMetadata(version=version, versioned_doi=versioned_doi),
@@ -264,9 +266,9 @@ def insert_papers(papers: list[Paper], db_path: Path) -> int:
         cursor.executemany(
             """
             INSERT INTO papers
-            (doi, pmid, title, abstract, authors, journal, source, source_date,
-             source_metadata, source_type, source_details)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (doi, pmid, title, abstract, authors, journal, journal_issn, source,
+             source_date, source_metadata, source_type, source_details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(doi) DO UPDATE SET
                 title = excluded.title,
                 abstract = excluded.abstract,
@@ -290,6 +292,7 @@ def insert_papers(papers: list[Paper], db_path: Path) -> int:
                     p.abstract,
                     p.authors,
                     p.journal,
+                    p.journal_issn,
                     p.source,
                     p.source_date,
                     serialize_source_metadata(p.source_metadata),

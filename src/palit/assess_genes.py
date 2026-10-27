@@ -820,8 +820,9 @@ def scoped_aggregation_schema(schema: dict[str, Any]) -> dict[str, Any]:
         "scope_rationale",
         {
             "type": "string",
-            "description": "Reported features placing this association on the scope panel, "
-            "condensed from its paper-level entities.",
+            "description": "The papers' statement that the individuals have the scope panel's "
+            "disorder, or the reported findings that define it, condensed from its paper-level "
+            "entities.",
             "minLength": 1,
         },
         after="inheritance_details",

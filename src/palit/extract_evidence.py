@@ -371,7 +371,8 @@ def scoped_extraction_schema(schema: dict[str, Any]) -> dict[str, Any]:
         "scope_rationale",
         {
             "type": "string",
-            "description": "Reported features placing this entity on the scope panel, with counts.",
+            "description": "The paper's statement that this entity's individuals have the "
+            "scope panel's disorder, or the reported findings that define it, with counts.",
         },
         after="description",
     )

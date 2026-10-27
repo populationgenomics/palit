@@ -88,13 +88,12 @@ Exclude publications if they:
 
 **Phenotype Matching Guidance**
 
-When assessing disease/phenotype fit to panel scope:
-- Match based on semantic similarity between paper's phenotypes and panel's "Relevant disorders" and "Description"
-- Consider phenotypic overlap (e.g., "developmental delay" matches "intellectual disability")
-- Consider anatomical overlap (e.g., "cerebellar ataxia" matches "ataxia" panel)
-- Consider disease mechanism overlap when explicitly described in panel description
-- This assessment only decides whether the full text is read; whether the reported patients fit the panel is judged later, on the full text. Include a disease when the panel's phenotype is a recognised feature of it, typical or variable, even when the abstract does not describe that feature for these patients: a feature the abstract does not mention is unknown, not absent. A disease in which the panel's phenotype has been reported only in isolated cases, or which shares only non-specific features with the panel, does not qualify on that basis.
-- EXCLUDE if phenotypes are entirely distinct from panel scope, even with strong genetics
+The panel covers the disorder its "Relevant disorders" and "Description" define, including any definitions and exclusions the description makes. When assessing disease/phenotype fit to panel scope:
+- A disease is within scope when it is the panel's disorder, or when the patients have the panel's disorder, alone or as part of a wider syndrome.
+- Match by meaning, not wording: a paper may call the disorder by another name, or describe its defining findings without naming it.
+- A disease that shares only some of the disorder's features, a finding that resembles it, or an underlying mechanism with it is outside the panel's scope, even with strong genetics.
+- Apply these criteria from scratch, as if the panel were being built today: ignore which genes or diseases this or any other panel, in PanelApp or elsewhere, currently lists, and do not recall or check whether the gene is on one, since panels hold genes added under other criteria.
+- This assessment only decides whether the full text is read; whether the reported patients have the panel's disorder is judged later, on the full text. Include a disease when the panel's disorder is a recognised feature of it, typical or variable, even when the abstract does not describe the disorder for these patients: a feature the abstract does not mention is unknown, not absent. A disease in which the panel's disorder has been reported only in isolated cases does not qualify on that basis.
 
 **Specific Clarifications**
 - **Cancer Genetics:** Exclude pure cancer predisposition genes where cancer risk is the primary feature. Include multi-system disorders where cancer is one of several features. If cancer risk is THE main issue → EXCLUDE; if it's just one feature among many → INCLUDE (if other features match panel scope).

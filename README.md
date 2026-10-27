@@ -532,17 +532,23 @@ uv run palit download-papers register --db-path data/$PANEL_NAME.sqlite
 
 # 5. Extract evidence, scoped to the panel. Scope is decided for each disease
 #    entity (one disease with one MoI), on the patients the paper reports for
-#    it: the disease gets an entity only when those individuals have features
-#    that would lead a clinician to order the panel, judged from what the paper
-#    reports about them, with any exclusions the panel's description makes. A
-#    paper saying they have the panel's disorder is enough, and a feature it
-#    does not mention is unknown, not absent. Another disease of the same gene
+#    it: the disease gets an entity only when those individuals have the
+#    disorder the panel covers, as its relevant disorders and description
+#    define it, with any definitions and exclusions the description makes. The
+#    paper either says they have it or reports the findings that define it. A
+#    disease that shares only some features, a resembling finding or a
+#    mechanism with the panel's disorder is left out, as is one whose findings
+#    are secondary to another primary disease when the panel defines its
+#    disorder by its primary pathology. A disease whose individuals in the paper
+#    have the disorder belongs even when it is variable in the disease. The
+#    gate ignores what any panel currently lists, and leaves doubtful cases
+#    out. Another disease of the same gene
 #    can be left out. An entity without patients is judged on what the paper
 #    says about the patients who carry its tested variants (their diagnosis or
-#    features, also when cited from earlier reports). Each entity records why it fits in
-#    `scope_rationale`: the reported features with how many of its individuals
-#    have them. The genes with evidence from a relevant paper are the run's
-#    genes.
+#    findings, also when cited from earlier reports). Each entity records why
+#    it fits in `scope_rationale`: the paper's statement or the defining
+#    findings, with how many of its individuals have them. The genes with
+#    evidence from a relevant paper are the run's genes.
 uv run palit extract-evidence --db-path data/$PANEL_NAME.sqlite --panel-date $PANEL_DATE --scope-panel-id $PANEL_ID
 
 # 6. Expand literature. For a panel-scoped run this only seeds the publications

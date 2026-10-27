@@ -1075,7 +1075,7 @@ def test_a_scoped_aggregation_gives_the_model_the_scope_panel(
     assert isinstance(item, _GeneBatchItem)
     heading = "PANEL SCOPE:\nThis run reviews the gene for the following diagnostic panel:"
     assert f"{heading}\n\n{SCOPE_PANEL}" in item.prompt
-    assert '"scope_rationale": "reported features that place this association' in item.prompt
+    assert '"scope_rationale": "the papers\' statement that the individuals have' in item.prompt
     assert '"scope_rationale": "cleft palate in 2 of 2"' in item.prompt  # the extraction's
 
 
@@ -1087,7 +1087,7 @@ def test_only_a_scoped_prompt_has_the_scope_panel_and_field(
     assert "scope_rationale" not in prompt
     assert "PAPER-LEVEL ENTITIES WITHOUT PATIENTS" in prompt
     scoped = _render(_context(panel_entries, gencc_index, GENEA), "GENEA", SCOPE_PANEL)
-    assert "  * scope_rationale: the reported features" in scoped
+    assert "  * scope_rationale: the papers' statement" in scoped
     assert "  * inheritance_details: " in scoped
 
 

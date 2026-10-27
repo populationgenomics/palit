@@ -244,12 +244,12 @@ def test_the_panel_gate_and_scope_rationale_are_in_the_scoped_prompt_only() -> N
     assert PANEL in scoped
     gate = (
         "PANEL SCOPE (decided for each disease entity): Create a disease entity only when the "
-        "affected individuals this paper reports for that disease have features that would "
-        "lead a clinician to order the panel above."
+        "affected individuals this paper reports for that disease have the disorder this "
+        "panel covers, as its relevant disorders and description define it"
     )
     assert gate in scoped
     assert "and the PANEL SCOPE above" in scoped
-    assert '"scope_rationale": "reported features' in scoped
+    assert '"scope_rationale": "the paper\'s statement' in scoped
     for text in ("PANEL SCOPE", "scope_rationale", "panel above", "Target Panel Context"):
         assert text not in monthly
     for prompt in (monthly, scoped):

@@ -53,6 +53,7 @@ from palit.llm import (
     log_refusal,
     make_client,
     parse_json_output,
+    raise_for_invalid_requests,
     record_result,
     stage_history,
     with_required_property,
@@ -1095,7 +1096,7 @@ def handle_results(
     validator: jsonschema.protocols.Validator,
 ) -> _Outcome:
     outcome = _Outcome()
-    invalid_requests: list[str] = []
+    invalid_requests: list[LlmResult] = []
     for result in results:
         item = items.get(result.subject)
         message = result.message
@@ -1108,7 +1109,7 @@ def handle_results(
         elif result.status != ResultStatus.SUCCEEDED or message is None:
             outcome.failed += 1
             if result.error_type == "invalid_request_error":
-                invalid_requests.append(result.subject)
+                invalid_requests.append(result)
         elif item is None:
             logger.info(
                 "HGNC:%s no longer needs an assessment; discarding its result", result.subject
@@ -1143,11 +1144,7 @@ def handle_results(
         if not stored:
             with sqlite3.connect(db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
                 record_result(conn, result, rejection=rejection)
-    if invalid_requests:
-        raise RuntimeError(
-            f"{len(invalid_requests)} assess-genes requests were invalid "
-            f"(first: HGNC:{invalid_requests[0]}); see llm_requests.error_type"
-        )
+    raise_for_invalid_requests(invalid_requests, lambda result: f"HGNC:{result.subject}")
     return outcome
 
 

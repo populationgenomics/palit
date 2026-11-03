@@ -78,6 +78,7 @@ from palit.llm import (
     log_refusal,
     make_client,
     parse_json_output,
+    raise_for_invalid_requests,
     record_result,
     stage_history,
     unfinished_answer_reason,
@@ -122,6 +123,9 @@ FILE_EXPIRY_MARGIN = timedelta(days=3)
 MAX_CONCURRENT_UPLOADS = 8
 # Claude's PDF input limit.
 MAX_PDF_PAGES = 600
+PDF_HEADER = b"%PDF-"
+# PDF readers take a header within this many leading bytes as the start of the file.
+PDF_HEADER_SEARCH_BYTES = 1024
 
 # The round-1 request of a PDF with more pages is token-counted once per PDF
 # version, and the PDF is truncated to the leading pages that fit the context
@@ -757,6 +761,33 @@ def unselected_reasons(
     return reasons
 
 
+def repaired_pdf_bytes(pdf_path: Path) -> bytes:
+    """The PDF's bytes, once any bytes before its header are removed from the file.
+
+    A PDF's cross-reference table gives each object's byte offset from the start
+    of the file, where the format requires the header. Some publishers' servers
+    send a stray newline first. PDF readers take a header within the first
+    PDF_HEADER_SEARCH_BYTES bytes as the start of the file, but the Messages API
+    rejects such a PDF as invalid, while count_tokens accepts it. A file without
+    a header there is no PDF and is left as it is.
+    """
+    pdf_bytes = pdf_path.read_bytes()
+    offset = pdf_bytes.find(PDF_HEADER, 0, PDF_HEADER_SEARCH_BYTES)
+    if offset <= 0:
+        return pdf_bytes
+    logger.warning(
+        "%s: removing %d bytes before its PDF header from the file: %r",
+        pdf_path,
+        offset,
+        pdf_bytes[:offset],
+    )
+    pdf_bytes = pdf_bytes[offset:]
+    temporary = pdf_path.with_name(f"{pdf_path.name}.tmp")
+    temporary.write_bytes(pdf_bytes)
+    temporary.replace(pdf_path)
+    return pdf_bytes
+
+
 def pdf_pages(pdf_path: Path) -> int:
     with closing(pdfium.PdfDocument(pdf_path)) as document:
         return len(document)
@@ -1012,7 +1043,8 @@ async def upload_pdfs(
     :func:`count_page_limits`). A stored count is counted again when its request
     leaves too little room for MAX_TOKENS (see :meth:`StoredPageLimit.reusable`).
     Papers whose PDF is missing, or whose first page alone does not fit, are
-    skipped.
+    skipped. A PDF with bytes before its header is repaired on disk first (see
+    :func:`repaired_pdf_bytes`).
     """
     now = datetime.now(UTC)
     pdfs: list[LocalPdf] = []
@@ -1021,7 +1053,7 @@ async def upload_pdfs(
         if not pdf_path.exists():
             logger.warning("Missing PDF for %s: %s", paper["doi"], pdf_path)
             continue
-        sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+        sha256 = hashlib.sha256(repaired_pdf_bytes(pdf_path)).hexdigest()
         pdfs.append(LocalPdf(paper, pdf_path, sha256, pdf_pages(pdf_path)))
 
     def page_limits() -> dict[str, StoredPageLimit]:
@@ -1227,17 +1259,15 @@ class ExtractionRunner:
                 return outcome
 
             outcome = RoundOutcome.combine(await asyncio.gather(*map(handle_one, results)))
-        invalid_requests = [
-            result.subject
-            for result in results
-            if result.error_type == "invalid_request_error"
-            and result.too_long_prompt_tokens is None
-        ]
-        if invalid_requests:
-            raise RuntimeError(
-                f"{len(invalid_requests)} extraction requests were invalid "
-                f"(first: {invalid_requests[0]}); see llm_requests.error_type"
-            )
+        raise_for_invalid_requests(
+            [
+                result
+                for result in results
+                if result.error_type == "invalid_request_error"
+                and result.too_long_prompt_tokens is None
+            ],
+            lambda result: result.subject,
+        )
         return outcome
 
     async def rerun_transient_lookups(

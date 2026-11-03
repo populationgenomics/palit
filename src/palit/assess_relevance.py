@@ -70,6 +70,7 @@ from palit.llm import (
     log_refusal,
     make_client,
     parse_json_output,
+    raise_for_invalid_requests,
     record_result,
     stage_history,
 )
@@ -226,7 +227,7 @@ def store_screens(
     so the next attempt selects it again. Invalid requests are a bug and raise.
     """
     outcome = StoreOutcome()
-    invalid_requests: list[str] = []
+    invalid_requests: list[LlmResult] = []
     with sqlite3.connect(db_path) as conn:
         for result in results:
             if result.status == ResultStatus.REFUSED:
@@ -243,7 +244,7 @@ def store_screens(
                 record_result(conn, result)
                 outcome.failed += 1
                 if result.error_type == "invalid_request_error":
-                    invalid_requests.append(result.subject)
+                    invalid_requests.append(result)
                 continue
             assert result.message is not None
             try:
@@ -258,11 +259,7 @@ def store_screens(
             record_result(conn, result)
             _store_screen(conn, result.subject, screen, result.message.to_json(), resolver)
             outcome.stored += 1
-    if invalid_requests:
-        raise RuntimeError(
-            f"{len(invalid_requests)} {STAGE} requests were invalid "
-            f"(first: {invalid_requests[0]}); see llm_requests.error_type"
-        )
+    raise_for_invalid_requests(invalid_requests, lambda result: result.subject)
     return outcome
 
 

@@ -42,7 +42,7 @@ import re
 import sqlite3
 import uuid
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -344,6 +344,23 @@ def log_refusal(result: LlmResult, label: str) -> None:
         f"the next attempt goes to {FALLBACKS[result.model]}"
         if result.goes_to_fallback
         else "refused for good",
+    )
+
+
+def raise_for_invalid_requests(
+    invalid: Sequence[LlmResult], label: Callable[[LlmResult], str]
+) -> None:
+    """Raise when the API rejected any request as invalid: such a request is a bug.
+
+    The error names the first one, by *label*, with the API's reason, which
+    llm_requests does not store.
+    """
+    if not invalid:
+        return
+    first = invalid[0]
+    raise RuntimeError(
+        f"{first.stage}: {len(invalid)} invalid request(s), the first for {label(first)}: "
+        f"{first.error_message}"
     )
 
 

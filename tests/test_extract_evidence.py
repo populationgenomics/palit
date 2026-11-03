@@ -51,6 +51,7 @@ from palit.extract_evidence import (
     normalize_extraction_genes,
     page_copy,
     render_system_prompt,
+    repaired_pdf_bytes,
     request_room,
     save_conversation,
     scoped_extraction_schema,
@@ -1321,6 +1322,43 @@ def test_a_truncated_upload_is_counted_and_uploaded_once_per_pdf_version(tmp_pat
     }
 
 
+def test_bytes_before_the_pdf_header_are_removed_from_the_file_before_upload(
+    tmp_path: Path,
+) -> None:
+    """The Messages API rejects such a PDF; the upload and the file hold the repaired bytes."""
+    pdf = _pdf(2)
+    db_path, papers, history = _upload_run(tmp_path, {"10.1/stray": b"\n" + pdf})
+    files = FakeFiles()
+    client = SimpleNamespace(messages=None, files=files)
+
+    uploads = asyncio.run(upload_pdfs(client, db_path, papers, tmp_path, _settings(), history))  # type: ignore[arg-type]
+
+    assert uploads["10.1/stray"].total_pages == 2
+    assert files.uploaded == [pdf]
+    assert doi_to_path("10.1/stray", tmp_path, ".pdf").read_bytes() == pdf
+    assert not list(tmp_path.glob("*.tmp"))
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT sha256 FROM uploaded_files").fetchone() == (
+            hashlib.sha256(pdf).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [_pdf(1), b"<html>not found</html>", b"\n" * 1024 + _pdf(1)],
+    ids=["header at byte 0", "no pdf", "header beyond reach"],
+)
+def test_a_pdf_without_bytes_before_a_header_in_reach_is_left_as_it_is(
+    tmp_path: Path, content: bytes
+) -> None:
+    """A header at byte 0 needs no repair; without one in the first 1024 bytes, it is no PDF."""
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(content)
+
+    assert repaired_pdf_bytes(path) == content
+    assert path.read_bytes() == content
+
+
 def test_a_stored_page_limit_without_room_for_max_tokens_is_counted_again(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1776,7 +1814,10 @@ def test_invalid_requests_raise_once_every_result_is_recorded(
         runner = _runner(tmp_path, db_path, hgnc_resolver, GatedVariantClient(0))
         return await runner.handle(results)
 
-    with pytest.raises(RuntimeError, match=r"1 extraction requests were invalid \(first: 10.1/x\)"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"extraction: 1 invalid request\(s\), the first for 10.1/x: tools.0: bad schema",
+    ):
         asyncio.run(run())
     with sqlite3.connect(db_path) as conn:
         recorded = conn.execute("SELECT subject, status FROM llm_requests ORDER BY subject")

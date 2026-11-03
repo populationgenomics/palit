@@ -60,6 +60,7 @@ from palit.llm import (
     log_refusal,
     make_client,
     parse_json_output,
+    raise_for_invalid_requests,
     record_result,
     stage_history,
     unfinished_answer_reason,
@@ -339,9 +340,8 @@ class MappingRunner:
             outcome.failed += 1
             self._record(result, conversation)
             if result.error_type == "invalid_request_error":
-                raise RuntimeError(
-                    f"map-mondo request for association {result.subject} in round "
-                    f"{result.round} was invalid; see llm_requests.error_type"
+                raise_for_invalid_requests(
+                    [result], lambda result: f"association {result.subject} in round {result.round}"
                 )
         elif message is None:
             raise AssertionError("succeeded result without a message")

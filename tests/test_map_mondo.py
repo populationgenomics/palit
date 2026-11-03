@@ -719,7 +719,9 @@ def test_an_invalid_request_is_recorded_and_cancels_the_other_conversations(
         transport=InvalidTransport(), db_path=db_path, system="s", schema=SCHEMA, index=index
     )
     with pytest.RaisesGroup(
-        pytest.RaisesExc(RuntimeError, match="association 2 in round 1 was invalid")
+        pytest.RaisesExc(
+            RuntimeError, match="1 invalid request\\(s\\), the first for association 2 in round 1"
+        )
     ):
         asyncio.run(runner.advance([_conversation(2), _conversation(4)]))
 

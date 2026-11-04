@@ -73,7 +73,7 @@ from palit.panelapp_integration import (
 )
 from palit.papers import MIN_PREPRINT_FAMILIES, generate_paper_ids, is_preprint
 from palit.quotes import is_placeholder
-from palit.run_corpus import RUN_GENES
+from palit.run_corpus import RELEVANT_PAPER, RUN_GENES
 from palit.variants import (
     GeneVariant,
     GnomadFrequency,
@@ -308,18 +308,30 @@ class PaperBatchProcessor:
         Returns:
             List of dicts with doi, date, title, authors, paper_gene_symbol, gene_evaluations
         """
+        return self._evidence(hgnc_id, "gm.source IN ('recent_evidence', 'expansion_evidence')")
+
+    def get_claim_evidence_for_gene(self, hgnc_id: int) -> list[dict[str, Any]]:
+        """The evidence extractions of the relevant initial papers for a gene: the run's
+        new claims about it, which make it one of the run's genes (see
+        :mod:`palit.run_corpus`). Same shape as :meth:`get_evidence_for_gene`.
+        """
+        return self._evidence(hgnc_id, f"gm.source = 'recent_evidence' AND {RELEVANT_PAPER}")
+
+    def _evidence(self, hgnc_id: int, mention_condition: str) -> list[dict[str, Any]]:
+        """The gene's evidence from papers whose gene mention (``gm``) and paper (``p``)
+        satisfy *mention_condition*."""
         with sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
             cursor.execute(
-                """
+                f"""
                 SELECT p.doi, p.pmid, p.journal, p.source_date, p.title, p.authors,
                        p.evidence_extraction_json, gm.paper_gene_symbol
                 FROM papers p
                 JOIN gene_mentions gm ON p.doi = gm.paper_doi
                 WHERE gm.hgnc_id = ?
-                AND gm.source IN ('recent_evidence', 'expansion_evidence')
+                AND {mention_condition}
                 AND p.evidence_extraction_json IS NOT NULL
                 ORDER BY p.doi
             """,
@@ -665,6 +677,7 @@ def render_prompt(
         dispute_blocks=dispute_blocks(context.gencc, evidence_list, doi_to_paper_id),
         panel_date=panel_date,
         scope_panel=scope_panel,
+        copies_gencc_terms=True,
     )
     return RenderedPrompt(text=rendered, paper_id_to_doi=paper_id_to_doi, variants=variants_by_id)
 

@@ -11,10 +11,10 @@ from anthropic.types import Message
 from palit.hgnc import HgncResolver
 from palit.llm import FALLBACK_MODEL, MODEL, LlmRequest, LlmResult, ResultStatus
 from palit.papers import Paper, PubmedMetadata
-from palit.tournament import TournamentEntry, run_tournaments, tournament_prompt
+from palit.tournament import TournamentEntry, load_prompt, run_tournaments, tournament_prompt
 
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE = (ROOT / "prompts/tournament_selection_prompt.txt").read_text()
+TEMPLATE = load_prompt(ROOT / "prompts/tournament_selection_prompt.j2")
 
 
 def _paper(doi: str, title: str) -> Paper:

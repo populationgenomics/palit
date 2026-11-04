@@ -1,0 +1,97 @@
+{
+    "type": "object",
+    "properties": {
+        "associations": {
+            "type": "array",
+            "description": "The gene-disease-MoI associations the new papers report evidence for.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "Disease name or clinical description.",
+                        "minLength": 1
+                    },
+                    "inheritance_mode": {
+                        "type": "string",
+                        "enum": [
+                            "Monoallelic",
+                            "Biallelic",
+                            "X-linked",
+                            "Mitochondrial",
+                            "Other",
+                            "NR"
+                        ],
+                        "description": "Mode of inheritance for this association."
+                    },
+                    "paper_ids": {
+                        "type": "array",
+                        "description": "IDs of the new papers whose disease entities this association groups.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "minItems": 1
+                    },
+                    "panelapp_relation": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "existing",
+                                    "new_disease",
+                                    "new_moi"
+                                ],
+                                "description": "existing: curated with this MoI; new_moi: disease curated, not with this MoI; new_disease: disease not curated."
+                            },
+                            "existing_rating": {
+                                "anyOf": [
+                                    {
+                                        "type": "string",
+                                        "enum": [
+                                            "GREEN",
+                                            "AMBER",
+                                            "RED"
+                                        ]
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "description": "PanelApp Australia's rating of this association; null if undeterminable or new_disease/new_moi."
+                            },
+                            "basis": {
+                                "type": "string",
+                                "description": "The panel entry or review the judgement rests on.",
+                                "minLength": 1
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "existing_rating",
+                            "basis"
+                        ],
+                        "additionalProperties": false
+                    },
+                    "evidence_brief": {
+                        "type": "string",
+                        "description": "The earlier literature that would settle this association's family count.",
+                        "minLength": 1
+                    }
+                },
+                "required": [
+                    "description",
+                    "inheritance_mode",
+                    "paper_ids",
+                    "panelapp_relation",
+                    "evidence_brief"
+                ],
+                "additionalProperties": false
+            }
+        }
+    },
+    "required": [
+        "associations"
+    ],
+    "additionalProperties": false
+}

@@ -1,8 +1,10 @@
 """Which papers and genes make up a run's corpus.
 
 The run's genes are the genes with recent evidence from a relevant initial paper.
-Only these genes get a tournament, PanelApp citation seeding, referenced-paper
-discovery and an aggregation. An extraction from any paper still counts as
+Only these genes get referenced-paper discovery and an aggregation, and in a
+panel-scoped run PanelApp citation seeding. In a monthly run, only the run's genes
+with an association the expansion triage pursues get seeding and a tournament (see
+:mod:`palit.triage_expansion`). An extraction from any paper still counts as
 evidence for a gene of the run.
 
 A paper is in the corpus, and extracted once downloaded, when it is one of:
@@ -12,8 +14,8 @@ A paper is in the corpus, and extracted once downloaded, when it is one of:
 - an expansion paper (tournament picks, referenced papers, and PanelApp-cited
   papers seeding added, copied from the baseline or fetched), which is never
   assessed for relevance;
-- a paper PanelApp cites for one of the run's genes (table
-  ``panelapp_citations``, filled by seeding), whatever relevance said about it.
+- a paper PanelApp cites for one of the run's genes that seeding covered (table
+  ``panelapp_citations``), whatever relevance said about it.
 
 An initial paper outside these is not extracted even when it has a PDF: the
 ledger can carry a download status over from an earlier run. The run's genes come
@@ -31,6 +33,10 @@ import sqlite3
 # SQL conditions on a `papers` row aliased `p`. `IS` compares NULL as a value, so
 # each condition is 0 or 1, never NULL, and can also be summed or negated.
 RELEVANT_PAPER = "json_extract(p.relevance_assessment_json, '$.relevant') IS 1"
+
+# An initial paper: in a monthly run, a paper from the run's literature window, newly
+# published; in a panel-scoped run, a paper copied from the baseline.
+INITIAL_PAPER = "p.source_type IS NOT 'expansion'"
 
 # The HGNC IDs of the run's genes, for use as a subquery: `hgnc_id IN ({RUN_GENES})`.
 RUN_GENES = f"""

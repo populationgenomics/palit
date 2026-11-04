@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Literature expansion for a run's genes: the publications PanelApp cites, and in
 monthly runs tournament selection over the screened baseline using hierarchical LLM
-filtering."""
+filtering.
+
+In a monthly run, expansion serves the run's new claims: only the genes with an
+association the expansion triage pursues (see :mod:`palit.triage_expansion`) are
+expanded, and their tournament picks earlier papers for those associations."""
 
 import asyncio
 import json
@@ -11,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from jinja2 import Template
 
 from palit.hgnc import HgncResolver
 from palit.llm import BatchTransport, ImmediateTransport, Transport, make_client
@@ -19,8 +24,15 @@ from palit.panelapp_client import DEFAULT_SNAPSHOT_DIR
 from palit.panelapp_publications import BASELINE_DB_PATH, seed_panelapp_publications
 from palit.panelapp_snapshot import load_panels_with_reviews
 from palit.papers import Paper, deserialize_source_metadata, serialize_source_metadata
-from palit.run_corpus import RUN_GENES
-from palit.tournament import TournamentEntry, TournamentOutcome, record_abandoned, run_tournaments
+from palit.run_corpus import run_genes
+from palit.tournament import (
+    TournamentEntry,
+    TournamentOutcome,
+    load_prompt,
+    record_abandoned,
+    run_tournaments,
+)
+from palit.triage_expansion import pursued_associations, untriaged_genes
 
 app = typer.Typer(
     help="Expand the run's literature with the publications PanelApp cites, and in monthly "
@@ -141,21 +153,36 @@ def store_expansion_papers(db_path: Path, papers: list[Paper], gene_symbol: str)
         logger.info(f"Added {new_papers} new expansion papers")
 
 
-def genes_to_expand(db_path: Path) -> list[int]:
-    """The run's genes without a tournament result, in HGNC ID order.
-
-    The run's genes have recent evidence from a relevant paper (see
-    :mod:`palit.run_corpus`).
-    """
+def genes_to_expand(db_path: Path, pursued: list[int]) -> list[int]:
+    """The *pursued* genes without a tournament result, in HGNC ID order."""
     with sqlite3.connect(db_path) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT DISTINCT hgnc_id FROM ({RUN_GENES})
-            WHERE hgnc_id NOT IN (SELECT hgnc_id FROM tournament_results)
-            ORDER BY hgnc_id
-            """
-        ).fetchall()
-    return [row[0] for row in rows]
+        done = {row[0] for row in conn.execute("SELECT hgnc_id FROM tournament_results")}
+    return sorted(set(pursued) - done)
+
+
+def association_brief(associations: list[dict[str, Any]]) -> str:
+    """The directed tournament's list of a gene's pursued associations: each one's
+    disease, mode of inheritance, relation to PanelApp Australia's curation and the
+    earlier literature that would settle it, from the expansion triage."""
+    lines = []
+    for a in associations:
+        relation = a["panelapp_relation"]
+        match relation["status"]:
+            case "new_disease":
+                curation = "not curated for this gene"
+            case "new_moi":
+                curation = "curated only with another mode of inheritance"
+            case "existing" if relation["existing_rating"] is not None:
+                curation = f"curated, rated {relation['existing_rating']}"
+            case "existing":
+                curation = "curated, without a rating of its own"
+            case status:
+                raise ValueError(f"Unknown relation status {status!r}")
+        lines.append(
+            f"- {a['description']} ({a['inheritance_mode']}); PanelApp Australia: {curation}. "
+            f"Earlier literature that settles it: {a['evidence_brief']}"
+        )
+    return "\n".join(lines)
 
 
 def _record_expansion_completion(db_path: Path, hgnc_id: int, outcome: TournamentOutcome) -> None:
@@ -191,17 +218,18 @@ async def _process_expansion(
     transport: Transport,
     hgnc_resolver: HgncResolver,
     genes: list[int],
+    briefs: dict[int, str],
     db_path: Path,
     baseline_db_path: Path,
     schema: dict[str, Any],
-    template: str,
+    template: Template,
     paper_limit: int,
     cutoff_date: str,
     max_papers: int,
     papers_per_round: int,
     max_retries: int,
 ) -> None:
-    """Run every gene's tournament, then store the selected papers."""
+    """Run every gene's tournament, directed by its brief, then store the selected papers."""
     record_abandoned(db_path, await transport.resume(STAGE))
 
     entries = []
@@ -215,7 +243,9 @@ async def _process_expansion(
                 db_path, hgnc_id, TournamentOutcome(selected_papers=[], raw_responses_by_round=[])
             )
             continue
-        entries.append(TournamentEntry.for_gene(hgnc_id, papers, hgnc_resolver))
+        entries.append(
+            TournamentEntry.for_gene(hgnc_id, papers, hgnc_resolver, brief=briefs[hgnc_id])
+        )
 
     outcomes = await run_tournaments(
         entries,
@@ -372,14 +402,28 @@ def main(
     # Seed the publications PanelApp already cites. Runs after --force-all's
     # expansion wipe so seeded papers survive it, and before the tournament's
     # early return so a rerun still picks up publications added to a panel.
-    seed_panelapp_publications(db_path, panels, baseline_db_path, hgnc_resolver)
-
     if scope_panel_id is not None:
+        with sqlite3.connect(db_path) as conn:
+            seed_panelapp_publications(
+                db_path, panels, baseline_db_path, hgnc_resolver, run_genes(conn)
+            )
         logger.info(f"Panel-scoped run for panel {scope_panel_id}: seeding is the whole expansion")
         return
     assert cutoff_date is not None
 
-    prompt_path = Path("prompts/tournament_selection_prompt.txt")
+    with sqlite3.connect(db_path) as conn:
+        untriaged = untriaged_genes(conn)
+        pursued = pursued_associations(conn)
+    if untriaged:
+        logger.error(
+            f"{len(untriaged)} run gene(s) have no expansion triage, e.g. HGNC:{untriaged[0]}; "
+            "run triage-expansion first"
+        )
+        raise typer.Exit(1)
+    logger.info(f"Expansion triage pursues associations of {len(pursued)} gene(s)")
+    seed_panelapp_publications(db_path, panels, baseline_db_path, hgnc_resolver, list(pursued))
+
+    prompt_path = Path("prompts/tournament_directed_prompt.j2")
     schema_path = Path("prompts/tournament_selection_schema.json")
 
     if not prompt_path.exists():
@@ -390,10 +434,10 @@ def main(
         logger.error(f"Schema not found: {schema_path}")
         raise typer.Exit(1)
 
-    template = prompt_path.read_text()
+    template = load_prompt(prompt_path)
     schema: dict[str, Any] = json.loads(schema_path.read_text())
 
-    genes = genes_to_expand(db_path)
+    genes = genes_to_expand(db_path, list(pursued))
     logger.info(f"Found {len(genes)} gene(s) to expand")
 
     if not genes:
@@ -409,6 +453,7 @@ def main(
             transport=transport,
             hgnc_resolver=hgnc_resolver,
             genes=genes,
+            briefs={hgnc_id: association_brief(pursued[hgnc_id]) for hgnc_id in genes},
             db_path=db_path,
             baseline_db_path=baseline_db_path,
             schema=schema,

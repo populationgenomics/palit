@@ -26,6 +26,7 @@ from palit import (
     panelapp_snapshot,
     reduce_literature,
     scan_mechanisms,
+    triage_expansion,
 )
 
 app = typer.Typer(
@@ -68,6 +69,7 @@ app.add_typer(map_mondo.app, name="map-mondo")
 app.add_typer(match_panels.app, name="match-panels")
 app.add_typer(journal_metrics.app, name="journal-metrics")
 app.add_typer(panelapp_snapshot.app, name="panelapp")
+app.add_typer(triage_expansion.app, name="triage-expansion")
 app.add_typer(expand_literature.app, name="expand-literature")
 app.add_typer(reduce_literature.app, name="reduce-literature")
 

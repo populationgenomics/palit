@@ -45,7 +45,6 @@ from palit.panelapp_client import (
     ordered_panel_publications,
 )
 from palit.panelapp_integration import (
-    RATING_CONFIDENCE,
     Finding,
     FindingKind,
     MondoMatch,
@@ -57,6 +56,7 @@ from palit.panelapp_integration import (
     calculate_association_rating,
     panelapp_confidence_to_color,
     prepare_prefill_data,
+    upgrade_baseline,
 )
 from palit.papers import (
     build_display_ids,
@@ -65,7 +65,7 @@ from palit.papers import (
     is_preprint,
     replace_paper_ids_for_display,
 )
-from palit.run_corpus import CITED_PAPER, CORPUS_PAPER, RELEVANT_PAPER
+from palit.run_corpus import CITED_PAPER, CORPUS_PAPER, INITIAL_PAPER, RELEVANT_PAPER
 from palit.variants import GeneVariant, GnomadFrequency, GnomadMiss, load_gene_variants
 
 logger = logging.getLogger(__name__)
@@ -424,6 +424,9 @@ class ReportAssociation:
     # The names of the target panels holding the gene when they have reviewed the
     # association's papers in full (see reviewed_in_full); empty otherwise
     reviewed_on: tuple[str, ...]
+    # In a monthly run: none of the association's papers is from the run's literature
+    # window (see load_associations); always false in a panel-scoped run
+    older_literature_only: bool
     # Why the association fits the scope panel of a panel-scoped run; None otherwise
     scope_rationale: str | None
 
@@ -709,10 +712,12 @@ class GeneGroup:
 class GeneGroups:
     """The report's genes, each in exactly one group; groups without genes are left out."""
 
-    new_genes: list[GeneGroup]  # by top association rating: GREEN, AMBER, RED
+    new_genes: list[GeneGroup]  # new genes with findings, by best finding rating
     with_findings: list[GeneGroup]  # known genes by best finding rating: GREEN, AMBER, RED
     without_findings: list[GeneGroup]  # known genes unreviewed on the target panels
     already_reviewed: list[GeneGroup]  # known genes reviewed on the target panels
+    # New genes whose associations all rest on older literature (monthly runs only)
+    new_without_findings: list[GeneGroup]
 
 
 app = typer.Typer(help="Generate gene-centric HTML reports from aggregate assessments")
@@ -821,17 +826,17 @@ def association_finding(
 
     *current_rating* is the gene's highest rating on the target panels, None
     when it is on none of them. An association whose papers the target panels
-    have all reviewed already is no finding, whatever its relation and rating.
+    have all reviewed already is no finding, whatever its relation and rating; nor,
+    in a monthly run, is one that rests on older literature only: a monthly run
+    reports what newly published papers add, and gaps in older literature are for
+    platform-wide and panel-scoped reviews.
     Otherwise, every association of a gene on none of the target panels is a new
     disease, whatever PanelApp Australia curates on other panels. On a gene on a
     target panel, a new disease is a finding, and a new MoI once highlighted. An
     existing association is an upgrade when its corpus rating is above the rating
-    it starts from. In a panel-scoped run (*scoped*), that is the gene's rating
-    on the scope panel: a panel named after a clinical feature rates how reliably
-    the gene causes the feature, not each disease. Otherwise it is PanelApp's
-    rating of the association, or the gene's current rating when that is unknown.
+    it starts from (see :func:`upgrade_baseline`; *scoped* for a panel-scoped run).
     """
-    if association.already_reviewed:
+    if association.already_reviewed or association.older_literature_only:
         return None
     if current_rating is None:
         return Finding(FindingKind.NEW_DISEASE, association.rating, association.id, None)
@@ -842,8 +847,9 @@ def association_finding(
         if not association.new_moi_highlighted:
             return None
         return Finding(FindingKind.NEW_MOI, association.rating, association.id, None)
-    stated: str | None = association.assessment["panelapp_relation"]["existing_rating"]
-    from_rating = current_rating if scoped or stated is None else RATING_CONFIDENCE[stated]
+    from_rating = upgrade_baseline(
+        association.assessment["panelapp_relation"]["existing_rating"], current_rating, scoped
+    )
     if association.rating <= from_rating:
         return None
     return Finding(FindingKind.UPGRADE, association.rating, association.id, from_rating)
@@ -883,11 +889,13 @@ def group_genes(
 ) -> GeneGroups:
     """Place each gene in one group, each group's genes by HGNC symbol.
 
-    New genes go by their top association rating, known genes with findings by
-    the rating of their strongest finding, and known genes without findings by
-    whether nobody has reviewed one of their entries on the target panels. The
-    reviewed genes start collapsed in the ToC; the groups of known genes without
-    findings are not preselected for bulk assignment.
+    Genes with findings go by the rating of their strongest finding, new and known
+    genes apart, and known genes without findings by whether nobody has reviewed
+    one of their entries on the target panels. Every association of a new gene is a
+    finding unless it rests on older literature only (see association_finding), so
+    a new gene without findings has nothing from the run's new papers. The reviewed
+    genes and the new genes without findings start collapsed in the ToC; the groups
+    of genes without findings are not preselected for bulk assignment.
     """
     novel = sorted(novel_genes, key=lambda g: g.hgnc_symbol)
     known = sorted(known_genes, key=lambda g: g.hgnc_symbol)
@@ -925,7 +933,9 @@ def group_genes(
         return [GeneGroup(key, title, None, genes, collapsed=collapsed, preselected=False)]
 
     return GeneGroups(
-        new_genes=by_rating("new", "New gene", novel, lambda g: g.top_rating),
+        new_genes=by_rating(
+            "new", "New gene", [g for g in novel if g.findings], lambda g: g.findings[0].rating
+        ),
         with_findings=by_rating(
             "finding",
             "Best finding",
@@ -934,6 +944,9 @@ def group_genes(
         ),
         without_findings=single("unreviewed", "Unreviewed on target panel", unreviewed, False),
         already_reviewed=single("reviewed", "Already reviewed", reviewed, True),
+        new_without_findings=single(
+            "new-older", "Older literature only", [g for g in novel if not g.findings], True
+        ),
     )
 
 
@@ -1190,6 +1203,7 @@ def load_associations(
     gene_variants: list[ReportVariant],
     target_entries: tuple[PanelEntry, ...],
     pmid_by_doi: dict[str, int | None],
+    initial_dois: frozenset[str],
     scoped: bool,
 ) -> list[ReportAssociation]:
     """The gene's associations, by corpus rating and then independent family count.
@@ -1199,7 +1213,9 @@ def load_associations(
     stages send immediate requests only, which are recorded once they have completed.
     *target_entries* are the gene's entries on the target panels, against which each
     association's papers, with their PMIDs from *pmid_by_doi*, are checked for having
-    been reviewed already. In a panel-scoped run (*scoped*), each association carries
+    been reviewed already. In a monthly run, an association none of whose papers is
+    among *initial_dois* (the papers of the run's literature window) rests on older
+    literature only. In a panel-scoped run (*scoped*), each association carries
     its ``scope_rationale``. Raises ValueError for an association aggregated without the
     scope panel in a panel-scoped run, or with one in a run without it.
     """
@@ -1271,6 +1287,7 @@ def load_associations(
                     row["matching_model"],
                 ),
                 reviewed_on=target_panel_names if reviewed else (),
+                older_literature_only=not scoped and initial_dois.isdisjoint(assessment["dois"]),
                 scope_rationale=scope_rationale,
             )
         )
@@ -1337,12 +1354,14 @@ def load_gene(
     target_panel_data: PanelGeneData,
     all_panels_data: AllPanelsData,
     target_entries: tuple[PanelEntry, ...],
+    initial_dois: frozenset[str],
     scoped: bool,
 ) -> GeneAssessment:
     """One gene's aggregation row with its associations, papers and panel context.
 
-    *target_entries* are the gene's entries on the target panels. *scoped* is true in a
-    panel-scoped run, whose one target panel is the scope panel.
+    *target_entries* are the gene's entries on the target panels. *initial_dois*
+    are the run's initial papers (see :func:`load_associations`). *scoped* is
+    true in a panel-scoped run, whose one target panel is the scope panel.
     """
     hgnc_id: int = row["hgnc_id"]
     paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
@@ -1384,6 +1403,7 @@ def load_gene(
         gene_variants,
         target_entries,
         pmid_by_doi,
+        initial_dois,
         scoped,
     )
     findings = gene_findings(rated_associations, current_rating, scoped)
@@ -1463,9 +1483,13 @@ def build_gene_assessment_results(
         ORDER BY hgnc_id
         """
     )
+    rows = cursor.fetchall()
+    initial_dois = frozenset(
+        r[0] for r in cursor.execute(f"SELECT p.doi FROM papers p WHERE {INITIAL_PAPER}")
+    )
     novel_genes: list[GeneAssessment] = []
     known_genes: list[GeneAssessment] = []
-    for row in cursor.fetchall():
+    for row in rows:
         gene = load_gene(
             conn.cursor(),
             row,
@@ -1473,6 +1497,7 @@ def build_gene_assessment_results(
             target_panel_data,
             all_panels_data,
             target_entries.get(row["hgnc_id"], ()),
+            initial_dois,
             scoped=scope_panel_id is not None,
         )
         (novel_genes if gene.is_novel else known_genes).append(gene)
@@ -2214,7 +2239,7 @@ def calculate_comprehensive_statistics(
         return ComprehensiveStats(
             # Gene assessment stats
             total_genes_assessed=len(all_genes),
-            new_genes_count=len(results.novel_genes),
+            new_genes_count=sum(1 for gene in results.novel_genes if gene.findings),
             known_genes_with_findings=sum(1 for gene in results.known_genes if gene.findings),
             total_contributing_papers=len(all_dois),
             # Panel validation stats

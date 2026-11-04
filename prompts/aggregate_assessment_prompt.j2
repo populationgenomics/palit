@@ -16,29 +16,7 @@ Each entry in the `disease_entities` array is one gene–disease–MoI associati
 
 Create an entry only for an association that at least one contributing paper reports evidence for. PanelApp Australia associations that no contributing paper addresses are not listed.
 
-**STEP 1 — SPLIT BY INHERITANCE MODE (mandatory, no exceptions):**
-Each association must have EXACTLY ONE inheritance_mode. When an autosomal gene's same phenotype has evidence for BOTH monoallelic and biallelic inheritance across the contributing papers, create TWO separate entries — one per MoI — even if the description, disease, and disease_mechanism are otherwise identical. (This monoallelic/biallelic split applies to autosomal genes only; every association of an X-linked gene is "X-linked" — see the location-first rule under inheritance_mode below.) PanelApp curates each gene–disease relationship per MoI, so per-MoI family and patient counts are required for downstream classification. Do NOT fold mixed-MoI evidence into a single entry; combination modes are not permitted.
-
-**STEP 2 — WITHIN A SINGLE MoI, decide LUMP vs SPLIT using ClinGen criteria (weigh together):**
-
-1. **Molecular Mechanism** (strongest criterion): Different mechanisms (LOF vs GOF, domain-specific) for different phenotypes → SPLIT. Same mechanism → LUMP.
-
-2. **Phenotypic Variability**: If intrafamilial variability ≈ interfamilial variability → LUMP (variable expressivity, not distinct diseases). If families differ more from each other than members within families → consider splitting.
-
-3. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
-
-**Isolated Features of Syndromes:**
-If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, report the SYNDROME, not the isolated feature—unless papers present it as distinct (see the next paragraph).
-
-**Distinct entities that overlap:**
-An entity defined by the absence of another entity's core phenotype (e.g., isolated craniosynostosis without immunodeficiency versus a hyper-IgE syndrome), or caused by a different molecular mechanism, stays a separate association. A structurally distinct malformation is not lumped into a different organ-system association merely because both involve the same organ (e.g., anomalous pulmonary venous return versus aortic valve disease). The fuzziness allowed in STEP 3 covers names, subtypes and phenotype spectrum, not these differences.
-
-**STEP 3 — ANCHOR ON PANELAPP AUSTRALIA'S EXISTING ASSOCIATIONS:**
-Compare each association from STEPS 1–2 with the associations PanelApp Australia already curates for this gene (PANELAPP AUSTRALIA STATE below: the panel entries and the reviews, on every panel that holds the gene). The GenCC disease terms listed there are suggestions for naming associations and for deciding what to lump or split; they do not show what PanelApp Australia curates.
-
-- Reuse an existing association whenever yours is the same disease in the clinical sense, with the same MoI. Allow reasonable fuzziness: a different name, a numbered subtype versus the broader disease, or a slightly wider or narrower phenotype spectrum is still the same association. When a GenCC disease term names your association's disease, copy its MONDO id into `existing_association_mondo_id`, whatever the association's status.
-- Combining closely related paper-level entities of slightly different scope into one association is fine and expected, for example when they all match one PanelApp Australia association, or when the papers describe them as one spectrum.
-- Adding new associations is expected: a phenotype expansion or a disease PanelApp Australia does not list (status "new_disease"), or a new MoI for a disease it lists (status "new_moi"). A disease that PanelApp Australia lists only under a different MoI is a new association with status "new_moi"; you may still copy that disease's GenCC term when the term does not specify the other MoI.
+{% include "partials/lump_split.j2" %}
 - BAR FOR NEW ASSOCIATIONS: a new association (`panelapp_relation.status` "new_disease" or "new_moi") goes into `disease_entities` only when at least one family qualifies (`independent_family_count` ≥ 1). Reports of a new phenotype or MoI below that bar (no family passes the QUALIFYING VARIANT GATE, family numbers not reported, functional or animal data only, or an association-study signal) go into the gene-level `unassessed_reports` array instead, one entry per phenotype and MoI; they are not associations and get no entry in `disease_entities`. Associations PanelApp Australia already curates (status "existing") are still emitted when the contributing papers report evidence touching them, even with 0 or null families.
 - PAPER-LEVEL ENTITIES WITHOUT PATIENTS: a paper-level disease entity with `patient_count` 0 and null family counts reports functional or animal-model tests of the gene's disease variants, without new patients. It belongs to the association of the disease its variants were reported in: its paper is one of that association's `paper_ids`, and its variant-specific functional evidence counts toward that association's Criterion C Pillar 2, the QUALIFYING VARIANT GATE (see GATE ACROSS PAPERS) and its `functional` field. It adds no patients or families. When such entities are the only evidence for a new disease or MoI, the report goes into `unassessed_reports` (functional or animal data only, see the BAR above).
 - The merge and split judgement is yours. Explain it per association in `grouping_rationale`: which paper-level entities (by paper ID and the paper's own description) and which PanelApp Australia association you combined, or kept apart, and why.
@@ -293,12 +271,7 @@ NEVER infer, estimate, or make assumptions about missing data.
 - disease_entities: array of distinct (disease × MoI) associations with their patient and family counts aggregated across all papers. ALWAYS create SEPARATE associations when (a) inheritance modes differ (e.g., monoallelic vs biallelic for the same phenotype — see STEP 1 above) or (b) molecular mechanisms differ (e.g., gain-of-function vs loss-of-function), even if phenotypes overlap. Each entry must include:
   * description: SPECIFIC DISEASE NAME (where applicable) or clinical description (3-5 core features), PLUS important modifiers like age of onset (e.g., "childhood-onset", "adult-onset"), severity (e.g., "severe", "mild"), or progression (e.g., "progressive"). Always include recognized syndrome/disease names when mentioned in the papers.
   * inheritance_mode: EXACTLY ONE of: "Monoallelic"|"Biallelic"|"X-linked"|"Mitochondrial"|"Other"|"NR". Each association carries a single MoI — combination modes are not permitted. Decide in this order:
-    1. LOCATION FIRST. If the gene lies on the X chromosome (outside the pseudoautosomal regions), inheritance_mode is "X-linked" for EVERY association of that gene, regardless of the proband's zygosity: hemizygous males, heterozygous females (X-linked dominant or skewed X-inactivation), de novo, or inherited. A single heterozygous or de novo allele in an X-linked gene is "X-linked", NOT "Monoallelic". "Monoallelic" and "Biallelic" are AUTOSOMAL-ONLY labels — never apply them to an X-chromosome gene, never record "Monoallelic"/"Biallelic" while relegating "X-linked" to inheritance_details, and never split an X-linked gene into separate "Monoallelic" and "X-linked" associations. If a contributing paper calls an X-linked gene's variant "heterozygous", "de novo", or "monoallelic", still classify the association "X-linked". (Pseudoautosomal genes such as SHOX inherit autosomally — treat them as autosomal.)
-    2. AUTOSOMAL → USE ZYGOSITY. For autosomal genes, determine Monoallelic vs Biallelic from zygosity evidence in the papers (e.g., "heterozygous", "de novo" → Monoallelic; "homozygous", "compound heterozygous" → Biallelic), NOT from variant type. Loss-of-function variants (nonsense, frameshift, splice-site) can cause EITHER monoallelic (haploinsufficiency) OR biallelic (recessive) disease. When the same phenotype has evidence for BOTH monoallelic and biallelic inheritance, create TWO associations (see STEP 1 above).
-    MOSAIC/SOMATIC VARIANTS: Mosaicism describes the cellular distribution of a variant, not its zygosity — both monoallelic and biallelic mosaic states exist (e.g., a constitutive heterozygous variant combined with post-zygotic loss-of-heterozygosity on the second allele yields a biallelic mosaic state, though this is uncommon outside cancer). The location-first rule still governs: a mosaic variant in an X-linked gene is "X-linked". For autosomal genes, classify by the zygosity reported in the contributing papers, and record the mosaic context in `inheritance_details` as "mosaic":
-      - Single mosaic variant with no second pathogenic variant reported on the partner allele → "Monoallelic"
-      - Compound heterozygous mosaic, homozygous mosaic, or constitutive heterozygous combined with post-zygotic LOH on the second allele → "Biallelic"
-      - Use "Other" ONLY when the contributing papers themselves leave zygosity genuinely ambiguous (e.g., describe a mosaic finding without indicating whether the partner allele also carries a pathogenic variant). A paper's labelling conventions are signals: a paper that explicitly tags biallelic mosaic cases (e.g., "homozygous mosaic", "Mosaic AR") but uses a bare label such as "Mosaic" for a given case is reporting monoallelic mosaicism — classify accordingly rather than defaulting to "Other".
+{% include "partials/inheritance_mode_rules.j2" %}
   * inheritance_details: empty string "", or one or more of exactly these phrases joined by "; ": "reduced penetrance", "variable expressivity", "mosaic", "imprinted, paternal allele expressed", "imprinted, maternal allele expressed", "sex-limited" (e.g., "reduced penetrance; variable expressivity"). No other text: segregation, consanguinity, zygosity, de novo status and other evidence belong in the summary, not here.
 {% if scope_panel %}  * scope_rationale: the papers' statement that the individuals have the panel's disorder, or the reported findings that define it, condensed from the `scope_rationale` of the paper-level entities it groups. See PANEL SCOPE.
 {% endif %}  * grouping_rationale: 1-3 sentences per STEP 3: which paper-level entities (paper ID plus the paper's own description) and which PanelApp Australia association you combined into this association or kept apart from it, and why.
@@ -307,16 +280,8 @@ NEVER infer, estimate, or make assumptions about missing data.
   * existing_association_mondo_id: the MONDO id copied exactly from the GenCC disease term that names this association's disease (STEP 3), or null when none does. Only MONDO ids listed under GENCC DISEASE TERMS below are valid. A term restricted to another MoI (e.g., an "autosomal dominant" subtype for a biallelic association) does not name this association's disease.
   * proposed_disease_name: null when existing_association_mondo_id is set. Otherwise a disease name for this association in the form "{{ hgnc_symbol }}-related <disease>" (e.g., "AGBL2-related tetralogy of Fallot"), using the specific disease name from the papers or from a PanelApp Australia entry or review where there is one. It is required whenever existing_association_mondo_id is null, whatever the status. Exactly one of existing_association_mondo_id and proposed_disease_name is set.
   * panelapp_relation: how this association relates to PanelApp Australia's existing curation:
-    - status: one of three values. "existing" when a current panel entry or review, on any panel, curates this disease with this MoI. "new_moi" when PanelApp Australia curates this disease for the gene, but not with this MoI (e.g., it lists only the monoallelic form and this association is biallelic). An entry's MoI can belong to another of the gene's diseases: "BOTH monoallelic and biallelic" on an entry that lists a dominant and a recessive disease does not give each of them both MoIs. Judge which MoI PanelApp Australia gives THIS disease from the entries and reviews that isolate it and from the disease names (e.g., "autosomal recessive" in an OMIM title). "new_disease" when PanelApp Australia does not curate this disease for the gene under any MoI (a disease it does not list, or a phenotype expansion). "new_disease" and "new_moi" are the two new statuses: wherever this prompt speaks of a new association, it means either of them. A new association must clear the BAR FOR NEW ASSOCIATIONS (STEP 3): its `independent_family_count` is at least 1. A new phenotype or MoI without a qualifying family is an `unassessed_reports` entry, not a `disease_entities` entry.
-    - existing_rating: for "existing", the rating PanelApp Australia gives THIS association now, judged from the panel entries and reviews:
-      (i) An entry ISOLATES this association when it lists this disease and none of the gene's other diseases. Its rating is this association's rating on that panel; prefer it over the rating of an entry that lumps several diseases.
-      (ii) An entry on a panel named after a clinical feature of the disease (e.g., genetic epilepsy, intellectual disability, brain calcification) rates how reliably the gene causes that feature. It does not isolate the disease, and its rating does not lower this association's.
-      (iii) An entry's rating outweighs a rating stated in a review's text. When they disagree, take the entry's rating and name both in basis.
-      (iv) A class from another curation body quoted in a review (e.g., "ClinGen MODERATE") is context for the reviewer's decision, not PanelApp Australia's rating.
-      (v) When entries that isolate this association on different panels disagree, take the higher rating and name both in basis.
-      (vi) A review's date is when its curator first wrote it, and a later edit to its rating keeps that date. Order statements in time by their comments' dates.
-      Null when no entry or review isolates this association's rating (for example, it appears only in the phenotype lists of entries that also list other diseases, and no review rates it separately), and always for "new_disease" and "new_moi".
-    - basis: a short phrase naming the panel entry or review the judgement rests on, with its rating or comment date (e.g., "Hypertrophic cardiomyopathy entry lists only this disease, GREEN", "Mendeliome review comment 2026-02-06 calls Klippel-Feil syndrome 1 RED; the Skeletal dysplasia entry lists it on GREEN", "no PanelApp Australia entry or review with a cardiac phenotype").
+    - status: {% include "partials/panelapp_relation_status.j2" %} "new_disease" and "new_moi" are the two new statuses: wherever this prompt speaks of a new association, it means either of them. A new association must clear the BAR FOR NEW ASSOCIATIONS (STEP 3): its `independent_family_count` is at least 1. A new phenotype or MoI without a qualifying family is an `unassessed_reports` entry, not a `disease_entities` entry.
+{% include "partials/panelapp_existing_rating.j2" %}
   * dispute_status: One of "None"|"Disputed"|"Refuted". Encodes your decision for the dispute submissions that apply to this association (see DISPUTED OR REFUTED ASSOCIATIONS): "Disputed"/"Refuted" upholds them (criterion_A/B/C results for THIS association in its `evidence_assessments` must then be false); "None" overrules them (any A/B/C you return true for this association must state the overrule explicitly in its rationale). Associations that no dispute submission applies to MUST be "None". Do not escalate (Disputed → Refuted), demote (Refuted → Disputed), or fabricate disputes that no submission states.
   * patient_count: number of patients for this specific association aggregated across all papers (always required)
   * reported_family_count: every family the contributing papers report for this association, before the qualifying gate, aggregated across papers (count families, not individuals; dedupe paper overlap via previously_reported_sources). Null when no paper reports families. See FAMILY COUNTS.
@@ -499,36 +464,7 @@ Respond in JSON format with your aggregate evaluation:
 }
 {% endraw %}
 
-PANELAPP AUSTRALIA STATE FOR {{ hgnc_symbol }}:
-
-The panel entries and the reviews below are what PanelApp Australia curates for this gene now; the GenCC disease terms after them are suggestions for names. Read them with these caveats:
-- The PANEL ENTRIES come from the PanelApp snapshot of {{ panel_date }}: every panel that holds the gene, the target panels first. They are lumped. Each entry carries one rating per gene per panel, which is the rating of the gene's top association on that panel, and a phenotype list that is the UNION of the gene's associations on that panel. A disease listed on a GREEN entry is therefore not necessarily GREEN-level itself, and the entry's MoI may span several associations. An entry that lists one of the gene's diseases and none of its others rates that disease alone; a panel named after a clinical feature rates how reliably the gene causes that feature.
-- The REVIEWS are curators' evaluations of the gene on each panel that holds it, one block per panel, most recent first. Each block gives the time its reviews were captured, which can be later than the snapshot date. A review judges the gene on that panel only, and its comments often judge individual associations that the lumped entry rating hides. A review's date is when its curator first wrote it; a later edit to its rating keeps that date, while each comment carries its own. A block marked unavailable means PanelApp could not serve that panel's reviews, not that nobody reviewed the gene there.
-- The GENCC DISEASE TERMS are the MONDO terms that GenCC submitters (curation bodies and laboratories) use for this gene's diseases, with the MoIs submitted for each. Use them to name associations and to decide what to lump or split. They do not show what PanelApp Australia curates or how it rates anything, and where they disagree with the entries and reviews, the entries and reviews win.
-
-PANEL ENTRIES (every panel holding {{ hgnc_symbol }} on {{ panel_date }}, target panels first; lumped):
-{% if panel_entries %}{% for e in panel_entries %}
-- {{ e.panel_name }} (panel {{ e.panel_id }}{% if e.reference %}, target panel{% endif %}): rating {{ e.rating }}; MoI "{{ e.moi }}"{% if e.mode_of_pathogenicity %}; mode of pathogenicity "{{ e.mode_of_pathogenicity }}"{% endif %}
-  Phenotypes: {{ e.phenotypes | join("; ") }}{% if e.publications %}
-  Publications: {{ e.publications | join("; ") }}{% endif %}
-{% endfor %}{% else %}
-None: no panel holds {{ hgnc_symbol }}.
-{% endif %}
-
-REVIEWS (one block per panel that holds the gene and has reviews):
-{% if reviews_section %}
-{{ reviews_section }}
-{% else %}
-None.
-{% endif %}
-
-GENCC DISEASE TERMS (MONDO id, disease, MoIs submitted, MONDO definition):
-{% if gencc_terms %}{% for t in gencc_terms %}
-- {{ t.mondo_id }}{% if t.obsolete %} (obsolete MONDO term; reuse this id as given){% endif %} "{{ t.disease_title }}"; MoI {{ t.moi_titles | join(", ") }}{% if t.definition %}
-  Definition: {{ t.definition }}{% endif %}
-{% endfor %}{% else %}
-None: GenCC has no submissions for {{ hgnc_symbol }}.
-{% endif %}
+{% include "partials/panelapp_state.j2" %}
 
 DISPUTE DETAILS:
 {% if dispute_blocks %}For each Disputed or Refuted GenCC submission below, the evaluated PMIDs and stated rationale are reproduced verbatim; for each of your contributing papers, its PMID and publication date are shown so you can compare against the panel's review date — work from this text when deciding uphold vs. overrule.

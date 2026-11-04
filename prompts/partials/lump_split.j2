@@ -1,0 +1,23 @@
+**STEP 1 — SPLIT BY INHERITANCE MODE (mandatory, no exceptions):**
+Each association must have EXACTLY ONE inheritance_mode. When an autosomal gene's same phenotype has evidence for BOTH monoallelic and biallelic inheritance across the contributing papers, create TWO separate entries — one per MoI — even if the description, disease, and disease_mechanism are otherwise identical. (This monoallelic/biallelic split applies to autosomal genes only; every association of an X-linked gene is "X-linked" — see the location-first rule under inheritance_mode below.) PanelApp curates each gene–disease relationship per MoI, so per-MoI family and patient counts are required for downstream classification. Do NOT fold mixed-MoI evidence into a single entry; combination modes are not permitted.
+
+**STEP 2 — WITHIN A SINGLE MoI, decide LUMP vs SPLIT using ClinGen criteria (weigh together):**
+
+1. **Molecular Mechanism** (strongest criterion): Different mechanisms (LOF vs GOF, domain-specific) for different phenotypes → SPLIT. Same mechanism → LUMP.
+
+2. **Phenotypic Variability**: If intrafamilial variability ≈ interfamilial variability → LUMP (variable expressivity, not distinct diseases). If families differ more from each other than members within families → consider splitting.
+
+3. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
+
+**Isolated Features of Syndromes:**
+If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, report the SYNDROME, not the isolated feature—unless papers present it as distinct (see the next paragraph).
+
+**Distinct entities that overlap:**
+An entity defined by the absence of another entity's core phenotype (e.g., isolated craniosynostosis without immunodeficiency versus a hyper-IgE syndrome), or caused by a different molecular mechanism, stays a separate association. A structurally distinct malformation is not lumped into a different organ-system association merely because both involve the same organ (e.g., anomalous pulmonary venous return versus aortic valve disease). The fuzziness allowed in STEP 3 covers names, subtypes and phenotype spectrum, not these differences.
+
+**STEP 3 — ANCHOR ON PANELAPP AUSTRALIA'S EXISTING ASSOCIATIONS:**
+Compare each association from STEPS 1–2 with the associations PanelApp Australia already curates for this gene (PANELAPP AUSTRALIA STATE below: the panel entries and the reviews, on every panel that holds the gene). The GenCC disease terms listed there are suggestions for naming associations and for deciding what to lump or split; they do not show what PanelApp Australia curates.
+
+- Reuse an existing association whenever yours is the same disease in the clinical sense, with the same MoI. Allow reasonable fuzziness: a different name, a numbered subtype versus the broader disease, or a slightly wider or narrower phenotype spectrum is still the same association.{% if copies_gencc_terms %} When a GenCC disease term names your association's disease, copy its MONDO id into `existing_association_mondo_id`, whatever the association's status.{% endif %}
+- Combining closely related paper-level entities of slightly different scope into one association is fine and expected, for example when they all match one PanelApp Australia association, or when the papers describe them as one spectrum.
+- Adding new associations is expected: a phenotype expansion or a disease PanelApp Australia does not list (status "new_disease"), or a new MoI for a disease it lists (status "new_moi"). A disease that PanelApp Australia lists only under a different MoI is a new association with status "new_moi"{% if copies_gencc_terms %}; you may still copy that disease's GenCC term when the term does not specify the other MoI.{% else %}.{% endif %}

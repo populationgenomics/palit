@@ -1,0 +1,30 @@
+PANELAPP AUSTRALIA STATE FOR {{ hgnc_symbol }}:
+
+The panel entries and the reviews below are what PanelApp Australia curates for this gene now; the GenCC disease terms after them are suggestions for names. Read them with these caveats:
+- The PANEL ENTRIES come from the PanelApp snapshot of {{ panel_date }}: every panel that holds the gene, the target panels first. They are lumped. Each entry carries one rating per gene per panel, which is the rating of the gene's top association on that panel, and a phenotype list that is the UNION of the gene's associations on that panel. A disease listed on a GREEN entry is therefore not necessarily GREEN-level itself, and the entry's MoI may span several associations. An entry that lists one of the gene's diseases and none of its others rates that disease alone; a panel named after a clinical feature rates how reliably the gene causes that feature.
+- The REVIEWS are curators' evaluations of the gene on each panel that holds it, one block per panel, most recent first. Each block gives the time its reviews were captured, which can be later than the snapshot date. A review judges the gene on that panel only, and its comments often judge individual associations that the lumped entry rating hides. A review's date is when its curator first wrote it; a later edit to its rating keeps that date, while each comment carries its own. A block marked unavailable means PanelApp could not serve that panel's reviews, not that nobody reviewed the gene there.
+- The GENCC DISEASE TERMS are the MONDO terms that GenCC submitters (curation bodies and laboratories) use for this gene's diseases, with the MoIs submitted for each. Use them to name associations and to decide what to lump or split. They do not show what PanelApp Australia curates or how it rates anything, and where they disagree with the entries and reviews, the entries and reviews win.
+
+PANEL ENTRIES (every panel holding {{ hgnc_symbol }} on {{ panel_date }}, target panels first; lumped):
+{% if panel_entries %}{% for e in panel_entries %}
+- {{ e.panel_name }} (panel {{ e.panel_id }}{% if e.reference %}, target panel{% endif %}): rating {{ e.rating }}; MoI "{{ e.moi }}"{% if e.mode_of_pathogenicity %}; mode of pathogenicity "{{ e.mode_of_pathogenicity }}"{% endif %}
+  Phenotypes: {{ e.phenotypes | join("; ") }}{% if e.publications %}
+  Publications: {{ e.publications | join("; ") }}{% endif %}
+{% endfor %}{% else %}
+None: no panel holds {{ hgnc_symbol }}.
+{% endif %}
+
+REVIEWS (one block per panel that holds the gene and has reviews):
+{% if reviews_section %}
+{{ reviews_section }}
+{% else %}
+None.
+{% endif %}
+
+GENCC DISEASE TERMS (MONDO id, disease, MoIs submitted, MONDO definition):
+{% if gencc_terms %}{% for t in gencc_terms %}
+- {{ t.mondo_id }}{% if t.obsolete %} (obsolete MONDO term; reuse this id as given){% endif %} "{{ t.disease_title }}"; MoI {{ t.moi_titles | join(", ") }}{% if t.definition %}
+  Definition: {{ t.definition }}{% endif %}
+{% endfor %}{% else %}
+None: GenCC has no submissions for {{ hgnc_symbol }}.
+{% endif %}

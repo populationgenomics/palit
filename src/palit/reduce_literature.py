@@ -14,13 +14,20 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from jinja2 import Template
 
 from palit.hgnc import HgncResolver
 from palit.llm import BatchTransport, ImmediateTransport, Transport, make_client
 from palit.llm_usage import print_stage_summary
 from palit.papers import Paper, deserialize_source_metadata
 from palit.run_corpus import RELEVANT_PAPER
-from palit.tournament import TournamentEntry, TournamentOutcome, record_abandoned, run_tournaments
+from palit.tournament import (
+    TournamentEntry,
+    TournamentOutcome,
+    load_prompt,
+    record_abandoned,
+    run_tournaments,
+)
 
 app = typer.Typer(help="Reduce literature using tournament selection to minimize manual downloads")
 logger = logging.getLogger(__name__)
@@ -233,7 +240,7 @@ async def _process_reduction(
     genes_with_counts: list[tuple[int, int]],
     db_path: Path,
     schema: dict[str, Any],
-    template: str,
+    template: Template,
     paper_limit: int,
     max_papers: int,
     papers_per_round: int,
@@ -343,7 +350,7 @@ def main(
         raise typer.Exit(1)
 
     # Load prompt and schema
-    prompt_path = Path("prompts/tournament_selection_prompt.txt")
+    prompt_path = Path("prompts/tournament_selection_prompt.j2")
     schema_path = Path("prompts/tournament_selection_schema.json")
 
     if not prompt_path.exists():
@@ -354,7 +361,7 @@ def main(
         logger.error(f"Schema not found: {schema_path}")
         raise typer.Exit(1)
 
-    template = prompt_path.read_text()
+    template = load_prompt(prompt_path)
     schema: dict[str, Any] = json.loads(schema_path.read_text())
 
     logger.info("Finding genes to reduce...")

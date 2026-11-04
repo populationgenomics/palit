@@ -11,6 +11,11 @@ Tournament state lives only in memory: after an interruption the tournament
 restarts, and results of batches still in flight are recorded for their usage
 but not used. A prompt MODEL refuses is sent again on FALLBACK_MODEL within the
 same round, before the round's selections are used.
+
+Two prompts use it: gene-wide selection (``tournament_selection_prompt.j2``), which
+picks a gene's most informative papers across all its diseases, and directed
+selection (``tournament_directed_prompt.j2``), which picks earlier papers for the
+associations an entry's ``brief`` names.
 """
 
 import logging
@@ -22,6 +27,7 @@ from typing import Any
 import jsonschema
 from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, Template
 
 from palit.hgnc import HgncResolver
 from palit.llm import (
@@ -61,12 +67,28 @@ class TournamentEntry:
     key: str  # HGNC ID as text
     gene_symbol: str
     papers: list[Paper]
+    # The associations directed selection picks papers for; empty for gene-wide
+    # selection, whose prompt has no place for it
+    brief: str
 
     @classmethod
     def for_gene(
-        cls, hgnc_id: int, papers: list[Paper], resolver: HgncResolver
+        cls, hgnc_id: int, papers: list[Paper], resolver: HgncResolver, brief: str = ""
     ) -> "TournamentEntry":
-        return cls(key=str(hgnc_id), gene_symbol=resolver.get_symbol(hgnc_id), papers=papers)
+        return cls(
+            key=str(hgnc_id), gene_symbol=resolver.get_symbol(hgnc_id), papers=papers, brief=brief
+        )
+
+
+def load_prompt(path: Path) -> Template:
+    """A tournament prompt template, which may include ``prompts/partials``."""
+    env = Environment(
+        loader=FileSystemLoader(path.parent),
+        autoescape=False,
+        undefined=StrictUndefined,
+        keep_trailing_newline=True,
+    )
+    return env.get_template(path.name)
 
 
 @dataclass
@@ -99,13 +121,14 @@ def format_papers_for_prompt(papers: list[Paper]) -> str:
 
 
 def tournament_prompt(
-    template: str, entry: TournamentEntry, papers: list[Paper], max_papers: int
+    template: Template, entry: TournamentEntry, papers: list[Paper], max_papers: int
 ) -> str:
     """The user message selecting up to *max_papers* of *papers* for *entry*'s gene."""
-    return template.format(
+    return template.render(
         gene_symbol=entry.gene_symbol,
         max_papers=max_papers,
         papers_list=format_papers_for_prompt(papers),
+        brief=entry.brief,
     )
 
 
@@ -143,7 +166,7 @@ async def run_tournaments(
     transport: Transport,
     db_path: Path,
     stage: str,
-    prompt_template: str,
+    prompt_template: Template,
     schema: dict[str, Any],
     max_papers: int,
     papers_per_round: int,
@@ -204,7 +227,7 @@ async def _run_prompts(
     db_path: Path,
     stage: str,
     round_no: int,
-    prompt_template: str,
+    prompt_template: Template,
     output_config: OutputConfigParam,
     validator: jsonschema.protocols.Validator,
     max_papers: int,

@@ -1110,6 +1110,7 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
         matched_panels=None,
         panel_matching=StageState.NOT_RUN,
         reviewed_on=(),
+        older_literature_only=False,
         scope_rationale=None,
     )
 
@@ -3119,3 +3120,55 @@ def test_manual_downloads_need_every_journal_looked_up(db_path: Path) -> None:
     _add_manual_download_papers(db_path, [("10.9/a", "J", "1111-1111", "2026-01-01")], [])
     with pytest.raises(ValueError, match=r"\['1111-1111'\].*palit journal-metrics"):
         load_manual_download_papers(db_path)
+
+
+def _rest_on_older_literature(db_path: Path, hgnc_id: int, extraction: str) -> None:
+    """Make every association of *hgnc_id* rest on one expansion paper only."""
+    _add_papers(db_path, [("10.1/old", 999, "expansion", None, extraction)], [])
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE associations SET assessment_json = "
+            "json_set(assessment_json, '$.dois', json('[\"10.1/old\"]')) WHERE hgnc_id = ?",
+            (hgnc_id,),
+        )
+        conn.execute(
+            "UPDATE gene_aggregations SET paper_id_mapping = "
+            "json_set(paper_id_mapping, '$.Old2020', '10.1/old') WHERE hgnc_id = ?",
+            (hgnc_id,),
+        )
+        conn.execute(
+            "INSERT INTO gene_mentions (hgnc_id, paper_gene_symbol, paper_doi, source) "
+            "VALUES (?, 'GENE', '10.1/old', 'expansion_evidence')",
+            (hgnc_id,),
+        )
+
+
+def test_a_new_gene_on_older_literature_only_has_no_finding_in_a_monthly_run(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """GENEB's association rests only on an expansion paper, so a monthly run has nothing
+    new to report for it: no finding, and the new gene folds into its own group, the
+    association saying why."""
+    _rest_on_older_literature(db_path, 3, _extraction(3))
+    results = _load(db_path, hgnc_resolver)
+    geneb = results.novel_genes[0]
+    assert geneb.associations[0].older_literature_only
+    assert geneb.findings == []
+    groups = group_genes(results.novel_genes, results.known_genes)
+    assert groups.new_genes == []
+    assert [[g.hgnc_id for g in group.genes] for group in groups.new_without_findings] == [[3]]
+    assert "none of this association's papers was published in this run's literature window" in (
+        _strip_tags(_render(db_path, results))
+    )
+
+
+def test_older_literature_makes_findings_in_a_panel_scoped_run(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """A panel-scoped run reviews all literature: GENEB's association on an expansion
+    paper only is still a finding of the new gene."""
+    _rest_on_older_literature(db_path, 3, _extraction(3))
+    results = _load_scoped(db_path, hgnc_resolver, genea_rating=1)
+    geneb = next(g for g in results.novel_genes if g.hgnc_id == 3)
+    assert not geneb.associations[0].older_literature_only
+    assert geneb.findings

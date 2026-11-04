@@ -13,6 +13,7 @@ from palit.extract_evidence import STAGE, Remaining, count_remaining, select_pap
 from palit.llm import stage_history
 from palit.reduce_literature import genes_to_reduce, papers_of_small_genes
 from palit.run_corpus import CORPUS_PAPER, run_genes
+from palit.triage_expansion import untriaged_genes
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -82,20 +83,42 @@ def test_run_genes_have_recent_evidence_from_a_relevant_paper(db_path: Path) -> 
         assert run_genes(conn) == [1]
 
 
-def test_expansion_covers_the_run_genes_without_a_tournament(db_path: Path) -> None:
-    assert genes_to_expand(db_path) == [1]
+def test_expansion_covers_the_pursued_genes_without_a_tournament(db_path: Path) -> None:
+    assert genes_to_expand(db_path, [1]) == [1]
     with sqlite3.connect(db_path) as conn:
         conn.execute("INSERT INTO tournament_results (hgnc_id) VALUES (1)")
-    assert genes_to_expand(db_path) == []
+    assert genes_to_expand(db_path, [1]) == []
 
 
-def test_referenced_sources_are_attributed_to_run_genes_only(db_path: Path) -> None:
-    """Gene 1's sources count from both of its papers; genes 2 and 3 are not run genes."""
+def test_every_run_gene_needs_a_triage(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        assert untriaged_genes(conn) == [1]
+        conn.execute("INSERT INTO expansion_triage (hgnc_id, associations_json) VALUES (1, '[]')")
+        assert untriaged_genes(conn) == []
+
+
+def _triage(db_path: Path, hgnc_id: int, pursued: bool) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO expansion_triage (hgnc_id, associations_json) VALUES (?, ?)",
+            (hgnc_id, json.dumps([{"pursued": pursued}])),
+        )
+
+
+def test_referenced_sources_are_attributed_to_pursued_genes_only(db_path: Path) -> None:
+    """Gene 1's sources count from both of its papers once the triage pursues it; genes 2
+    and 3 are not run genes."""
+    _triage(db_path, 1, pursued=True)
     sources = extract_referenced_sources_from_db(db_path)
     assert sorted((s.hgnc_id, s.citing_doi) for s in sources) == [
         (1, "10.1/not-relevant"),
         (1, "10.1/relevant"),
     ]
+
+
+def test_a_gene_the_triage_stops_has_no_referenced_sources(db_path: Path) -> None:
+    _triage(db_path, 1, pursued=False)
+    assert extract_referenced_sources_from_db(db_path) == []
 
 
 def test_reduction_counts_only_relevant_papers(db_path: Path) -> None:

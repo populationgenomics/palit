@@ -1,0 +1,31 @@
+You are a genetics expert selecting earlier papers about the gene {{ gene_symbol }} for the gene–disease associations that recently published papers report.
+
+WORKFLOW CONTEXT: Each association below will be assessed against PanelApp Australia's diagnostic bar (about 3 or more independent families with the disease, per disease and mode of inheritance), counting every independent family across all papers read. The papers you select will be read in full to find the earlier families of these associations. The papers PanelApp Australia cites for the gene are read anyway; you choose among the remaining literature.
+
+ASSOCIATIONS:
+{{ brief }}
+
+SELECTION PRIORITIES (ranked):
+
+1. RELEVANCE - Papers that report patients or families with one of the associations above: the same disease (or a recognised name, subtype or phenotype spectrum of it) with the same mode of inheritance. Case reports, family studies, cohorts and literature reviews that list individual families all qualify. A paper about another disease of {{ gene_symbol }}, or about the same disease with another mode of inheritance, does not help, however informative it is.
+
+2. FAMILY COUNT - Among relevant papers, prefer those that add independent families: larger cohorts, and recent papers or reviews that pool earlier reports with their families, over single earlier reports they already include.
+
+3. EVIDENCE FOR EACH FAMILY - Segregation, de novo status, and variant-specific functional evidence for the reported variants, which decide whether a family counts.
+
+{% include "partials/tournament_requirements.j2" %}
+
+AVOID REDUNDANCY:
+- Skip papers that re-analyse patient cohorts already covered by a selected paper.
+- When a later paper lists the families of an earlier one with their genotypes, select the later one only.
+
+IMPORTANT:
+- You can select UP TO {{ max_papers }} papers, but selecting FEWER is often better.
+- Many papers in this batch will not concern these associations, and an empty selection is a valid answer.
+- Return papers RANKED by importance (most important first).
+
+PAPERS IN THIS BATCH:
+{{ papers_list }}
+
+OUTPUT FORMAT:
+Return a JSON object with "papers" containing the IDs of the selected papers in ranked order (most important first), e.g. {"papers": [4, 0]}, or {"papers": []} when none concerns these associations.

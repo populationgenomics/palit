@@ -2,12 +2,15 @@
 """Add the publications PanelApp cites to a database: seeding a run's genes, and
 taking every citation of a snapshot into the baseline.
 
-Seeding gives each of the run's genes every publication PanelApp Australia cites
-for it, on any panel: in its gene and repeat-expansion entries and in its gene
-entries' reviews. Tournament selection optimises for a minimal, non-redundant
-evidence set, so it routinely discards papers a PanelApp curator has already
-cited, and the relevance screen may reject them; a run that never reads them
-cannot say what is new. Seeding is unconditional:
+Seeding gives each gene it covers every publication PanelApp Australia cites for
+it, on any panel: in its gene and repeat-expansion entries and in its gene
+entries' reviews. It covers the run's genes in a panel-scoped run, and in a
+monthly run the genes with an association the expansion triage pursues, for which
+the earlier families decide whether the new claims are a finding. Tournament
+selection optimises for a minimal, non-redundant evidence set, so it routinely
+discards papers a PanelApp curator has already cited, and the relevance screen may
+reject them; a run that never reads them cannot say what is new. For a covered
+gene, seeding is unconditional:
 
 - A cited paper the run does not hold is copied from the baseline when the
   baseline holds it, and fetched from PubMed or CrossRef otherwise. It is stored
@@ -43,7 +46,6 @@ from palit.hgnc import HgncResolver
 from palit.panelapp_client import PanelPublications, clean_panel_publications
 from palit.papers import Paper, deserialize_source_metadata
 from palit.progress import LoggingProgress as Progress
-from palit.run_corpus import run_genes
 
 logger = logging.getLogger(__name__)
 
@@ -460,9 +462,12 @@ def seed_panelapp_publications(
     panels: dict[int, dict[str, Any]],
     baseline_path: Path,
     hgnc_resolver: HgncResolver,
+    hgnc_ids: list[int],
 ) -> SeedStats:
-    """Add every publication *panels* cite for this run's genes, on any panel, to the
-    run's corpus, and record which genes cite each held paper.
+    """Add every publication *panels* cite for the genes *hgnc_ids*, on any panel, to the
+    run's corpus, and record which genes cite each held paper. These are the run's
+    genes in a panel-scoped run, and the genes the expansion triage pursues in a
+    monthly run (see :mod:`palit.expand_literature`).
 
     A paper the run lacks is copied from *baseline_path* when the baseline holds it
     and fetched otherwise. Added papers are expansion papers scheduled for download;
@@ -471,9 +476,7 @@ def seed_panelapp_publications(
     those copied from the baseline are linked and scheduled even when a fetch fails. Safe to rerun: held
     papers are not added again and the links are replaced.
     """
-    with sqlite3.connect(db_path) as conn:
-        hgnc_ids = run_genes(conn)
-    logger.info(f"Seeding PanelApp publications for {len(hgnc_ids)} run gene(s)")
+    logger.info(f"Seeding PanelApp publications for {len(hgnc_ids)} gene(s)")
 
     cited = gene_citations(panels, hgnc_ids)
     held = held_identifiers(db_path)
@@ -493,7 +496,7 @@ def seed_panelapp_publications(
     )
     logger.info(
         f"PanelApp cites {missing.publications_cited} publication(s) for {len(cited)} of "
-        f"the run's genes: {missing.already_present} already held, "
+        f"the seeded genes: {missing.already_present} already held, "
         f"{len(in_baseline_papers)} paper(s) to copy from the baseline, "
         f"{to_fetch} identifier(s) to fetch"
     )
@@ -539,7 +542,7 @@ def seed_panelapp_publications(
         f"{stats.copied_from_baseline} paper(s) copied from the "
         f"baseline, {stats.fetched} fetched, {stats.already_held} resolved to a paper already "
         f"held ({stats.pmids_linked} given their PMID), {stats.unresolved} unresolved; "
-        f"{links.papers} held paper(s) cited for the run's genes ({links.links} link(s)), "
+        f"{links.papers} held paper(s) cited for the seeded genes ({links.links} link(s)), "
         f"{links.scheduled} newly scheduled for download"
     )
 

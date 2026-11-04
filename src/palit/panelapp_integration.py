@@ -634,6 +634,21 @@ def calculate_gene_rating(associations: list[dict[str, Any]]) -> int:
 RATING_CONFIDENCE: dict[str, int] = {"RED": 1, "AMBER": 2, "GREEN": 3}
 
 
+def upgrade_baseline(existing_rating: str | None, current_rating: int, scoped: bool) -> int:
+    """The rating an existing association's corpus rating must exceed to be an upgrade.
+
+    *current_rating* is the gene's highest rating on the target panels. In a
+    panel-scoped run (*scoped*), that is its rating on the scope panel, and the
+    baseline: a panel named after a clinical feature rates how reliably the gene
+    causes the feature, not each disease. Otherwise the baseline is PanelApp's
+    rating of the association (*existing_rating*, the aggregation's
+    ``panelapp_relation.existing_rating``), or *current_rating* when that is unknown.
+    """
+    if scoped or existing_rating is None:
+        return current_rating
+    return RATING_CONFIDENCE[existing_rating]
+
+
 def panelapp_confidence_to_color(confidence: int | None) -> str:
     """Convert PanelApp confidence level to color name.
 

@@ -30,6 +30,7 @@ from palit.panelapp_publications import (
     snapshot_publications,
 )
 from palit.papers import CrossrefMetadata, Paper, PubmedMetadata
+from palit.run_corpus import run_genes
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -475,8 +476,10 @@ def _seed(
     hgnc_resolver: HgncResolver,
     gene_1_cites_rejected: bool = True,
 ) -> SeedStats:
+    with sqlite3.connect(db_path) as conn:
+        hgnc_ids = run_genes(conn)
     return seed_panelapp_publications(
-        db_path, _seed_panels(gene_1_cites_rejected), baseline_path, hgnc_resolver
+        db_path, _seed_panels(gene_1_cites_rejected), baseline_path, hgnc_resolver, hgnc_ids
     )
 
 

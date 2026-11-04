@@ -1,6 +1,6 @@
 You are a genetics expert curating the most informative papers to comprehensively assess a gene's role in rare genetic diseases. Your goal is to select a MINIMAL but COMPREHENSIVE set of papers that together provide the best overall understanding of this gene for diagnostic assessment.
 
-GENE: {gene_symbol}
+GENE: {{ gene_symbol }}
 
 WORKFLOW CONTEXT: These papers will be individually analyzed to extract evidence (families, phenotypes, variants, functional data), then aggregated to assess whether this gene meets diagnostic criteria. Select papers that provide the most useful, complementary evidence when combined.
 
@@ -39,21 +39,7 @@ SELECTION PRIORITIES (ranked):
    - More comprehensive phenotyping and mechanistic understanding
    - Use publication dates (<date> field) to identify original discoveries vs. comprehensive summaries
 
-CRITICAL REQUIREMENTS - ALL selected papers must:
-- Focus on variants causing rare genetic diseases — including both germline variants and
-  post-zygotic mosaic/somatic variants causing non-malignant rare disease phenotypes
-- Contain human clinical genetic data with detailed patient phenotypes
-- NOT be about cancer-associated somatic mutations, tumor drivers, or acquired
-  hematological malignancy mutations
-- NOT be about pure cancer predisposition where cancer risk is the PRIMARY manifestation (e.g., BRCA1/BRCA2 breast cancer, Lynch syndrome, Li-Fraumeni, FAP)
-  * Exception: Multi-system disorders where cancer is ONE symptom among many (e.g., Beckwith-Wiedemann, Costello syndrome)
-- NOT be about CNVs (deletions, duplications, microdeletions, microduplications, chromosomal rearrangements)
-- NOT be about gene fusions or fusion transcripts (a chimeric gene formed by joining two genes
-  via translocation or other structural rearrangement; e.g., EWSR1-FLI1, EWSR1-NFATC1),
-  regardless of somatic or germline status
-- NOT be primarily about digenic or oligogenic inheritance (disease requiring variants in
-  multiple different genes)
-- NOT be primarily about treatment/management/therapy
+{% include "partials/tournament_requirements.j2" %}
 
 AVOID REDUNDANCY:
 - For the same disease entity, if multiple papers provide similar evidence, select the most COMPREHENSIVE (often the most recent)
@@ -63,13 +49,13 @@ AVOID REDUNDANCY:
 - Use publication dates to identify first reports vs. later comprehensive summaries (prefer summaries for efficiency)
 
 IMPORTANT:
-- You can select UP TO {max_papers} papers, but selecting FEWER is often better
+- You can select UP TO {{ max_papers }} papers, but selecting FEWER is often better
 - Many papers in this batch may not be worth selecting - that's expected
 - Return papers RANKED by importance (most critical first)
 - Think: "Which papers together give the broadest evidence base across distinct phenotypes with minimal redundancy?"
 
 PAPERS IN THIS BATCH:
-{papers_list}
+{{ papers_list }}
 
 OUTPUT FORMAT:
 Return a JSON object with "papers" containing the IDs of selected papers in ranked order (most important first).
@@ -82,9 +68,9 @@ Example input:
 <paper id=3><date>2023-02-01</date><title>Novel NIN variants expand phenotype to include renal anomalies</title><abstract>Three families...</abstract></paper>
 
 Example output (selecting only the 2 relevant papers from the 4 presented):
-{{
+{
   "papers": [0, 3]
-}}
+}
 
 Rationale: Paper 0 establishes NIN-Seckel with 8 families. Paper 3 adds a new phenotype (renal). Paper 1 is basic biology (excluded). Paper 2 is treatment-focused (excluded).
 

@@ -1,0 +1,9 @@
+    - existing_rating: for "existing", the rating PanelApp Australia gives THIS association now, judged from the panel entries and reviews:
+      (i) An entry ISOLATES this association when it lists this disease and none of the gene's other diseases. Its rating is this association's rating on that panel; prefer it over the rating of an entry that lumps several diseases.
+      (ii) An entry on a panel named after a clinical feature of the disease (e.g., genetic epilepsy, intellectual disability, brain calcification) rates how reliably the gene causes that feature. It does not isolate the disease, and its rating does not lower this association's.
+      (iii) An entry's rating outweighs a rating stated in a review's text. When they disagree, take the entry's rating and name both in basis.
+      (iv) A class from another curation body quoted in a review (e.g., "ClinGen MODERATE") is context for the reviewer's decision, not PanelApp Australia's rating.
+      (v) When entries that isolate this association on different panels disagree, take the higher rating and name both in basis.
+      (vi) A review's date is when its curator first wrote it, and a later edit to its rating keeps that date. Order statements in time by their comments' dates.
+      Null when no entry or review isolates this association's rating (for example, it appears only in the phenotype lists of entries that also list other diseases, and no review rates it separately), and always for "new_disease" and "new_moi".
+    - basis: a short phrase naming the panel entry or review the judgement rests on, with its rating or comment date (e.g., "Hypertrophic cardiomyopathy entry lists only this disease, GREEN", "Mendeliome review comment 2026-02-06 calls Klippel-Feil syndrome 1 RED; the Skeletal dysplasia entry lists it on GREEN", "no PanelApp Australia entry or review with a cardiac phenotype").

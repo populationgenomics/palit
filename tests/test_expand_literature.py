@@ -39,13 +39,15 @@ def test_force_all_clears_the_links_before_deleting_expansion_papers(
             """
         )
 
-    seen: list[tuple[list[str], int]] = []
+    seen: list[tuple[list[str], int, list[int]]] = []
 
-    def seed(db: Path, panels: dict[int, dict[str, Any]], baseline: Path, _: Any) -> None:
+    def seed(
+        db: Path, panels: dict[int, dict[str, Any]], baseline: Path, _: Any, hgnc_ids: list[int]
+    ) -> None:
         with sqlite3.connect(db) as conn:
             dois = [row[0] for row in conn.execute("SELECT doi FROM papers ORDER BY doi")]
             (links,) = conn.execute("SELECT COUNT(*) FROM panelapp_citations").fetchone()
-        seen.append((dois, links))
+        seen.append((dois, links, hgnc_ids))
 
     monkeypatch.setattr(expand_literature, "seed_panelapp_publications", seed)
     monkeypatch.setattr(expand_literature, "load_panels_with_reviews", lambda *_: {})
@@ -68,8 +70,8 @@ def test_force_all_clears_the_links_before_deleting_expansion_papers(
     )
 
     assert result.exit_code == 0, result.output
-    # The run has no genes, so seeding is the last step and no tournament runs.
-    assert seen == [(["10.1/cited"], 0)]
+    # The run has no genes, so none is triaged or seeded and no tournament runs.
+    assert seen == [(["10.1/cited"], 0, [])]
 
 
 def _run_with_a_gene_to_expand(tmp_path: Path) -> tuple[Path, Path]:
@@ -95,7 +97,9 @@ def _refuse_client() -> None:
     raise AssertionError("a panel-scoped expansion should run no tournament")
 
 
-def _refuse_seed(db: Path, panels: dict[int, dict[str, Any]], baseline: Path, _: Any) -> None:
+def _refuse_seed(
+    db: Path, panels: dict[int, dict[str, Any]], baseline: Path, _: Any, hgnc_ids: list[int]
+) -> None:
     raise AssertionError("expand-literature should have stopped before seeding")
 
 
@@ -118,10 +122,12 @@ def test_scoped_expansion_seeds_from_every_panel_and_the_baseline_without_a_tour
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path, baseline_path = _run_with_a_gene_to_expand(tmp_path)
-    calls: list[tuple[Path, list[int], Path]] = []
+    calls: list[tuple[Path, list[int], Path, list[int]]] = []
 
-    def seed(db: Path, panels: dict[int, dict[str, Any]], baseline: Path, _: Any) -> None:
-        calls.append((db, sorted(panels), baseline))
+    def seed(
+        db: Path, panels: dict[int, dict[str, Any]], baseline: Path, _: Any, hgnc_ids: list[int]
+    ) -> None:
+        calls.append((db, sorted(panels), baseline, hgnc_ids))
 
     monkeypatch.setattr(expand_literature, "seed_panelapp_publications", seed)
     monkeypatch.setattr(expand_literature, "load_panels_with_reviews", lambda *_: {1: {}, 2: {}})
@@ -133,9 +139,10 @@ def test_scoped_expansion_seeds_from_every_panel_and_the_baseline_without_a_tour
     result = _expand(db_path, baseline_path, "--scope-panel-id", "2")
 
     assert result.exit_code == 0, result.output
-    assert calls == [(db_path, [1, 2], baseline_path)]
+    # A panel-scoped run seeds every run gene, without a triage.
+    assert calls == [(db_path, [1, 2], baseline_path, [1])]
     # Gene 1 is still without a tournament result, which a monthly run would run.
-    assert expand_literature.genes_to_expand(db_path) == [1]
+    assert expand_literature.genes_to_expand(db_path, [1]) == [1]
 
 
 def test_scoped_expansion_needs_the_panel_in_the_snapshot(
@@ -185,3 +192,46 @@ def test_scoped_expansion_needs_the_baseline(
 
     assert result.exit_code == 1
     assert "Baseline database not found" in caplog.text
+
+
+def test_monthly_expansion_needs_every_run_gene_triaged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    db_path, baseline_path = _run_with_a_gene_to_expand(tmp_path)
+    monkeypatch.setattr(expand_literature, "seed_panelapp_publications", _refuse_seed)
+    monkeypatch.setattr(expand_literature, "load_panels_with_reviews", lambda *_: {})
+    monkeypatch.setattr(expand_literature.HgncResolver, "from_file", lambda: None)
+
+    result = _expand(db_path, baseline_path, "--cutoff-date", "2026-10-01")
+
+    assert result.exit_code == 1
+    assert "1 run gene(s) have no expansion triage, e.g. HGNC:1" in caplog.text
+
+
+def test_the_brief_names_each_pursued_association_and_its_curation() -> None:
+    def association(status: str, rating: str | None, description: str) -> dict[str, Any]:
+        return {
+            "description": description,
+            "inheritance_mode": "Biallelic",
+            "panelapp_relation": {"status": status, "existing_rating": rating, "basis": "b"},
+            "evidence_brief": f"earlier {description}",
+        }
+
+    brief = expand_literature.association_brief(
+        [
+            association("existing", "AMBER", "myopathy"),
+            association("existing", None, "ataxia"),
+            association("new_disease", None, "cardiomyopathy"),
+            association("new_moi", None, "neuropathy"),
+        ]
+    )
+    assert brief.splitlines() == [
+        "- myopathy (Biallelic); PanelApp Australia: curated, rated AMBER. "
+        "Earlier literature that settles it: earlier myopathy",
+        "- ataxia (Biallelic); PanelApp Australia: curated, without a rating of its own. "
+        "Earlier literature that settles it: earlier ataxia",
+        "- cardiomyopathy (Biallelic); PanelApp Australia: not curated for this gene. "
+        "Earlier literature that settles it: earlier cardiomyopathy",
+        "- neuropathy (Biallelic); PanelApp Australia: curated only with another mode of "
+        "inheritance. Earlier literature that settles it: earlier neuropathy",
+    ]

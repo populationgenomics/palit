@@ -70,11 +70,24 @@ CREATE TABLE tournament_results (
     tournament_raw_responses_json JSON  -- Each round's answering messages as the API returned them, thinking included
 );
 
--- The papers PanelApp Australia cites for each of the run's genes, on any panel, in
+-- Expansion triage (see triage_expansion.py): each run gene's new claims, grouped
+-- into associations and related to PanelApp Australia's curation, before expansion.
+-- One row per triaged gene. A gene whose claims were all filtered (preprints below
+-- the family gate) has an empty array and no raw message.
+CREATE TABLE expansion_triage (
+    hgnc_id INTEGER PRIMARY KEY,
+    -- [{description, inheritance_mode, dois, panelapp_relation, evidence_brief, pursued}];
+    -- pursued: expand-literature reads the gene's wider literature for it
+    associations_json JSON NOT NULL,
+    triage_raw JSON  -- The answering Claude message, thinking included; NULL when nothing was sent
+);
+
+-- The papers PanelApp Australia cites for each seeded gene, on any panel, in
 -- gene and repeat-expansion entries and in gene reviews, from the run's snapshot.
 -- One row per gene and held paper; a citation the run holds no paper for has none.
 -- Seeding (see panelapp_publications.py) replaces the table each time it runs. A
--- cited paper of a run gene is in the corpus whatever its relevance (run_corpus.py).
+-- cited paper of a seeded run gene is in the corpus whatever its relevance
+-- (run_corpus.py). Monthly runs seed the genes the expansion triage pursues.
 CREATE TABLE panelapp_citations (
     hgnc_id INTEGER NOT NULL,
     paper_doi TEXT NOT NULL REFERENCES papers(doi),

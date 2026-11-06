@@ -951,15 +951,19 @@ def group_genes(
 
 
 def load_contributing_papers(
-    cursor: sqlite3.Cursor, hgnc_id: int, filtered_doi_reasons: dict[str, str]
+    cursor: sqlite3.Cursor,
+    hgnc_id: int,
+    filtered_doi_reasons: dict[str, str],
+    cited_dois: frozenset[str],
 ) -> list[DetailedPaper]:
     """Papers with an extraction for the gene, initial and expansion alike, newest first.
 
     One row per paper, with the symbol from the extraction's gene mention (a
     relevance-stage mention may carry an older symbol of the same gene).
+    *cited_dois* are the papers PanelApp cites for one of the run's genes.
     """
     cursor.execute(
-        f"""
+        """
         SELECT
             p.doi,
             p.title,
@@ -972,7 +976,6 @@ def load_contributing_papers(
             p.pmid,
             p.relevance_assessment_json,
             p.evidence_extraction_json,
-            {CITED_PAPER} AS cited_for_run_gene,
             gm.paper_gene_symbol
         FROM papers p
         JOIN gene_mentions gm ON p.doi = gm.paper_doi
@@ -1012,7 +1015,7 @@ def load_contributing_papers(
                 relevance_assessment=relevance_assessment,
                 gene_evaluations=gene_evaluations,
                 quote_refs=load_quote_refs(cursor, doi),
-                cited_for_run_gene=bool(paper_row["cited_for_run_gene"]),
+                cited_for_run_gene=doi in cited_dois,
                 preprint=is_preprint(paper_row["journal"], paper_row["pmid"]),
                 pmid=paper_row["pmid"],
                 paper_gene_symbol=paper_row["paper_gene_symbol"],
@@ -1022,65 +1025,65 @@ def load_contributing_papers(
     return contributing_papers
 
 
-def load_refused_papers(cursor: sqlite3.Cursor, hgnc_id: int) -> list[RefusedPaper]:
-    """The gene's papers without an extraction that extract-evidence refused for good.
+def load_refused_papers(cursor: sqlite3.Cursor) -> dict[int, list[RefusedPaper]]:
+    """Each aggregated gene's papers without an extraction that extract-evidence refused
+    for good, newest first. Genes without such papers are left out.
 
     A paper is refused for good once FALLBACK_MODEL refused it; a paper only
     MODEL refused is still due its fallback request.
 
-    A paper belongs to the gene when the relevance screen named the gene for it,
+    A paper belongs to a gene when the relevance screen named the gene for it,
     when the gene's tournament selected it, when PanelApp cites it for the gene
     (``panelapp_citations``), or when it was added for the gene as a referenced
     paper (``source_details``).
+
+    The query starts from the few refused papers and pairs each with every aggregated
+    gene: nearly every paper of a run lacks an extraction, and the CROSS JOINs keep
+    SQLite from scanning those.
     """
     cursor.execute(
         """
-        SELECT p.doi, p.pmid, p.title,
+        SELECT g.hgnc_id, p.doi, p.pmid, p.title,
                (SELECT r2.refusal_category FROM llm_requests r2
-                WHERE r2.stage = ? AND r2.subject = p.doi AND r2.status = 'refused'
-                  AND r2.model = ?
+                WHERE r2.stage = :stage AND r2.subject = p.doi AND r2.status = 'refused'
+                  AND r2.model = :model
                 ORDER BY r2.completed_at DESC LIMIT 1) AS category
-        FROM papers p
+        FROM (
+            SELECT DISTINCT subject FROM llm_requests
+            WHERE stage = :stage AND status = 'refused' AND model = :model
+        ) refused
+        CROSS JOIN papers p ON p.doi = refused.subject
+        CROSS JOIN gene_aggregations g
         WHERE p.evidence_extraction_json IS NULL
-          AND EXISTS (
-              SELECT 1 FROM llm_requests r
-              WHERE r.stage = ? AND r.subject = p.doi AND r.status = 'refused' AND r.model = ?
-          )
           AND (
               EXISTS (
                   SELECT 1 FROM gene_mentions gm
-                  WHERE gm.paper_doi = p.doi AND gm.hgnc_id = ?
+                  WHERE gm.paper_doi = p.doi AND gm.hgnc_id = g.hgnc_id
                     AND gm.source = 'relevance_assessment'
               )
               OR EXISTS (
                   SELECT 1 FROM tournament_results t, json_each(t.selected_dois_json) j
-                  WHERE t.hgnc_id = ? AND j.value = p.doi
+                  WHERE t.hgnc_id = g.hgnc_id AND j.value = p.doi
               )
               OR EXISTS (
                   SELECT 1 FROM panelapp_citations pc
-                  WHERE pc.paper_doi = p.doi AND pc.hgnc_id = ?
+                  WHERE pc.paper_doi = p.doi AND pc.hgnc_id = g.hgnc_id
               )
-              OR p.source_details = CAST(? AS TEXT)
-              OR p.source_details LIKE 'referenced:' || ? || ':%'
+              OR p.source_details = CAST(g.hgnc_id AS TEXT)
+              OR p.source_details LIKE 'referenced:' || g.hgnc_id || ':%'
           )
-        ORDER BY p.source_date DESC, p.doi
+        ORDER BY g.hgnc_id, p.source_date DESC, p.doi
         """,
-        (
-            EXTRACTION_STAGE,
-            FALLBACK_MODEL,
-            EXTRACTION_STAGE,
-            FALLBACK_MODEL,
-            hgnc_id,
-            hgnc_id,
-            hgnc_id,
-            hgnc_id,
-            hgnc_id,
-        ),
+        {"stage": EXTRACTION_STAGE, "model": FALLBACK_MODEL},
     )
-    return [
-        RefusedPaper(doi=row["doi"], pmid=row["pmid"], title=row["title"], category=row["category"])
-        for row in cursor.fetchall()
-    ]
+    by_gene: dict[int, list[RefusedPaper]] = {}
+    for row in cursor.fetchall():
+        by_gene.setdefault(row["hgnc_id"], []).append(
+            RefusedPaper(
+                doi=row["doi"], pmid=row["pmid"], title=row["title"], category=row["category"]
+            )
+        )
+    return by_gene
 
 
 def load_refused_genes(cursor: sqlite3.Cursor, hgnc_resolver: HgncResolver) -> list[RefusedGene]:
@@ -1355,13 +1358,17 @@ def load_gene(
     all_panels_data: AllPanelsData,
     target_entries: tuple[PanelEntry, ...],
     initial_dois: frozenset[str],
+    cited_dois: frozenset[str],
+    refused_papers: list[RefusedPaper],
     scoped: bool,
 ) -> GeneAssessment:
     """One gene's aggregation row with its associations, papers and panel context.
 
     *target_entries* are the gene's entries on the target panels. *initial_dois*
-    are the run's initial papers (see :func:`load_associations`). *scoped* is
-    true in a panel-scoped run, whose one target panel is the scope panel.
+    are the run's initial papers (see :func:`load_associations`), *cited_dois* the
+    papers PanelApp cites for one of the run's genes, *refused_papers* the gene's
+    papers refused for good (see :func:`load_refused_papers`). *scoped* is true in a
+    panel-scoped run, whose one target panel is the scope panel.
     """
     hgnc_id: int = row["hgnc_id"]
     paper_id_to_doi: dict[str, str] = json.loads(row["paper_id_mapping"])
@@ -1369,7 +1376,9 @@ def load_gene(
         fp["doi"]: fp["reason"] for fp in json.loads(row["filtered_papers_json"] or "[]")
     }
 
-    contributing_papers = load_contributing_papers(cursor, hgnc_id, filtered_doi_reasons)
+    contributing_papers = load_contributing_papers(
+        cursor, hgnc_id, filtered_doi_reasons, cited_dois
+    )
     pmid_by_doi = {p.doi: p.pmid for p in contributing_papers}
 
     # Replace AuthorYear paper IDs with PMID display format
@@ -1443,7 +1452,7 @@ def load_gene(
         unassociated_variants=[v for v in gene_variants if v.variant_id not in associated_ids],
         prefill=prefill,
         target_entries=target_entries,
-        refused_papers=load_refused_papers(cursor, hgnc_id),
+        refused_papers=refused_papers,
     )
 
 
@@ -1487,6 +1496,10 @@ def build_gene_assessment_results(
     initial_dois = frozenset(
         r[0] for r in cursor.execute(f"SELECT p.doi FROM papers p WHERE {INITIAL_PAPER}")
     )
+    cited_dois = frozenset(
+        r[0] for r in cursor.execute(f"SELECT p.doi FROM papers p WHERE {CITED_PAPER}")
+    )
+    refused_papers = load_refused_papers(cursor)
     novel_genes: list[GeneAssessment] = []
     known_genes: list[GeneAssessment] = []
     for row in rows:
@@ -1498,6 +1511,8 @@ def build_gene_assessment_results(
             all_panels_data,
             target_entries.get(row["hgnc_id"], ()),
             initial_dois,
+            cited_dois,
+            refused_papers.get(row["hgnc_id"], []),
             scoped=scope_panel_id is not None,
         )
         (novel_genes if gene.is_novel else known_genes).append(gene)

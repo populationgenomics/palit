@@ -16,7 +16,6 @@ dependencies = [
     "jsonschema",
     "lxml",
     "markdown>=3.10.2",
-    "metapub",
     "nh3>=0.3.5",
     "plotly",
     "pronto",

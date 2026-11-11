@@ -15,7 +15,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.models.bedrock import BedrockConverseModel, BedrockModelSettings
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
-from pydantic_ai.output import NativeOutput, StructuredDict, ToolOutput
+from pydantic_ai.output import NativeOutput, StructuredDict
 from pydantic_ai.providers.bedrock import BedrockModelProfile, BedrockProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -78,10 +78,10 @@ class PydanticAIProcessor:
             output_schema = StructuredDict(schema)
 
             if self._is_bedrock:
-                output_type: Any = ToolOutput(output_schema)
-                instructions: str | None = (
-                    "Always return your response by calling the final_result tool."
-                )
+                # Native JSON-schema output rather than an output tool: Bedrock
+                # cannot force a tool call while thinking is on, and
+                # pydantic-ai 2.x refuses to send that combination.
+                output_type: Any = NativeOutput(output_schema)
                 model_settings: BedrockModelSettings | OpenAIChatModelSettings = (
                     BedrockModelSettings(
                         max_tokens=self.max_tokens,
@@ -94,7 +94,6 @@ class PydanticAIProcessor:
                 )
             else:
                 output_type = NativeOutput(output_schema, strict=True)
-                instructions = None
                 model_settings = OpenAIChatModelSettings(
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
@@ -104,7 +103,6 @@ class PydanticAIProcessor:
                 self._model,
                 output_type=output_type,
                 retries=0,
-                instructions=instructions,
                 model_settings=model_settings,
             )
 

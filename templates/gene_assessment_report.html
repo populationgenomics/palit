@@ -155,7 +155,8 @@
     <a class="mondo-term" href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>
     {% if m.obsolete %}<span class="mondo-note" data-title="The GenCC term is obsolete in the loaded MONDO release">obsolete in MONDO{% if m.replaced_by %}, replaced by {{ m.replaced_by | map(attribute='mondo_id') | join(', ') }}{% else %}, no replacement named{% endif %}</span>{% endif %}
     {% else %}
-    <span class="mondo-term"{% if m.match == 'exact' %} data-title="{{ m.rationale }}"{% endif %}>{{ m.label }} (<a href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>)</span>
+    {# A term whose label is the association's name, as for most GenCC terms, shows its ID alone. #}
+    <span class="mondo-term"{% if m.match == 'exact' %} data-title="{{ m.rationale }}"{% endif %}>{% if m.label | lower == assoc.disease_label | lower %}<a href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>{% else %}{{ m.label }} (<a href="https://monarchinitiative.org/{{ m.mondo_id }}" target="_blank">{{ m.mondo_id }}</a>){% endif %}</span>
     {% if m.match == 'broader' %}<span class="mondo-note" data-title="MONDO has no term for this gene's form of the disease; this is the most specific term that includes it. {{ m.rationale }}">broader term</span>{% endif %}
     {% endif %}
     {% endmacro %}

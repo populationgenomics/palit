@@ -216,7 +216,11 @@ MondoMatch = Literal["gencc", "exact", "broader"]
 
 @dataclass(frozen=True)
 class MondoTerm:
-    """The MONDO term stored on an association and how it was chosen."""
+    """The MONDO term stored on an association and how it was chosen.
+
+    ``gencc`` is the GenCC term assess-genes named the association by, before map-mondo
+    has checked it; map-mondo answers ``exact`` or ``broader`` for every association.
+    """
 
     mondo_id: str
     label: str
@@ -230,6 +234,9 @@ class MondoTerm:
 class PrefillAssociation:
     """What the PanelApp prefill takes from one of the gene's associations."""
 
+    # The association's disease name: the title of the GenCC term assess-genes named it
+    # by, else its proposed disease name
+    name: str
     assessment: dict[str, Any]  # the stored association JSON, paper IDs in display form
     mondo: MondoTerm | None  # None until map-mondo has run for this association
     finding: Finding | None  # None for an association without a finding
@@ -267,7 +274,7 @@ class PrefillData:
     # them, then the associations' papers, by PMID where available and DOI otherwise
     publications: str
     # Semicolon-separated: a review's entry phenotypes as PanelApp lists them (free
-    # text), then the associations' "label, MONDO:id" entries or bare disease names
+    # text), then the associations' entries as prefill_phenotype writes them
     phenotypes: str
     comments: str  # what the described associations add, see prefill_comments
 
@@ -379,32 +386,50 @@ class PrefillDisease:
 
     name: str
     mondo_id: str | None  # None for an association without a MONDO term
+    # "GENE-related" for a broader MONDO term, which is not specific to the gene; else None
+    qualifier: str | None
+
+    @property
+    def heading(self) -> str:
+        """The disease in a comment heading: ``name``, or ``name, GENE-related``."""
+        return self.name if self.qualifier is None else f"{self.name}, {self.qualifier}"
+
+    @property
+    def phenotype(self) -> str:
+        """The disease in the phenotype field: the name, its MONDO ID and the qualifier,
+        each where the disease has one."""
+        parts = [self.name, self.mondo_id, self.qualifier]
+        return ", ".join(part for part in parts if part is not None)
 
 
-def prefill_disease(association: PrefillAssociation) -> PrefillDisease:
+def prefill_disease(association: PrefillAssociation, gene_symbol: str) -> PrefillDisease:
     """The association's disease as the prefill names it.
 
-    A reused GenCC term and an exact match are named by their MONDO label, a broader
-    match by the proposed disease name. A reused GenCC term that MONDO obsoleted with
+    An exact match is named by its MONDO label, and so is a GenCC term that map-mondo
+    has not checked yet. A broader match is named by its MONDO label too, qualified
+    with ``GENE-related``: the term is not specific to the gene, and PanelApp's
+    curators write such a term with the gene after it. A name that starts with the
+    gene would read as a gene-specific MONDO term. An association without a MONDO
+    term is named by its own name. An unchecked GenCC term that MONDO obsoleted with
     exactly one replacement gives the replacement instead; with no or several
-    replacements it stays as submitted. An association without a MONDO term is named
-    by its proposed disease name.
+    replacements it stays as submitted.
     """
     mondo = association.mondo
-    if mondo is None or mondo.match == "broader":
-        proposed_name: str = association.assessment["proposed_disease_name"]
-        return PrefillDisease(proposed_name, None if mondo is None else mondo.mondo_id)
+    if mondo is None:
+        return PrefillDisease(association.name, None, None)
+    if mondo.match == "broader":
+        return PrefillDisease(mondo.label, mondo.mondo_id, f"{gene_symbol}-related")
     if mondo.obsolete and len(mondo.replaced_by) == 1:
         replacement = mondo.replaced_by[0]
-        return PrefillDisease(replacement.label, replacement.mondo_id)
-    return PrefillDisease(mondo.label, mondo.mondo_id)
+        return PrefillDisease(replacement.label, replacement.mondo_id, None)
+    return PrefillDisease(mondo.label, mondo.mondo_id, None)
 
 
-def prefill_phenotype(association: PrefillAssociation) -> str:
-    """The association's entry in the prefill's phenotype field: ``name, MONDO:id``, or the
-    name alone without a MONDO term (see prefill_disease)."""
-    disease = prefill_disease(association)
-    return disease.name if disease.mondo_id is None else f"{disease.name}, {disease.mondo_id}"
+def prefill_phenotype(association: PrefillAssociation, gene_symbol: str) -> str:
+    """The association's entry in the prefill's phenotype field: ``label, MONDO:id``, with
+    ``, GENE-related`` after a broader term, or the association's name alone without a
+    MONDO term (see prefill_disease)."""
+    return prefill_disease(association, gene_symbol).phenotype
 
 
 # A MONDO ID in a PanelApp phenotype string
@@ -427,16 +452,19 @@ HEADING_MOI = {
 PREFILL_RATINGS = {0: "Red", 1: "Red", 2: "Amber", 3: "Green"}
 
 
-def prefill_comment_heading(association: PrefillAssociation, form_type: FormType) -> str:
+def prefill_comment_heading(
+    association: PrefillAssociation, form_type: FormType, gene_symbol: str
+) -> str:
     """The heading of the association's section of the prefill comment.
 
     It names the disease as prefill_disease does, its first letter capitalised and
-    without its MONDO ID, with the MoI (see HEADING_MOI) and the association's rating:
+    without its MONDO ID (a broader term as "<Label>, GENE-related"), with the MoI
+    (see HEADING_MOI) and the association's rating:
     "<Disease> (<MoI>, <Rating>)". On a review form an association with a finding is
     headed by its kind: "New disease: ", "New MoI: " or "Upgrade from <rating>: ".
     """
     assessment = association.assessment
-    name = prefill_disease(association).name
+    name = prefill_disease(association, gene_symbol).heading
     disease = name[0].upper() + name[1:]
     moi = HEADING_MOI[assessment["inheritance_mode"]]
     rating = PREFILL_RATINGS[calculate_association_rating(assessment)]
@@ -458,7 +486,9 @@ def prefill_comment_heading(association: PrefillAssociation, form_type: FormType
     return f"{kind}: {heading}"
 
 
-def prefill_comments(form_type: FormType, associations: list[PrefillAssociation]) -> str:
+def prefill_comments(
+    form_type: FormType, associations: list[PrefillAssociation], gene_symbol: str
+) -> str:
     """The prefill's comment: what the described associations add to PanelApp's curation.
 
     PanelApp shows the comment publicly, next to the curator's earlier ones, so it
@@ -470,7 +500,8 @@ def prefill_comments(form_type: FormType, associations: list[PrefillAssociation]
         summary: str = associations[0].assessment["summary"]
         return summary
     return "\n\n".join(
-        f"{prefill_comment_heading(a, form_type)}\n{a.assessment['summary']}" for a in associations
+        f"{prefill_comment_heading(a, form_type, gene_symbol)}\n{a.assessment['summary']}"
+        for a in associations
     )
 
 
@@ -503,6 +534,7 @@ def prefill_publications(
 
 def prepare_prefill_data(
     hgnc_id: int,
+    gene_symbol: str,
     associations: list[PrefillAssociation],
     moi_associations: list[dict[str, Any]],
     panel_id: int,
@@ -535,6 +567,7 @@ def prepare_prefill_data(
 
     Args:
         hgnc_id: HGNC ID (integer) of the gene
+        gene_symbol: The gene's current symbol, which qualifies a broader MONDO term
         associations: The associations the prefill describes, in report order
         moi_associations: Every association of the gene, for the MoI
         panel_id: Target panel ID
@@ -567,9 +600,9 @@ def prepare_prefill_data(
         for phenotype in (
             *entry_phenotypes,
             *(
-                prefill_phenotype(a)
+                prefill_phenotype(a, gene_symbol)
                 for a in associations
-                if prefill_disease(a).mondo_id not in entry_mondo_ids
+                if prefill_disease(a, gene_symbol).mondo_id not in entry_mondo_ids
             ),
         )
     )
@@ -588,7 +621,7 @@ def prepare_prefill_data(
         mode_of_pathogenicity=None,
         publications=";".join(publications),
         phenotypes=";".join(phenotypes),
-        comments=prefill_comments(form_type, associations) if rated else "",
+        comments=prefill_comments(form_type, associations, gene_symbol) if rated else "",
     )
 
 

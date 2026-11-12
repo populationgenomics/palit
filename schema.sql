@@ -161,10 +161,12 @@ CREATE TABLE associations (
     -- The association object, with dois and criteria as a list; its quality_concerns
     -- are [{concern, citations: [{doi, quote}]}]
     assessment_json JSON NOT NULL,
-    mondo_id TEXT,                         -- NULL until map-mondo has run for this row
+    -- assess-genes stores the GenCC disease term it named the association by, with the
+    -- match gencc, and NULL otherwise; map-mondo then answers for every row
+    mondo_id TEXT,
     mondo_label TEXT,
-    -- gencc: reuses a GenCC disease term of the gene (set by assess-genes);
-    -- exact / broader: chosen by map-mondo
+    -- gencc: the GenCC term from assess-genes, which map-mondo has not checked yet;
+    -- exact / broader: map-mondo's answer
     mondo_match TEXT CHECK(mondo_match IN ('gencc', 'exact', 'broader')),
     mondo_raw TEXT,                        -- map-mondo's final message; NULL for gencc
     matched_panels_json JSON,              -- [{"panel_id", "rationale"}]

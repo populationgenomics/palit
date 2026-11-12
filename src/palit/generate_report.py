@@ -412,9 +412,9 @@ class ReportAssociation:
     id: int
     position: int  # order in the model output
     assessment: dict[str, Any]  # the stored association JSON, paper IDs in display form
-    disease_label: str  # the GenCC term's title when reused, else the proposed name
+    disease_label: str  # the association's name, see association_name
     mondo: MondoTerm | None  # None unless mondo_mapping is STORED
-    mondo_mapping: StageState  # STORED for a reused GenCC term too
+    mondo_mapping: StageState  # STORED for a GenCC term map-mondo has not checked, too
     rating: int  # computed from this association's criteria: 3 GREEN, 2 AMBER, 1 RED
     disputes: list[DisputeRef]
     variants: list[ReportVariant]  # the association's variants, in the gene's order
@@ -1109,6 +1109,17 @@ def load_refused_genes(cursor: sqlite3.Cursor, hgnc_resolver: HgncResolver) -> l
     ]
 
 
+def association_name(assessment: dict[str, Any], gencc_terms: list[dict[str, Any]]) -> str:
+    """The association's disease name: the title of the GenCC term assess-genes named it
+    by, else its proposed disease name."""
+    mondo_id: str | None = assessment["existing_association_mondo_id"]
+    if mondo_id is None:
+        name: str = assessment["proposed_disease_name"]
+        return name
+    title: str = next(t["disease_title"] for t in gencc_terms if t["mondo_id"] == mondo_id)
+    return title
+
+
 def _mondo_term(row: sqlite3.Row, gencc_terms: list[dict[str, Any]]) -> MondoTerm | None:
     """The association row's MONDO term, or None while it has none."""
     mondo_id: str | None = row["mondo_id"]
@@ -1267,18 +1278,16 @@ def load_associations(
                 id=row["id"],
                 position=row["position"],
                 assessment=assessment,
-                disease_label=(
-                    mondo.label
-                    if mondo is not None and mondo.match == "gencc"
-                    else assessment["proposed_disease_name"]
-                ),
+                disease_label=association_name(assessment, panelapp_context["gencc_terms"]),
                 mondo=mondo,
                 mondo_mapping=stage_state(
                     mondo is not None, row["mondo_status"], row["mondo_model"]
                 ),
                 rating=calculate_association_rating(assessment),
                 disputes=association_disputes(
-                    assessment, row["mondo_id"], panelapp_context["disputes"]
+                    assessment,
+                    assessment["existing_association_mondo_id"] or row["mondo_id"],
+                    panelapp_context["disputes"],
                 ),
                 variants=association_variants(assessment, gene_variants),
                 matched_panels=_panel_matches(
@@ -1424,10 +1433,14 @@ def load_gene(
 
     described = prefill_associations(associations, findings)
     finding_by_association = {f.association_id: f for f in findings}
+    hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
     prefill = prepare_prefill_data(
         hgnc_id=hgnc_id,
+        gene_symbol=hgnc_symbol,
         associations=[
-            PrefillAssociation(a.assessment, a.mondo, finding_by_association.get(a.id))
+            PrefillAssociation(
+                a.disease_label, a.assessment, a.mondo, finding_by_association.get(a.id)
+            )
             for a in described.associations
         ],
         moi_associations=[a.assessment for a in associations],
@@ -1443,7 +1456,7 @@ def load_gene(
 
     return GeneAssessment(
         hgnc_id=hgnc_id,
-        hgnc_symbol=hgnc_resolver.get_symbol(hgnc_id),
+        hgnc_symbol=hgnc_symbol,
         associations=associations,
         unassessed_reports=unassessed_reports,
         current_rating=current_rating,

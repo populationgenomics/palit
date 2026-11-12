@@ -781,13 +781,13 @@ def test_review_prefill_unions_the_findings_in_report_order(
     assert prefill["rating"] == "GREEN"
     assert prefill["moi"] == ENUM_TO_PANELAPP_MOI["Monoallelic_and_biallelic"]
     assert prefill["phenotypes"].split(";") == [
-        "GENEA-related ataxia variant, MONDO:0000200",  # broader: the proposed name
+        "ataxia, MONDO:0000200, GENEA-related",  # broader: the term's label, then the gene
         "GENEA-related other disease",
         "GENEA-related biallelic disease",
     ]
     assert prefill["publications"] == "111"
     assert [section.split("\n")[0] for section in prefill["comments"].split("\n\n")] == [
-        "New disease: GENEA-related ataxia variant (Monoallelic, Green)",
+        "New disease: Ataxia, GENEA-related (Monoallelic, Green)",  # broader: label, then gene
         "New disease: GENEA-related other disease (Monoallelic, Amber)",
         "New MoI: GENEA-related biallelic disease (Biallelic, Amber)",
     ]
@@ -2136,6 +2136,41 @@ def test_findings_with_the_same_badge_merge_and_come_first(
     assert statistics.new_disease_findings == 3
 
 
+def test_a_gencc_named_association_keeps_its_name_once_map_mondo_has_checked_it(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    """map-mondo's answer replaces the stored GenCC term. The association is still named by
+    the GenCC term's title, and a term with that label shows its ID alone."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE associations SET mondo_id = 'MONDO:0000200', mondo_label = 'ataxia', "
+            "mondo_match = 'broader', mondo_raw = ? WHERE id = 10",
+            (_mondo_raw("a class of diseases"),),
+        )
+    results = _load(db_path, hgnc_resolver)
+    association = next(a for a in results.known_genes[0].associations if a.id == 10)
+    assert association.disease_label == "disease A"
+    heading = _heading(_association_section(_render(db_path, results), 10))
+    assert (
+        '<span class="mondo-term">ataxia (<a href="https://monarchinitiative.org/MONDO:0000200"'
+        in heading
+    )
+    assert ">broader term</span>" in heading
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE associations SET mondo_id = 'MONDO:0000001', mondo_label = 'Disease A', "
+            "mondo_match = 'exact', mondo_raw = ? WHERE id = 10",
+            (_mondo_raw("MONDO ties it to the gene"),),
+        )
+    heading = _heading(_association_section(_render(db_path, _load(db_path, hgnc_resolver)), 10))
+    assert (
+        '<span class="mondo-term" data-title="MONDO ties it to the gene">'
+        '<a href="https://monarchinitiative.org/MONDO:0000001"'
+    ) in heading
+    assert "Disease A (" not in heading
+
+
 def test_fold_of_curated_associations_names_their_diseases(
     db_path: Path, hgnc_resolver: HgncResolver
 ) -> None:
@@ -2143,7 +2178,18 @@ def test_fold_of_curated_associations_names_their_diseases(
     named twice in the fold shows its MoI."""
     _add_genea_associations(
         db_path,
-        [(16, 4, _association("disease A", independent=1, inheritance_mode="Biallelic"))],
+        [
+            (
+                16,
+                4,
+                _association(
+                    "disease A",
+                    independent=1,
+                    inheritance_mode="Biallelic",
+                    mondo_id="MONDO:0000001",
+                ),
+            )
+        ],
     )
     with sqlite3.connect(db_path) as conn:
         conn.execute(

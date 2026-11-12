@@ -77,7 +77,10 @@ def _term(
 def _described(
     assessment: dict[str, Any], mondo: MondoTerm | None = None, finding: Finding | None = None
 ) -> PrefillAssociation:
-    return PrefillAssociation(assessment, mondo, finding)
+    """An association named by its proposed disease name, or else by its term's label, as an
+    association that assess-genes named by a GenCC term is."""
+    name = assessment["proposed_disease_name"] or (mondo.label if mondo is not None else "")
+    return PrefillAssociation(name, assessment, mondo, finding)
 
 
 def _entry(
@@ -103,6 +106,7 @@ def _prefill(
     review_entry = _entry() if entry is None else entry
     return prepare_prefill_data(
         hgnc_id=HGNC_ID,
+        gene_symbol="SMAD6",
         associations=associations,
         moi_associations=(
             [a.assessment for a in associations] if moi_associations is None else moi_associations
@@ -315,10 +319,12 @@ def test_phenotype_per_mondo_match() -> None:
         _term("MONDO:0019180", "hereditary hemorrhagic telangiectasia", "broader"),
     )
     unmapped = _described(_assessment(proposed_disease_name="SMAD6-related JIA"))
-    assert [prefill_phenotype(a) for a in (gencc, exact, broader, unmapped)] == [
+    # A broader term keeps its own label and names the gene after it, as curators write a
+    # term that is not specific to the gene.
+    assert [prefill_phenotype(a, "SMAD6") for a in (gencc, exact, broader, unmapped)] == [
         "craniosynostosis 7, MONDO:0044315",
         "pulmonary arterial hypertension, MONDO:0015924",
-        "SMAD6-related HHT-like disorder, MONDO:0019180",
+        "hereditary hemorrhagic telangiectasia, MONDO:0019180, SMAD6-related",
         "SMAD6-related JIA",
     ]
 
@@ -346,7 +352,7 @@ def test_obsolete_gencc_term_uses_its_only_replacement() -> None:
             replaced_by=(MondoRef("MONDO:0000003", "B1"), MondoRef("MONDO:0000004", "B2")),
         ),
     )
-    assert [prefill_phenotype(a) for a in (one, none, several)] == [
+    assert [prefill_phenotype(a, "SMAD6") for a in (one, none, several)] == [
         "leukoencephalopathy with vanishing white matter, MONDO:0800448",
         "disease A, MONDO:0000001",
         "disease B, MONDO:0000002",
@@ -473,7 +479,8 @@ def test_review_comment_heads_each_association_by_its_finding() -> None:
     )
     assert prefill.comments.split("\n\n") == [
         "Upgrade from Amber: Craniosynostosis 7 (Monoallelic, Green)\nPMID 1 reports 18 families.",
-        "New MoI: SMAD6-related HHT-like disorder (Monoallelic and biallelic, Amber)\n"
+        "New MoI: Hereditary hemorrhagic telangiectasia, SMAD6-related "
+        "(Monoallelic and biallelic, Amber)\n"
         "PMID 2 reports 2 families.",
         "New disease: SMAD6-related JIA (X-linked, Red)\nOne family.",
         "SMAD6-related JIA (X-linked, Red)\nNo finding.",
@@ -516,7 +523,7 @@ def test_add_comment_of_several_associations_heads_each_without_its_finding() ->
     )
     assert prefill.comments.split("\n\n") == [
         "Craniosynostosis 7 (Monoallelic, Green)\nPMID 1 reports 18 families.",
-        "SMAD6-related HHT-like disorder (Monoallelic and biallelic, Amber)\n"
+        "Hereditary hemorrhagic telangiectasia, SMAD6-related (Monoallelic and biallelic, Amber)\n"
         "PMID 2 reports 2 families.",
     ]
 
@@ -535,8 +542,10 @@ def test_comment_names_no_mondo_id_and_not_the_report() -> None:
     ]
     for prefill in (_prefill(associations, {}), _prefill(associations, {}, add=True)):
         comments = prefill.comments.lower()
-        for text in ("mondo", "report", "papers reviewed", "broader", "hereditary"):
+        for text in ("mondo", "report", "papers reviewed", "broader"):
             assert text not in comments
+        # a broader term is named by its label, then the gene
+        assert "hereditary hemorrhagic telangiectasia, smad6-related (" in comments
 
 
 def test_review_moi_covers_every_association_not_only_the_described_ones() -> None:

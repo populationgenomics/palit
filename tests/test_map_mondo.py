@@ -12,7 +12,7 @@ import pronto
 import pytest
 from anthropic.types import Message
 
-from palit.gencc import NO_GENCC_TERMS, GenccIndex
+from palit.gencc import NO_GENCC_TERMS, GenccIndex, MondoRef
 from palit.hgnc import HgncEntry, HgncResolver
 from palit.llm import (
     ALL_TIME,
@@ -32,12 +32,14 @@ from palit.map_mondo import (
     Association,
     Conversation,
     MappingRunner,
+    MondoMapping,
     association_text,
     count_unmapped,
     format_gene_terms,
     map_associations,
     parse_mapping,
     select_associations,
+    store_mapping,
 )
 from palit.mondo_tools import MondoIndex, MondoToolRunner, tokens
 
@@ -351,8 +353,8 @@ def _assessment(name: str | None) -> str:
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
-    """Gene 6772 with a GenCC-anchored association (1), an unmapped one (2) and one refused
-    for good (3)."""
+    """Gene 6772 with a mapped association (1), an unmapped one (2) and one refused for
+    good (3)."""
     path = tmp_path / "run.sqlite"
     with sqlite3.connect(path) as conn:
         conn.executescript((ROOT / "schema.sql").read_text())
@@ -367,7 +369,7 @@ def db_path(tmp_path: Path) -> Path:
             """
             INSERT INTO associations (id, hgnc_id, position, assessment_json, mondo_id,
                 mondo_label, mondo_match)
-            VALUES (1, 6772, 0, ?, 'MONDO:0000101', 'craniosynostosis 7', 'gencc')
+            VALUES (1, 6772, 0, ?, 'MONDO:0000101', 'craniosynostosis 7', 'exact')
             """,
             (_assessment(None),),
         )
@@ -394,11 +396,42 @@ def test_select_associations_takes_only_unmapped_unrefused_rows(db_path: Path) -
             id=2,
             hgnc_id=6772,
             proposed_disease_name="SMAD6-related renovascular hypertension",
+            gencc_term=None,
             description="renal artery stenosis with hypertension",
             inheritance_mode="Monoallelic",
             summary="Two families.",
         )
     ]
+
+
+def test_an_association_named_by_a_gencc_term_is_mapped_too(
+    db_path: Path, index: MondoIndex
+) -> None:
+    """assess-genes stores the GenCC term with the match "gencc"; map-mondo still has to say
+    whether that term is the gene's own, and may replace it."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE associations SET mondo_match = 'gencc' WHERE id = 1")
+    assert count_unmapped(db_path) == 3
+    named, proposed = select_associations(db_path, None, _history(db_path))
+    assert (named.id, named.proposed_disease_name) == (1, None)
+    assert named.gencc_term == MondoRef("MONDO:0000101", "craniosynostosis 7")
+    assert proposed.gencc_term is None
+
+    text = association_text(named, "SMAD6", GenccIndex({}), index)
+    assert "GenCC term the assessment named it by: craniosynostosis 7 (MONDO:0000101)" in text
+    assert "Proposed disease name" not in text
+
+    mapping = MondoMapping("MONDO:0000100", "craniosynostosis", "broader", "r")
+    with sqlite3.connect(db_path) as conn:
+        store_mapping(conn, 1, mapping, "{}")
+        assert conn.execute(
+            "SELECT mondo_id, mondo_label, mondo_match FROM associations WHERE id = 1"
+        ).fetchone() == ("MONDO:0000100", "craniosynostosis", "broader")
+        # an association map-mondo has answered for is not overwritten
+        store_mapping(conn, 1, MondoMapping("MONDO:0000101", "x", "exact", "r"), "{}")
+        assert conn.execute("SELECT mondo_id FROM associations WHERE id = 1").fetchone() == (
+            "MONDO:0000100",
+        )
 
 
 def test_rows_of_a_deleted_aggregation_are_neither_selected_nor_counted(db_path: Path) -> None:

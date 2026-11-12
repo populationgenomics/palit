@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Map associations that reuse no GenCC disease term onto MONDO terms.
+"""Map associations onto MONDO terms, and say whether each term is the gene's own.
 
-Each association without a MONDO term goes to the model with its proposed disease
-name, description, MoI and summary, the gene's GenCC disease terms, and the terms
-MONDO itself ties to the gene.
+An association comes from assess-genes either named by one of the gene's GenCC
+disease terms or with a proposed disease name. Both kinds go to the model: with
+the GenCC term or the proposed name, the description, MoI and summary, the gene's
+GenCC disease terms, and the terms MONDO itself ties to the gene. A GenCC term is
+the first candidate and a hint, not the answer: GenCC submitters also use terms
+for a class of diseases, which are broader like any other.
 The model searches the local MONDO release with the tools in
 :mod:`palit.mondo_tools` and answers with one term and a match type: ``exact``
 when the term is for this gene's form of the disease, ``broader`` when MONDO has
@@ -41,7 +44,7 @@ import typer
 from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
 
-from palit.gencc import GenccIndex, fetch_gencc, fetch_mondo, format_gencc_terms
+from palit.gencc import GenccIndex, MondoRef, fetch_gencc, fetch_mondo, format_gencc_terms
 from palit.hgnc import HgncResolver
 from palit.llm import (
     ALL_TIME,
@@ -70,7 +73,7 @@ from palit.llm_usage import print_stage_summary
 from palit.mondo_tools import TOOLS, MondoIndex, MondoTerm, MondoToolRunner
 from palit.progress import LoggingProgress as Progress
 
-app = typer.Typer(help="Map associations without a GenCC disease term onto MONDO")
+app = typer.Typer(help="Map associations onto MONDO terms")
 logger = logging.getLogger(__name__)
 
 STAGE = "map_mondo"
@@ -89,14 +92,20 @@ FINAL_ROUND_TEXT = (
 
 MatchType = Literal["exact", "broader"]
 
+# An association row that map-mondo has not answered for: it has no MONDO term, or only
+# the GenCC term that assess-genes named it by
+TO_MAP = "(a.mondo_id IS NULL OR a.mondo_match = 'gencc')"
+
 
 @dataclass(frozen=True)
 class Association:
-    """The fields of one unmapped association that the model sees."""
+    """The fields of one association to map that the model sees."""
 
     id: int
     hgnc_id: int
-    proposed_disease_name: str
+    # Exactly one of the two names is set, as assess-genes stores an association
+    proposed_disease_name: str | None
+    gencc_term: MondoRef | None  # the GenCC term assess-genes named the association by
     description: str
     inheritance_mode: str
     summary: str
@@ -136,30 +145,34 @@ class MappingOutcome:
 def select_associations(
     db_path: Path, limit: int | None, history: StageHistory
 ) -> list[Association]:
-    """Associations without a MONDO term, except the ones skipped for good.
+    """Associations still to map, except the ones skipped for good.
 
-    Only rows of a stored aggregation count: rows left behind by deleting a
-    ``gene_aggregations`` row are skipped.
+    These are the associations without a MONDO term and the ones that only carry
+    the GenCC term assess-genes named them by. Only rows of a stored aggregation
+    count: rows left behind by deleting a ``gene_aggregations`` row are skipped.
     """
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
-            """
-            SELECT a.id, a.hgnc_id, a.assessment_json
+            f"""
+            SELECT a.id, a.hgnc_id, a.assessment_json, a.mondo_id, a.mondo_label
             FROM associations a
             JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
-            WHERE a.mondo_id IS NULL
+            WHERE {TO_MAP}
             ORDER BY a.id
             """
         ).fetchall()
     due = [row for row in rows if not history.skipped(str(row[0]))]
     associations = []
-    for association_id, hgnc_id, assessment_json in due if limit is None else due[:limit]:
+    for association_id, hgnc_id, assessment_json, mondo_id, mondo_label in (
+        due if limit is None else due[:limit]
+    ):
         assessment = json.loads(assessment_json)
         associations.append(
             Association(
                 id=association_id,
                 hgnc_id=hgnc_id,
                 proposed_disease_name=assessment["proposed_disease_name"],
+                gencc_term=None if mondo_id is None else MondoRef(mondo_id, mondo_label),
                 description=assessment["description"],
                 inheritance_mode=assessment["inheritance_mode"],
                 summary=assessment["summary"],
@@ -169,12 +182,13 @@ def select_associations(
 
 
 def count_unmapped(db_path: Path) -> int:
+    """How many associations of stored aggregations are still to map."""
     with sqlite3.connect(db_path) as conn:
         (count,) = conn.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM associations a
             JOIN gene_aggregations g ON g.hgnc_id = a.hgnc_id
-            WHERE a.mondo_id IS NULL
+            WHERE {TO_MAP}
             """
         ).fetchone()
     return int(count)
@@ -186,7 +200,7 @@ def store_mapping(
     cursor = conn.execute(
         """
         UPDATE associations SET mondo_id = ?, mondo_label = ?, mondo_match = ?, mondo_raw = ?
-        WHERE id = ? AND mondo_id IS NULL
+        WHERE id = ? AND (mondo_id IS NULL OR mondo_match = 'gencc')
         """,
         (mapping.mondo_id, mapping.label, mapping.match, raw, association_id),
     )
@@ -230,10 +244,16 @@ def association_text(
     association: Association, gene_symbol: str, gencc: GenccIndex, index: MondoIndex
 ) -> str:
     """The first user message for *association*."""
+    term = association.gencc_term
+    name = (
+        f"Proposed disease name: {association.proposed_disease_name}"
+        if term is None
+        else f"GenCC term the assessment named it by: {term.label} ({term.mondo_id})"
+    )
     return (
         f"GENE: {gene_symbol} (HGNC:{association.hgnc_id})\n\n"
         "ASSOCIATION TO MAP\n"
-        f"Proposed disease name: {association.proposed_disease_name}\n"
+        f"{name}\n"
         f"Mode of inheritance: {association.inheritance_mode}\n"
         f"Description: {association.description}\n"
         f"Summary: {association.summary}\n\n"
@@ -538,7 +558,7 @@ def main(
         "in this invocation",
     ),
 ) -> None:
-    """Map every association without a MONDO term onto one, with the model and the MONDO tools."""
+    """Map every association onto a MONDO term, with the model and the MONDO tools."""
     if not db_path.exists():
         logger.error(f"Database not found: {db_path}")
         raise typer.Exit(1)
@@ -551,7 +571,7 @@ def main(
     mondo = fetch_mondo(db_path.parent)
     index = MondoIndex.from_ontology(mondo, hgnc_resolver)
     gencc = fetch_gencc(db_path.parent, mondo)
-    logger.info(f"{count_unmapped(db_path):,} associations without a MONDO term")
+    logger.info(f"{count_unmapped(db_path):,} associations to map")
 
     async def run() -> None:
         runner = MappingRunner(
@@ -573,7 +593,7 @@ def main(
         )
 
     asyncio.run(run())
-    logger.info(f"{count_unmapped(db_path):,} associations still without a MONDO term")
+    logger.info(f"{count_unmapped(db_path):,} associations still to map")
     print_stage_summary(db_path, STAGE)
 
 

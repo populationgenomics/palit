@@ -230,11 +230,15 @@ uv run palit extract-evidence
 #    flight and skips genes that already have an aggregation.
 uv run palit assess-genes --panel-date $PANEL_DATE
 
-# 10. Map each association that reuses no GenCC disease term onto a
-#     MONDO term. Claude sees the terms MONDO ties to the gene, searches the
+# 10. Map each association onto a MONDO term. An association that assess-genes
+#     named by a GenCC disease term is mapped too, with that term as the first
+#     candidate: GenCC submitters also use terms for a class of diseases, so
+#     the term is a hint and not the answer. Claude sees the gene's GenCC
+#     terms and the terms MONDO ties to the gene, searches the
 #     local MONDO release with tools and answers with a term and a match type:
 #     exact when the term is for this gene's form of the disease (MONDO ties
-#     it to the gene, or its label, definition or synonyms name the gene),
+#     it to the gene, its label, definition or synonyms name the gene, or it
+#     is one of the gene's GenCC terms and one gene's form),
 #     broader when MONDO has no such term and this is the most
 #     specific term that includes the disease. The report marks broader terms. Requests go out immediately, not
 #     as batches, because a mapping takes several tool rounds. Each
@@ -275,7 +279,10 @@ uv run palit journal-metrics
 #     is prefilled with its other associations, or, when all are already
 #     reviewed, at its rating on the panel. A review replaces the curator's
 #     evaluation of the gene's entry, so its MoI, phenotypes and publications
-#     combine the entry's with those of the report's associations. The union is
+#     combine the entry's with those of the report's associations. An
+#     association's phenotype is its MONDO label and ID; for a broader MONDO
+#     term the gene follows ("label, MONDO:id, GENE-related"), as curators
+#     write a term that is not specific to the gene. The union is
 #     with the panel entry, not with the curator's own earlier review: a
 #     phenotype or publication that the review had and the entry lacks is
 #     replaced on submit, so the curator adds it back in the form. The comment

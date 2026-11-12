@@ -2,7 +2,8 @@
 """Map associations that reuse no GenCC disease term onto MONDO terms.
 
 Each association without a MONDO term goes to the model with its proposed disease
-name, description, MoI and summary, and the gene's GenCC disease terms.
+name, description, MoI and summary, the gene's GenCC disease terms, and the terms
+MONDO itself ties to the gene.
 The model searches the local MONDO release with the tools in
 :mod:`palit.mondo_tools` and answers with one term and a match type: ``exact``
 when the term is for this gene's form of the disease, ``broader`` when MONDO has
@@ -66,7 +67,7 @@ from palit.llm import (
     unfinished_answer_reason,
 )
 from palit.llm_usage import print_stage_summary
-from palit.mondo_tools import TOOLS, MondoIndex, MondoToolRunner
+from palit.mondo_tools import TOOLS, MondoIndex, MondoTerm, MondoToolRunner
 from palit.progress import LoggingProgress as Progress
 
 app = typer.Typer(help="Map associations without a GenCC disease term onto MONDO")
@@ -211,7 +212,23 @@ def save_conversation(conn: sqlite3.Connection, conversation: Conversation) -> N
 # ---------------------------------------------------------------------------
 
 
-def association_text(association: Association, gene_symbol: str, gencc: GenccIndex) -> str:
+NO_GENE_TERMS = "MONDO ties no term to this gene."
+
+
+def format_gene_terms(terms: list[MondoTerm], hgnc_id: int) -> str:
+    """MONDO's terms for the gene, one ``label (MONDO id) | relationship`` line each."""
+    if not terms:
+        return NO_GENE_TERMS
+    return "\n".join(
+        f"- {term.label} ({term.id}) | "
+        f"{', '.join(gene.relation for gene in term.genes if gene.hgnc_id == hgnc_id)}"
+        for term in terms
+    )
+
+
+def association_text(
+    association: Association, gene_symbol: str, gencc: GenccIndex, index: MondoIndex
+) -> str:
     """The first user message for *association*."""
     return (
         f"GENE: {gene_symbol} (HGNC:{association.hgnc_id})\n\n"
@@ -221,7 +238,9 @@ def association_text(association: Association, gene_symbol: str, gencc: GenccInd
         f"Description: {association.description}\n"
         f"Summary: {association.summary}\n\n"
         "GENCC DISEASE TERMS FOR THIS GENE (disease (MONDO id) | MoIs submitted)\n"
-        f"{format_gencc_terms(gencc.for_gene(association.hgnc_id))}"
+        f"{format_gencc_terms(gencc.for_gene(association.hgnc_id))}\n\n"
+        "MONDO TERMS TIED TO THIS GENE (disease (MONDO id) | MONDO's relationship to the gene)\n"
+        f"{format_gene_terms(index.terms_for_gene(association.hgnc_id), association.hgnc_id)}"
     )
 
 
@@ -434,6 +453,7 @@ async def map_associations(
     db_path: Path,
     hgnc_resolver: HgncResolver,
     gencc: GenccIndex,
+    index: MondoIndex,
     limit: int | None,
     max_retries: int,
     failures_since: datetime,
@@ -465,7 +485,10 @@ async def map_associations(
                     {
                         "role": "user",
                         "content": association_text(
-                            association, hgnc_resolver.get_symbol(association.hgnc_id), gencc
+                            association,
+                            hgnc_resolver.get_symbol(association.hgnc_id),
+                            gencc,
+                            index,
                         ),
                     }
                 ],
@@ -524,10 +547,10 @@ def main(
 
     system = PROMPT_PATH.read_text().strip()
     schema: dict[str, Any] = json.loads(SCHEMA_PATH.read_text())
-    mondo = fetch_mondo(db_path.parent)
-    index = MondoIndex.from_ontology(mondo)
-    gencc = fetch_gencc(db_path.parent, mondo)
     hgnc_resolver = HgncResolver.from_file()
+    mondo = fetch_mondo(db_path.parent)
+    index = MondoIndex.from_ontology(mondo, hgnc_resolver)
+    gencc = fetch_gencc(db_path.parent, mondo)
     logger.info(f"{count_unmapped(db_path):,} associations without a MONDO term")
 
     async def run() -> None:
@@ -543,6 +566,7 @@ def main(
             db_path=db_path,
             hgnc_resolver=hgnc_resolver,
             gencc=gencc,
+            index=index,
             limit=limit,
             max_retries=max_retries,
             failures_since=failures_since,

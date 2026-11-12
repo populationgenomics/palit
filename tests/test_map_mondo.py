@@ -26,6 +26,7 @@ from palit.llm import (
 )
 from palit.map_mondo import (
     LAST_ROUND,
+    NO_GENE_TERMS,
     SCHEMA_PATH,
     STAGE,
     Association,
@@ -33,6 +34,7 @@ from palit.map_mondo import (
     MappingRunner,
     association_text,
     count_unmapped,
+    format_gene_terms,
     map_associations,
     parse_mapping,
     select_associations,
@@ -44,6 +46,18 @@ SCHEMA: dict[str, Any] = json.loads((ROOT / SCHEMA_PATH).read_text())
 
 OBO = """format-version: 1.2
 ontology: mondo
+
+[Typedef]
+id: has_material_basis_in_germline_mutation_in
+name: has material basis in germline mutation in
+
+[Typedef]
+id: should_conform_to
+name: should conform to
+
+[Term]
+id: http://identifiers.org/hgnc/6772
+name: SMAD6
 
 [Term]
 id: BFO:0000016
@@ -88,6 +102,7 @@ xref: Orphanet:1531
 xref: OMIMPS:123100
 xref: UMLS:C0010278
 is_a: MONDO:0000001 ! disease
+relationship: should_conform_to http://purl.obolibrary.org/obo/mondo/patterns/OMIM_phenotypic_series.yaml
 
 [Term]
 id: MONDO:0000101
@@ -96,6 +111,7 @@ def: "A craniosynostosis caused by heterozygous mutation in the SMAD6 gene." []
 synonym: "craniosynostosis type 7" EXACT []
 xref: OMIM:617439
 is_a: MONDO:0000100 ! craniosynostosis
+relationship: has_material_basis_in_germline_mutation_in http://identifiers.org/hgnc/6772 ! SMAD6
 
 [Term]
 id: MONDO:0000102
@@ -140,7 +156,7 @@ replaced_by: MONDO:0000100
 def index(tmp_path_factory: pytest.TempPathFactory) -> MondoIndex:
     path = tmp_path_factory.mktemp("mondo") / "mondo.obo"
     path.write_text(OBO)
-    return MondoIndex.from_ontology(pronto.Ontology(str(path)))
+    return MondoIndex.from_ontology(pronto.Ontology(str(path)), _resolver())
 
 
 def _ids(index: MondoIndex, query: str, limit: int = 10) -> list[str]:
@@ -226,6 +242,25 @@ def test_lookup_of_obsolete_unknown_and_ineligible_terms(index: MondoIndex) -> N
     }
     assert index.lookup_result("MONDO:9999999") == {"id": "MONDO:9999999", "status": "not found"}
     assert "note" in index.lookup_result("MONDO:1000001")
+
+
+def test_lookup_and_search_show_the_genes_mondo_ties_a_term_to(index: MondoIndex) -> None:
+    assert index.lookup_result("MONDO:0000101")["genes"] == [
+        {
+            "symbol": "SMAD6",
+            "hgnc_id": "HGNC:6772",
+            "relation": "has material basis in germline mutation in",
+        }
+    ]
+    assert index.lookup_result("MONDO:0000100")["genes"] == []
+    (candidate,) = index.search_result("OMIM:617439")["candidates"]
+    assert candidate["genes"] == ["SMAD6"]
+    assert index.search_result("renovascular hypertension")["candidates"][0]["genes"] == []
+
+
+def test_terms_for_gene_lists_the_terms_mondo_ties_to_it(index: MondoIndex) -> None:
+    assert [term.id for term in index.terms_for_gene(6772)] == ["MONDO:0000101"]
+    assert index.terms_for_gene(1100) == []
 
 
 def test_tool_runner_validates_input(index: MondoIndex) -> None:
@@ -383,12 +418,21 @@ def test_deleting_an_aggregation_cascades_where_foreign_keys_are_on(db_path: Pat
     assert left_behind == 0
 
 
-def test_association_text_lists_the_gene_and_its_gencc_terms(db_path: Path) -> None:
+def test_association_text_lists_the_gene_with_its_gencc_and_mondo_terms(
+    db_path: Path, index: MondoIndex
+) -> None:
     (association,) = select_associations(db_path, None, _history(db_path))
-    text = association_text(association, "SMAD6", GenccIndex({}))
+    text = association_text(association, "SMAD6", GenccIndex({}), index)
     assert "GENE: SMAD6 (HGNC:6772)" in text
     assert "Proposed disease name: SMAD6-related renovascular hypertension" in text
-    assert text.endswith(NO_GENCC_TERMS)
+    assert NO_GENCC_TERMS in text
+    assert text.endswith(
+        "- craniosynostosis 7 (MONDO:0000101) | has material basis in germline mutation in"
+    )
+
+
+def test_gene_terms_say_when_mondo_ties_none_to_the_gene() -> None:
+    assert format_gene_terms([], 1100) == NO_GENE_TERMS
 
 
 def _result(
@@ -615,6 +659,7 @@ def test_a_refused_conversation_restarts_on_the_fallback_model_in_the_same_run(
             db_path=db_path,
             hgnc_resolver=_resolver(),
             gencc=GenccIndex({}),
+            index=index,
             limit=None,
             max_retries=3,
             failures_since=ALL_TIME,

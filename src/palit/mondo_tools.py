@@ -3,12 +3,18 @@
 * ``search_mondo``: ranked candidates for free-text queries over term labels and
   synonyms, or for an OMIM or Orphanet id.
 * ``lookup_mondo``: a term's label, definition, synonyms, OMIM and Orphanet
-  cross-references, and its neighbourhood in the tree: every ancestor up to the
-  root, and descendants a few levels down.
+  cross-references, the genes MONDO ties it to, and its neighbourhood in the
+  tree: every ancestor up to the root, and descendants a few levels down.
 
 Both run over a :class:`MondoIndex` built once from the local ``mondo.obo``. Only
 human disease and disease-susceptibility terms that are not obsolete are
 eligible: they are what search returns and what a mapping may name.
+
+MONDO ties a term to a gene with a relationship such as "has material basis in
+germline mutation in", most often taken from the term's OMIM entry. Many
+OMIM-numbered subtypes have no definition, so this relationship is the only place
+the release names their gene. Both tools show it, and
+:meth:`MondoIndex.terms_for_gene` lists the eligible terms of one gene.
 """
 
 import json
@@ -25,6 +31,7 @@ import jsonschema
 import pronto
 from anthropic.types import ToolParam
 
+from palit.hgnc import HgncResolver
 from palit.lookup_tools import ToolOutcome
 
 logger = logging.getLogger(__name__)
@@ -34,6 +41,8 @@ SUSCEPTIBILITY_ROOT = "MONDO:0042489"
 NON_HUMAN_ROOT = "MONDO:0005583"
 
 XREF_PREFIXES = ("OMIM", "OMIMPS", "Orphanet")
+# MONDO names a gene as the target of a relationship, by this IRI prefix and its HGNC id.
+GENE_IRI_PREFIX = "http://identifiers.org/hgnc/"
 
 MAX_QUERIES = 5
 MAX_IDS = 5
@@ -61,7 +70,8 @@ SEARCH_TOOL: ToolParam = {
         f"Orphanet:1234). For each query returns up to {SEARCH_RESULTS} candidates, best "
         "first: exact label matches, then exact synonym matches, then by word overlap. Each "
         "candidate has its id, label, the name that matched, a definition shortened to "
-        f"{SEARCH_DEFINITION_CHARS} characters and up to {SEARCH_SYNONYMS} synonyms. Obsolete "
+        f"{SEARCH_DEFINITION_CHARS} characters, up to {SEARCH_SYNONYMS} synonyms and the "
+        "symbols of the genes MONDO ties the term to (empty when it records none). Obsolete "
         "and non-human terms are never returned."
     ),
     "input_schema": {
@@ -84,7 +94,9 @@ LOOKUP_TOOL: ToolParam = {
     "description": (
         f"Looks up MONDO terms by id (e.g. MONDO:0007915), up to {MAX_IDS} per call. For each "
         "returns the label, full definition, all synonyms with their scope, OMIM and Orphanet "
-        "cross-references, every ancestor up to the root with its distance (1 = parent), and "
+        "cross-references, the genes MONDO ties the term to with the relationship (e.g. has "
+        "material basis in germline mutation in; empty when MONDO records none), every "
+        "ancestor up to the root with its distance (1 = parent), and "
         f"descendants down to {DESCENDANT_LEVELS} levels with their depth (1 = child) and number "
         f"of children, at most {MAX_DESCENDANTS} listed (nearest levels first, groupings first "
         "within a level), with the full count per level. An "
@@ -119,12 +131,22 @@ class Synonym:
 
 
 @dataclass(frozen=True)
+class TermGene:
+    """A gene MONDO ties a term to."""
+
+    hgnc_id: int
+    symbol: str  # HGNC's current symbol, for display
+    relation: str  # MONDO's name for the relationship
+
+
+@dataclass(frozen=True)
 class MondoTerm:
     id: str
     label: str
     definition: str  # empty when the term has none
     synonyms: tuple[Synonym, ...]
     xrefs: tuple[str, ...]  # OMIM, OMIMPS and Orphanet ids only
+    genes: tuple[TermGene, ...]  # empty when MONDO ties the term to no gene
     parents: tuple[str, ...]  # MONDO is_a parents
     obsolete: bool
     replaced_by: tuple[str, ...]
@@ -160,7 +182,7 @@ def _scope_kind(scope: str) -> int:
 
 
 class MondoIndex:
-    """MONDO terms with their tree, a word index over names, and an xref index."""
+    """MONDO terms with their tree, a word index over names, an xref index and a gene index."""
 
     def __init__(self, terms: dict[str, MondoTerm], eligible: frozenset[str]) -> None:
         self._terms = terms
@@ -173,10 +195,13 @@ class MondoIndex:
         self._names: list[_Name] = []
         self._postings: defaultdict[str, list[int]] = defaultdict(list)
         self._by_xref: defaultdict[str, list[str]] = defaultdict(list)
+        self._by_gene: defaultdict[int, list[str]] = defaultdict(list)
         for term_id in sorted(eligible):
             term = terms[term_id]
             for xref in term.xrefs:
                 self._by_xref[xref.upper()].append(term_id)
+            for hgnc_id in {gene.hgnc_id for gene in term.genes}:
+                self._by_gene[hgnc_id].append(term_id)
             names = [(term.label, 0)] + [(s.text, _scope_kind(s.scope)) for s in term.synonyms]
             seen: set[tuple[str, ...]] = set()
             for text, kind in names:
@@ -199,7 +224,8 @@ class MondoIndex:
         self._unseen_idf = math.log(1 + total)
 
     @classmethod
-    def from_ontology(cls, ontology: pronto.Ontology) -> "MondoIndex":
+    def from_ontology(cls, ontology: pronto.Ontology, hgnc_resolver: HgncResolver) -> "MondoIndex":
+        """The index over *ontology*; *hgnc_resolver* gives the symbols of the genes it names."""
         terms: dict[str, MondoTerm] = {}
         for term in ontology.terms():
             if not term.id.startswith("MONDO:"):
@@ -216,6 +242,22 @@ class MondoIndex:
                 ),
                 xrefs=tuple(
                     sorted(x.id for x in term.xrefs if x.id.split(":", 1)[0] in XREF_PREFIXES)
+                ),
+                # Relationship targets by id: some name an IRI that is no term of the ontology.
+                genes=tuple(
+                    sorted(
+                        (
+                            TermGene(
+                                hgnc_id=(hgnc_id := int(target_id.removeprefix(GENE_IRI_PREFIX))),
+                                symbol=hgnc_resolver.get_symbol(hgnc_id),
+                                relation=relationship.name or relationship.id,
+                            )
+                            for relationship, targets in term.relationships.items()
+                            for target_id in targets.ids
+                            if target_id.startswith(GENE_IRI_PREFIX)
+                        ),
+                        key=lambda gene: (gene.symbol, gene.relation),
+                    )
                 ),
                 parents=tuple(
                     sorted(
@@ -252,6 +294,11 @@ class MondoIndex:
 
     def is_eligible(self, term_id: str) -> bool:
         return term_id in self._eligible
+
+    def terms_for_gene(self, hgnc_id: int) -> list[MondoTerm]:
+        """The eligible terms MONDO ties to the gene, by label."""
+        terms = [self._terms[term_id] for term_id in self._by_gene.get(hgnc_id, ())]
+        return sorted(terms, key=lambda term: term.label.lower())
 
     # -----------------------------------------------------------------------
     # Search
@@ -313,6 +360,7 @@ class MondoIndex:
                     "matched_name": hit.matched_name,
                     "definition": _shorten(hit.term.definition, SEARCH_DEFINITION_CHARS),
                     "synonyms": [s.text for s in hit.term.synonyms[:SEARCH_SYNONYMS]],
+                    "genes": [gene.symbol for gene in hit.term.genes],
                 }
                 for hit in self.search(query)
             ],
@@ -406,6 +454,10 @@ class MondoIndex:
                 for prefix in XREF_PREFIXES
                 if any(x.split(":", 1)[0] == prefix for x in term.xrefs)
             },
+            "genes": [
+                {"symbol": g.symbol, "hgnc_id": f"HGNC:{g.hgnc_id}", "relation": g.relation}
+                for g in term.genes
+            ],
             "ancestors": [{**self._brief(a), "distance": d} for a, d in ancestors[:max_ancestors]],
             "descendants": listed,
             "descendant_counts_by_depth": [len(level) for level in descendant_levels],

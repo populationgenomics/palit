@@ -850,8 +850,14 @@ details.other-associations > div {
 
 /* Gene-level blocks after the associations */
 
-.unassessed-reports .muted {
+.unassessed-reports .muted,
+.clingen-curations p.muted {
     margin: 0 0 4px 0;
+}
+
+.clingen-summary p {
+    margin: 4px 0 0 0;
+    white-space: pre-line;
 }
 
 .refused-papers {

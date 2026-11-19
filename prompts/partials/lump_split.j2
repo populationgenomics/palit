@@ -9,6 +9,16 @@ Each association must have EXACTLY ONE inheritance_mode. When an autosomal gene'
 
 3. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
 
+**ClinGen's curations of this gene (CLINGEN CURATIONS below) take precedence within STEP 2:**
+A ClinGen expert panel that curated one of this gene's diseases applied these criteria to the literature of that disease, and its evidence summary often states which disease entities it lumped into the curated disease or split from it.
+
+- WHAT A CURATION COVERS: the disease it names, with its MoI, and every disease entity that its evidence summary says was lumped into that disease or split from it.
+- WITHIN THAT COVERAGE, group as ClinGen did. Disease entities that ClinGen lumped form one association (per MoI, see STEP 1), also when PanelApp Australia or OMIM lists them as separate diseases. Disease entities that ClinGen split stay separate associations. Depart from a curation only for a specific reason: contributing papers published after the curation's date that show a distinct molecular mechanism or a distinct disease, or a PanelApp Australia review that discusses the grouping and decides it differently. Separate phenotype names on PanelApp Australia entries are no such reason.
+- OUTSIDE THAT COVERAGE, ClinGen has made no decision in either direction, and criteria 1–3 above apply as they do for a gene without curations. This holds for a disease or phenotype that the evidence summary does not address, for one first reported after the curation's date, and for another MoI. Criteria 1–3 also decide whether such a phenotype belongs to a disease that ClinGen curated: a later phenotype expansion with the same mechanism and MoI is lumped into the curated disease. The lack of a curation is never a reason to split, and it is no evidence against a disease.
+- UMBRELLA TERMS: some expert panels curate every disease in their area under one broad term ("mitochondrial disease", "genetic developmental and epileptic encephalopathy", "syndromic intellectual disability"). Such a curation covers the phenotypes that its evidence summary describes. Group them as it does, and name the association by this gene's own disease where the papers, PanelApp Australia or the GenCC terms give one, rather than by the broad term.
+- MoI: a curation is for one MoI and decides nothing about the same disease under another MoI. A "Semidominant" curation covers the monoallelic and the biallelic form of one disease; STEP 1 still makes them two associations.
+- A curation's classification, and the proband and family numbers in its evidence summary, are ClinGen's assessment of its own evidence at its date. They are context: they are not evidence from the contributing papers, and a ClinGen classification is not PanelApp Australia's rating.
+
 **Isolated Features of Syndromes:**
 If a feature (e.g., cardiomyopathy) is part of a named syndrome in the papers, report the SYNDROME, not the isolated feature—unless papers present it as distinct (see the next paragraph).
 
@@ -20,4 +30,5 @@ Compare each association from STEPS 1–2 with the associations PanelApp Austral
 
 - Reuse an existing association whenever yours is the same disease in the clinical sense, with the same MoI. Allow reasonable fuzziness: a different name, a numbered subtype versus the broader disease, or a slightly wider or narrower phenotype spectrum is still the same association.{% if copies_gencc_terms %} When a GenCC disease term names your association's disease, copy its MONDO id into `existing_association_mondo_id`, whatever the association's status.{% endif %}
 - Combining closely related paper-level entities of slightly different scope into one association is fine and expected, for example when they all match one PanelApp Australia association, or when the papers describe them as one spectrum.
+- An association that follows a ClinGen lumping (STEP 2) can cover several diseases that PanelApp Australia lists separately. Its status is "existing" when PanelApp Australia curates at least one of them with this MoI.
 - Adding new associations is expected: a phenotype expansion or a disease PanelApp Australia does not list (status "new_disease"), or a new MoI for a disease it lists (status "new_moi"). A disease that PanelApp Australia lists only under a different MoI is a new association with status "new_moi"{% if copies_gencc_terms %}; you may still copy that disease's GenCC term when the term does not specify the other MoI.{% else %}.{% endif %}

@@ -13,6 +13,7 @@ from anthropic.types import Message
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
 from palit.assess_relevance import STAGE as RELEVANCE_STAGE
 from palit.assess_relevance import Refusal, refused_assessment
+from palit.clingen import ClingenCuration
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.gencc import MondoRef
 from palit.generate_report import (
@@ -1253,6 +1254,7 @@ def _gene(
             else (_target_entry(MENDELIOME_PANEL_ID, current_rating, review_state),)
         ),
         refused_papers=[],
+        clingen_curations=[],
     )
 
 
@@ -1482,6 +1484,47 @@ def _article(html: str, anchor: str) -> str:
         if depth == 0:
             break
     return html[start:position]
+
+
+def test_clingen_curations_shown_to_the_aggregation_are_listed_under_the_gene(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    curation = {
+        "mondo_id": "MONDO:0000010",
+        "disease_label": "GENEA-related disease",
+        "moi": "Autosomal dominant",
+        "classification": "Definitive",
+        "date": "2023-06-15",
+        "expert_panel": "Test Gene Curation Expert Panel",
+        "report_url": "https://search.clinicalgenome.org/kb/gene-validity/CGGV:assertion_x",
+        "evidence_summary": "Disease A & disease B have been lumped into one disease entity.",
+    }
+    with sqlite3.connect(db_path) as conn:
+        (stored,) = conn.execute(
+            "SELECT panelapp_context_json FROM gene_aggregations WHERE hgnc_id = 1"
+        ).fetchone()
+        context = {**json.loads(stored), "clingen_curations": [curation]}
+        conn.execute(
+            "UPDATE gene_aggregations SET panelapp_context_json = ? WHERE hgnc_id = 1",
+            (json.dumps(context),),
+        )
+    results = _load(db_path, hgnc_resolver)
+    (known,) = results.known_genes
+    assert known.clingen_curations == [ClingenCuration(**curation)]
+
+    html = _render(db_path, results)
+    block = re.search(
+        r'<details class="clingen-curations">.*?</table>', _article(html, "known-gene-1"), re.DOTALL
+    )
+    assert block is not None
+    text = " ".join(_strip_tags(block.group()).split())
+    assert "ClinGen curations (1)" in text
+    assert "GENEA-related disease MONDO:0000010" in text
+    assert "Disease A &amp; disease B have been lumped into one disease entity." in text
+    assert "Autosomal dominant Definitive Test Gene Curation Expert Panel 2023-06-15" in text
+    assert f'<a href="{curation["report_url"]}"' in block.group()
+    # The other gene's aggregation was stored without ClinGen curations.
+    assert "clingen-curations" not in _article(html, "novel-gene-3")
 
 
 def test_association_headings_show_the_relation_then_the_corpus_rating(

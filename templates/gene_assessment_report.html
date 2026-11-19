@@ -313,6 +313,40 @@
     </section>
     {% endmacro %}
 
+    {# ClinGen's curations of the gene, which the aggregation follows when it lumps or splits #}
+    {% macro clingen_curations(gene) %}
+    {% if gene.clingen_curations %}
+    <details class="clingen-curations">
+        <summary><strong>ClinGen curations ({{ gene.clingen_curations | length }})</strong></summary>
+        <div>
+            <p class="muted"><em>Gene-disease validity curations by ClinGen expert panels. The associations above follow their lumping and splitting for the diseases they cover; each association's grouping rationale says where. An expert panel curates only some of a gene's diseases, so a disease missing here has not been judged by ClinGen.</em></p>
+            <table class="disease-entity-table">
+                <thead><tr><th>Disease</th><th>MoI</th><th>Classification</th><th>Expert panel</th><th>Report</th></tr></thead>
+                <tbody>
+                    {% for curation in gene.clingen_curations %}
+                    <tr>
+                        <td>
+                            {{ curation.disease_label }} <span class="muted">{{ curation.mondo_id }}</span>
+                            {% if curation.evidence_summary %}
+                            <details class="clingen-summary">
+                                <summary>Evidence summary</summary>
+                                <p>{{ curation.evidence_summary }}</p>
+                            </details>
+                            {% endif %}
+                        </td>
+                        <td>{{ curation.moi }}</td>
+                        <td>{{ curation.classification }}</td>
+                        <td>{{ curation.expert_panel }}</td>
+                        <td><a href="{{ curation.report_url }}" target="_blank" rel="noopener">{{ curation.date }}</a></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </details>
+    {% endif %}
+    {% endmacro %}
+
     {# Reports below the bar for new associations, and papers whose reports all fall under an exclusion #}
     {% macro unassessed_reports(gene) %}
     {% if gene.unassessed_reports %}
@@ -436,6 +470,7 @@
             {% endif %}
         </div>
 
+        {{ clingen_curations(gene) }}
         {{ unassessed_reports(gene) }}
         {{ refused_papers(gene) }}
 

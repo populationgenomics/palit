@@ -4,9 +4,10 @@
 One request per gene. The model groups the contributing papers' disease entities
 into associations, anchored on what PanelApp Australia already curates for the
 gene (its entries and reviews on every panel that holds it, from the PanelApp
-snapshot), and assesses each association on its own. GenCC's disease terms for
-the gene are offered as names; an association named by one takes its MONDO term,
-and the others get theirs from ``map-mondo``. In a panel-scoped run, each
+snapshot), and assesses each association on its own. ClinGen's curations of the
+gene are the precedent for lumping and splitting. GenCC's disease terms for the
+gene are offered as names; an association named by one takes its MONDO term, and
+the others get theirs from ``map-mondo``. In a panel-scoped run, each
 association also says why it fits the scope panel, condensed from the
 ``scope_rationale`` its papers' disease entities got in extraction. A gene MODEL
 refused goes to FALLBACK_MODEL in the next attempt (see :mod:`palit.llm`). A
@@ -32,6 +33,7 @@ from anthropic.types import Message
 from anthropic.types.output_config_param import OutputConfigParam
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from palit.clingen import ClingenCuration, ClingenIndex, fetch_clingen
 from palit.extract_evidence import evaluations_of_gene
 from palit.gencc import GenccIndex, GeneGencc, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
@@ -482,9 +484,11 @@ def dispute_blocks(
 
 @dataclass(frozen=True)
 class PanelAppContext:
-    """What PanelApp Australia curates for one gene, as shown to the model."""
+    """What PanelApp Australia curates for one gene, with the gene's GenCC records and
+    ClinGen curations, as shown to the model."""
 
     gencc: GeneGencc
+    clingen: tuple[ClingenCuration, ...]
     panel_entries: tuple[PanelEntry, ...]  # every panel holding the gene, target panels first
     panel_reviews: list[PanelReviews]  # every panel holding the gene as a gene entry
 
@@ -493,6 +497,7 @@ class PanelAppContext:
         return {
             "gencc_terms": [asdict(t) for t in self.gencc.terms],
             "disputes": [asdict(d) for d in self.gencc.disputes],
+            "clingen_curations": [asdict(c) for c in self.clingen],
             "panel_entries": [
                 {
                     "panel_id": e.panel_id,
@@ -672,6 +677,7 @@ def render_prompt(
         evidence_extractions=json.dumps(prompt_evidence, indent=2),
         variant_rows=variant_rows,
         gencc_terms=context.gencc.terms,
+        clingen_curations=context.clingen,
         panel_entries=context.panel_entries,
         reviews_section=format_panel_reviews(context.panel_reviews),
         dispute_blocks=dispute_blocks(context.gencc, evidence_list, doi_to_paper_id),
@@ -706,6 +712,7 @@ class _GenePreparation:
     panel_date: str
     entries: dict[int, tuple[PanelEntry, ...]]  # every panel's entries, by gene
     gencc: GenccIndex
+    clingen: ClingenIndex
     prompt_path: Path
     # The scope panel's description in a panel-scoped run, for the prompt; None otherwise
     scope_panel: str | None
@@ -770,6 +777,7 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | SkipR
 
     context = PanelAppContext(
         gencc=prep.gencc.for_gene(hgnc_id),
+        clingen=prep.clingen.for_gene(hgnc_id),
         panel_entries=entries,
         panel_reviews=panel_reviews(hgnc_id, prep.panelapp_client, entries),
     )
@@ -1351,6 +1359,7 @@ def main(
         list(panelapp_client.get_all_panel_data().values()), panel_data.panel_ids
     )
     gencc = fetch_gencc(db_path.parent, fetch_mondo(db_path.parent))
+    clingen = fetch_clingen(db_path.parent)
 
     db_processor = PaperBatchProcessor(db_path)
     logger.info(f"{db_processor.count_remaining():,} genes of this run without an assessment")
@@ -1361,6 +1370,7 @@ def main(
         panel_date=panel_date,
         entries=entries,
         gencc=gencc,
+        clingen=clingen,
         prompt_path=prompt_path,
         scope_panel=scope_panel,
     )

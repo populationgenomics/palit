@@ -37,6 +37,7 @@ from palit.assess_genes import (
     format_panel_reviews,
     panel_reviews,
 )
+from palit.clingen import ClingenIndex, fetch_clingen
 from palit.gencc import GenccIndex, fetch_gencc, fetch_mondo
 from palit.hgnc import HgncResolver
 from palit.llm import (
@@ -132,6 +133,7 @@ class _Preparation:
     panel_date: str
     entries: dict[int, tuple[PanelEntry, ...]]  # every panel's entries, by gene
     gencc: GenccIndex
+    clingen: ClingenIndex
     template: Template
     panel_data: PanelGeneData  # the target panels
 
@@ -155,6 +157,7 @@ def prepare_gene(hgnc_id: int, prep: _Preparation) -> _TriageItem | None:
     entries = prep.entries.get(hgnc_id, ())
     context = PanelAppContext(
         gencc=prep.gencc.for_gene(hgnc_id),
+        clingen=prep.clingen.for_gene(hgnc_id),
         panel_entries=entries,
         panel_reviews=panel_reviews(hgnc_id, prep.panelapp_client, entries),
     )
@@ -180,6 +183,7 @@ def prepare_gene(hgnc_id: int, prep: _Preparation) -> _TriageItem | None:
         hgnc_symbol=hgnc_symbol,
         evidence_extractions=json.dumps(prompt_evidence, indent=2),
         gencc_terms=context.gencc.terms,
+        clingen_curations=context.clingen,
         panel_entries=context.panel_entries,
         reviews_section=format_panel_reviews(context.panel_reviews),
         panel_date=prep.panel_date,
@@ -523,6 +527,7 @@ def main(
             list(panelapp_client.get_all_panel_data().values()), panel_data.panel_ids
         ),
         gencc=fetch_gencc(db_path.parent, fetch_mondo(db_path.parent)),
+        clingen=fetch_clingen(db_path.parent),
         template=env.get_template(PROMPT_PATH.name),
         panel_data=panel_data,
     )

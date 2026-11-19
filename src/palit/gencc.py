@@ -15,15 +15,15 @@ fetched separately, so a stage that also needs the ontology itself parses it onc
 
 import csv
 import logging
-import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-import httpx2
 import pronto
+
+from palit.reference_files import download_if_stale
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,6 @@ GENCC_URL = "https://search.thegencc.org/download/action/submissions-export-tsv"
 MONDO_OBO_URL = "https://github.com/monarch-initiative/mondo/releases/latest/download/mondo.obo"
 GENCC_FILENAME = "gencc_submissions.tsv"
 MONDO_FILENAME = "mondo.obo"
-MAX_DOWNLOAD_AGE_SECONDS = 7 * 24 * 3600
 
 DisputeClass = Literal["Disputed", "Refuted"]
 
@@ -208,24 +207,6 @@ def format_gencc_terms(gene: GeneGencc) -> str:
 
 
 NO_GENCC_TERMS = "GenCC has no submissions for this gene."
-
-
-def download_if_stale(url: str, path: Path) -> None:
-    """Download *url* to *path* unless *path* exists and is less than a week old."""
-    if path.exists():
-        age = time.time() - path.stat().st_mtime
-        if age < MAX_DOWNLOAD_AGE_SECONDS:
-            logger.info("Using cached %s (age: %.0fh)", path, age / 3600)
-            return
-        logger.info("Re-downloading stale %s (age: %.0fh)", path, age / 3600)
-    else:
-        logger.info("Downloading %s", url)
-
-    with httpx2.Client(follow_redirects=True, timeout=120) as client:
-        response = client.get(url)
-        response.raise_for_status()
-        path.write_bytes(response.content)
-    logger.info("Downloaded %s bytes to %s", f"{len(response.content):,}", path)
 
 
 def fetch_mondo(data_dir: Path) -> pronto.Ontology:

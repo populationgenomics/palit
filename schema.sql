@@ -136,9 +136,10 @@ CREATE TABLE gene_aggregations (
     assessment_raw TEXT NOT NULL,          -- Message JSON as returned by the API
     paper_id_mapping JSON NOT NULL,        -- {AuthorYear: DOI} mapping used during assessment
     filtered_papers_json JSON,             -- [{doi, reason}] removed by the preprint gate; NULL when none
-    -- PanelApp Australia's curation and the GenCC records shown to the model:
+    -- PanelApp Australia's curation and the GenCC and ClinGen records shown to the model:
     --   {"gencc_terms": [GenCC disease terms of the gene, all submitters],
     --    "disputes": [Disputed/Refuted GenCC submissions, any submitter],
+    --    "clingen_curations": [ClinGen's gene-disease validity curations of the gene],
     --    "panel_entries": [entries on every panel holding the gene, target panels first]}
     panelapp_context_json JSON NOT NULL,
     -- Reviews on every panel holding the gene as a gene entry, from the PanelApp snapshot:

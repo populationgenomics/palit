@@ -39,6 +39,7 @@ from palit.assess_genes import (
     store_gene_aggregation,
     uncopied_citations,
 )
+from palit.clingen import ClingenCuration, ClingenIndex
 from palit.gencc import GenccIndex, GeneGencc, MondoRef
 from palit.hgnc import HgncResolver
 from palit.llm import (
@@ -326,6 +327,7 @@ def _item(gencc_index: GenccIndex, evidence: list[dict[str, Any]] | None = None)
         filtered_papers=None,
         context=PanelAppContext(
             gencc=gencc_index.for_gene(GENEA),
+            clingen=(),
             panel_entries=(MENDELIOME_ENTRY,),
             panel_reviews=[],
         ),
@@ -678,7 +680,7 @@ def test_new_associations_need_a_qualifying_family(gencc_index: GenccIndex, stat
         assert f"{status} association" in problem and "unassessed_reports" in problem
 
 
-UNCURATED = PanelAppContext(gencc=GeneGencc(), panel_entries=(), panel_reviews=[])
+UNCURATED = PanelAppContext(gencc=GeneGencc(), clingen=(), panel_entries=(), panel_reviews=[])
 
 
 def _existing_without_gencc_row() -> dict[str, Any]:
@@ -847,9 +849,11 @@ def _context(
     gencc: GenccIndex,
     hgnc_id: int,
     reviews: list[PanelReviews] | None = None,
+    clingen: tuple[ClingenCuration, ...] = (),
 ) -> PanelAppContext:
     return PanelAppContext(
         gencc=gencc.for_gene(hgnc_id),
+        clingen=clingen,
         panel_entries=entries[hgnc_id],
         panel_reviews=reviews or [],
     )
@@ -886,6 +890,58 @@ def test_prompt_lists_gencc_terms_without_classes(
     assert "obsolete MONDO term" not in prompt
     for gencc_rating in ("Strong", "Moderate", "Limited"):
         assert f"class {gencc_rating}" not in prompt
+
+
+SMAD6_LIKE_CURATION = ClingenCuration(
+    mondo_id="MONDO:0000002",
+    disease_label="disease B",
+    moi="Autosomal dominant",
+    classification="Definitive",
+    date="2023-06-15",
+    expert_panel="Test Gene Curation Expert Panel",
+    report_url="https://search.clinicalgenome.org/kb/gene-validity/CGGV:assertion_x",
+    evidence_summary="Disease A and disease B have been lumped into one disease entity.\n\n"
+    "28 probands in 3 publications are included in this curation.",
+)
+
+
+def test_prompt_lists_clingen_curations_with_their_evidence_summaries(
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
+) -> None:
+    summary_missing = dataclasses.replace(
+        SMAD6_LIKE_CURATION,
+        disease_label="disease C",
+        classification="Limited",
+        evidence_summary="",
+    )
+    context = _context(
+        panel_entries, gencc_index, GENEA, clingen=(SMAD6_LIKE_CURATION, summary_missing)
+    )
+    prompt = _render(context, "GENEA")
+    assert (
+        '- MONDO:0000002 "disease B"; MoI Autosomal dominant; Definitive; '
+        "Test Gene Curation Expert Panel; 2023-06-15\n"
+        "  Evidence summary:\n"
+        "    Disease A and disease B have been lumped into one disease entity.\n"
+        "\n"
+        "    28 probands in 3 publications are included in this curation.\n"
+    ) in prompt
+    assert (
+        '- MONDO:0000002 "disease C"; MoI Autosomal dominant; Limited; '
+        "Test Gene Curation Expert Panel; 2023-06-15\n"
+        "  Evidence summary: not available for this curation.\n"
+    ) in prompt
+    assert "no ClinGen expert panel has curated" not in prompt
+    assert context.to_json()["clingen_curations"][0]["disease_label"] == "disease B"
+
+
+def test_prompt_says_when_clingen_has_curated_nothing_for_the_gene(
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
+) -> None:
+    context = _context(panel_entries, gencc_index, GENEA)
+    prompt = _render(context, "GENEA")
+    assert "None: no ClinGen expert panel has curated a disease of GENEA." in prompt
+    assert context.to_json()["clingen_curations"] == []
 
 
 def test_obsolete_gencc_term_is_marked(
@@ -997,6 +1053,7 @@ def _prepare(
         panel_date=panel_date,
         entries=entries_by_gene(list(snapshot.values()), [MENDELIOME_PANEL_ID]),
         gencc=gencc_index,
+        clingen=ClingenIndex({}),
         prompt_path=PROMPT_PATH,
         scope_panel=scope_panel,
     )

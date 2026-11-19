@@ -22,6 +22,7 @@ from markupsafe import Markup
 
 from palit.assess_genes import STAGE as ASSESS_GENES_STAGE
 from palit.assess_relevance import STAGE as RELEVANCE_STAGE
+from palit.clingen import ClingenCuration
 from palit.extract_evidence import STAGE as EXTRACTION_STAGE
 from palit.extract_evidence import evaluations_of_gene
 from palit.gencc import MondoRef
@@ -499,6 +500,7 @@ class GeneAssessment:
     prefill: PrefillData
     target_entries: tuple[PanelEntry, ...]  # the gene's entries on the target panels
     refused_papers: list[RefusedPaper]
+    clingen_curations: list[ClingenCuration]  # the ClinGen curations the aggregation was shown
 
     @property
     def is_novel(self) -> bool:
@@ -1412,10 +1414,11 @@ def load_gene(
     current_rating = target_panel_data.highest_confidence(hgnc_id) if holding else None
     prefill_panel_id = holding[0] if holding else target_panel_data.panel_ids[0]
 
+    panelapp_context = json.loads(row["panelapp_context_json"])
     rated_associations = load_associations(
         cursor,
         hgnc_id,
-        json.loads(row["panelapp_context_json"]),
+        panelapp_context,
         display_ids,
         all_panels_data,
         gene_variants,
@@ -1466,6 +1469,11 @@ def load_gene(
         prefill=prefill,
         target_entries=target_entries,
         refused_papers=refused_papers,
+        # An aggregation stored before assess-genes read ClinGen's curations has no such key.
+        clingen_curations=[
+            ClingenCuration(**curation)
+            for curation in panelapp_context.get("clingen_curations", [])
+        ],
     )
 
 

@@ -40,7 +40,7 @@ The system uses multiple databases:
 
 Both main and screening workflows use the same schema for consistency, allowing the same tools (e.g., `assess-relevance`) to work on both databases.
 
-Stages that read the GenCC submissions or the MONDO ontology download `gencc_submissions.tsv` and `mondo.obo` into the run database's directory (e.g. `data/`) when the files are missing or older than 7 days.
+Stages that read the GenCC submissions or the MONDO ontology download `gencc_submissions.tsv` and `mondo.obo` into the run database's directory (e.g. `data/`) when the files are missing or older than 7 days. `triage-expansion` and `assess-genes` download ClinGen's gene-disease validity curations the same way: the table of curations (`clingen_gene_validity.csv`) and the archive with their evidence summaries (`clingen_gene_validity_json.tar.gz`). ClinGen publishes both under CC0 and replaces them in place, so the copy next to the run database is the record of what a run read.
 
 ### Claude API
 
@@ -218,7 +218,18 @@ uv run palit extract-evidence
 #    Australia (existing, new disease or new MoI), the rating PanelApp gives it
 #    as judged from those entries and reviews, and its rating from the evidence
 #    in this run's corpus. GenCC's disease terms for the gene, from every
-#    submitter, are offered as names; GenCC classes are not shown. A gene is
+#    submitter, are offered as names; GenCC classes are not shown.
+#    ClinGen's curations of the gene decide lumping and splitting for the
+#    diseases they cover: each curation's disease, MoI, classification, expert
+#    panel, date and evidence summary are in the prompt, and the model groups
+#    the disease entities that a summary says were lumped, and keeps apart
+#    those it says were split. It departs only for a stated reason, such as
+#    later papers that show a distinct mechanism. A disease or MoI that no
+#    curation covers is grouped by the general criteria, as for a gene ClinGen
+#    has not curated; this includes a phenotype reported after a curation's
+#    date. A ClinGen classification is context and sets no rating. Each
+#    association's grouping rationale says which curation it follows, and the
+#    report lists the gene's curations with links to ClinGen's reports. A gene is
 #    skipped when the target panels have already reviewed all of its papers:
 #    their entries for the gene and those entries' reviews cite every paper (by
 #    PMID, or by DOI in any letter case), and every entry of it there is known

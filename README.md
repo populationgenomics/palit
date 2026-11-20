@@ -172,11 +172,22 @@ uv run palit download-papers register
 #    many of its entities list them.
 #    Each disease entity carries three family counts. The reported count is
 #    every family the paper reports. The qualifying count (`family_count`) is
-#    the families whose genotype passes the qualifying variant gate. The
-#    independent count drops families that share the variant's ancestral
-#    origin; criteria A to C use it. For registries and case series without
-#    family structure, the qualifying and independent counts are derived from
-#    the patients who carry a qualifying genotype.
+#    the families whose genotype passes the qualifying variant gate. A
+#    cohort, registry or panel study that calls its patients' variants
+#    pathogenic or likely pathogenic without the per-patient detail is counted
+#    on that classification. The independent count drops families that share
+#    the variant's ancestral origin; criteria A to C use it. A variant in more
+#    than 10 families counts every one of them, also with a proven founder
+#    haplotype, and this is decided before any collapse. A variant in fewer
+#    families counts once per proven haplotype, or else once per country or
+#    ancestry, with the families of unreported ancestry as one group. For
+#    registries and case series without family structure, the qualifying and
+#    independent counts are derived from the patients who carry a qualifying
+#    genotype. Extraction and aggregation read these rules from one prompt
+#    partial (prompts/partials/independent_family_count.j2). Aggregation takes
+#    each paper's qualifying count as given and changes it only for reasons
+#    that arise across papers: overlapping cohorts, a variant another paper
+#    establishes, or its gnomAD figures.
 #    An initial paper is extracted only when assess-relevance found it relevant
 #    or PanelApp cites it for one of the run's genes (step 6), even if a PDF is
 #    on file; expansion papers are always extracted. The genes with evidence

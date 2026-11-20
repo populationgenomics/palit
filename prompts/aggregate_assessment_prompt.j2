@@ -95,6 +95,7 @@ A reported variant counts toward Criterion A/B/C only if it QUALIFIES under all 
         (i) Segregation with affected status across ≥2 informative meioses (multiple affected carriers, unaffected non-carriers documented in the family).
         (ii) Variant-specific functional validation — an assay tests the actual reported variant (not just gene knockdown) and demonstrates a mechanistic deficit.
         (iii) Recurrence as the same variant in affected individuals from demonstrably distinct populations or independent ancestries.
+    (d) **Classified pathogenic by the paper, details not given** — a cohort, registry or panel study states that a patient carries a pathogenic or likely pathogenic variant in the gene (for a biallelic entity: a biallelic pathogenic or likely pathogenic genotype), by a stated standard such as the ACMG/AMP criteria, without the per-patient detail that (a)–(c) need: the variants are in a supplement that is not part of the PDF, or are not listed. Accept the paper's classification for these patients, and say in `count_reduction_reasoning` how many families are counted on it. Where the paper gives a patient's variant and the evidence for it, (a)–(c) decide instead, and a variant the paper calls of uncertain significance never qualifies.
 
 (2) No contradictory population evidence — population allele frequency must be plausible for the reported MoI:
     - Autosomal dominant (Monoallelic): gnomAD allele frequency ≤ 0.0001 (1 in 10,000)
@@ -105,7 +106,16 @@ A reported variant counts toward Criterion A/B/C only if it QUALIFIES under all 
 
 (3) Variant type is consistent with the assumed disease mechanism (e.g., truncating variant in a loss-of-function disease; activating missense in a gain-of-function disease).
 
+Conditions (2) and (3) are checked for the variants that are given. A patient counted under (1)(d), whose variant is not given, has nothing to check them against.
+
 BIALLELIC ENTITIES: For a biallelic entity the gate applies to the genotype, not to a single allele. A family counts only when it is homozygous for a qualifying variant, or when both of its variants pass the gate and are in trans, with phase confirmed (parental testing, segregation in the family, or read-based phasing) or reasonably inferred (e.g., one tested parent carries only one of the two variants). Where this gene also has a monoallelic disease with overlapping features, a family with one qualifying allele and a second variant that is unassessed or fails the gate does not count toward the biallelic entity: the qualifying allele alone may explain the phenotype.
+
+PER-PAPER COUNTS ARE THE STARTING POINT: Each paper's extraction applied this gate to the full text of the paper, which you do not see. Take the `family_count` of each paper-level entity as that paper's qualifying families. Change it only for a reason that arises across papers, and state each change in `count_reduction_reasoning`:
+- families that another contributing paper already reports (previously_reported_sources, overlapping cohorts);
+- a variant that another contributing paper establishes under condition (1)(c), which raises the count (GATE ACROSS PAPERS);
+- a variant whose gnomAD figures in the VARIANTS table fail condition (2);
+- the BIALLELIC ENTITIES rule for a gene that also has a monoallelic disease with overlapping features.
+Do not lower a paper's count because its extraction does not list the genotypes behind it: a cohort counted under (1)(d), or with its variants in a supplement, stays counted.
 
 GATE ACROSS PAPERS: A variant passes condition (1)(c) when ANY contributing paper for this gene establishes it there — variant-specific functional validation, segregation across informative meioses, or recurrence in distinct populations — even when another paper reporting the same variant lacks that evidence itself (e.g., a registry that reports only genotypes for a recurrent splice variant). Name the establishing paper (its paper ID) in `count_reduction_reasoning` or in the criterion rationale. Each paper's extraction is gated on that paper's own evidence, so a paper's per-paper `family_count` may be raised here for this reason. This does not relax any other gate condition: the population-frequency thresholds of condition (2), the mechanism consistency of condition (3), the phase requirement under BIALLELIC ENTITIES, and the CNV, gene-fusion and digenic/oligogenic exclusions apply unchanged.
 
@@ -117,24 +127,12 @@ FAMILY COUNTS — report three counts per entity: reported, qualifying and indep
 
 `family_count` (qualifying): the families whose genotype passes the QUALIFYING VARIANT GATE, counted among the reported families plus any derived under COHORTS WITHOUT FAMILY STRUCTURE below, aggregated across papers with the same deduplication. Same counting unit. Do NOT reduce this for shared alleles, shared ancestry, or geography. Null only when no contributing paper gives usable patient or family numbers for this entity. `family_count` can exceed `reported_family_count` when some families are derived from cohorts.
 
-`independent_family_count` (≤ family_count): of those, how many are independent observations of the gene–disease link — families that do not descend from a common ancestral origin of the variant. Criteria A/B/C use this count. It is the sum of:
-- each family whose qualifying variant is not shared with another family → 1;
-- each de novo–confirmed family (parents wild-type) → 1, even if the variant recurs (a de novo event is a new origin; recurrent de novo is the strongest evidence);
-- for each variant shared by ≥2 inherited (non–de novo) families, that group's contribution by the FIRST matching rule:
-  1. shared haplotype shown across the carriers → 1 (one proven origin);
-  2. families from different countries/continents or clearly distinct ancestries → count each (a single founder allele rarely spans distinct ancestries);
-  3. otherwise — same community/consanguineous cluster, same broad population, or ancestry not reported → 1 (treat as one origin; missing ancestry does NOT make families independent).
-
-HARD FLOOR (overrides rule 3 only): a variant shared by MORE THAN 10 families is too large a signal to fold into a single data point — count it at family size (less any explicitly documented close relatives), and record the likely shared origin as a founder caveat rather than discarding the recurrence. (A single consanguineous pedigree remains ONE family and never reaches this floor.)
-
-Founder/recurrence is a confidence caveat (`founder_or_recurrent_variant`); the shared-origin collapse above is its only count effect — do not penalise twice, and it never feeds Criterion E.
-
-Always set `count_reduction_reasoning` to the qualifying and independent counts plus the per-group disposition, e.g. "7 qualifying: 5 distinct variants → 5; L14V in 2 Han/Shanghai families, no haplotype → 1; independent 6". Write "No reduction (N families)" only when the counts are equal and no family was derived under COHORTS WITHOUT FAMILY STRUCTURE.
+{% with paper_level = false %}{% include "partials/independent_family_count.j2" %}{% endwith %}
 
 COHORTS WITHOUT FAMILY STRUCTURE: Registries, natural-history cohorts and case series often report patients without grouping them into families. Do not leave `family_count` null for them. Derive the families from the patients who carry a qualifying genotype:
   (a) The paper states how many families, pedigrees or probands the patients come from → that number (it is also `reported_family_count`).
   (b) Otherwise → one family per patient.
-A genotype stated for the whole cohort (e.g., "all patients were homozygous for c.1234+6T>C") applies to every patient in it. Only affected patients count: embryos, fetuses without a reported disease phenotype, cell lines, iPSCs, biopsies and other specimens never add a family unless the paper ties them to a distinct affected individual not already counted. When two cohorts may include the same patients (same registry, same centre or consortium, overlapping recruitment), do not add them: take the larger and state the possible overlap in `count_reduction_reasoning`. A derived count is a family count like any other: the shared-origin collapse and the HARD FLOOR above apply to it. State the rule and the numbers in `count_reduction_reasoning`, e.g. "120 registry patients, no family structure, all homozygous c.1234+6T>C → (b) 120 families; one variant in >10 families → hard floor, independent 120". `reported_family_count` stays null under (b), because the paper reports no families.
+A genotype stated for the whole cohort (e.g., "all patients were homozygous for c.1234+6T>C") applies to every patient in it. Only affected patients count: embryos, fetuses without a reported disease phenotype, cell lines, iPSCs, biopsies and other specimens never add a family unless the paper ties them to a distinct affected individual not already counted. When two cohorts may include the same patients (same registry, same centre or consortium, overlapping recruitment), do not add them: take the larger and state the possible overlap in `count_reduction_reasoning`. A derived count is a family count like any other: the rules for `independent_family_count` above apply to it, the MORE-THAN-10 RULE first. State the rule and the numbers in `count_reduction_reasoning`, e.g. "120 registry patients, no family structure, all homozygous c.1234+6T>C → (b) 120 families; one variant in >10 families → more-than-10 rule, independent 120". `reported_family_count` stays null under (b), because the paper reports no families.
 
 EVIDENCE WEAKENING FACTORS — STRUCTURED CHECKLIST (PER ENTITY):
 

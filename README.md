@@ -224,12 +224,21 @@ uv run palit extract-evidence
 #    panel, date and evidence summary are in the prompt, and the model groups
 #    the disease entities that a summary says were lumped, and keeps apart
 #    those it says were split. It departs only for a stated reason, such as
-#    later papers that show a distinct mechanism. A disease or MoI that no
-#    curation covers is grouped by the general criteria, as for a gene ClinGen
-#    has not curated; this includes a phenotype reported after a curation's
-#    date. A ClinGen classification is context and sets no rating. Each
-#    association's grouping rationale says which curation it follows, and the
-#    report lists the gene's curations with links to ClinGen's reports. A gene is
+#    later papers that show a distinct mechanism. For a disease or MoI that
+#    no curation covers, PanelApp Australia's existing listing decides next:
+#    diseases it lists separately stay separate, and what it lists as one
+#    disease stays one. The general criteria (mechanism, phenotypic
+#    variability, the papers' framing) place what neither addresses, such as
+#    a phenotype reported after a curation's date: as a phenotype expansion
+#    of an existing association, which then keeps its status, or as a new
+#    disease. That ClinGen or PanelApp does not mention a phenotype is no
+#    reason to split it off. Extraction, expansion triage and aggregation
+#    read the criteria from one prompt partial
+#    (prompts/partials/lump_split_criteria.j2); extraction applies them to
+#    one paper. A ClinGen classification is context and sets no rating. Each
+#    association's grouping rationale says which curation it follows, or
+#    which criterion a new association rests on, and the report lists the
+#    gene's curations with links to ClinGen's reports. A gene is
 #    skipped when the target panels have already reviewed all of its papers:
 #    their entries for the gene and those entries' reviews cite every paper (by
 #    PMID, or by DOI in any letter case), and every entry of it there is known

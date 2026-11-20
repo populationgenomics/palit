@@ -1,0 +1,19 @@
+{% set unit = "disease entity" if paper_level else "association" %}{% set source = "the paper" if paper_level else "the papers" %}**STEP 1 — SPLIT BY INHERITANCE MODE (mandatory, no exceptions):**
+Each {{ unit }} must have EXACTLY ONE inheritance_mode. When an autosomal gene's same phenotype has evidence for BOTH monoallelic and biallelic inheritance{% if not paper_level %} across the contributing papers{% endif %}, create TWO separate entries — one per MoI — even if the description and disease_mechanism are otherwise identical. (This monoallelic/biallelic split applies to autosomal genes only; every {{ unit }} of an X-linked gene is "X-linked" — see the location-first rule under inheritance_mode below.) PanelApp curates each gene–disease relationship per MoI, so per-MoI family and patient counts are required for downstream classification. Do NOT fold mixed-MoI evidence into a single entry; combination modes are not permitted.
+
+**STEP 2 — WITHIN A SINGLE MoI, decide LUMP vs SPLIT using ClinGen criteria (weigh together):**
+
+1. **Molecular Mechanism** (strongest criterion): Different mechanisms (LOF vs GOF, domain-specific) for different phenotypes → SPLIT. Same mechanism → LUMP.
+
+2. **Phenotypic Variability**: If intrafamilial variability ≈ interfamilial variability → LUMP (variable expressivity, not distinct diseases). If families differ more from each other than members within families → consider splitting.
+
+3. **Paper Framing**: Distinct disease names → favors splitting. Described as "spectrum" or "variable expressivity" → favors lumping.
+
+**Phenotype expansion or new disease:**
+Criteria 1–3 also decide what a further phenotype is. Further features, or a wider spectrum, of a disease with the same mechanism and MoI are a PHENOTYPE EXPANSION of that disease: they belong to its {{ unit }} and are described there. A phenotype is a disease of its own, with its own {{ unit }}, when the criteria separate it: a different mechanism, families that differ from those of the other disease more than its own families differ from each other, or {{ source }} presenting it as a distinct disease and not as part of a spectrum.
+
+**Isolated Features of Syndromes:**
+If a feature (e.g., cardiomyopathy) is part of a named syndrome in {{ source }}, report the SYNDROME, not the isolated feature, unless {{ source }} present{% if paper_level %}s{% endif %} it as a distinct disease (see the next paragraph).
+
+**Distinct entities that overlap:**
+An entity defined by the absence of another entity's core phenotype (e.g., isolated craniosynostosis without immunodeficiency versus a hyper-IgE syndrome), or caused by a different molecular mechanism, stays a separate {{ unit }}. A phenotype counts as absent only when {{ source }} report{% if paper_level %}s{% endif %} that the patients do not have it. A feature that was not assessed or not reported is not absent.

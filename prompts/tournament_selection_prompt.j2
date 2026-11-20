@@ -12,6 +12,7 @@ A gene may cause multiple DISTINCT diseases (disease entities), and the SAME phe
 - Phenotype A with monoallelic inheritance: Epilepsy syndrome (3 independent families)
 - Phenotype B with biallelic inheritance: Cardiomyopathy (3 independent families)
 These are counted SEPARATELY, not summed. Each phenotype-inheritance combination needs ~3+ independent families.
+Further features of a disease that is already represented, with the same mechanism and mode of inheritance, are a phenotype expansion of that disease and count toward it. A different disease, by mechanism or by how the papers present it, is a disease entity of its own.
 
 SELECTION PRIORITIES (ranked):
 
@@ -72,7 +73,7 @@ Example output (selecting only the 2 relevant papers from the 4 presented):
   "papers": [0, 3]
 }
 
-Rationale: Paper 0 establishes NIN-Seckel with 8 families. Paper 3 adds a new phenotype (renal). Paper 1 is basic biology (excluded). Paper 2 is treatment-focused (excluded).
+Rationale: Paper 0 establishes NIN-Seckel with 8 families. Paper 3 adds three families and widens the phenotype (renal anomalies). Paper 1 is basic biology (excluded). Paper 2 is treatment-focused (excluded).
 
 After completing your selection, validate that the output fits the response format and task criteria. If validation fails, briefly self-correct and regenerate the output.
 

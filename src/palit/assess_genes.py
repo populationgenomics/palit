@@ -638,6 +638,7 @@ def render_prompt(
     context: PanelAppContext,
     panel_date: str,
     scope_panel: str | None,
+    disaggregation_review: bool,
 ) -> RenderedPrompt:
     """The aggregation prompt for one gene, with its paper and variant ID mappings.
 
@@ -645,6 +646,7 @@ def render_prompt(
     IDs for the variant table. The LLM refers to papers and variants by these IDs;
     the caller maps them back to DOIs and variant keys after receiving the response.
     *scope_panel* is the scope panel's description in a panel-scoped run, None otherwise.
+    In a *disaggregation_review*, each summary also draws on PanelApp Australia's reviews.
     """
     paper_id_to_doi, doi_to_paper_id = generate_paper_ids(evidence_list)
     variant_rows, variants_by_id = variant_table(variants, doi_to_paper_id)
@@ -683,6 +685,7 @@ def render_prompt(
         dispute_blocks=dispute_blocks(context.gencc, evidence_list, doi_to_paper_id),
         panel_date=panel_date,
         scope_panel=scope_panel,
+        disaggregation_review=disaggregation_review,
         copies_gencc_terms=True,
     )
     return RenderedPrompt(text=rendered, paper_id_to_doi=paper_id_to_doi, variants=variants_by_id)
@@ -716,6 +719,9 @@ class _GenePreparation:
     prompt_path: Path
     # The scope panel's description in a panel-scoped run, for the prompt; None otherwise
     scope_panel: str | None
+    # A review of how a gene's entry splits into associations: no gene is skipped for
+    # being reviewed already, and each summary also draws on PanelApp Australia's reviews
+    disaggregation_review: bool
 
 
 def panel_reviews(
@@ -766,7 +772,9 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | SkipR
         return SkipReason.PREPRINTS_FILTERED
 
     entries = prep.entries.get(hgnc_id, ())
-    if reviewed_in_full(entries, {e["doi"]: e["pmid"] for e in evidence_list}):
+    if not prep.disaggregation_review and reviewed_in_full(
+        entries, {e["doi"]: e["pmid"] for e in evidence_list}
+    ):
         target_panel_ids = list(dict.fromkeys(t.panel_id for t in entries if t.reference))
         logger.info(
             f"Skipping {hgnc_symbol} — all {len(evidence_list)} paper(s) already cited on "
@@ -789,6 +797,7 @@ def prepare_gene(hgnc_id: int, prep: _GenePreparation) -> _GeneBatchItem | SkipR
         context,
         prep.panel_date,
         prep.scope_panel,
+        prep.disaggregation_review,
     )
     return _GeneBatchItem(
         hgnc_id=hgnc_id,
@@ -1312,6 +1321,13 @@ def main(
         "the only target panel, and each association says why it fits it. Exclusive with "
         "--target-panel-ids.",
     ),
+    disaggregation_review: bool = typer.Option(
+        False,
+        "--disaggregation-review",
+        help="Review how each gene's entry splits into associations: aggregate genes the "
+        "target panels have reviewed in full too, and write each summary from the papers and "
+        "from PanelApp Australia's reviews",
+    ),
     immediate: bool = typer.Option(
         False,
         "--immediate",
@@ -1373,6 +1389,7 @@ def main(
         clingen=clingen,
         prompt_path=prompt_path,
         scope_panel=scope_panel,
+        disaggregation_review=disaggregation_review,
     )
 
     async def run() -> None:

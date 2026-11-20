@@ -377,6 +377,14 @@ section > h2 {
     font-style: italic;
 }
 
+.curator-note {
+    background: #fff8e1;
+    border-left: 4px solid #f9a825;
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin: 8px 0 14px 0;
+}
+
 .gene-assessment > h3 {
     margin-top: 0;
     margin-bottom: 15px;

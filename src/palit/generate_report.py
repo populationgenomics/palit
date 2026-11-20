@@ -81,6 +81,7 @@ MIN_FAMILIES_FOR_MOI_EXPANSION = 2
 
 # The heading of a report without a scope panel
 MONTHLY_REPORT_TITLE = "PanelApp Literature Assessment Report"
+DISAGGREGATION_REVIEW_TITLE = "Disaggregation Review: Literature Assessment Report"
 
 # Hand-picked journals surfaced in the "Papers in Featured Journals" section.
 # Strings are PubMed-style and must match papers.journal verbatim.
@@ -952,6 +953,25 @@ def group_genes(
     )
 
 
+def review_groups(genes: list[GeneAssessment]) -> GeneGroups:
+    """Every gene of a disaggregation review in one group, by HGNC symbol."""
+    group = GeneGroup(
+        key="review",
+        title="Genes",
+        rating=None,
+        genes=sorted(genes, key=lambda g: g.hgnc_symbol),
+        collapsed=False,
+        preselected=True,
+    )
+    return GeneGroups(
+        new_genes=[],
+        with_findings=[group],
+        without_findings=[],
+        already_reviewed=[],
+        new_without_findings=[],
+    )
+
+
 def load_contributing_papers(
     cursor: sqlite3.Cursor,
     hgnc_id: int,
@@ -1372,6 +1392,7 @@ def load_gene(
     cited_dois: frozenset[str],
     refused_papers: list[RefusedPaper],
     scoped: bool,
+    disaggregation_review: bool,
 ) -> GeneAssessment:
     """One gene's aggregation row with its associations, papers and panel context.
 
@@ -1422,7 +1443,9 @@ def load_gene(
         display_ids,
         all_panels_data,
         gene_variants,
-        target_entries,
+        # A disaggregation review shows every association, also one whose papers the
+        # target panels have all reviewed.
+        () if disaggregation_review else target_entries,
         pmid_by_doi,
         initial_dois,
         scoped,
@@ -1434,7 +1457,11 @@ def load_gene(
         {"unassessed_reports": json.loads(row["unassessed_reports_json"])}, display_ids
     )["unassessed_reports"]
 
-    described = prefill_associations(associations, findings)
+    described = (
+        PrefillSelection(associations, rated=True)
+        if disaggregation_review
+        else prefill_associations(associations, findings)
+    )
     finding_by_association = {f.association_id: f for f in findings}
     hgnc_symbol = hgnc_resolver.get_symbol(hgnc_id)
     prefill = prepare_prefill_data(
@@ -1484,6 +1511,7 @@ def build_gene_assessment_results(
     all_panels_data: AllPanelsData,
     scope_panel_id: int | None,
     target_entries: dict[int, tuple[PanelEntry, ...]],
+    disaggregation_review: bool = False,
 ) -> GeneAssessmentResults:
     """Every aggregated gene with associations, split into novel and known genes.
 
@@ -1535,6 +1563,7 @@ def build_gene_assessment_results(
             cited_dois,
             refused_papers.get(row["hgnc_id"], []),
             scoped=scope_panel_id is not None,
+            disaggregation_review=disaggregation_review,
         )
         (novel_genes if gene.is_novel else known_genes).append(gene)
 
@@ -1655,6 +1684,7 @@ def load_gene_assessments(
     hgnc_resolver: HgncResolver,
     target_panel_ids: list[int] | None = None,
     scope_panel_id: int | None = None,
+    disaggregation_review: bool = False,
 ) -> GeneAssessmentResults:
     """Load every gene's aggregation and associations, with PanelApp membership at *panel_date*.
 
@@ -1692,6 +1722,7 @@ def load_gene_assessments(
             all_panels_data,
             scope_panel_id,
             target_entries,
+            disaggregation_review,
         )
 
 
@@ -2451,8 +2482,12 @@ def build_report_config(
     return json.dumps(config)
 
 
-def report_title(scope_panel_id: int | None, target_panel_names: dict[int, str]) -> str:
+def report_title(
+    scope_panel_id: int | None, target_panel_names: dict[int, str], disaggregation_review: bool
+) -> str:
     """The report's title and heading: the scope panel's name and ID in a panel-scoped run."""
+    if disaggregation_review:
+        return DISAGGREGATION_REVIEW_TITLE
     if scope_panel_id is None:
         return MONTHLY_REPORT_TITLE
     return f"{target_panel_names[scope_panel_id]} ({scope_panel_id}): Literature Assessment Report"
@@ -2478,10 +2513,15 @@ def generate_html_report(
     panelapp_integration: bool,
     unreviewed_without_evidence: list[UnreviewedEntry],
     scope_panel_id: int | None,
+    disaggregation_review: bool = False,
+    gene_notes: dict[int, str] | None = None,
 ) -> str:
     """Generate HTML report directly using Jinja2 templates.
 
     *scope_panel_id* is the panel of a panel-scoped run, which is then the only target panel.
+    A *disaggregation_review* lists all genes in one group and shows every association.
+    *gene_notes* are hand-written notes for the curator, by HGNC ID, each shown under
+    its gene's header.
     """
 
     # Build report config JSON for PanelApp integration
@@ -2491,7 +2531,11 @@ def generate_html_report(
         else None
     )
 
-    groups = group_genes(novel_genes, known_genes)
+    groups = (
+        review_groups(novel_genes + known_genes)
+        if disaggregation_review
+        else group_genes(novel_genes, known_genes)
+    )
 
     # Set up Jinja2 environment
     env = Environment(
@@ -2542,7 +2586,7 @@ def generate_html_report(
 
     # Render HTML
     html = template.render(
-        title=report_title(scope_panel_id, target_panel_names),
+        title=report_title(scope_panel_id, target_panel_names, disaggregation_review),
         groups=groups,
         statistics=statistics,
         panel_validation=panel_validation,
@@ -2559,6 +2603,8 @@ def generate_html_report(
         panels_matched=panels_matched,
         unreviewed_without_evidence=unreviewed_without_evidence,
         scoped=scope_panel_id is not None,
+        disaggregation_review=disaggregation_review,
+        gene_notes=gene_notes or {},
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
         model_name=MODEL_NAMES[MODEL],
         relevance_refusers=relevance_refusers,
@@ -2613,6 +2659,18 @@ def main(
         "--panelapp-integration/--no-panelapp-integration",
         help="Enable PanelApp integration (prefill buttons, assignment support, CSRF token)",
     ),
+    disaggregation_review: bool = typer.Option(
+        False,
+        "--disaggregation-review",
+        help="Report a run aggregated with assess-genes --disaggregation-review: all genes "
+        "in one list, every association shown, none left out as already reviewed",
+    ),
+    gene_notes_path: Path | None = typer.Option(
+        None,
+        "--gene-notes",
+        help="JSON file of hand-written notes for the curator, by HGNC ID "
+        '({"5959": "..."}), each shown under its gene\'s header',
+    ),
 ) -> None:
     """Generate a self-contained report directory: the HTML, its papers, and the PDF viewer."""
 
@@ -2640,7 +2698,12 @@ def main(
     # Generate report
     hgnc_resolver = HgncResolver.from_file()
     results = load_gene_assessments(
-        db_path, panel_date, hgnc_resolver, target_panel_ids or None, scope_panel_id
+        db_path,
+        panel_date,
+        hgnc_resolver,
+        target_panel_ids or None,
+        scope_panel_id,
+        disaggregation_review,
     )
     # Use actual target_panel_ids from results (handles None -> defaults)
     actual_panel_ids = list(results.target_panel_data.panel_ids)
@@ -2671,8 +2734,17 @@ def main(
         relevance_refusers=load_relevance_refusers(db_path),
         panels_matched=results.panels_matched,
         panelapp_integration=panelapp_integration,
-        unreviewed_without_evidence=results.unreviewed_without_evidence,
+        # The papers of a disaggregation review also mention genes outside it.
+        unreviewed_without_evidence=(
+            [] if disaggregation_review else results.unreviewed_without_evidence
+        ),
         scope_panel_id=scope_panel_id,
+        disaggregation_review=disaggregation_review,
+        gene_notes=(
+            None
+            if gene_notes_path is None
+            else {int(k): v for k, v in json.loads(gene_notes_path.read_text()).items()}
+        ),
     )
 
     # Save HTML as index.html

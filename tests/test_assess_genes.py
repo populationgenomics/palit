@@ -577,6 +577,7 @@ def test_prompt_lists_the_genes_variants_with_their_gnomad_figures(
         _context(panel_entries, gencc_index, GENEA),
         "2026-09-01",
         None,
+        disaggregation_review=False,
     )
 
     assert {vid: v.variant_id for vid, v in prompt.variants.items()} == {
@@ -859,9 +860,16 @@ def _context(
     )
 
 
-def _render(context: PanelAppContext, symbol: str, scope_panel: str | None = None) -> str:
+def _render(
+    context: PanelAppContext,
+    symbol: str,
+    scope_panel: str | None = None,
+    disaggregation_review: bool = False,
+) -> str:
     evidence = [_evidence("10.1/a", "Smith", "2024")]
-    prompt = render_prompt(PROMPT_PATH, symbol, evidence, [], context, "2026-09-01", scope_panel)
+    prompt = render_prompt(
+        PROMPT_PATH, symbol, evidence, [], context, "2026-09-01", scope_panel, disaggregation_review
+    )
     assert prompt.paper_id_to_doi == {"Smith2024": "10.1/a"}
     assert prompt.variants == {}
     return prompt.text
@@ -933,6 +941,23 @@ def test_prompt_lists_clingen_curations_with_their_evidence_summaries(
     ) in prompt
     assert "no ClinGen expert panel has curated" not in prompt
     assert context.to_json()["clingen_curations"][0]["disease_label"] == "disease B"
+
+
+def test_only_a_disaggregation_review_draws_the_summary_on_the_reviews(
+    panel_entries: dict[int, tuple[PanelEntry, ...]], gencc_index: GenccIndex
+) -> None:
+    context = _context(panel_entries, gencc_index, GENEA)
+    monthly = _render(context, "GENEA")
+    assert "DISAGGREGATION REVIEW:" not in monthly
+    assert "FROM THE REVIEWS:" not in monthly
+    assert "do not recap the PanelApp entries or reviews" in monthly
+    assert '"summary": "about 70 words: ' in monthly
+
+    review = _render(context, "GENEA", disaggregation_review=True)
+    assert "DISAGGREGATION REVIEW:\nPanelApp Australia is preparing to split" in review
+    assert "FROM THE REVIEWS: after the facts from the contributing papers" in review
+    assert "do not recap the PanelApp entries or reviews" not in review
+    assert '"summary": "about 120 words: ' in review
 
 
 def test_prompt_says_when_clingen_has_curated_nothing_for_the_gene(
@@ -1056,6 +1081,7 @@ def _prepare(
         clingen=ClingenIndex({}),
         prompt_path=PROMPT_PATH,
         scope_panel=scope_panel,
+        disaggregation_review=False,
     )
     return prepare_gene(GENEA, prep)
 

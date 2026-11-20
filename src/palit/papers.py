@@ -273,17 +273,24 @@ def replace_paper_ids_for_display(
 ) -> dict[str, Any]:
     """Replace AuthorYear paper IDs with display format in a JSON-serializable dict.
 
-    Serializes to JSON, regex-replaces all AuthorYear occurrences, deserializes back.
-    Keys are sorted by length descending so "Smith2024a" matches before "Smith2024".
+    Every string value is searched, at any depth; keys are left alone. The IDs are
+    tried longest first, so "Smith2024a" matches before "Smith2024".
     """
-    ids_to_replace = [(pid, did) for pid, did in display_ids.items() if pid != did]
-    if not ids_to_replace:
+    replacements = {pid: did for pid, did in display_ids.items() if pid != did}
+    if not replacements:
         return data
-    # Sort by length descending so "Smith2024a" matches before "Smith2024" in the regex
-    ids_to_replace.sort(key=lambda x: len(x[0]), reverse=True)
-    replacements = dict(ids_to_replace)  # preserves sort order (Python 3.7+)
-    pattern = re.compile("|".join(rf"\b{re.escape(pid)}\b" for pid in replacements))
-    text = json.dumps(data)
-    text = pattern.sub(lambda m: replacements[m.group()], text)
-    result: dict[str, Any] = json.loads(text)
+    pattern = re.compile(
+        "|".join(rf"\b{re.escape(pid)}\b" for pid in sorted(replacements, key=len, reverse=True))
+    )
+
+    def replaced(value: Any) -> Any:
+        if isinstance(value, str):
+            return pattern.sub(lambda m: replacements[m.group()], value)
+        if isinstance(value, list):
+            return [replaced(item) for item in value]
+        if isinstance(value, dict):
+            return {key: replaced(item) for key, item in value.items()}
+        return value
+
+    result: dict[str, Any] = replaced(data)
     return result

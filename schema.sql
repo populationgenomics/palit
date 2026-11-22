@@ -172,6 +172,12 @@ CREATE TABLE associations (
     mondo_raw TEXT,                        -- map-mondo's final message; NULL for gencc
     matched_panels_json JSON,              -- [{"panel_id", "rationale"}]
     matched_panels_raw TEXT,
+    -- assess-mechanisms' answer: {"mechanisms": [{"mechanism", "confidence", "statement",
+    -- "dois"}], "unknown_note"}, the mechanisms of disease that the evidence supports,
+    -- the best supported first; none of them means the mechanism is unknown, and
+    -- unknown_note says why. NULL until assess-mechanisms has run for the association.
+    mechanisms_json JSON,
+    mechanisms_raw TEXT,
     UNIQUE(hgnc_id, position),
     CHECK((mondo_id IS NULL) = (mondo_match IS NULL))
 );
@@ -179,6 +185,17 @@ CREATE TABLE associations (
 CREATE INDEX idx_associations_hgnc ON associations(hgnc_id);
 CREATE INDEX idx_associations_unmapped ON associations(id) WHERE mondo_id IS NULL;
 CREATE INDEX idx_associations_unmatched ON associations(id) WHERE matched_panels_json IS NULL;
+
+-- What each paper holds on the mechanism of disease of the associations that cite it,
+-- read from its PDF by read-mechanisms. A reading covers the associations it names;
+-- an aggregation run gives associations new ids, after which the paper is read again.
+CREATE TABLE mechanism_readings (
+    doi TEXT PRIMARY KEY REFERENCES papers(doi),
+    -- {"associations": [{"association_id": <associations.id>, "authors_conclusion",
+    --   "evidence": [{"mechanism", "evidence_type", "finding", "quote"}]}]}
+    reading_json JSON NOT NULL,
+    reading_raw TEXT NOT NULL              -- Message JSON as returned by the API
+);
 
 -- Variant frequency information from gnomAD v4.1, one row per extracted variant.
 -- Filled by extract-evidence from its lookup_variants tool results (variant-lookup

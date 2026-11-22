@@ -3,7 +3,8 @@
 
 One JSON file with, per gene, every association as the mock-up shows it: its
 name, MoI as PanelApp writes it, rating from the papers, MONDO term, summary
-with PMIDs in place of the run's paper IDs, and the PMIDs of its papers.
+with PMIDs in place of the run's paper IDs, the PMIDs of its papers, and its
+mechanisms of disease.
 """
 
 import json
@@ -16,6 +17,7 @@ import typer
 
 from palit.generate_report import association_name
 from palit.hgnc import HgncResolver
+from palit.mechanisms import MechanismAssessment, review_comment
 from palit.panelapp_integration import (
     ENUM_TO_PANELAPP_MOI,
     calculate_association_rating,
@@ -24,6 +26,38 @@ from palit.panelapp_integration import (
 from palit.papers import build_display_ids, replace_paper_ids_for_display
 
 ROSTER_HGNC_IDS = [20, 5959, 4922, 6021, 29882, 6898, 9498, 6772, 11273, 12407, 16700]
+
+
+def shown_mechanisms(
+    mechanisms_raw: str | None, display_ids: dict[str, str]
+) -> MechanismAssessment | None:
+    """An association's mechanisms with PMIDs in place of the run's paper IDs; None
+    before assess-mechanisms has run for it."""
+    if mechanisms_raw is None:
+        return None
+    return MechanismAssessment.from_json(
+        replace_paper_ids_for_display(json.loads(mechanisms_raw), display_ids)
+    )
+
+
+def mechanisms_export(assessment: MechanismAssessment | None) -> dict[str, Any] | None:
+    """An association's mechanisms as the mock-up shows them: each with its label, its
+    confidence term and the rating colour of the term."""
+    if assessment is None:
+        return None
+    return {
+        "mechanisms": [
+            {
+                "mechanism": m.mechanism,
+                "label": m.label,
+                "confidence": m.confidence,
+                "colour": m.colour,
+                "statement": m.statement,
+            }
+            for m in assessment.mechanisms
+        ],
+        "unknown_note": assessment.unknown_note,
+    }
 
 
 def gene_export(conn: sqlite3.Connection, hgnc_id: int, symbol: str) -> dict[str, Any]:
@@ -41,13 +75,14 @@ def gene_export(conn: sqlite3.Connection, hgnc_id: int, symbol: str) -> dict[str
     panel_names = {e["panel_id"]: e["panel_name"] for e in context["panel_entries"]}
 
     associations = []
-    for raw, mondo_id, mondo_label, mondo_match, panels_raw in conn.execute(
-        "SELECT assessment_json, mondo_id, mondo_label, mondo_match, matched_panels_json "
-        "FROM associations WHERE hgnc_id = ? ORDER BY position",
+    for raw, mondo_id, mondo_label, mondo_match, panels_raw, mechanisms_raw in conn.execute(
+        "SELECT assessment_json, mondo_id, mondo_label, mondo_match, matched_panels_json, "
+        "mechanisms_json FROM associations WHERE hgnc_id = ? ORDER BY position",
         (hgnc_id,),
     ):
         stored: dict[str, Any] = json.loads(raw)
         shown = replace_paper_ids_for_display(stored, display_ids)
+        mechanisms = shown_mechanisms(mechanisms_raw, display_ids)
         relation = stored["panelapp_relation"]
         associations.append(
             {
@@ -66,6 +101,8 @@ def gene_export(conn: sqlite3.Connection, hgnc_id: int, symbol: str) -> dict[str
                 "mondo_label": mondo_label,
                 "mondo_match": mondo_match,
                 "summary": shown["summary"],
+                "mechanism_assessment": mechanisms_export(mechanisms),
+                "review_comment": review_comment(shown["summary"], mechanisms),
                 "grouping_rationale": shown["grouping_rationale"],
                 "pmids": sorted(doi_to_pmid[d] for d in stored["dois"] if d in doi_to_pmid),
                 "papers_without_pmid": sorted(d for d in stored["dois"] if d not in doi_to_pmid),

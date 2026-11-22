@@ -1689,3 +1689,149 @@ footer hr {
         padding: 6px 8px;
     }
 }
+/* An association's mechanisms: one row per mechanism, the tags in a column of their own
+   so that the statements line up */
+.mechanism-list {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 8px 14px;
+    margin: 6px 0 10px 0;
+}
+
+.mechanism-entry {
+    display: contents;
+}
+
+.mechanism-list dt,
+.mechanism-list dd {
+    margin: 0;
+    line-height: 1.45;
+}
+
+/* One tag of two parts: the mechanism on white, its confidence term on the rating colour
+   (.rating-green, .rating-amber, .rating-red; .rating-grey for an unknown mechanism).
+   The border takes the rating's text colour, as the rating badges of the association do. */
+.mechanism-tag {
+    display: inline-flex;
+    border-radius: 3px;
+    overflow: hidden;
+    font-size: 0.85em;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.mechanism-tag.rating-green { border-color: #155724; }
+.mechanism-tag.rating-amber { border-color: #856404; }
+.mechanism-tag.rating-red { border-color: #721c24; }
+.mechanism-tag.rating-grey { border-color: #6c757d; }
+
+.mechanism-name,
+.mechanism-confidence {
+    padding: 2px 9px;
+}
+
+.mechanism-name {
+    background: #fff;
+    color: #2c3e50;
+    border-right: 1px solid;
+    border-right-color: inherit;
+}
+
+@media (max-width: 700px) {
+    .mechanism-list {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+
+    .mechanism-list dd {
+        margin-bottom: 8px;
+    }
+}
+
+details.assessment-form {
+    margin: 8px 0 0 0;
+}
+
+details.assessment-form > summary {
+    padding: 4px 10px;
+    font-size: 0.9em;
+    background: rgba(255, 255, 255, 0.6);
+}
+
+details.assessment-form form {
+    background: #fff;
+    border: 1px solid #cbd5e0;
+    border-radius: 4px;
+    padding: 12px 16px;
+    margin-top: 6px;
+}
+
+.assessment-form .form-field {
+    display: grid;
+    grid-template-columns: 170px 1fr;
+    gap: 10px;
+    align-items: start;
+    margin: 8px 0;
+}
+
+/* The four mechanisms in one row, each a rating under its name */
+.assessment-form .mechanism-ratings {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.assessment-form .mechanism-rating span {
+    display: block;
+    margin-bottom: 3px;
+    font-size: 0.85em;
+    font-weight: 400;
+    color: #4a5568;
+}
+
+.assessment-form label {
+    font-weight: 600;
+}
+
+.assessment-form input[type="text"],
+.assessment-form select,
+.assessment-form textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 6px;
+    border: 1px solid #a0aec0;
+    border-radius: 3px;
+    font: inherit;
+}
+
+.assessment-form textarea {
+    resize: vertical;
+}
+
+/* A confidence term in the form takes its rating colour, and follows the selection */
+.assessment-form select.confidence-select:has(option[value="Established"]:checked) {
+    background: #d4edda;
+    color: #155724;
+    border-color: #155724;
+}
+
+.assessment-form select.confidence-select:has(option[value="Likely"]:checked) {
+    background: #fff3cd;
+    color: #856404;
+    border-color: #856404;
+}
+
+.assessment-form select.confidence-select:has(option[value="Suspected"]:checked) {
+    background: #f8d7da;
+    color: #721c24;
+    border-color: #721c24;
+}
+
+.assessment-form select.confidence-select {
+    font-weight: 600;
+}
+
+.assessment-form select.confidence-select:has(option[value=""]:checked) {
+    color: #6c757d;
+    font-weight: 400;
+}

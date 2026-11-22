@@ -1,0 +1,60 @@
+{
+    "type": "object",
+    "properties": {
+        "mechanisms": {
+            "type": "array",
+            "description": "The asserted mechanisms, the best supported first; empty when the mechanism is unknown.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "mechanism": {
+                        "type": "string",
+                        "enum": [
+                            "loss_of_function",
+                            "gain_of_function",
+                            "dominant_negative",
+                            "not_loss_of_function"
+                        ]
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": [
+                            "Established",
+                            "Likely",
+                            "Suspected"
+                        ]
+                    },
+                    "statement": {
+                        "type": "string",
+                        "description": "One detailed sentence, two at most, on how the variants act and what shows it, citing paper IDs.",
+                        "minLength": 1
+                    },
+                    "paper_ids": {
+                        "type": "array",
+                        "description": "The IDs of the papers the statement rests on.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "minItems": 1
+                    }
+                },
+                "required": [
+                    "mechanism",
+                    "confidence",
+                    "statement",
+                    "paper_ids"
+                ],
+                "additionalProperties": false
+            }
+        },
+        "unknown_note": {
+            "type": "string",
+            "description": "Why the mechanism is unknown, when mechanisms is empty; an empty string otherwise."
+        }
+    },
+    "required": [
+        "mechanisms",
+        "unknown_note"
+    ],
+    "additionalProperties": false
+}

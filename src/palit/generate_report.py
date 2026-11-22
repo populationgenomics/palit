@@ -37,6 +37,12 @@ from palit.llm import (
 )
 from palit.map_mondo import STAGE as MAP_MONDO_STAGE
 from palit.match_panels import STAGE as MATCH_PANELS_STAGE
+from palit.mechanisms import (
+    CONFIDENCE_TERMS,
+    MECHANISM_LABELS,
+    MechanismAssessment,
+    review_comment,
+)
 from palit.panel_entries import PanelEntry, entries_by_gene, reviewed_in_full
 from palit.panelapp_client import (
     AllPanelsData,
@@ -46,6 +52,9 @@ from palit.panelapp_client import (
     ordered_panel_publications,
 )
 from palit.panelapp_integration import (
+    MOI_NOT_SPECIFIED,
+    PANELAPP_MOI_MODES,
+    PREFILL_RATINGS,
     Finding,
     FindingKind,
     MondoMatch,
@@ -55,7 +64,10 @@ from palit.panelapp_integration import (
     PrefillEntry,
     RelationStatus,
     calculate_association_rating,
+    derive_panelapp_moi,
     panelapp_confidence_to_color,
+    prefill_disease,
+    prefill_publications,
     prepare_prefill_data,
     upgrade_baseline,
 )
@@ -431,6 +443,9 @@ class ReportAssociation:
     older_literature_only: bool
     # Why the association fits the scope panel of a panel-scoped run; None otherwise
     scope_rationale: str | None
+    # The mechanisms of disease, statements with paper IDs in display form; None until
+    # assess-mechanisms has run for the association
+    mechanisms: MechanismAssessment | None
 
     @property
     def already_reviewed(self) -> bool:
@@ -484,6 +499,46 @@ class RefusedPaper:
     category: str | None  # the fallback model's refusal category
 
 
+@dataclass(frozen=True)
+class AssessmentForm:
+    """One association's assessment as a review form would hold it once PanelApp keeps one
+    entry per association. A disaggregation review shows it as a mock-up of that form,
+    next to the association's mechanisms of disease; nothing is sent to PanelApp.
+    """
+
+    disease: str  # the disease name with its MONDO ID, as prefill_disease writes a phenotype
+    rating: str  # "Green", "Amber" or "Red"
+    moi: str  # PanelApp's MoI string; empty when the association reports no mode
+    publications: str  # semicolon-separated, by PMID where available and DOI otherwise
+    # The association's summary, then the notes on its mechanisms of disease: the form
+    # holds the mechanisms as ratings only, so their evidence is part of the comment
+    comments: str
+
+
+# The MoI choices of PanelApp's review form
+ASSESSMENT_FORM_MOIS: tuple[str, ...] = tuple(
+    moi for moi in PANELAPP_MOI_MODES if moi != MOI_NOT_SPECIFIED
+)
+
+
+def assessment_form(
+    association: ReportAssociation, gene_symbol: str, pmid_by_doi: dict[str, int | None]
+) -> AssessmentForm:
+    """The pre-filled assessment form of one association of *gene_symbol*."""
+    assessment = association.assessment
+    disease = prefill_disease(
+        PrefillAssociation(association.disease_label, assessment, association.mondo, None),
+        gene_symbol,
+    )
+    return AssessmentForm(
+        disease=disease.phenotype,
+        rating=PREFILL_RATINGS[association.rating],
+        moi=derive_panelapp_moi([assessment]),
+        publications=";".join(prefill_publications((), assessment["dois"], pmid_by_doi)),
+        comments=review_comment(assessment["summary"], association.mechanisms),
+    )
+
+
 @dataclass
 class GeneAssessment:
     """A gene's aggregation: its associations and the gene-level blocks."""
@@ -502,6 +557,9 @@ class GeneAssessment:
     target_entries: tuple[PanelEntry, ...]  # the gene's entries on the target panels
     refused_papers: list[RefusedPaper]
     clingen_curations: list[ClingenCuration]  # the ClinGen curations the aggregation was shown
+    # The pre-filled assessment form of each association, by association id, in a
+    # disaggregation review; empty otherwise
+    assessment_forms: dict[int, AssessmentForm]
 
     @property
     def is_novel(self) -> bool:
@@ -1268,7 +1326,7 @@ def load_associations(
     cursor.execute(
         f"""
         SELECT a.id, a.position, a.assessment_json, a.mondo_id, a.mondo_label, a.mondo_match,
-               a.mondo_raw, a.matched_panels_json,
+               a.mondo_raw, a.matched_panels_json, a.mechanisms_json,
                {latest("status")} AS mondo_status,
                {latest("model")} AS mondo_model,
                {latest("status")} AS matching_status,
@@ -1323,6 +1381,15 @@ def load_associations(
                 reviewed_on=target_panel_names if reviewed else (),
                 older_literature_only=not scoped and initial_dois.isdisjoint(assessment["dois"]),
                 scope_rationale=scope_rationale,
+                mechanisms=(
+                    None
+                    if row["mechanisms_json"] is None
+                    else MechanismAssessment.from_json(
+                        replace_paper_ids_for_display(
+                            json.loads(row["mechanisms_json"]), display_ids
+                        )
+                    )
+                ),
             )
         )
     return sorted(associations, key=association_sort_key)
@@ -1501,6 +1568,11 @@ def load_gene(
             ClingenCuration(**curation)
             for curation in panelapp_context.get("clingen_curations", [])
         ],
+        assessment_forms=(
+            {a.id: assessment_form(a, hgnc_symbol, pmid_by_doi) for a in associations}
+            if disaggregation_review
+            else {}
+        ),
     )
 
 
@@ -2605,6 +2677,10 @@ def generate_html_report(
         scoped=scope_panel_id is not None,
         disaggregation_review=disaggregation_review,
         gene_notes=gene_notes or {},
+        mechanism_labels=MECHANISM_LABELS,
+        confidence_terms=CONFIDENCE_TERMS,
+        assessment_form_mois=ASSESSMENT_FORM_MOIS,
+        assessment_form_ratings=tuple(dict.fromkeys(reversed(PREFILL_RATINGS.values()))),
         min_families_for_moi_expansion=MIN_FAMILIES_FOR_MOI_EXPANSION,
         model_name=MODEL_NAMES[MODEL],
         relevance_refusers=relevance_refusers,

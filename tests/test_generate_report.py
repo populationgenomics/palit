@@ -527,6 +527,7 @@ def _load(
     hgnc_resolver: HgncResolver,
     genea_rating: int = 2,
     genea_reviews: ReviewState = ReviewState.UNREVIEWED,
+    disaggregation_review: bool = False,
 ) -> GeneAssessmentResults:
     """The fixture's genes, with GENEA on the Mendeliome at *genea_rating*, its reviews
     there in state *genea_reviews*."""
@@ -547,7 +548,9 @@ def _load(
     }
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        return build_gene_assessment_results(conn, hgnc_resolver, target, all_panels, None, entries)
+        return build_gene_assessment_results(
+            conn, hgnc_resolver, target, all_panels, None, entries, disaggregation_review
+        )
 
 
 @pytest.fixture
@@ -917,6 +920,7 @@ def _render(
     panel_validation: PanelValidationResult = NO_PANEL_VALIDATION,
     favorite_journal_papers: FavoriteJournalSections = NO_FEATURED_PAPERS,
     manual_download_papers: list[ManualDownloadPaper] | None = None,
+    disaggregation_review: bool = False,
 ) -> str:
     return generate_html_report(
         novel_genes=results.novel_genes,
@@ -937,6 +941,7 @@ def _render(
         panelapp_integration=False,
         unreviewed_without_evidence=results.unreviewed_without_evidence,
         scope_panel_id=results.scope_panel_id,
+        disaggregation_review=disaggregation_review,
     )
 
 
@@ -1113,6 +1118,7 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
         reviewed_on=(),
         older_literature_only=False,
         scope_rationale=None,
+        mechanisms=None,
     )
 
 
@@ -1255,6 +1261,7 @@ def _gene(
         ),
         refused_papers=[],
         clingen_curations=[],
+        assessment_forms={},
     )
 
 
@@ -3261,3 +3268,124 @@ def test_older_literature_makes_findings_in_a_panel_scoped_run(
     geneb = next(g for g in results.novel_genes if g.hgnc_id == 3)
     assert not geneb.associations[0].older_literature_only
     assert geneb.findings
+
+
+def _store_mechanisms(db_path: Path, association_id: int, mechanisms: dict[str, Any]) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE associations SET mechanisms_json = ?, mechanisms_raw = '{}' WHERE id = ?",
+            (json.dumps(mechanisms), association_id),
+        )
+
+
+def test_an_association_shows_its_mechanisms_with_papers_by_pmid(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    _store_mechanisms(
+        db_path,
+        12,
+        {
+            "mechanisms": [
+                {
+                    "mechanism": "gain_of_function",
+                    "confidence": "Likely",
+                    "statement": "Missense variants raise channel activity (Smith2024).",
+                    "dois": ["10.1/a"],
+                },
+                {
+                    "mechanism": "not_loss_of_function",
+                    "confidence": "Suspected",
+                    "statement": "Carriers of a deletion are healthy (Smith2024).",
+                    "dois": ["10.1/a"],
+                },
+            ],
+            "unknown_note": "",
+        },
+    )
+    _store_mechanisms(
+        db_path, 13, {"mechanisms": [], "unknown_note": "Only proposed by Smith2024."}
+    )
+    html = _render(db_path, _load(db_path, hgnc_resolver))
+    section = _association_section(html, 12)
+    # One tag per mechanism, its confidence term in the rating colour: Likely is amber,
+    # Suspected red
+    assert (
+        '<dt><span class="mechanism-tag rating-amber"><span class="mechanism-name">Gain of '
+        'function</span><span class="mechanism-confidence">Likely</span></span></dt>' in section
+    )
+    assert "<dd>Missense variants raise channel activity (PMID 111).</dd>" in section
+    assert (
+        '<span class="mechanism-tag rating-red"><span class="mechanism-name">Not loss of '
+        'function</span><span class="mechanism-confidence">Suspected</span></span>' in section
+    )
+    unknown = _association_section(html, 13)
+    assert (
+        '<span class="mechanism-tag rating-grey"><span class="mechanism-confidence">Unknown'
+        "</span></span>" in unknown
+    )
+    assert "<dd>Only proposed by PMID 111.</dd>" in unknown
+    # Without mechanisms and without a free-text mechanism, an association shows neither
+    assert "Mechanism" not in _association_section(html, 10)
+    # The form mock-up belongs to a disaggregation review
+    assert '<details class="assessment-form">' not in html
+
+
+def test_a_disaggregation_review_offers_each_association_as_a_prefilled_form(
+    db_path: Path, hgnc_resolver: HgncResolver
+) -> None:
+    _store_mechanisms(
+        db_path,
+        12,
+        {
+            "mechanisms": [
+                {
+                    "mechanism": "gain_of_function",
+                    "confidence": "Likely",
+                    "statement": "Missense variants raise channel activity (Smith2024).",
+                    "dois": ["10.1/a"],
+                }
+            ],
+            "unknown_note": "",
+        },
+    )
+    _store_mechanisms(
+        db_path, 13, {"mechanisms": [], "unknown_note": "Only proposed by Smith2024."}
+    )
+    results = _load(db_path, hgnc_resolver, disaggregation_review=True)
+    html = _render(db_path, results, disaggregation_review=True)
+
+    form = _association_section(html, 12)
+    form = form[form.index('<details class="assessment-form">') :]
+    assert (
+        '<input type="text" id="assessment-12-disease" value="ataxia, MONDO:0000200, GENEA-related">'
+        in form
+    )
+    assert "<option selected>Green</option>" in form
+    assert (
+        "<option selected>MONOALLELIC, autosomal or pseudoautosomal, NOT imprinted</option>" in form
+    )
+    assert '<input type="text" id="assessment-12-publications" value="111">' in form
+    # The mechanisms are four ratings; their evidence is part of the comment
+    gain = form[form.index('id="assessment-12-gain_of_function"') :]
+    gain = gain[: gain.index("</select>")]
+    assert '<option value="Likely" selected>Likely</option>' in gain
+    loss = form[form.index('id="assessment-12-loss_of_function"') :]
+    loss = loss[: loss.index("</select>")]
+    assert '<option value="" selected>Not asserted</option>' in loss
+    assert form.count('class="confidence-select"') == 4
+    comments = form[form.index('id="assessment-12-comments"') :]
+    comments = comments[: comments.index("</textarea>")]
+    assert comments.endswith(
+        "\n\nMechanism of disease:\n"
+        "- Gain of function (likely): Missense variants raise channel activity (PMID 111)."
+    )
+    assert '<button type="button" disabled>Submit review</button>' in form
+
+    unknown = _association_section(html, 13)
+    assert unknown.count('<option value="" selected>Not asserted</option>') == 4
+    assert "\n\nMechanism of disease:\n- Unknown: Only proposed by PMID 111.</textarea>" in unknown
+    # An association that assess-mechanisms has not reached has no rating and no notes
+    unassessed = _association_section(html, 11)
+    assert unassessed.count('<option value="" selected>Not asserted</option>') == 4
+    assert "BIALLELIC, autosomal or pseudoautosomal</option>" in unassessed
+    assert "Mechanism of disease:" not in unassessed[unassessed.index("-comments") :]

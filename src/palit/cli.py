@@ -10,6 +10,7 @@ from rich.logging import RichHandler
 from palit import (
     analyze_concordance,
     assess_genes,
+    assess_mechanisms,
     assess_relevance,
     discover_citations,
     download_papers,
@@ -24,6 +25,7 @@ from palit import (
     map_mondo,
     match_panels,
     panelapp_snapshot,
+    read_mechanisms,
     reduce_literature,
     scan_mechanisms,
     triage_expansion,
@@ -67,6 +69,8 @@ app.add_typer(extract_evidence.app, name="extract-evidence")
 app.add_typer(assess_genes.app, name="assess-genes")
 app.add_typer(map_mondo.app, name="map-mondo")
 app.add_typer(match_panels.app, name="match-panels")
+app.add_typer(read_mechanisms.app, name="read-mechanisms")
+app.add_typer(assess_mechanisms.app, name="assess-mechanisms")
 app.add_typer(journal_metrics.app, name="journal-metrics")
 app.add_typer(panelapp_snapshot.app, name="panelapp")
 app.add_typer(triage_expansion.app, name="triage-expansion")

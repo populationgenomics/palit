@@ -18,11 +18,13 @@ from anthropic.types.messages import MessageBatchIndividualResponse
 
 from palit import (
     assess_genes,
+    assess_mechanisms,
     assess_relevance,
     expand_literature,
     extract_evidence,
     map_mondo,
     match_panels,
+    read_mechanisms,
     reduce_literature,
     scan_mechanisms,
 )
@@ -588,6 +590,8 @@ def test_every_stage_has_its_subject_kind() -> None:
         reduce_literature.STAGE: SubjectKind.TOURNAMENT_PROMPT,
         map_mondo.STAGE: SubjectKind.ASSOCIATION,
         match_panels.STAGE: SubjectKind.ASSOCIATION,
+        read_mechanisms.STAGE: SubjectKind.PAPER,
+        assess_mechanisms.STAGE: SubjectKind.ASSOCIATION,
         "relevance_panelapp": SubjectKind.PAPER,
     }
 

@@ -251,6 +251,114 @@
     {% for paper in papers %}{% if paper.preprint %}⚠️ {% endif %}{{ paper_link(paper) }}{% if not loop.last %}; {% endif %}{% endfor %}
     {%- endmacro %}
 
+    {# An association's mechanisms of disease. Each asserted mechanism is one tag of two
+       parts, the mechanism and its confidence term, in the rating colour of the term
+       (Established green, Likely amber, Suspected red), with its statement beside it. An
+       unknown mechanism is a grey tag with the reason. Before assess-mechanisms has run
+       for the association, the aggregation's free-text mechanism. #}
+    {% macro association_mechanisms(assoc) %}
+    {% set m = assoc.mechanisms %}
+    {% if m is none %}
+    {% if assoc.assessment.disease_mechanism != 'NR' %}
+    <p><strong>Mechanism:</strong> {{ assoc.assessment.disease_mechanism }}</p>
+    {% endif %}
+    {% else %}
+    <div class="association-mechanisms">
+        <strong>Mechanism of disease:</strong>
+        <dl class="mechanism-list">
+            {% for mechanism in m.mechanisms %}
+            <div class="mechanism-entry">
+                <dt><span class="mechanism-tag rating-{{ mechanism.colour }}"><span class="mechanism-name">{{ mechanism.label }}</span><span class="mechanism-confidence">{{ mechanism.confidence }}</span></span></dt>
+                <dd>{{ mechanism.statement }}</dd>
+            </div>
+            {% endfor %}
+            {% if m.unknown %}
+            <div class="mechanism-entry">
+                <dt><span class="mechanism-tag rating-grey"><span class="mechanism-confidence">Unknown</span></span></dt>
+                <dd>{{ m.unknown_note }}</dd>
+            </div>
+            {% endif %}
+        </dl>
+    </div>
+    {% endif %}
+    {% endmacro %}
+
+    {# A disaggregation review's mock-up of the review form for one association, pre-filled
+       from the association. The four mechanisms of disease are ratings in one row, each
+       on its own, because one association can hold several. Like the mode of inheritance
+       they have no justification of their own: their evidence is part of the comment.
+       The form posts nowhere. #}
+    {% macro assessment_form(assoc, gene) %}
+    {% set form = gene.assessment_forms.get(assoc.id) %}
+    {% if form %}
+    {% set m = assoc.mechanisms %}
+    {% set id = 'assessment-' ~ assoc.id %}
+    {# Rows that show a text in full at the form's width, at least one #}
+    {% macro rows(text, line_length) -%}
+    {{ [1, ((text | length) / line_length) | round(0, 'ceil') | int] | max }}
+    {%- endmacro %}
+    <details class="assessment-form">
+        <summary><strong>Pre-filled assessment</strong> <span class="muted">(mock-up of the review form for this association: nothing is sent to PanelApp)</span></summary>
+        <form onsubmit="return false" autocomplete="off">
+            <div class="form-field">
+                <label>Gene</label>
+                <span>{{ gene.hgnc_symbol }}</span>
+            </div>
+            <div class="form-field">
+                <label for="{{ id }}-disease">Disease</label>
+                <input type="text" id="{{ id }}-disease" value="{{ form.disease }}">
+            </div>
+            <div class="form-field">
+                <label for="{{ id }}-rating">Rating</label>
+                <select id="{{ id }}-rating">
+                    {% for rating in assessment_form_ratings %}
+                    <option{% if rating == form.rating %} selected{% endif %}>{{ rating }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-field">
+                <label for="{{ id }}-moi">Mode of inheritance</label>
+                <select id="{{ id }}-moi">
+                    <option value=""{% if not form.moi %} selected{% endif %}>Provide a mode of inheritance</option>
+                    {% for moi in assessment_form_mois %}
+                    <option{% if moi == form.moi %} selected{% endif %}>{{ moi }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-field">
+                <label>Mechanism of disease</label>
+                <div class="mechanism-ratings">
+                    {% for key, label in mechanism_labels.items() %}
+                    {% set confidence = m.confidence_of(key) if m is not none else none %}
+                    <label class="mechanism-rating" for="{{ id }}-{{ key }}">
+                        <span>{{ label }}</span>
+                        <select id="{{ id }}-{{ key }}" class="confidence-select">
+                            <option value=""{% if confidence is none %} selected{% endif %}>Not asserted</option>
+                            {% for term in confidence_terms | reverse %}
+                            <option value="{{ term }}"{% if term == confidence %} selected{% endif %}>{{ term }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="form-field">
+                <label for="{{ id }}-publications">Publications</label>
+                <input type="text" id="{{ id }}-publications" value="{{ form.publications }}">
+            </div>
+            <div class="form-field">
+                <label for="{{ id }}-comments">Comments</label>
+                <textarea id="{{ id }}-comments" rows="{{ rows(form.comments, 85) }}">{{ form.comments }}</textarea>
+            </div>
+            <div class="form-field">
+                <span></span>
+                <span><button type="button" disabled>Submit review</button> <span class="muted">Disabled in this mock-up.</span></span>
+            </div>
+        </form>
+    </details>
+    {% endif %}
+    {% endmacro %}
+
     {# One gene-disease-MoI association, inside the gene's summary box #}
     {% macro association_block(assoc, gene) %}
     {% set e = assoc.assessment %}
@@ -283,9 +391,7 @@
         {% if e.functional != 'NR' %}
         <p><strong>Functional:</strong> {{ e.functional }}</p>
         {% endif %}
-        {% if e.disease_mechanism != 'NR' %}
-        <p><strong>Mechanism:</strong> {{ e.disease_mechanism }}</p>
-        {% endif %}
+        {{ association_mechanisms(assoc) }}
         <p><strong>Papers:</strong> {{ paper_links(e.dois | papers_for_dois(gene.contributing_papers)) }}</p>
         {% if e.quality_concerns %}
         <div class="quality-concerns association-concerns">
@@ -310,6 +416,7 @@
             <summary>PanelApp criteria</summary>
             <div>{{ criteria_grid(e, contributing_papers=gene.contributing_papers) }}</div>
         </details>
+        {{ assessment_form(assoc, gene) }}
     </section>
     {% endmacro %}
 

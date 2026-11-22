@@ -1,0 +1,80 @@
+{
+    "type": "object",
+    "properties": {
+        "associations": {
+            "type": "array",
+            "description": "One entry per listed association, in the order of the list.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "association": {
+                        "type": "string",
+                        "description": "The association's ID from the list: A1, A2, ..."
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "description": "The paper's evidence on this association's mechanism; empty if it holds none.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "mechanism": {
+                                    "type": "string",
+                                    "enum": [
+                                        "loss_of_function",
+                                        "gain_of_function",
+                                        "dominant_negative",
+                                        "not_loss_of_function"
+                                    ]
+                                },
+                                "evidence_type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "predicted_lof_variants",
+                                        "variant_spectrum",
+                                        "variant_functional",
+                                        "model_organism",
+                                        "gene_function",
+                                        "unaffected_carriers",
+                                        "other"
+                                    ]
+                                },
+                                "finding": {
+                                    "type": "string",
+                                    "description": "What the paper shows, in one or two sentences.",
+                                    "minLength": 1
+                                },
+                                "quote": {
+                                    "type": "string",
+                                    "description": "A verbatim passage of the paper that supports the finding.",
+                                    "minLength": 1
+                                }
+                            },
+                            "required": [
+                                "mechanism",
+                                "evidence_type",
+                                "finding",
+                                "quote"
+                            ],
+                            "additionalProperties": false
+                        }
+                    },
+                    "authors_conclusion": {
+                        "type": "string",
+                        "description": "What the authors conclude or propose about the mechanism, in one sentence, or NR.",
+                        "minLength": 1
+                    }
+                },
+                "required": [
+                    "association",
+                    "evidence",
+                    "authors_conclusion"
+                ],
+                "additionalProperties": false
+            }
+        }
+    },
+    "required": [
+        "associations"
+    ],
+    "additionalProperties": false
+}

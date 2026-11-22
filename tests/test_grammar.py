@@ -62,6 +62,8 @@ CONFIGURATIONS: list[tuple[str, dict[str, Any], list[ToolParam]]] = [
     ("match_panels", _schema("panel_matching_schema.json"), []),
     ("tournament", _schema("tournament_selection_schema.json"), []),
     ("scan_mechanisms", MechanismScanResult.model_json_schema(), []),
+    ("read_mechanisms", _schema("mechanism_reading_schema.json"), []),
+    ("assess_mechanisms", _schema("mechanism_assessment_schema.json"), []),
 ]
 # assess-relevance --model
 LIGHT_MODEL_STAGES = {"relevance"}

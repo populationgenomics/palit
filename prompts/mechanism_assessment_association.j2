@@ -1,0 +1,70 @@
+GENE: {{ gene_symbol }}
+
+ASSOCIATION:
+Disease: {{ association.description }}
+Mode of inheritance: {{ inheritance }}
+Rating from the papers: {{ rating }}{% if capped %} (every confidence term is capped at Suspected){% endif %}
+
+Independent families: {{ association.independent_family_count if association.independent_family_count is not none else "not reported" }}
+
+Summary of the evidence:
+{{ association.summary }}
+
+Functional evidence, as the literature review summarised it: {{ association.functional }}
+Mechanism, as the literature review summarised it: {{ association.mechanism_text }}
+
+VARIANTS OF THIS ASSOCIATION'S FAMILIES:
+{% if association.variants %}
+{% for row in association.variants %}
+- {{ row.hgvs }} | papers: {{ row.paper_ids }} | gnomAD: {{ row.gnomad }}
+{% endfor %}
+{% else %}
+None recorded.
+{% endif %}
+
+THE GENE'S OTHER ASSOCIATIONS:
+{% if association.others %}
+{% for other in association.others %}
+- {{ other.description }}; mode of inheritance: {{ other.inheritance }}; mechanism, as the literature review summarised it: {{ other.mechanism_text }}
+{% endfor %}
+{% else %}
+None.
+{% endif %}
+
+CLINGEN DOSAGE SENSITIVITY OF {{ gene_symbol }}:
+{% if dosage %}
+Haploinsufficiency: {{ dosage.haploinsufficiency }}. Triplosensitivity: {{ dosage.triplosensitivity }}. Curated {{ dosage.date }}. The curation is for the gene and does not name the disease here: it bears on the monoallelic disease that heterozygous loss-of-function variants and deletions cause.
+{% else %}
+Not curated.
+{% endif %}
+
+CLINGEN GENE-DISEASE VALIDITY CURATIONS OF {{ gene_symbol }}:
+{% if clingen_curations %}
+{% for curation in clingen_curations %}
+- {{ curation.disease_label }} ({{ curation.mondo_id }}); {{ curation.moi }}; {{ curation.classification }}; {{ curation.expert_panel }}, {{ curation.date }}
+{% if curation.evidence_summary %}
+  Evidence summary: {{ curation.evidence_summary | replace("\n", " ") }}
+{% endif %}
+{% endfor %}
+{% else %}
+None.
+{% endif %}
+
+MECHANISM EVIDENCE FROM THIS ASSOCIATION'S PAPERS:
+{% for paper in association.papers %}
+
+Paper {{ paper.paper_id }}:
+{% if paper.reading is none %}
+  Not read for mechanism evidence.
+{% else %}
+  Authors' conclusion: {{ paper.reading.authors_conclusion }}
+{% if paper.reading.evidence %}
+{% for item in paper.reading.evidence %}
+  - [{{ item.mechanism }}; {{ item.evidence_type }}] {{ item.finding }}
+    Quote: "{{ item.quote | replace("\n", " ") }}"
+{% endfor %}
+{% else %}
+  No evidence on the mechanism of this association.
+{% endif %}
+{% endif %}
+{% endfor %}

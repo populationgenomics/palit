@@ -1,0 +1,33 @@
+You are reading one paper for a curator of gene-disease associations. Your task is to record the evidence this paper holds on the MECHANISM OF DISEASE of each gene-disease association listed with the paper. A second step judges the mechanism of each association from the evidence of all its papers, so record what this paper shows and leave the overall judgement to that step.
+
+{% include "partials/mechanism_definitions.j2" %}
+
+WHAT TO RECORD
+
+The message lists the associations this paper is cited for, each with an ID (A1, A2, ...), the gene, the disease and the mode of inheritance. Answer for every listed association, once each, under its ID.
+
+For each association, record one evidence item for each distinct piece of evidence the paper holds on its mechanism:
+
+- `mechanism`: the mechanism the evidence speaks for. Evidence against loss of function goes under not_loss_of_function.
+- `evidence_type`:
+  - predicted_lof_variants: the patients' causal variants include pLOF variants. Name them, and say whether the paper shows or expects nonsense-mediated decay, or an escape from it.
+  - variant_spectrum: the pattern of the causal variants: only missense or in-frame variants, a cluster or hotspot, recurrent variants, truncating variants that escape nonsense-mediated decay, no pLOF variants, or pLOF variants that cause a different disease.
+  - variant_functional: an experiment on one or more of the patients' variants: transcript, protein, activity, localisation, interaction, or co-expression with the wild type. Name the variants, the system and the readout, and the direction of the effect.
+  - model_organism: a knock-out, knock-in or transgenic model, with its zygosity and whether it has the phenotype.
+  - gene_function: the known function of the gene, or a homologous protein, as far as it bears on the mechanism.
+  - unaffected_carriers: carriers of pLOF variants or deletions without the disease, such as heterozygous parents, or population data on such variants.
+  - other: evidence on the mechanism that fits none of the above.
+- `finding`: one or two sentences that state what the paper shows, with the variants, the system and the result. Write "the paper reports" or "the paper shows" for its own data, and "the authors cite" for results of earlier work.
+- `quote`: one verbatim passage of the paper that supports the finding, at most two sentences, copied exactly.
+
+`authors_conclusion`: what the authors themselves conclude or propose about the mechanism of this association's disease, in one sentence, with their own degree of certainty ("the authors propose", "the authors conclude"). Write NR when they say nothing about it.
+
+RULES
+
+- Record evidence only for the listed gene and only where it concerns the listed disease with the listed mode of inheritance. A paper cited for several associations often holds evidence for only some of them.
+- Record what the paper shows, including evidence that argues against the authors' own conclusion. A statement of the authors without data of this paper belongs in `authors_conclusion`, and it is no evidence item.
+- A variant type alone is evidence: a nonsense or frameshift variant in a patient is a predicted_lof_variants item for loss_of_function, also when the authors do not discuss the mechanism.
+- Healthy heterozygous carriers of a recessive disease's variants are expected, and they are no evidence on the mechanism of a biallelic association. Record unaffected carriers only where they bear on the listed association: carriers of pLOF variants or deletions who lack a monoallelic association's disease.
+- In-silico predictions of pathogenicity (SIFT, PolyPhen, CADD, REVEL) say nothing on the mechanism. Leave them out.
+- An association for which the paper holds no evidence on the mechanism gets an empty `evidence` list.
+- Read the whole paper, including tables, figure legends and supplementary text in the PDF.

@@ -151,10 +151,19 @@ class MechanismAssessment:
         )
 
 
-def review_comment(summary: str, mechanisms: MechanismAssessment | None) -> str:
-    """The comment of an association's review: its summary, then the notes on its
+GROUPING_HEADING = "Lumping and splitting:"
+
+
+def review_comment(
+    summary: str, grouping_statement: str | None, mechanisms: MechanismAssessment | None
+) -> str:
+    """The comment of an association's review, as paragraphs: its summary, its lumping
+    and splitting statement once explain-grouping has written it, and the notes on its
     mechanisms of disease (see :meth:`MechanismAssessment.notes`) once assess-mechanisms
     has run for it."""
-    if mechanisms is None:
-        return summary
-    return f"{summary}\n\n{mechanisms.notes()}"
+    paragraphs = [summary]
+    if grouping_statement is not None:
+        paragraphs.append(f"{GROUPING_HEADING} {grouping_statement}")
+    if mechanisms is not None:
+        paragraphs.append(mechanisms.notes())
+    return "\n\n".join(paragraphs)

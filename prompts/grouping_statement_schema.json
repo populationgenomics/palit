@@ -1,0 +1,32 @@
+{
+    "type": "object",
+    "properties": {
+        "associations": {
+            "type": "array",
+            "description": "One entry per association of the gene, in the order of the list.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "association": {
+                        "type": "string",
+                        "description": "The association's ID from the list: A1, A2, ..."
+                    },
+                    "statement": {
+                        "type": "string",
+                        "description": "The lumping and splitting statement: two to four sentences, at most 90 words, one paragraph.",
+                        "minLength": 1
+                    }
+                },
+                "required": [
+                    "association",
+                    "statement"
+                ],
+                "additionalProperties": false
+            }
+        }
+    },
+    "required": [
+        "associations"
+    ],
+    "additionalProperties": false
+}

@@ -471,14 +471,15 @@ def test_the_review_comment_carries_the_mechanism_notes() -> None:
         ),
         unknown_note="",
     )
-    assert review_comment("SUMMARY", asserted) == (
-        "SUMMARY\n\nMechanism of disease:\n"
+    assert review_comment("SUMMARY", "Kept apart from X.", asserted) == (
+        "SUMMARY\n\nLumping and splitting: Kept apart from X.\n\nMechanism of disease:\n"
         "- Dominant negative (established): Mutant blocks wild type.\n"
         "- Not loss of function (suspected): Carriers are healthy."
     )
     unknown = MechanismAssessment(mechanisms=(), unknown_note="Only proposed.")
     assert unknown.notes() == "Mechanism of disease:\n- Unknown: Only proposed."
-    assert review_comment("SUMMARY", None) == "SUMMARY"
+    assert review_comment("SUMMARY", None, unknown) == "SUMMARY\n\n" + unknown.notes()
+    assert review_comment("SUMMARY", None, None) == "SUMMARY"
 
 
 def test_an_unknown_mechanism_needs_its_note(db_path: Path) -> None:

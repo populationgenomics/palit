@@ -15,6 +15,7 @@ from palit import (
     discover_citations,
     download_papers,
     expand_literature,
+    explain_grouping,
     extract_evidence,
     generate_report,
     ingest_preprints,
@@ -71,6 +72,7 @@ app.add_typer(map_mondo.app, name="map-mondo")
 app.add_typer(match_panels.app, name="match-panels")
 app.add_typer(read_mechanisms.app, name="read-mechanisms")
 app.add_typer(assess_mechanisms.app, name="assess-mechanisms")
+app.add_typer(explain_grouping.app, name="explain-grouping")
 app.add_typer(journal_metrics.app, name="journal-metrics")
 app.add_typer(panelapp_snapshot.app, name="panelapp")
 app.add_typer(triage_expansion.app, name="triage-expansion")

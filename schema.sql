@@ -147,7 +147,10 @@ CREATE TABLE gene_aggregations (
     --   "evaluations": [<raw evaluation dicts>]}, ...] in the order of panel_entries.
     -- NULL when no panel held the gene.
     existing_panel_reviews_json JSON,
-    unassessed_reports_json JSON NOT NULL  -- [{phenotype, inheritance_mode, dois, reason}]
+    unassessed_reports_json JSON NOT NULL,  -- [{phenotype, inheritance_mode, dois, reason}]
+    -- explain-grouping's answer for the gene's associations: Message JSON as returned by
+    -- the API. NULL until it has run for the gene.
+    grouping_statements_raw TEXT
 );
 
 -- One row per gene-disease-MoI association of one gene in this run. Storing a gene's
@@ -178,6 +181,10 @@ CREATE TABLE associations (
     -- unknown_note says why. NULL until assess-mechanisms has run for the association.
     mechanisms_json JSON,
     mechanisms_raw TEXT,
+    -- explain-grouping's lumping and splitting statement for the association's review:
+    -- which disease entities it lumps, which associations of the gene it is kept apart
+    -- from, and why. NULL until explain-grouping has run for the gene.
+    grouping_statement TEXT,
     UNIQUE(hgnc_id, position),
     CHECK((mondo_id IS NULL) = (mondo_match IS NULL))
 );

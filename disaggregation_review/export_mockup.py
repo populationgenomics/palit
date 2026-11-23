@@ -3,8 +3,8 @@
 
 One JSON file with, per gene, every association as the mock-up shows it: its
 name, MoI as PanelApp writes it, rating from the papers, MONDO term, summary
-with PMIDs in place of the run's paper IDs, the PMIDs of its papers, and its
-mechanisms of disease.
+with PMIDs in place of the run's paper IDs, the PMIDs of its papers, its lumping
+and splitting statement and its mechanisms of disease.
 """
 
 import json
@@ -75,9 +75,18 @@ def gene_export(conn: sqlite3.Connection, hgnc_id: int, symbol: str) -> dict[str
     panel_names = {e["panel_id"]: e["panel_name"] for e in context["panel_entries"]}
 
     associations = []
-    for raw, mondo_id, mondo_label, mondo_match, panels_raw, mechanisms_raw in conn.execute(
+    for (
+        raw,
+        mondo_id,
+        mondo_label,
+        mondo_match,
+        panels_raw,
+        mechanisms_raw,
+        grouping_statement,
+    ) in conn.execute(
         "SELECT assessment_json, mondo_id, mondo_label, mondo_match, matched_panels_json, "
-        "mechanisms_json FROM associations WHERE hgnc_id = ? ORDER BY position",
+        "mechanisms_json, grouping_statement FROM associations WHERE hgnc_id = ? "
+        "ORDER BY position",
         (hgnc_id,),
     ):
         stored: dict[str, Any] = json.loads(raw)
@@ -102,7 +111,8 @@ def gene_export(conn: sqlite3.Connection, hgnc_id: int, symbol: str) -> dict[str
                 "mondo_match": mondo_match,
                 "summary": shown["summary"],
                 "mechanism_assessment": mechanisms_export(mechanisms),
-                "review_comment": review_comment(shown["summary"], mechanisms),
+                "grouping_statement": grouping_statement,
+                "review_comment": review_comment(shown["summary"], grouping_statement, mechanisms),
                 "grouping_rationale": shown["grouping_rationale"],
                 "pmids": sorted(doi_to_pmid[d] for d in stored["dois"] if d in doi_to_pmid),
                 "papers_without_pmid": sorted(d for d in stored["dois"] if d not in doi_to_pmid),

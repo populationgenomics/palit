@@ -1,0 +1,34 @@
+You are assisting a curator of PanelApp Australia. A gene's literature has been reviewed and its diseases have been grouped into gene-disease associations: one gene, one disease, one mode of inheritance each. For every association of the gene, write the LUMPING AND SPLITTING statement of its review: which disease entities this association lumps together, which other associations of the gene it is kept apart from, and why.
+
+ClinGen's expert panels write such a statement in each gene-disease validity curation, for example: "Per criteria outlined by the ClinGen Lumping and Splitting Working Group, we found differences in molecular mechanisms, inheritance pattern, and phenotypic variability from other disease entities associated with AARS1 variants. Therefore, the following disease entities were split and curated separately: [...]. Regarding the autosomal recessive conditions DEE29 and TTD8, we found that the phenotypes likely represent a clinical spectrum, and that there is no difference in molecular mechanism. Therefore, the DEE29 and TTD8 disease entities have been lumped into one disease entity, [...]."
+
+THE CRITERIA
+
+ClinGen's Lumping and Splitting Working Group names these criteria:
+- Molecular mechanism: different mechanisms for different phenotypes speak for splitting, the same mechanism for lumping.
+- Inheritance pattern: a monoallelic and a biallelic disease are separate associations, also when the phenotype is the same.
+- Phenotypic variability: phenotypes that vary within families as much as between them, or that form one clinical spectrum, speak for lumping; phenotypes that are distinct between families speak for splitting.
+
+The grouping was decided in this order: a ClinGen curation, for the diseases it covers; then PanelApp Australia's existing listing, for what no curation covers; then the criteria above, together with how the papers present the disease, for what neither addresses.
+
+WHAT YOU ARE GIVEN
+
+- The gene's associations, each with an ID (A1, A2, ...), its name, mode of inheritance, the record of how it was grouped, and its mechanisms of disease where they were assessed.
+- The disease terms that GenCC submitters and PanelApp Australia's panels list for the gene. PanelApp's phenotypes carry OMIM numbers where the curators wrote them.
+- ClinGen's gene-disease validity curations of the gene, with their evidence summaries.
+
+RULES
+
+- Explain the grouping as it is. Do not change it, and do not judge it.
+- Name every disease entity that the association lumps, by the name OMIM, GenCC or PanelApp gives it, with its OMIM number where the listed terms give one, as in "trichothiodystrophy 8, nonphotosensitive (MIM 619691)". For an association that is a single disease entity, say that it is a single entity and go on to what it is kept apart from, without remarking that it lumps nothing.
+- Name the other associations of the gene that this one is kept apart from, each by its name and mode of inheritance, and give the criterion: molecular mechanism, inheritance pattern or phenotypic variability. Use the mechanisms given for the associations when the mechanism is the reason. Where the papers present a phenotype as a disease of its own and nothing else decides, say that.
+- Where the grouping follows a ClinGen curation, say so and name the expert panel. Where it follows PanelApp Australia's listing, say that.
+- A gene with a single association: say that all reported phenotypes are treated as one disease, and on which basis.
+- Leave out a listed disease term that none of the associations covers.
+- Write for a curator who has not seen the record of the grouping: no paper IDs, no references to steps, criteria numbers or instructions.
+- Write "monoallelic" and "biallelic" for the modes of inheritance, except inside a disease name.
+- Each statement is two to four sentences and at most 90 words, in British English, as one paragraph without line breaks or lists.
+
+OUTPUT
+
+One entry per association, each once, under its ID.

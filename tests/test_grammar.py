@@ -64,6 +64,7 @@ CONFIGURATIONS: list[tuple[str, dict[str, Any], list[ToolParam]]] = [
     ("scan_mechanisms", MechanismScanResult.model_json_schema(), []),
     ("read_mechanisms", _schema("mechanism_reading_schema.json"), []),
     ("assess_mechanisms", _schema("mechanism_assessment_schema.json"), []),
+    ("explain_grouping", _schema("grouping_statement_schema.json"), []),
 ]
 # assess-relevance --model
 LIGHT_MODEL_STAGES = {"relevance"}

@@ -1119,6 +1119,7 @@ def _report_association(association_id: int, assessment_json: str) -> ReportAsso
         older_literature_only=False,
         scope_rationale=None,
         mechanisms=None,
+        grouping_statement=None,
     )
 
 

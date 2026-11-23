@@ -94,6 +94,7 @@ STAGE_SUBJECT_KINDS: dict[str, SubjectKind] = {
     "match_panels": SubjectKind.ASSOCIATION,
     "read_mechanisms": SubjectKind.PAPER,
     "assess_mechanisms": SubjectKind.ASSOCIATION,
+    "explain_grouping": SubjectKind.GENE,
     # Run databases hold requests of this stage, the PanelApp check of relevance, which
     # no module sends.
     "relevance_panelapp": SubjectKind.PAPER,

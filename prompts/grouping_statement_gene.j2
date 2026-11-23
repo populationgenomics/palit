@@ -1,0 +1,34 @@
+GENE: {{ gene_symbol }}
+
+ASSOCIATIONS:
+{% for a in associations %}
+
+{{ a.label }}: {{ a.name }}
+  Mode of inheritance: {{ a.inheritance }}
+  Rating from the papers: {{ a.rating }}
+  MONDO term: {{ a.mondo }}
+  Description: {{ a.description }}
+  How it was grouped: {{ a.grouping_rationale }}
+  Relation to PanelApp Australia: {{ a.relation }}
+  Mechanisms of disease: {{ a.mechanisms }}
+{% endfor %}
+
+DISEASE TERMS GENCC SUBMITTERS LIST FOR {{ gene_symbol }} (disease (MONDO id) | modes of inheritance submitted):
+{{ gencc_terms }}
+
+PANELAPP AUSTRALIA ENTRIES OF {{ gene_symbol }}:
+{% for e in panel_entries %}
+- {{ e.panel_name }}: {{ e.rating }}; {{ e.moi }}; phenotypes: {{ e.phenotypes | join("; ") or "none listed" }}
+{% endfor %}
+
+CLINGEN GENE-DISEASE VALIDITY CURATIONS OF {{ gene_symbol }}:
+{% if clingen_curations %}
+{% for curation in clingen_curations %}
+- {{ curation.disease_label }} ({{ curation.mondo_id }}); {{ curation.moi }}; {{ curation.classification }}; {{ curation.expert_panel }}, {{ curation.date }}
+{% if curation.evidence_summary %}
+  Evidence summary: {{ curation.evidence_summary | replace("\n", " ") }}
+{% endif %}
+{% endfor %}
+{% else %}
+None.
+{% endif %}

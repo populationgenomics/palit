@@ -384,6 +384,9 @@
         <p class="relation-basis">No finding: none of this association's papers was published in this run's literature window.</p>
         {% endif %}
         <div class="summary-content">{{ e.summary | markdown_to_html }}</div>
+        {% if assoc.grouping_statement is not none %}
+        <p><strong>Lumping and splitting:</strong> {{ assoc.grouping_statement }}</p>
+        {% endif %}
         {{ family_counts(e) }}
         {% if e.segregation != 'NR' %}
         <p><strong>Segregation:</strong> {{ e.segregation }}</p>

@@ -21,6 +21,7 @@ from palit import (
     assess_mechanisms,
     assess_relevance,
     expand_literature,
+    explain_grouping,
     extract_evidence,
     map_mondo,
     match_panels,
@@ -592,6 +593,7 @@ def test_every_stage_has_its_subject_kind() -> None:
         match_panels.STAGE: SubjectKind.ASSOCIATION,
         read_mechanisms.STAGE: SubjectKind.PAPER,
         assess_mechanisms.STAGE: SubjectKind.ASSOCIATION,
+        explain_grouping.STAGE: SubjectKind.GENE,
         "relevance_panelapp": SubjectKind.PAPER,
     }
 

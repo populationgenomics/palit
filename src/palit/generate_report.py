@@ -446,6 +446,8 @@ class ReportAssociation:
     # The mechanisms of disease, statements with paper IDs in display form; None until
     # assess-mechanisms has run for the association
     mechanisms: MechanismAssessment | None
+    # The lumping and splitting statement; None until explain-grouping has run for the gene
+    grouping_statement: str | None
 
     @property
     def already_reviewed(self) -> bool:
@@ -510,8 +512,9 @@ class AssessmentForm:
     rating: str  # "Green", "Amber" or "Red"
     moi: str  # PanelApp's MoI string; empty when the association reports no mode
     publications: str  # semicolon-separated, by PMID where available and DOI otherwise
-    # The association's summary, then the notes on its mechanisms of disease: the form
-    # holds the mechanisms as ratings only, so their evidence is part of the comment
+    # The association's summary, its lumping and splitting statement and the notes on
+    # its mechanisms of disease: the form holds the mechanisms as ratings only, so their
+    # evidence is part of the comment
     comments: str
 
 
@@ -535,7 +538,9 @@ def assessment_form(
         rating=PREFILL_RATINGS[association.rating],
         moi=derive_panelapp_moi([assessment]),
         publications=";".join(prefill_publications((), assessment["dois"], pmid_by_doi)),
-        comments=review_comment(assessment["summary"], association.mechanisms),
+        comments=review_comment(
+            assessment["summary"], association.grouping_statement, association.mechanisms
+        ),
     )
 
 
@@ -1326,7 +1331,7 @@ def load_associations(
     cursor.execute(
         f"""
         SELECT a.id, a.position, a.assessment_json, a.mondo_id, a.mondo_label, a.mondo_match,
-               a.mondo_raw, a.matched_panels_json, a.mechanisms_json,
+               a.mondo_raw, a.matched_panels_json, a.mechanisms_json, a.grouping_statement,
                {latest("status")} AS mondo_status,
                {latest("model")} AS mondo_model,
                {latest("status")} AS matching_status,
@@ -1390,6 +1395,7 @@ def load_associations(
                         )
                     )
                 ),
+                grouping_statement=row["grouping_statement"],
             )
         )
     return sorted(associations, key=association_sort_key)

@@ -3,8 +3,8 @@
 The mechanisms are the Gene Curation Coalition's four categories: loss of function,
 gain of function, dominant negative, and "not loss of function" for evidence that
 loss of function is not the mechanism. Each is judged on its own, so an association
-can hold several, each with a confidence term (Established, Likely or Suspected) and
-a statement of the evidence. An association that holds none has an unknown mechanism.
+can hold several, each with a confidence term (Established or Inconclusive) and a
+statement of the evidence. An association that holds none has an unknown mechanism.
 
 read-mechanisms reads each paper's PDF for the mechanism evidence it holds on the
 associations that cite it. assess-mechanisms judges each association's mechanisms
@@ -24,17 +24,18 @@ MECHANISM_LABELS: dict[str, str] = {
     "not_loss_of_function": "Not loss of function",
 }
 
-# The confidence terms, weakest first
-CONFIDENCE_TERMS: tuple[str, ...] = ("Suspected", "Likely", "Established")
+# The confidence terms, weaker first. Inconclusive covers every mechanism that direct
+# evidence supports without establishing it, which GenCC divides into Likely and Suspected.
+CONFIDENCE_TERMS: tuple[str, ...] = ("Inconclusive", "Established")
 
 # The highest term for an association whose gene-disease evidence is limited (rated RED)
-LIMITED_EVIDENCE_CAP = "Suspected"
+LIMITED_EVIDENCE_CAP = "Inconclusive"
 
-# The rating colour each confidence term is shown in, so that the terms read like ratings
+# The colour each confidence term is shown in. Only Established takes a colour; the
+# ratings' amber and red are left to the ratings.
 CONFIDENCE_COLOURS: dict[str, str] = {
     "Established": "green",
-    "Likely": "amber",
-    "Suspected": "red",
+    "Inconclusive": "grey",
 }
 
 
@@ -84,7 +85,7 @@ class AssertedMechanism:
 
     @property
     def colour(self) -> str:
-        """The rating colour of the confidence term: green, amber or red."""
+        """The colour of the confidence term: green or grey."""
         return CONFIDENCE_COLOURS[self.confidence]
 
 

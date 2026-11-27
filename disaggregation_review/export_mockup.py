@@ -42,7 +42,7 @@ def shown_mechanisms(
 
 def mechanisms_export(assessment: MechanismAssessment | None) -> dict[str, Any] | None:
     """An association's mechanisms as the mock-up shows them: each with its label, its
-    confidence term and the rating colour of the term."""
+    confidence term and the colour of the term."""
     if assessment is None:
         return None
     return {

@@ -393,7 +393,7 @@ def test_the_request_shows_the_association_the_curations_and_the_evidence(db_pat
     text = association_text(biallelic, template, "GENEA", dosage)
     lines = text.splitlines()
     assert "Disease: recessive disease" in lines
-    assert "Rating from the papers: Red (every confidence term is capped at Suspected)" in lines
+    assert "Rating from the papers: Red (no mechanism can be Established)" in lines
     assert (
         "- dominant disease; mode of inheritance: Monoallelic; mechanism, as the literature "
         "review summarised it: proposed gain of function" in lines
@@ -433,7 +433,7 @@ def test_asserted_mechanisms_are_stored_with_their_papers_dois(db_path: Path) ->
     monoallelic = _associations(db_path)[MONOALLELIC]
     answer = _answer(
         ("gain_of_function", "Established"),
-        ("not_loss_of_function", "Likely"),
+        ("not_loss_of_function", "Inconclusive"),
         paper_ids=["Smith2020", "Jones2018", "Smith2020"],
     )
     jsonschema.Draft202012Validator(ASSESSMENT_SCHEMA).validate(answer)
@@ -445,7 +445,7 @@ def test_asserted_mechanisms_are_stored_with_their_papers_dois(db_path: Path) ->
         dois=(SMITH, JONES),
     )
     assert not assessment.unknown
-    assert assessment.confidence_of("not_loss_of_function") == "Likely"
+    assert assessment.confidence_of("not_loss_of_function") == "Inconclusive"
     assert assessment.confidence_of("dominant_negative") is None
     assert assessment.statement_of("dominant_negative") == ""
     assert MechanismAssessment.from_json(assessment.to_json()) == assessment
@@ -454,7 +454,7 @@ def test_asserted_mechanisms_are_stored_with_their_papers_dois(db_path: Path) ->
 def test_paper_ids_are_spelled_as_the_aggregation_gave_them(db_path: Path) -> None:
     monoallelic = _associations(db_path)[MONOALLELIC]
     answer = _answer(
-        ("loss_of_function", "Likely"),
+        ("loss_of_function", "Inconclusive"),
         statement="No effect in yeast (SMITH2020), unlike JONES2018 and Jonesy2018.",
         paper_ids=["smith2020"],
     )
@@ -467,14 +467,14 @@ def test_the_review_comment_carries_the_mechanism_notes() -> None:
     asserted = MechanismAssessment(
         mechanisms=(
             AssertedMechanism("dominant_negative", "Established", "Mutant blocks wild type.", ()),
-            AssertedMechanism("not_loss_of_function", "Suspected", "Carriers are healthy.", ()),
+            AssertedMechanism("not_loss_of_function", "Inconclusive", "Carriers are healthy.", ()),
         ),
         unknown_note="",
     )
     assert review_comment("SUMMARY", "Kept apart from X.", asserted) == (
         "SUMMARY\n\nLumping and splitting: Kept apart from X.\n\nMechanism of disease:\n"
         "- Dominant negative (established): Mutant blocks wild type.\n"
-        "- Not loss of function (suspected): Carriers are healthy."
+        "- Not loss of function (inconclusive): Carriers are healthy."
     )
     unknown = MechanismAssessment(mechanisms=(), unknown_note="Only proposed.")
     assert unknown.notes() == "Mechanism of disease:\n- Unknown: Only proposed."
@@ -495,32 +495,32 @@ def test_an_unknown_mechanism_needs_its_note(db_path: Path) -> None:
     [
         (
             MONOALLELIC,
-            _answer(("loss_of_function", "Likely"), ("loss_of_function", "Suspected")),
+            _answer(("loss_of_function", "Established"), ("loss_of_function", "Inconclusive")),
             "asserted more than once",
         ),
         (
             BIALLELIC,
-            _answer(("dominant_negative", "Suspected")),
+            _answer(("dominant_negative", "Inconclusive")),
             "dominant_negative asserted for a biallelic association",
         ),
         (
             BIALLELIC,
-            _answer(("loss_of_function", "Likely")),
-            "above the cap of Suspected for limited evidence",
+            _answer(("loss_of_function", "Established")),
+            "above the cap of Inconclusive for limited evidence",
         ),
         (
             MONOALLELIC,
-            _answer(("loss_of_function", "Likely"), unknown_note="unclear"),
+            _answer(("loss_of_function", "Inconclusive"), unknown_note="unclear"),
             "unknown_note given although mechanisms are asserted",
         ),
         (
             BIALLELIC,
-            _answer(("loss_of_function", "Suspected"), paper_ids=["Jones2018"]),
+            _answer(("loss_of_function", "Inconclusive"), paper_ids=["Jones2018"]),
             "unknown paper IDs",
         ),
         (
             MONOALLELIC,
-            _answer(("loss_of_function", "Likely"), statement="One.\n- Two."),
+            _answer(("loss_of_function", "Inconclusive"), statement="One.\n- Two."),
             "line break in the statement",
         ),
     ],
@@ -538,7 +538,7 @@ def test_valid_mechanisms_are_stored_on_the_association(db_path: Path) -> None:
     stage = assess_mechanisms.STAGE
     rejected = _result(stage, str(BIALLELIC), _answer(("loss_of_function", "Established")))
     assert not assess_mechanisms.handle_result(rejected, db_path, validator, biallelic)
-    accepted = _result(stage, str(BIALLELIC), _answer(("loss_of_function", "Suspected")))
+    accepted = _result(stage, str(BIALLELIC), _answer(("loss_of_function", "Inconclusive")))
     accepted = LlmResult(**{**accepted.__dict__, "custom_id": "second"})
     assert assess_mechanisms.handle_result(accepted, db_path, validator, biallelic)
     with sqlite3.connect(db_path) as conn:
@@ -552,7 +552,7 @@ def test_valid_mechanisms_are_stored_on_the_association(db_path: Path) -> None:
         "mechanisms": [
             {
                 "mechanism": "loss_of_function",
-                "confidence": "Suspected",
+                "confidence": "Inconclusive",
                 "statement": "Statement on loss_of_function (Smith2020).",
                 "dois": [SMITH],
             }

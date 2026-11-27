@@ -1708,9 +1708,9 @@ footer hr {
     line-height: 1.45;
 }
 
-/* One tag of two parts: the mechanism on white, its confidence term on the rating colour
-   (.rating-green, .rating-amber, .rating-red; .rating-grey for an unknown mechanism).
-   The border takes the rating's text colour, as the rating badges of the association do. */
+/* One tag of two parts: the mechanism on white, its confidence term on the term's colour
+   (.rating-green for Established, .rating-grey for Inconclusive and for an unknown
+   mechanism). The border takes the text colour, as the rating badges of the association do. */
 .mechanism-tag {
     display: inline-flex;
     border-radius: 3px;
@@ -1721,8 +1721,6 @@ footer hr {
 }
 
 .mechanism-tag.rating-green { border-color: #155724; }
-.mechanism-tag.rating-amber { border-color: #856404; }
-.mechanism-tag.rating-red { border-color: #721c24; }
 .mechanism-tag.rating-grey { border-color: #6c757d; }
 
 .mechanism-name,
@@ -1808,23 +1806,17 @@ details.assessment-form form {
     resize: vertical;
 }
 
-/* A confidence term in the form takes its rating colour, and follows the selection */
+/* A confidence term in the form takes its colour, and follows the selection */
 .assessment-form select.confidence-select:has(option[value="Established"]:checked) {
     background: #d4edda;
     color: #155724;
     border-color: #155724;
 }
 
-.assessment-form select.confidence-select:has(option[value="Likely"]:checked) {
-    background: #fff3cd;
-    color: #856404;
-    border-color: #856404;
-}
-
-.assessment-form select.confidence-select:has(option[value="Suspected"]:checked) {
-    background: #f8d7da;
-    color: #721c24;
-    border-color: #721c24;
+.assessment-form select.confidence-select:has(option[value="Inconclusive"]:checked) {
+    background: #e9ecef;
+    color: #495057;
+    border-color: #6c757d;
 }
 
 .assessment-form select.confidence-select {

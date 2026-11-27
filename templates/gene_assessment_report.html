@@ -252,9 +252,9 @@
     {%- endmacro %}
 
     {# An association's mechanisms of disease. Each asserted mechanism is one tag of two
-       parts, the mechanism and its confidence term, in the rating colour of the term
-       (Established green, Likely amber, Suspected red), with its statement beside it. An
-       unknown mechanism is a grey tag with the reason. Before assess-mechanisms has run
+       parts, the mechanism and its confidence term, in the colour of the term
+       (Established green, Inconclusive grey), with its statement beside it. An unknown
+       mechanism is a grey tag without a mechanism, with the reason. Before assess-mechanisms has run
        for the association, the aggregation's free-text mechanism. #}
     {% macro association_mechanisms(assoc) %}
     {% set m = assoc.mechanisms %}

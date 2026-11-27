@@ -3289,13 +3289,13 @@ def test_an_association_shows_its_mechanisms_with_papers_by_pmid(
             "mechanisms": [
                 {
                     "mechanism": "gain_of_function",
-                    "confidence": "Likely",
+                    "confidence": "Established",
                     "statement": "Missense variants raise channel activity (Smith2024).",
                     "dois": ["10.1/a"],
                 },
                 {
                     "mechanism": "not_loss_of_function",
-                    "confidence": "Suspected",
+                    "confidence": "Inconclusive",
                     "statement": "Carriers of a deletion are healthy (Smith2024).",
                     "dois": ["10.1/a"],
                 },
@@ -3308,16 +3308,17 @@ def test_an_association_shows_its_mechanisms_with_papers_by_pmid(
     )
     html = _render(db_path, _load(db_path, hgnc_resolver))
     section = _association_section(html, 12)
-    # One tag per mechanism, its confidence term in the rating colour: Likely is amber,
-    # Suspected red
+    # One tag per mechanism, its confidence term in the term's colour: Established is
+    # green, Inconclusive grey
     assert (
-        '<dt><span class="mechanism-tag rating-amber"><span class="mechanism-name">Gain of '
-        'function</span><span class="mechanism-confidence">Likely</span></span></dt>' in section
+        '<dt><span class="mechanism-tag rating-green"><span class="mechanism-name">Gain of '
+        'function</span><span class="mechanism-confidence">Established</span></span></dt>'
+        in section
     )
     assert "<dd>Missense variants raise channel activity (PMID 111).</dd>" in section
     assert (
-        '<span class="mechanism-tag rating-red"><span class="mechanism-name">Not loss of '
-        'function</span><span class="mechanism-confidence">Suspected</span></span>' in section
+        '<span class="mechanism-tag rating-grey"><span class="mechanism-name">Not loss of '
+        'function</span><span class="mechanism-confidence">Inconclusive</span></span>' in section
     )
     unknown = _association_section(html, 13)
     assert (
@@ -3341,7 +3342,7 @@ def test_a_disaggregation_review_offers_each_association_as_a_prefilled_form(
             "mechanisms": [
                 {
                     "mechanism": "gain_of_function",
-                    "confidence": "Likely",
+                    "confidence": "Inconclusive",
                     "statement": "Missense variants raise channel activity (Smith2024).",
                     "dois": ["10.1/a"],
                 }
@@ -3369,7 +3370,7 @@ def test_a_disaggregation_review_offers_each_association_as_a_prefilled_form(
     # The mechanisms are four ratings; their evidence is part of the comment
     gain = form[form.index('id="assessment-12-gain_of_function"') :]
     gain = gain[: gain.index("</select>")]
-    assert '<option value="Likely" selected>Likely</option>' in gain
+    assert '<option value="Inconclusive" selected>Inconclusive</option>' in gain
     loss = form[form.index('id="assessment-12-loss_of_function"') :]
     loss = loss[: loss.index("</select>")]
     assert '<option value="" selected>Not asserted</option>' in loss
@@ -3378,7 +3379,7 @@ def test_a_disaggregation_review_offers_each_association_as_a_prefilled_form(
     comments = comments[: comments.index("</textarea>")]
     assert comments.endswith(
         "\n\nMechanism of disease:\n"
-        "- Gain of function (likely): Missense variants raise channel activity (PMID 111)."
+        "- Gain of function (inconclusive): Missense variants raise channel activity (PMID 111)."
     )
     assert '<button type="button" disabled>Submit review</button>' in form
 

@@ -94,7 +94,7 @@ class GroupedAssociation:
     description: str
     grouping_rationale: str  # the aggregation's note, with its paper IDs
     relation: str  # the association's status in PanelApp Australia and its basis
-    mechanisms: str  # e.g. "Dominant negative (likely), Loss of function (suspected)"
+    mechanisms: str  # e.g. "Dominant negative (established), Loss of function (inconclusive)"
 
     @property
     def label(self) -> str:

@@ -3,7 +3,7 @@ GENE: {{ gene_symbol }}
 ASSOCIATION:
 Disease: {{ association.description }}
 Mode of inheritance: {{ inheritance }}
-Rating from the papers: {{ rating }}{% if capped %} (every confidence term is capped at Suspected){% endif %}
+Rating from the papers: {{ rating }}{% if capped %} (no mechanism can be Established){% endif %}
 
 Independent families: {{ association.independent_family_count if association.independent_family_count is not none else "not reported" }}
 
